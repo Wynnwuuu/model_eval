@@ -1,5 +1,9 @@
 # Eval Studio
 
+**线上环境（生产部署）：** [https://evalstudiocopygit-125148-927e8.web.app/](https://evalstudiocopygit-125148-927e8.web.app/)
+
+---
+
 评测工作台（界面品牌为 **EvalTrack**）。业务数据通过 `src/datastore.ts` 统一接入：
 
 - **本地开发**（`npm run dev`）：默认使用 `localPlatform`，数据在浏览器 **`localStorage`**（键名 `evaltrack_local_platform_v1`），内置本地测试用户，**不**强制 Google 登录，便于单机调试。

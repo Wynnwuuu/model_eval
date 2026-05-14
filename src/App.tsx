@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React from 'react';
 import { ModelEvalApp } from './components/ModelEvalApp';
-import { LayoutDashboard, Settings, Bell } from 'lucide-react';
+import { LayoutDashboard } from 'lucide-react';
 
 export default function App() {
   return (
@@ -23,12 +23,6 @@ export default function App() {
               </div>
             </div>
             <div className="flex items-center space-x-4">
-              <button className="text-slate-400 hover:text-slate-200 transition-colors">
-                <Bell className="w-5 h-5" />
-              </button>
-              <button className="text-slate-400 hover:text-slate-200 transition-colors">
-                <Settings className="w-5 h-5" />
-              </button>
               <div className="w-8 h-8 rounded-full bg-white/10 border border-white/10 flex items-center justify-center text-slate-200 font-bold text-sm">
                 我
               </div>

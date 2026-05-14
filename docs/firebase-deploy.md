@@ -36,6 +36,9 @@ VITE_FIREBASE_APP_ID=<你的 appId>
    - Firebase Hosting Admin
    - Cloud Datastore User
    - Firebase Rules Admin
+   - Service Usage Viewer
+
+如果 Firestore API / Firebase Hosting API 还没启用，先由项目 Owner 在控制台启用，或临时给服务账号加 `Service Usage Admin` 完成首次部署后再移除。
 
 ## 部署触发
 
