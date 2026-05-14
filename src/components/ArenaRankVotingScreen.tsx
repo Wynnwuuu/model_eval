@@ -195,8 +195,8 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
             <p className="text-sm max-w-md">请在创建任务时选择 3 列或更多模型结果列；2 个候选请继续使用原 Arena。</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px] gap-6 h-full min-h-[640px]">
-            <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3 gap-4 content-start">
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px] gap-6 min-h-[640px] xl:min-h-full">
+            <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3 gap-4 content-start min-w-0">
               {orderedOutputs.map((output, index) => (
                 <div
                   key={output.modelId}
@@ -204,7 +204,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
                   onDragStart={() => setDraggedId(output.modelId)}
                   onDragOver={(event) => event.preventDefault()}
                   onDrop={() => handleDrop(output.modelId)}
-                  className={`min-h-[320px] flex flex-col bg-white/5 border rounded-xl overflow-hidden transition-colors ${
+                  className={`min-h-[360px] min-w-0 flex flex-col bg-white/5 border rounded-xl overflow-hidden transition-colors ${
                     draggedId === output.modelId ? 'border-amber-400/70 opacity-70' : 'border-white/10 hover:border-amber-400/50'
                   }`}
                 >
@@ -233,7 +233,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
                       </button>
                     </div>
                   </div>
-                  <div className="flex-1 min-h-[260px] bg-black/40 p-1">
+                  <div className="flex-1 min-h-[280px] overflow-hidden bg-black/40 p-1">
                     <MediaRenderer
                       url={output.url}
                       label={`Option ${index + 1}`}

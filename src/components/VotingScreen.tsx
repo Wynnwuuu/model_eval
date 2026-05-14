@@ -255,7 +255,7 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
       </div>
 
       {/* Main Layout */}
-      <div className="flex-1 flex flex-col overflow-hidden bg-white/5">
+      <div className="flex-1 min-h-0 flex flex-col bg-white/5">
         
         {/* Top Section: Prompt / Inputs */}
         {(item.inputs || item.prompt) && (
@@ -299,11 +299,12 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
         )}
 
         {/* Content Area */}
-        <div className="flex-1 p-4 md:p-6 flex gap-4 md:gap-6 min-h-0">
+        <div className="flex-1 min-h-0 overflow-auto">
+          <div className="min-h-[560px] h-full p-4 md:p-6 flex gap-4 md:gap-6">
           
           {/* Left Side (A or B if swapped) */}
-          <div className="flex-1 flex flex-col min-h-0 bg-white/5 rounded-2xl shadow-md shadow-black/20 border border-white/10 overflow-hidden group/card hover:border-blue-400/50 transition-colors">
-            <div className="flex-1 relative min-h-0 p-1 bg-black/40">
+          <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-white/5 rounded-2xl shadow-md shadow-black/20 border border-white/10 overflow-hidden group/card hover:border-blue-400/50 transition-colors">
+            <div className="flex-1 relative min-h-0 overflow-hidden p-1 bg-black/40">
               <MediaRenderer 
                 url={leftData.url} 
                 label="选项 1" 
@@ -315,7 +316,7 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
             <button
               onClick={() => onVote(leftData.voteVal)}
               disabled={!allMediaLoaded}
-              className={`p-4 font-bold flex items-center justify-center gap-2 transition-all border-t border-white/10 ${
+              className={`shrink-0 p-4 font-bold flex items-center justify-center gap-2 transition-all border-t border-white/10 ${
                 allMediaLoaded 
                   ? 'bg-white/5 hover:bg-blue-500/10 text-slate-200 hover:text-blue-400 cursor-pointer' 
                   : 'bg-white/5 text-slate-200 cursor-not-allowed'
@@ -406,8 +407,8 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
           </div>
 
           {/* Right Side (B or A if swapped) */}
-           <div className="flex-1 flex flex-col min-h-0 bg-white/5 rounded-2xl shadow-md shadow-black/20 border border-white/10 overflow-hidden group/card hover:border-amber-500/50 transition-colors">
-            <div className="flex-1 relative min-h-0 p-1 bg-black/40">
+           <div className="flex-1 min-w-0 flex flex-col min-h-0 bg-white/5 rounded-2xl shadow-md shadow-black/20 border border-white/10 overflow-hidden group/card hover:border-amber-500/50 transition-colors">
+            <div className="flex-1 relative min-h-0 overflow-hidden p-1 bg-black/40">
              <MediaRenderer 
                url={rightData.url} 
                label="选项 2" 
@@ -419,7 +420,7 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
             <button
               onClick={() => onVote(rightData.voteVal)}
               disabled={!allMediaLoaded}
-              className={`p-4 font-bold flex items-center justify-center gap-2 transition-all border-t border-white/10 ${
+              className={`shrink-0 p-4 font-bold flex items-center justify-center gap-2 transition-all border-t border-white/10 ${
                 allMediaLoaded
                   ? 'bg-white/5 hover:bg-amber-500/10 text-slate-200 hover:text-amber-300 cursor-pointer'
                   : 'bg-white/5 text-slate-200 cursor-not-allowed'
@@ -430,6 +431,7 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
             </button>
           </div>
 
+          </div>
         </div>
       </div>
 
@@ -440,11 +442,11 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
            <div className="relative w-full max-w-5xl h-full flex flex-col items-center justify-center p-4" onClick={(e) => e.stopPropagation()}>
              
              {/* Main Image */}
-             <div className="relative flex-1 flex items-center justify-center w-full min-h-0 mb-4">
+             <div className="relative w-full h-[80vh] min-h-0 mb-4">
                 <MediaRenderer 
                   url={currentRefIndex === -1 ? effectiveStartImageUrl! : effectiveReferenceUrls![currentRefIndex]} 
                   isActive={true}
-                  className="max-w-full max-h-[80vh] bg-transparent border-none shadow-none"
+                  className="bg-transparent border-none shadow-none"
                 />
              </div>
 

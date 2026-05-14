@@ -152,7 +152,7 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({ url, label, isActive, cla
 
   if (!finalUrl) {
     return (
-      <div className={`relative w-full h-full flex flex-col items-center justify-center bg-white/5 rounded-xl overflow-hidden border border-white/10 shadow-xl group ${className}`}>
+      <div className={`relative w-full h-full min-h-0 flex flex-col items-center justify-center bg-white/5 rounded-xl overflow-hidden border border-white/10 shadow-xl group ${className}`}>
         <AlertCircle className="w-10 h-10 mb-2 text-slate-500 shrink-0" />
         <p className="text-sm font-medium text-slate-400">链接为空</p>
       </div>
@@ -160,7 +160,7 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({ url, label, isActive, cla
   }
 
   return (
-    <div className={`relative w-full h-full flex flex-col bg-black/40 rounded-xl overflow-hidden border border-white/10 shadow-xl group ${className}`}>
+    <div className={`relative w-full h-full min-h-0 flex flex-col bg-black/40 rounded-xl overflow-hidden border border-white/10 shadow-xl group ${className}`}>
       {/* Label Badge */}
       {label && (
         <div className="absolute top-4 left-4 z-10 bg-black/60 backdrop-blur-md text-white px-3 py-1 rounded-full text-xs font-semibold tracking-wider border border-white/10 pointer-events-none">
@@ -170,14 +170,14 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({ url, label, isActive, cla
 
       {/* Loading State */}
       {loading && !error && (
-        <div className="absolute inset-0 flex items-center justify-center bg-white/5 z-0">
+        <div className="absolute inset-0 flex items-center justify-center bg-white/5 z-10">
           <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
         </div>
       )}
 
       {/* Error State */}
       {error && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/5 text-slate-400 p-4 text-center overflow-y-auto z-10">
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/5 text-slate-400 p-4 text-center overflow-y-auto z-20">
           <AlertCircle className="w-10 h-10 mb-2 text-red-400 shrink-0" />
           <p className="text-sm font-medium text-slate-300">
             {errorStatus === 403 ? '加载失败（CDN 可能拒绝访问）' : ((url.match(/https?:\/\//g) || []).length > 1 ? '检测到多个链接合并' : '加载失败')}
@@ -220,13 +220,13 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({ url, label, isActive, cla
       )}
 
       {/* Media Content */}
-      <div className="flex-1 relative flex items-center justify-center bg-black/60">
+      <div className="absolute inset-0 z-0 flex items-center justify-center bg-black/60 min-h-0">
         {mediaType === 'video' ? (
           <video
             key={`video-${retryKey}-${referrerPolicyIdx}-${blobUrl ? 'blob' : 'url'}`}
             ref={videoRef}
             src={blobUrl || finalUrl || undefined}
-            className={`max-w-full max-h-full object-contain focus:outline-none ${loading ? 'opacity-0' : 'opacity-100'}`}
+            className={`w-full h-full object-contain object-center focus:outline-none ${loading ? 'opacity-0' : 'opacity-100'}`}
             controls
             autoPlay={isActive}
             loop
@@ -247,7 +247,7 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({ url, label, isActive, cla
             key={`img-${retryKey}-${referrerPolicyIdx}`}
             src={finalUrl || undefined}
             alt={label}
-            className={`max-w-full max-h-full object-contain ${loading ? 'opacity-0' : 'opacity-100'}`}
+            className={`w-full h-full object-contain object-center ${loading ? 'opacity-0' : 'opacity-100'}`}
             referrerPolicy={referrerPolicy}
             onLoad={handleLoad}
             onError={handleError}
@@ -256,7 +256,7 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({ url, label, isActive, cla
       </div>
 
       {/* Type Indicator (Bottom Right) */}
-      <div className="absolute bottom-4 right-4 bg-black/40 backdrop-blur-sm p-1.5 rounded-lg text-white/70 pointer-events-none">
+      <div className="absolute bottom-4 right-4 z-20 bg-black/40 backdrop-blur-sm p-1.5 rounded-lg text-white/70 pointer-events-none">
         {mediaType === 'video' ? <FileVideo size={16} /> : <ImageIcon size={16} />}
       </div>
     </div>
