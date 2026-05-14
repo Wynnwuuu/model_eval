@@ -1,120 +1,81 @@
-# Eval Studio Copy
+# Eval Studio
 
-一个用于本地完整测试的评测工作台。当前版本默认走本地免登录模式，不依赖 Firebase Auth、Google 登录或线上 Firestore；项目、数据集、模板、任务、投票与分析结果会保存在浏览器 `localStorage` 中。
+评测工作台（界面品牌为 **EvalTrack**）。业务数据通过 `src/datastore.ts` 统一接入：
+
+- **本地开发**（`npm run dev`）：默认使用 `localPlatform`，数据在浏览器 **`localStorage`**（键名 `evaltrack_local_platform_v1`），内置本地测试用户，**不**强制 Google 登录，便于单机调试。
+- **生产构建**（`npm run build`）：默认使用 **Firebase Authentication + Cloud Firestore**，同一 Firebase 项目内的已登录用户共享项目、评测集、模板、任务与投票等数据。
+
+是否走云端由 `src/firebase.ts` 中的 `shouldUseFirebase` 决定；默认规则为 `import.meta.env.PROD`（生产包为 `true`），也可用环境变量 **`VITE_USE_FIREBASE`** 显式覆盖（见 `.env.example`）。
 
 ## 功能概览
 
-- 本地固定测试用户，无需登录即可使用。
-- 支持项目工作台、数据集、模板、任务创建与任务执行。
+- 项目工作台、评测集仓库、模板仓库、任务编排与执行、结果与分析。
 - 支持 GSB / MOS / Arena / Arena-rank 等评测范式。
-- Arena-rank 支持逐 case prompt 展示、逐排名视频预览、CSV 导出视频链接。
-- Analysis 支持平台本地结果导入、外部 CSV 上传汇总、分析 CSV 导出。
+- Arena-rank：逐 case prompt、排名视频预览、CSV 导出视频链接等。
+- Analysis：平台任务结果汇总、外部 CSV 上传、分析结果导出。
+- 浏览器内仍会使用少量 **`localStorage`**（例如评测进行中的会话 `modeleval_session`、历史 `modeleval_history`），与业务主库分离。
 
 ## 环境要求
 
-- Node.js 20 LTS 或较新的 Node.js 18 版本
+- Node.js 20 LTS，或较新的 Node.js 18
 - npm
 - 推荐浏览器：Chrome / Edge
 
-## 快速启动
-
-克隆仓库后进入项目目录：
-
-```powershell
-git clone https://github.com/bread-lxy/eval_studio_copy.git
-cd eval_studio_copy
-npm install
-```
-
-### Windows 推荐入口
-
-双击项目根目录里的：
-
-```text
-start-local.cmd
-```
-
-它会自动启动本地服务，并在可访问后打开浏览器。
-
-也可以用命令：
-
-```powershell
-npm.cmd run local:start
-```
-
-访问地址：
-
-```text
-http://localhost:3000/
-```
-
-### macOS / Linux / 通用入口
+## 快速启动（开发）
 
 ```bash
 npm install
 npm run dev
 ```
 
-然后打开：
+浏览器打开：`http://localhost:3000/`（端口以终端输出为准；仓库脚本里常用 `3000`）。
 
-```text
-http://localhost:3000/
-```
+### Windows 可选入口
 
-## 本地服务检查与停止
+- 双击根目录 **`start-local.cmd`**，或执行 `npm run local:start`（见 `scripts/start-local.ps1`）。
+- 停止与自检：`npm run local:stop`、`npm run local:check`；或双击 **`stop-local.cmd`**。
 
-Windows 下可使用：
+更细的 Windows 本机说明见 [docs/local-backend.md](docs/local-backend.md)。
 
-```powershell
-npm.cmd run local:check
-npm.cmd run local:stop
-```
-
-也可以双击：
-
-```text
-stop-local.cmd
-```
-
-更详细的 localhost 启动、重启电脑后的恢复、开机入口配置见：
-
-```text
-docs/local-backend.md
-```
-
-## 可选环境变量
-
-普通本地评测流程不需要配置线上服务。若后续启用 Gemini 相关能力，可复制 `.env.example` 为 `.env.local` 并填写：
-
-```text
-GEMINI_API_KEY="your_api_key"
-```
-
-`.env.local` 不会被提交到 Git。
-
-## 验证项目
-
-提交或使用前可以运行：
-
-```powershell
-npm.cmd run lint
-npm.cmd run build
-```
-
-如果不是 Windows，也可以用：
+## 生产构建与校验
 
 ```bash
 npm run lint
 npm run build
 ```
 
+生产包需要 **Vite 环境变量** 中的 Firebase Web 配置（`VITE_FIREBASE_*`）。构建完成后由 **Firebase Hosting** 等渠道托管静态资源；Firestore 安全规则见仓库根目录 **`firestore.rules`**。
+
+GitHub Actions 自动部署、Secrets/Variables 清单见 [docs/firebase-deploy.md](docs/firebase-deploy.md)。
+
+## 环境变量
+
+复制 **`.env.example`** 为 **`.env.local`**（不要提交到 Git），按需填写：
+
+| 变量 | 作用 |
+|------|------|
+| `VITE_FIREBASE_*` | Firebase Web 应用配置；生产构建读写 Firestore / Auth 时必需。 |
+| `VITE_USE_FIREBASE` | `true`：即使 `vite dev` 也走 Firebase；`false`：即使生产包也走本地 `localStorage`；不设则跟随 `import.meta.env.PROD`。 |
+| `GEMINI_API_KEY` | 若使用 Gemini 相关能力时在构建或运行环境中注入（见 `.env.example` 说明）。 |
+| `APP_URL` | 部署站点自身 URL（OAuth、回调等场景，见 `.env.example`）。 |
+
+默认 Firebase 工程 ID 与 CLI 默认项目见 **`.firebaserc`**（当前 `default` 为 `evalstudiocopygit-125148`）。
+
+## Firebase 与权限
+
+- **Authentication**：生产环境需启用 **Google** 等登录方式，并把线上域名加入 Authorized domains。
+- **Firestore**：规则文件为 **`firestore.rules`**；修改后需部署（例如 `firebase deploy --only firestore:rules`，或由 CI 执行，见 [docs/firebase-deploy.md](docs/firebase-deploy.md)）。
+- 项目、数据集等 **读取** 对同项目内已登录用户开放范围以规则为准；**写入** 多与 `initiatorUid` / `creatorUid` 绑定，详见规则内注释。
+
 ## 常见问题
 
-- `localhost:3000 refused to connect`：本地服务没启动。Windows 下双击 `start-local.cmd`，或运行 `npm run dev`。
-- 重启电脑后无法访问：这是正常现象，本地 Vite 服务不会自动随系统恢复；按上面的 Windows 推荐入口重新启动即可。
-- 页面数据消失：数据保存在当前浏览器的 `localStorage`，更换浏览器、清理站点数据或隐身模式都会看到新的空环境。
-- 视频能新标签页打开但页面内加载慢：评测页已经做了视频加载兜底，结果页的视频预览使用 `metadata` 预加载以避免一次性下载全部视频。
+- **`localhost` 无法连接**：先执行 `npm run dev` 或 Windows 下的 `start-local.cmd`。
+- **开发数据「换浏览器就没了」**：开发模式主数据在 **`localStorage`**，换浏览器或清除站点数据会重置。
+- **线上多人要看到同一批项目**：需使用 **同一 Firebase 项目** 的 `VITE_FIREBASE_*` 打生产包并部署；浏览器 Network 里出现 **`firestore.googleapis.com` … `Listen/channel`** 多为实时监听长连接，属正常现象。
+- **非项目发起人打开大盘仍看到他人项目**：列表来自 Firestore 查询；若监听器内曾对他人项目误触发 `updateDoc`，会导致权限错误与频繁重试——当前已在 **`DashboardScreen`** 中对自动迁移 / 自动改步骤状态增加 **仅发起人可写** 的守卫。
+- **页面内视频慢、新标签可开**：评测/结果页已对媒体加载做兜底；部分预览使用较轻的预加载策略。
 
-## 线上恢复说明
+## 相关文档
 
-当前仓库是本地免登录测试版。若未来要恢复 Firebase / Google 登录 / Firestore 线上部署能力，应基于 Git 历史重新接回线上数据层与权限配置。
+- [docs/local-backend.md](docs/local-backend.md) — Windows 本机启动与维护。
+- [docs/firebase-deploy.md](docs/firebase-deploy.md) — CI 部署与 GitHub Secrets。
