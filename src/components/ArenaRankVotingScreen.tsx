@@ -4,6 +4,7 @@ import { EvaluationItem, RankingEntry } from '../types';
 import { getModelOutputsForItem } from '../rankingUtils';
 import MediaRenderer from './MediaRenderer';
 import { normalizeUrl } from '../utils';
+import { VIDEO_EXTENSIONS } from '../constants';
 import DimensionChips from './DimensionChips';
 import { getDimensionValuesForItem, hasDimensionValues } from '../dimensionUtils';
 
@@ -60,14 +61,19 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
       const normalizedUrl = normalizeUrl(output.url);
       if (!normalizedUrl) return;
 
-      const isVideo = normalizedUrl.match(/\.(mp4|webm|ogg)$/i) || normalizedUrl.includes('video');
+      const cleanUrl = normalizedUrl.split('?')[0].split('#')[0].toLowerCase();
+      const isVideo = VIDEO_EXTENSIONS.some(ext => cleanUrl.endsWith(`.${ext}`)) || normalizedUrl.toLowerCase().includes('video');
       if (isVideo) {
         const video = document.createElement('video');
-        video.preload = 'auto';
+        video.preload = 'metadata';
+        video.muted = true;
+        video.playsInline = true;
         video.setAttribute('referrerpolicy', 'no-referrer');
         video.src = normalizedUrl;
       } else {
         const img = new Image();
+        img.referrerPolicy = 'no-referrer';
+        img.decoding = 'async';
         img.src = normalizedUrl;
       }
     });

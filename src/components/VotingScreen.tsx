@@ -2,7 +2,7 @@ import React, { useEffect, useCallback, useState } from 'react';
 import { CheckCircle2, ChevronDown, ChevronUp, Cloud, Equal, Expand, MessageSquare, ThumbsUp, Layers, ArrowLeft, ArrowRight, Shuffle } from 'lucide-react';
 import { EvaluationItem, VoteType } from '../types';
 import MediaRenderer from './MediaRenderer';
-import { KEYBOARD_SHORTCUTS } from '../constants';
+import { KEYBOARD_SHORTCUTS, VIDEO_EXTENSIONS } from '../constants';
 import { normalizeUrl } from '../utils';
 import DimensionChips from './DimensionChips';
 import { getDimensionValuesForItem, hasDimensionValues } from '../dimensionUtils';
@@ -152,15 +152,21 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
         const normalizedUrl = normalizeUrl(url);
         if (!normalizedUrl) return;
         
-        // Simple preloading strategy based on extension
-        const isVideo = normalizedUrl.match(/\.(mp4|webm|ogg)$/i) || normalizedUrl.includes('video');
+        // Preload conservatively: video metadata is enough to warm the host
+        // without competing with the current case's full media download.
+        const cleanUrl = normalizedUrl.split('?')[0].split('#')[0].toLowerCase();
+        const isVideo = VIDEO_EXTENSIONS.some(ext => cleanUrl.endsWith(`.${ext}`)) || normalizedUrl.toLowerCase().includes('video');
         if (isVideo) {
           const video = document.createElement('video');
-          video.preload = 'auto';
+          video.preload = 'metadata';
+          video.muted = true;
+          video.playsInline = true;
           video.setAttribute('referrerpolicy', 'no-referrer');
           video.src = normalizedUrl;
         } else {
           const img = new Image();
+          img.referrerPolicy = 'no-referrer';
+          img.decoding = 'async';
           img.src = normalizedUrl;
         }
       };
