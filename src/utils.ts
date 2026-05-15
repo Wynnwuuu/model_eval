@@ -76,10 +76,5 @@ export const normalizeUrl = (url: string): string => {
     return normalized;
   }
 
-  // 9. Upgrade HTTP to HTTPS (except for localhost)
-  if (normalized.startsWith('http://') && !normalized.includes('localhost') && !normalized.includes('127.0.0.1')) {
-    return normalized.replace('http://', 'https://');
-  }
-
   return normalized;
 };

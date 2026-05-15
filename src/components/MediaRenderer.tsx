@@ -59,8 +59,21 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({ url, label, isActive, cla
     onLoadStatusChangeRef.current = onLoadStatusChange;
   }, [onLoadStatusChange]);
 
+  useEffect(() => {
+    if (!finalUrl) {
+      setLoading(false);
+      setError(false);
+      setSoftTimedOut(false);
+      onLoadStatusChangeRef.current?.(true);
+    }
+  }, [finalUrl]);
+
   // Simple heuristic to detect type from URL extension
   useEffect(() => {
+    if (!finalUrl) {
+      return;
+    }
+
     setLoading(true);
     setError(false);
     setErrorStatus(null);
