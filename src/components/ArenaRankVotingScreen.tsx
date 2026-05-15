@@ -4,6 +4,8 @@ import { EvaluationItem, RankingEntry } from '../types';
 import { getModelOutputsForItem } from '../rankingUtils';
 import MediaRenderer from './MediaRenderer';
 import { normalizeUrl } from '../utils';
+import DimensionChips from './DimensionChips';
+import { getDimensionValuesForItem, hasDimensionValues } from '../dimensionUtils';
 
 interface ArenaRankVotingScreenProps {
   item: EvaluationItem;
@@ -75,6 +77,8 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
   const orderedOutputs = orderedIds
     .map(id => outputsById.get(id))
     .filter(Boolean) as typeof sourceOutputs;
+  const dimensionValues = getDimensionValuesForItem(item as any);
+  const hasDimensions = hasDimensionValues(dimensionValues);
 
   const progress = (currentIndex / totalItems) * 100;
   const allMediaLoaded = orderedOutputs.length >= 3 && orderedOutputs.every(output => loaded[output.modelId]);
@@ -160,8 +164,9 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
         <div className="h-full bg-amber-500 transition-all duration-300 ease-out" style={{ width: `${progress}%` }} />
       </div>
 
-      {(item.inputs || item.prompt) && (
+      {(item.inputs || item.prompt || hasDimensions) && (
         <div className="bg-white/5 border-b border-white/10 px-6 py-3 shrink-0 relative shadow-md shadow-black/20 z-10">
+          <DimensionChips values={dimensionValues} className="mb-2" />
           <div className={`text-slate-200 text-sm leading-relaxed transition-all duration-300 whitespace-pre-wrap ${showFullPrompt ? '' : 'line-clamp-2 pr-8'}`}>
             {visibleInputs.length > 0 ? (
               <div className="flex flex-col gap-2">

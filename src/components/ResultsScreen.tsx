@@ -3,6 +3,8 @@ import { Download, RotateCcw, Trophy, Check } from 'lucide-react';
 import { EvalParadigm, VoteRecord, EvaluationItem, VotingStats } from '../types';
 import { calculateArenaRankModelStats, getArenaRankModelOutputUrl, getBordaScore, isArenaRankVote, resolveEvaluationItemPrompt, sortRanking } from '../rankingUtils';
 import ArenaRankVideoPreviewList from './ArenaRankVideoPreviewList';
+import DimensionChips from './DimensionChips';
+import { calculateRankDimensionSummaries, calculateVoteDimensionSummaries, getDimensionColumnsForCsv, getDimensionCsvValues, getDimensionValuesForItem } from '../dimensionUtils';
 
 interface ResultsScreenProps {
   votes: VoteRecord[];
@@ -25,6 +27,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
     ? models
     : rankStats.map(stat => ({ id: stat.modelId, name: stat.modelName }));
   const maxRankCount = Math.max(0, ...rankVotes.map(v => v.ranking?.length || 0));
+  const dimensionColumns = getDimensionColumnsForCsv(items);
 
   // Calculate Stats
   const stats: VotingStats = votes.reduce(
@@ -41,16 +44,33 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
   const aPercent = stats.total ? Math.round((stats.aCount / stats.total) * 100) : 0;
   const bPercent = stats.total ? Math.round((stats.bCount / stats.total) * 100) : 0;
   const tiePercent = stats.total ? 100 - aPercent - bPercent : 0;
+  const aggregatedResultItems = items.map(item => {
+    const itemVotes = votes.filter(v => v.itemId === item.id && v.vote);
+    return {
+      itemId: item.id,
+      prompt: resolveEvaluationItemPrompt(item),
+      dimensionValues: getDimensionValuesForItem(item),
+      votes: {
+        A: itemVotes.filter(v => v.vote === 'A').length,
+        B: itemVotes.filter(v => v.vote === 'B').length,
+        Tie: itemVotes.filter(v => v.vote === 'Tie').length
+      },
+      voters: itemVotes.map(v => v.user || userName || 'Anonymous')
+    };
+  });
+  const voteDimensionSummaries = calculateVoteDimensionSummaries(aggregatedResultItems);
+  const rankDimensionSummaries = calculateRankDimensionSummaries(rankVotes, items);
 
   const downloadCSV = () => {
     if (isArenaRank) {
       const rankHeaders = Array.from({ length: maxRankCount }, (_, idx) => `rank_${idx + 1}`);
       const rankVideoHeaders = Array.from({ length: maxRankCount }, (_, idx) => `排名${idx + 1}视频链接`);
       const modelHeaders = arenaRankModelList.flatMap(model => [`${model.name}_rank`, `${model.name}_score`]);
-      const headers = ['ItemID', 'Prompt', 'Timestamp', 'User', ...rankHeaders, ...rankVideoHeaders, ...modelHeaders, 'ranking_json'];
+      const headers = ['ItemID', 'Prompt', ...dimensionColumns.map(col => col.header), 'Timestamp', 'User', ...rankHeaders, ...rankVideoHeaders, ...modelHeaders, 'ranking_json'];
       const rows = rankVotes.map(v => {
         const item = items.find(candidate => candidate.id === v.itemId);
         const ranking = sortRanking(v.ranking);
+        const dimensionValues = getDimensionValuesForItem(item);
         const rankValues = rankHeaders.map((_, idx) => {
           const entry = ranking[idx];
           return entry ? `${entry.modelName} (${entry.modelId})` : '';
@@ -69,6 +89,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
         return [
           v.itemId,
           resolveEvaluationItemPrompt(item),
+          ...getDimensionCsvValues(dimensionValues, dimensionColumns.map(col => col.key)),
           new Date(v.timestamp).toISOString(),
           userName || v.user || 'Anonymous',
           ...rankValues,
@@ -90,12 +111,15 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
       return;
     }
 
-    // Standard cols: ItemID, ModelA_URL, ModelB_URL, Winner, Timestamp, User, ModelA_Name, ModelB_Name, References
-    const headers = ['ItemID', 'ModelA_URL', 'ModelB_URL', 'Winner', 'Timestamp', 'User', 'ModelA_Name', 'ModelB_Name', 'References'];
+    // Standard cols: ItemID, Prompt, dimensions, model urls, winner, timestamp, user, model names, references
+    const headers = ['ItemID', 'Prompt', ...dimensionColumns.map(col => col.header), 'ModelA_URL', 'ModelB_URL', 'Winner', 'Timestamp', 'User', 'ModelA_Name', 'ModelB_Name', 'References'];
     const rows = votes.map(v => {
       const item = items.find(i => i.id === v.itemId);
+      const dimensionValues = getDimensionValuesForItem(item);
       return [
         v.itemId,
+        resolveEvaluationItemPrompt(item),
+        ...getDimensionCsvValues(dimensionValues, dimensionColumns.map(col => col.key)),
         item?.modelA_Url || '',
         item?.modelB_Url || '',
         v.vote,
@@ -104,7 +128,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
         modelNames.a,
         modelNames.b,
         item?.referenceUrls ? item.referenceUrls.join(' | ') : ''
-      ].map(field => `"${field}"`).join(',');
+      ].map(escapeCsvField).join(',');
     });
 
     const csvContent = [headers.join(','), ...rows].join('\n');
@@ -152,6 +176,42 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
           ))}
         </div>
 
+        {rankDimensionSummaries.length > 0 && (
+          <div className="glass-panel/5 rounded-xl shadow-lg border border-white/10 overflow-hidden mb-8">
+            <div className="p-6 border-b border-white/10 glass-panel/5">
+              <h3 className="font-semibold text-slate-200">按评测维度聚合</h3>
+            </div>
+            <div className="overflow-x-auto max-h-[320px]">
+              <table className="w-full text-left border-collapse">
+                <thead className="bg-white/5 sticky top-0">
+                  <tr>
+                    <th className="p-4 text-xs font-semibold text-slate-300 uppercase border-b border-white/10">维度</th>
+                    <th className="p-4 text-xs font-semibold text-slate-300 uppercase border-b border-white/10">取值</th>
+                    <th className="p-4 text-xs font-semibold text-slate-300 uppercase border-b border-white/10">Case 数</th>
+                    <th className="p-4 text-xs font-semibold text-slate-300 uppercase border-b border-white/10">排名记录</th>
+                    <th className="p-4 text-xs font-semibold text-slate-300 uppercase border-b border-white/10">领先模型</th>
+                    <th className="p-4 text-xs font-semibold text-slate-300 uppercase border-b border-white/10">模型统计</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rankDimensionSummaries.map(summary => (
+                    <tr key={`${summary.dimensionKey}-${summary.dimensionValue}`} className="border-b border-white/10 glass-panel-hover">
+                      <td className="p-4 text-sm text-slate-200">{summary.dimensionKey}</td>
+                      <td className="p-4 text-sm text-slate-200">{summary.dimensionValue}</td>
+                      <td className="p-4 text-sm text-slate-200">{summary.itemCount}</td>
+                      <td className="p-4 text-sm text-slate-200">{summary.rankingRecords}</td>
+                      <td className="p-4 text-sm font-semibold text-amber-300">{summary.modelStats[0]?.modelName || '-'}</td>
+                      <td className="p-4 text-xs text-slate-300 min-w-[280px]">
+                        {summary.modelStats.map(stat => `${stat.modelName}: score=${stat.totalScore}, avg=${stat.averageRank.toFixed(2)}, first=${stat.firstPlaceCount}`).join(' | ')}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
         <div className="glass-panel/5 rounded-xl shadow-lg border border-white/10 overflow-hidden">
           <div className="p-6 border-b border-white/10 glass-panel/5 flex justify-between items-center">
             <h3 className="font-semibold text-slate-200">逐 case 排名明细</h3>
@@ -175,6 +235,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
                 <tr>
                   <th className="p-4 text-xs font-semibold text-slate-300 uppercase border-b border-white/10">ID</th>
                   <th className="p-4 text-xs font-semibold text-slate-300 uppercase border-b border-white/10">Prompt</th>
+                  <th className="p-4 text-xs font-semibold text-slate-300 uppercase border-b border-white/10">评测维度</th>
                   <th className="p-4 text-xs font-semibold text-slate-300 uppercase border-b border-white/10">实际排名</th>
                   <th className="p-4 text-xs font-semibold text-slate-300 uppercase border-b border-white/10 text-right">时间</th>
                 </tr>
@@ -184,11 +245,15 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
                   const item = items.find(candidate => candidate.id === v.itemId);
                   const prompt = resolveEvaluationItemPrompt(item);
                   const ranking = sortRanking(v.ranking);
+                  const dimensionValues = getDimensionValuesForItem(item);
 
                   return (
                     <tr key={i} className="border-b border-white/10 glass-panel-hover">
                       <td className="p-4 text-sm text-slate-200 font-mono">{v.itemId}</td>
                       <td className="p-4 text-sm text-slate-300 min-w-[260px] max-w-md whitespace-pre-wrap break-words">{prompt || '-'}</td>
+                      <td className="p-4 min-w-[220px]">
+                        <DimensionChips values={dimensionValues} label="" />
+                      </td>
                       <td className="p-4">
                         <ArenaRankVideoPreviewList
                           entries={ranking.map(entry => ({
@@ -257,6 +322,49 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
         </div>
       </div>
 
+      {voteDimensionSummaries.length > 0 && (
+        <div className="glass-panel/5 rounded-xl shadow-lg border border-white/10 overflow-hidden mb-8">
+          <div className="p-6 border-b border-white/10 glass-panel/5">
+            <h3 className="font-semibold text-slate-200">按评测维度聚合</h3>
+          </div>
+          <div className="overflow-x-auto max-h-[320px]">
+            <table className="w-full text-left border-collapse">
+              <thead className="bg-white/5 sticky top-0">
+                <tr>
+                  <th className="p-4 text-xs font-semibold text-slate-200 uppercase border-b border-white/10">维度</th>
+                  <th className="p-4 text-xs font-semibold text-slate-200 uppercase border-b border-white/10">取值</th>
+                  <th className="p-4 text-xs font-semibold text-slate-200 uppercase border-b border-white/10">Case 数</th>
+                  <th className="p-4 text-xs font-semibold text-slate-200 uppercase border-b border-white/10">总票数</th>
+                  <th className="p-4 text-xs font-semibold text-slate-200 uppercase border-b border-white/10">投票分布</th>
+                  <th className="p-4 text-xs font-semibold text-slate-200 uppercase border-b border-white/10">获胜者</th>
+                  <th className="p-4 text-xs font-semibold text-slate-200 uppercase border-b border-white/10">共识度</th>
+                  <th className="p-4 text-xs font-semibold text-slate-200 uppercase border-b border-white/10">Margin</th>
+                </tr>
+              </thead>
+              <tbody>
+                {voteDimensionSummaries.map(summary => {
+                  const winnerLabel = summary.winner === 'A' ? modelNames.a : summary.winner === 'B' ? modelNames.b : '平局';
+                  return (
+                    <tr key={`${summary.dimensionKey}-${summary.dimensionValue}`} className="border-b border-white/10 glass-panel-hover">
+                      <td className="p-4 text-sm text-slate-200">{summary.dimensionKey}</td>
+                      <td className="p-4 text-sm text-slate-200">{summary.dimensionValue}</td>
+                      <td className="p-4 text-sm text-slate-200">{summary.itemCount}</td>
+                      <td className="p-4 text-sm text-slate-200">{summary.totalVotes}</td>
+                      <td className="p-4 text-xs text-slate-300 min-w-[220px]">
+                        {modelNames.a}: {summary.votes.A} | {modelNames.b}: {summary.votes.B} | 平局: {summary.votes.Tie}
+                      </td>
+                      <td className="p-4 text-sm font-semibold text-slate-100">{winnerLabel}</td>
+                      <td className="p-4 text-sm text-slate-200">{Math.round(summary.agreementRate * 100)}%</td>
+                      <td className="p-4 text-sm text-slate-200">{Math.round(summary.marginRate * 100)}%</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       <div className="glass-panel/5 rounded-xl shadow-lg border border-white/10 overflow-hidden">
         <div className="p-6 border-b border-white/10 glass-panel/5 flex justify-between items-center">
           <h3 className="font-semibold text-slate-200">详细明细</h3>
@@ -288,26 +396,33 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
             <thead className="glass-panel/5 sticky top-0">
               <tr>
                 <th className="p-4 text-xs font-semibold text-slate-200 uppercase border-b border-white/10">ID</th>
+                <th className="p-4 text-xs font-semibold text-slate-200 uppercase border-b border-white/10">评测维度</th>
                 <th className="p-4 text-xs font-semibold text-slate-200 uppercase border-b border-white/10">获胜者</th>
                 <th className="p-4 text-xs font-semibold text-slate-200 uppercase border-b border-white/10 text-right">时间</th>
               </tr>
             </thead>
             <tbody>
-              {votes.map((v, i) => (
-                <tr key={i} className="border-b border-white/10 glass-panel-hover">
-                  <td className="p-4 text-sm text-slate-200 font-mono">{v.itemId}</td>
-                  <td className="p-4">
-                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
-                      ${v.vote === 'A' ? 'bg-blue-500/80/20 text-amber-300' : 
-                        v.vote === 'B' ? 'bg-amber-500/20 text-amber-300' : 'bg-white/10 text-slate-200'}`}>
-                      {v.vote === 'Tie' ? '平局' : v.vote === 'A' ? modelNames.a : modelNames.b}
-                    </span>
-                  </td>
-                  <td className="p-4 text-sm text-slate-200 text-right">
-                    {new Date(v.timestamp).toLocaleTimeString()}
-                  </td>
-                </tr>
-              ))}
+              {votes.map((v, i) => {
+                const item = items.find(candidate => candidate.id === v.itemId);
+                return (
+                  <tr key={i} className="border-b border-white/10 glass-panel-hover">
+                    <td className="p-4 text-sm text-slate-200 font-mono">{v.itemId}</td>
+                    <td className="p-4 min-w-[220px]">
+                      <DimensionChips values={getDimensionValuesForItem(item)} label="" />
+                    </td>
+                    <td className="p-4">
+                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium
+                        ${v.vote === 'A' ? 'bg-blue-500/80/20 text-amber-300' :
+                          v.vote === 'B' ? 'bg-amber-500/20 text-amber-300' : 'bg-white/10 text-slate-200'}`}>
+                        {v.vote === 'Tie' ? '平局' : v.vote === 'A' ? modelNames.a : modelNames.b}
+                      </span>
+                    </td>
+                    <td className="p-4 text-sm text-slate-200 text-right">
+                      {new Date(v.timestamp).toLocaleTimeString()}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

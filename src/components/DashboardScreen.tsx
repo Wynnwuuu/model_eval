@@ -4,6 +4,7 @@ import { EvalParadigm, EvaluationProject, EvaluationStep, EvaluationItem, EvalTa
 import { CreateProjectModal } from './CreateProjectModal';
 import { db, auth, signInWithGoogle, logout } from '../firebase';
 import { collection, onSnapshot, addDoc, query, orderBy, doc, updateDoc, where, getDocs, getDoc, setDoc, deleteDoc } from '../datastore';
+import { getDimensionValuesForItem, getDimensionValuesFromRecord } from '../dimensionUtils';
 
 interface DashboardScreenProps {
   initialProject?: EvaluationProject | null;
@@ -288,6 +289,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
       const itemsSnapshot = await getDocs(collection(db, 'evalTasks', task.id, 'items'));
       let items = itemsSnapshot.docs.map(docSnap => {
         const data = { id: docSnap.id, ...docSnap.data() } as EvaluationItem;
+        data.dimensionValues = getDimensionValuesForItem(data as any, task.dimensionColumns || []);
         if (!data.modelOutputs?.length) {
           const originalData = (data as any).originalData || {};
           data.modelOutputs = taskModelList.map((model, idx) => ({
@@ -322,6 +324,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
               
               const inputs = { ...row };
               modelKeys.forEach(key => delete inputs[key]);
+              (task.dimensionColumns || []).forEach(key => delete inputs[key]);
               
               let startImageUrl: string | undefined;
               let referenceUrls: string[] = [];
@@ -357,6 +360,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
                   url: row[modelKeys[modelIdx]] || ''
                 })).filter(output => output.url),
                 inputs,
+                dimensionValues: getDimensionValuesFromRecord(row, task.dimensionColumns || []),
                 prompt: inputs['prompt'] || inputs['提示词'] || Object.values(inputs)[0] || '',
                 type: task.outputType || 'text',
                 startImageUrl,

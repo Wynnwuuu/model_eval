@@ -4,6 +4,8 @@ import { EvaluationItem, VoteType } from '../types';
 import MediaRenderer from './MediaRenderer';
 import { KEYBOARD_SHORTCUTS } from '../constants';
 import { normalizeUrl } from '../utils';
+import DimensionChips from './DimensionChips';
+import { getDimensionValuesForItem, hasDimensionValues } from '../dimensionUtils';
 
 interface VotingScreenProps {
   item: EvaluationItem;
@@ -82,6 +84,8 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
   const visibleInputs = item.inputs 
     ? Object.entries(item.inputs).filter(([key]) => !hiddenInputKeys.has(key))
     : [];
+  const dimensionValues = getDimensionValuesForItem(item as any);
+  const hasDimensions = hasDimensionValues(dimensionValues);
 
   const progress = ((currentIndex) / totalItems) * 100;
 
@@ -258,8 +262,9 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
       <div className="flex-1 min-h-0 flex flex-col bg-white/5">
         
         {/* Top Section: Prompt / Inputs */}
-        {(item.inputs || item.prompt) && (
+        {(item.inputs || item.prompt || hasDimensions) && (
           <div className="bg-white/5 border-b border-white/10 px-6 py-3 shrink-0 relative shadow-md shadow-black/20 z-10">
+            <DimensionChips values={dimensionValues} className="mb-2" />
             <div 
               className={`text-slate-200 text-sm leading-relaxed transition-all duration-300 whitespace-pre-wrap ${showFullPrompt ? '' : 'line-clamp-2 pr-8'}`}
             >

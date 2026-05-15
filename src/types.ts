@@ -70,6 +70,7 @@ export interface EvaluationItem {
   modelOutputs?: ModelOutput[]; // Arena-rank multi-model outputs
   prompt?: string;    // The prompt used to generate
   inputs?: Record<string, any>; // Flexible input columns
+  dimensionValues?: Record<string, string>; // Optional case-level analysis dimensions
   startImageUrl?: string; // New: Specific field for start image
   referenceUrls?: string[]; // Changed from single string to array
   type: 'image' | 'video' | 'unknown';
@@ -124,6 +125,7 @@ export interface HistorySession {
 export interface AggregatedResult {
   itemId: string;
   prompt?: string;
+  dimensionValues?: Record<string, string>;
   votes: {
     A: number;
     B: number;
@@ -185,6 +187,7 @@ export interface EvalTask {
   datasetId: string;
   templateId: string;
   models: { id: string; name: string }[];
+  dimensionColumns?: string[];
   outputType: 'text' | 'image' | 'video' | 'markdown';
   inputType?: 'text' | 'text_image' | 'text_audio' | 'multi_turn' | 'other';
   assignees?: string[];

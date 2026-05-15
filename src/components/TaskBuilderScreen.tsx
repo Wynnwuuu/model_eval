@@ -6,6 +6,8 @@ import { collection, onSnapshot, addDoc, query, orderBy, doc, updateDoc, deleteD
 import { ConfirmModal } from './ConfirmModal';
 import Papa from 'papaparse';
 import MediaRenderer from './MediaRenderer';
+import DimensionChips from './DimensionChips';
+import { getDimensionValuesForItem, getDimensionValuesFromRecord, isLikelyDimensionColumn } from '../dimensionUtils';
 
 interface TaskBuilderScreenProps {
   projectId?: string;
@@ -44,6 +46,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
   // Wizard State
   const [inputColumns, setInputColumns] = useState<string[]>([]);
   const [modelColumns, setModelColumns] = useState<string[]>([]);
+  const [dimensionColumns, setDimensionColumns] = useState<string[]>([]);
   const [saveDatasetToPlatform, setSaveDatasetToPlatform] = useState(true);
   const [showPreview, setShowPreview] = useState(false);
   const [inputType, setInputType] = useState<'text' | 'text_image' | 'text_audio' | 'multi_turn' | 'other'>('text');
@@ -141,6 +144,27 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
     return null;
   };
 
+  const autoDetectDimensionColumns = (headers: string[], blockedColumns: string[] = []) =>
+    headers.filter(header => !blockedColumns.includes(header) && isLikelyDimensionColumn(header));
+
+  const updateInputColumns = (columns: string[]) => {
+    setInputColumns(columns);
+    setModelColumns(prev => prev.filter(col => !columns.includes(col)));
+    setDimensionColumns(prev => prev.filter(col => !columns.includes(col)));
+  };
+
+  const updateModelColumns = (columns: string[]) => {
+    setModelColumns(columns);
+    setInputColumns(prev => prev.filter(col => !columns.includes(col)));
+    setDimensionColumns(prev => prev.filter(col => !columns.includes(col)));
+  };
+
+  const updateDimensionColumns = (columns: string[]) => {
+    setDimensionColumns(columns);
+    setInputColumns(prev => prev.filter(col => !columns.includes(col)));
+    setModelColumns(prev => prev.filter(col => !columns.includes(col)));
+  };
+
   const handleCreateTask = async () => {
     if (isSubmitting) return;
     
@@ -198,7 +222,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
             .filter(key => key !== 'id')
             .map(key => ({
               key,
-              label: inputColumns.includes(key) ? `输入: ${key}` : key,
+              label: dimensionColumns.includes(key) ? `评测维度: ${key}` : inputColumns.includes(key) ? `输入: ${key}` : key,
               type: 'text' as const
             }));
           
@@ -239,6 +263,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
         projectId: projectId || newTask.projectId || '',
         datasetId: finalDatasetId || 'external-csv',
         models: taskModels,
+        dimensionColumns,
         inputType,
         creatorUid: auth.currentUser.uid,
         creatorName: auth.currentUser.displayName || auth.currentUser.email || 'Anonymous',
@@ -297,6 +322,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                 modelName: model.name,
                 url: modelColumns[idx] ? row[modelColumns[idx]] : ''
               })).filter(output => output.url),
+              dimensionValues: getDimensionValuesFromRecord(row, dimensionColumns),
               type: newTask.outputType || 'text',
               originalData: row
             };
@@ -328,6 +354,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
       setCsvHeaders([]);
       setInputColumns([]);
       setModelColumns([]);
+      setDimensionColumns([]);
       setError(null);
       setSuccessMessage("创建成功！");
       setTimeout(() => setSuccessMessage(null), 3000);
@@ -490,8 +517,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
       h.includes('提示词') || 
       h.includes('输入')
     );
-    if (promptCol) setInputColumns([promptCol]);
-    else setInputColumns([headers[0]]);
+    let detectedInputColumns = promptCol ? [promptCol] : [headers[0]];
 
     // Auto-detect start image
     const startImgCol = headers.find(h => 
@@ -501,13 +527,18 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
       h.includes('输入图')
     );
     if (startImgCol) {
-      setInputColumns(prev => [...new Set([...prev, startImgCol])]);
+      detectedInputColumns = [...new Set([...detectedInputColumns, startImgCol])];
     }
+
+    const detectedDimensionColumns = autoDetectDimensionColumns(headers, detectedInputColumns);
+    setInputColumns(detectedInputColumns);
+    setDimensionColumns(detectedDimensionColumns);
 
     // Auto-detect model columns
     const models = headers.filter(h => 
       h !== promptCol && 
       h !== startImgCol &&
+      !detectedDimensionColumns.includes(h) &&
       !h.toLowerCase().includes('id') && 
       !h.includes('结果') &&
       (h.includes('Slot') || h.includes('Out') || h.includes('Model') || h.includes('模型') || h.includes('URL_'))
@@ -517,7 +548,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
     if (models.length >= 2) {
       setModelColumns(selectedParadigm === 'Arena-rank' ? models : models.slice(0, 2));
     } else {
-      const otherCols = headers.filter(h => h !== promptCol && h !== startImgCol && !h.toLowerCase().includes('id'));
+      const otherCols = headers.filter(h => h !== promptCol && h !== startImgCol && !detectedDimensionColumns.includes(h) && !h.toLowerCase().includes('id'));
       setModelColumns(selectedParadigm === 'Arena-rank' ? otherCols : otherCols.slice(0, 2));
     }
     
@@ -628,11 +659,21 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
       let items: EvaluationItem[] = [];
       const itemsSnapshot = await getDocs(collection(db, 'evalTasks', task.id, 'items'));
       if (!itemsSnapshot.empty) {
-        items = itemsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as EvaluationItem));
+        items = itemsSnapshot.docs.map(doc => {
+          const item = { id: doc.id, ...doc.data() } as EvaluationItem;
+          return {
+            ...item,
+            dimensionValues: getDimensionValuesForItem(item as any, task.dimensionColumns || [])
+          };
+        });
       } else if (task.datasetId && task.datasetId !== 'external-csv') {
         const dataset = datasets.find(d => d.id === task.datasetId);
         if (dataset && dataset.items) {
-          items = dataset.items;
+          items = dataset.items.map((item: any, index: number) => ({
+            ...item,
+            id: item.id || `ds-item-${index}`,
+            dimensionValues: getDimensionValuesFromRecord(item, task.dimensionColumns || [])
+          }));
         }
       }
       setViewingTaskItems(items);
@@ -771,18 +812,22 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                             
                             // Auto-detect prompt column
                             const promptCol = headers.find(h => h.toLowerCase().includes('prompt') || h.includes('提示词') || h.includes('输入'));
-                            if (promptCol) setInputColumns([promptCol]);
-                            else setInputColumns([headers[0]]);
+                            const detectedInputColumns = promptCol ? [promptCol] : [headers[0]];
+                            const detectedDimensionColumns = autoDetectDimensionColumns(headers, detectedInputColumns);
+                            setInputColumns(detectedInputColumns);
+                            setDimensionColumns(detectedDimensionColumns);
 
                             // Auto-detect model columns
-                            const models = headers.filter(h => h !== promptCol && !h.toLowerCase().includes('id') && !h.includes('结果'));
+                            const models = headers.filter(h => h !== promptCol && !detectedDimensionColumns.includes(h) && !h.toLowerCase().includes('id') && !h.includes('结果'));
                             const selectedParadigm = templates.find(t => t.id === newTask.templateId)?.paradigm;
                             setModelColumns(selectedParadigm === 'Arena-rank' ? models : models.slice(0, 2)); // Default to first 2 unless rank needs all
                           } else {
                             setCsvHeaders([]);
+                            setDimensionColumns([]);
                           }
                         } else {
                           setCsvHeaders([]);
+                          setDimensionColumns([]);
                         }
                       }}
                       className="w-full px-4 py-2 glass-input rounded-xl focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
@@ -906,7 +951,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                     </select>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div>
                       <label className="block text-sm font-medium text-slate-200 mb-1">输入列 (可多选，如提示词、图片、音频等)</label>
                       <div className="flex flex-wrap gap-2">
@@ -917,10 +962,9 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                               checked={inputColumns.includes(h)}
                               onChange={(e) => {
                                 if (e.target.checked) {
-                                  setInputColumns([...inputColumns, h]);
-                                  setModelColumns(modelColumns.filter(c => c !== h));
+                                  updateInputColumns([...inputColumns, h]);
                                 } else {
-                                  setInputColumns(inputColumns.filter(c => c !== h));
+                                  updateInputColumns(inputColumns.filter(c => c !== h));
                                 }
                               }}
                               className="rounded text-amber-400 focus:ring-amber-500"
@@ -933,16 +977,16 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                     <div>
                       <label className="block text-sm font-medium text-slate-200 mb-1">模型结果列 (可多选)</label>
                       <div className="flex flex-wrap gap-2">
-                        {csvHeaders.filter(h => !inputColumns.includes(h)).map(h => (
+                        {csvHeaders.filter(h => !inputColumns.includes(h) && !dimensionColumns.includes(h)).map(h => (
                           <label key={h} className="inline-flex items-center gap-1.5 bg-white/5 px-2 py-1 border border-white/10 rounded-md text-sm cursor-pointer glass-panel-hover">
                             <input 
                               type="checkbox" 
                               checked={modelColumns.includes(h)}
                               onChange={(e) => {
                                 if (e.target.checked) {
-                                  setModelColumns([...modelColumns, h]);
+                                  updateModelColumns([...modelColumns, h]);
                                 } else {
-                                  setModelColumns(modelColumns.filter(c => c !== h));
+                                  updateModelColumns(modelColumns.filter(c => c !== h));
                                 }
                               }}
                               className="rounded text-amber-400 focus:ring-amber-500"
@@ -951,6 +995,29 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                           </label>
                         ))}
                       </div>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-200 mb-1">评测维度列 (可选)</label>
+                      <div className="flex flex-wrap gap-2">
+                        {csvHeaders.filter(h => !inputColumns.includes(h) && !modelColumns.includes(h)).map(h => (
+                          <label key={h} className="inline-flex items-center gap-1.5 bg-white/5 px-2 py-1 border border-white/10 rounded-md text-sm cursor-pointer glass-panel-hover">
+                            <input
+                              type="checkbox"
+                              checked={dimensionColumns.includes(h)}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  updateDimensionColumns([...dimensionColumns, h]);
+                                } else {
+                                  updateDimensionColumns(dimensionColumns.filter(c => c !== h));
+                                }
+                              }}
+                              className="rounded text-amber-400 focus:ring-amber-500"
+                            />
+                            <span className="truncate max-w-[120px]" title={h}>{h}</span>
+                          </label>
+                        ))}
+                      </div>
+                      <p className="mt-2 text-xs text-slate-400">如场景、类别、能力、难度；仅用于展示和聚合分析。</p>
                     </div>
                   </div>
                   
@@ -1115,6 +1182,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                 <div className="glass-panel rounded-2xl overflow-hidden shadow-md shadow-black/20 flex flex-col" style={{ minHeight: '400px' }}>
                   {/* Header/Prompt Area */}
                   <div className="bg-white/5 border-b border-white/10 px-6 py-4 shrink-0 shadow-md shadow-black/20 z-10 space-y-3">
+                    <DimensionChips values={getDimensionValuesFromRecord(csvData[0], dimensionColumns)} />
                     {inputColumns.map(col => (
                       <div key={col} className="text-slate-200 text-sm leading-relaxed flex items-start">
                         <span className="font-semibold text-slate-100 mr-2 select-none uppercase text-xs tracking-wider bg-white/10 px-1.5 py-0.5 rounded shrink-0 mt-0.5">{col}</span>
@@ -1518,6 +1586,11 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                         )}
                       </div>
                       
+                      <DimensionChips
+                        values={getDimensionValuesForItem(item as any, viewingTask.dimensionColumns || [])}
+                        className="mb-4"
+                      />
+
                       {/* Input */}
                       <div className="mb-4">
                         <div className="text-xs font-medium text-slate-300 uppercase tracking-wider mb-1">输入</div>
