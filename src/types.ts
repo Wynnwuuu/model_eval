@@ -138,12 +138,74 @@ export interface AggregatedResult {
 // New Architecture: Dataset & Templates
 // ==========================================
 
-export type SchemaFieldType = 'text' | 'image_url' | 'video_url' | 'chat_history';
+export type SchemaFieldType = 'text' | 'image_url' | 'video_url' | 'audio_url' | 'url' | 'chat_history';
+export type DatasetFieldRole = 'case_id' | 'input' | 'output' | 'dimension' | 'reference' | 'media' | 'metadata' | 'rubric' | 'system';
+export type DatasetPreviewType = 'none' | 'text' | 'image' | 'video' | 'audio' | 'link';
+export type DatasetModality = 'image' | 'video' | 'audio' | 'text' | 'multimodal' | 'other';
 
 export interface DatasetSchemaField {
   key: string;
   label: string;
   type: SchemaFieldType;
+  role?: DatasetFieldRole;
+  canonicalKey?: string;
+  sourceKey?: string;
+  previewType?: DatasetPreviewType;
+  required?: boolean;
+}
+
+export interface DatasetStandardFieldDefinition {
+  canonicalKey: string;
+  label: string;
+  role: DatasetFieldRole;
+  type: SchemaFieldType;
+  previewType?: DatasetPreviewType;
+  required?: boolean;
+  aliases?: string[];
+  group?: string;
+}
+
+export interface DatasetColumnMappings {
+  caseId?: string;
+  inputColumns: string[];
+  outputColumns: string[];
+  dimensionColumns: string[];
+  referenceColumns: string[];
+  standard: Record<string, string>;
+}
+
+export interface DatasetCard {
+  applicableTasks: string[];
+  applicableStages: string[];
+  source: string;
+  sampleSize: number;
+  modality: DatasetModality;
+  tagDistribution: Record<string, number>;
+  dimensionDistribution: Record<string, Record<string, number>>;
+  rubricBinding: string;
+  coverageGaps: string[];
+  latestChange: string;
+  updatedAt: number;
+}
+
+export interface DatasetVersionEntry {
+  version: number;
+  changedAt: number;
+  changedBy: string;
+  changeSummary: string;
+  itemCountBefore: number;
+  itemCountAfter: number;
+}
+
+export interface DatasetValidationSummary {
+  status: 'ok' | 'warning' | 'error';
+  missingCaseIdCount: number;
+  duplicateCaseIdCount: number;
+  invalidUrlCount: number;
+  missingInputCount: number;
+  emptyOutputCells: number;
+  dimensionDistribution: Record<string, Record<string, number>>;
+  warnings: string[];
 }
 
 export interface EvalDataset {
@@ -154,10 +216,101 @@ export interface EvalDataset {
   inputSchema: DatasetSchemaField[];
   items: Record<string, any>[]; // The actual data rows
   inputType?: 'text' | 'text_image' | 'text_audio' | 'multi_turn' | 'other';
+  modality?: DatasetModality;
+  categoryPath?: string[];
+  standardFields?: DatasetStandardFieldDefinition[];
+  columnMappings?: DatasetColumnMappings;
+  datasetCard?: DatasetCard;
+  version?: number;
+  versionHistory?: DatasetVersionEntry[];
+  validationSummary?: DatasetValidationSummary;
   creatorUid?: string;
   creatorName?: string;
   createdAt: number;
   updatedAt: number;
+}
+
+export type GenerationOutputModality = DatasetModality;
+export type GenerationJobStatus = 'draft' | 'queued' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled';
+export type GenerationItemStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type GenerationSeedMode = 'fixed' | 'derive_from_case' | 'column';
+
+export interface GenerationControlDefinition {
+  key: string;
+  label: string;
+  type: 'text' | 'number' | 'select';
+  options?: string[];
+  defaultValue?: string | number;
+  unit?: string;
+}
+
+export interface GenerationModelConfig {
+  id: string;
+  displayName: string;
+  provider: string;
+  outputModality: GenerationOutputModality;
+  previewType: DatasetPreviewType;
+  capabilities: string[];
+  supportedAspectRatios?: string[];
+  supportedResolutions?: string[];
+  supportedDurations?: Array<string | number>;
+  controls: GenerationControlDefinition[];
+}
+
+export interface GenerationInputMapping {
+  promptColumn?: string;
+  referenceImageColumns: string[];
+  referenceAudioColumns: string[];
+  startImageColumn?: string;
+  endImageColumn?: string;
+  lyricsOrDialogueColumn?: string;
+  extraInputColumns: string[];
+}
+
+export interface DatasetGenerationJob {
+  id: string;
+  datasetId: string;
+  datasetName?: string;
+  datasetVersion?: number;
+  modelConfig: GenerationModelConfig;
+  targetColumn: string;
+  inputMapping: GenerationInputMapping;
+  defaultControls: Record<string, string | number>;
+  perCaseControlColumns: Record<string, string>;
+  seedMode: GenerationSeedMode;
+  fixedSeed?: number;
+  seedColumn?: string;
+  status: GenerationJobStatus;
+  total: number;
+  succeeded: number;
+  failed: number;
+  createdByUid?: string;
+  createdBy?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface DatasetGenerationJobItem {
+  id: string;
+  jobId: string;
+  datasetId: string;
+  rowIndex: number;
+  caseId: string;
+  status: GenerationItemStatus;
+  requestId?: string;
+  providerJobId?: string;
+  resolvedInputs: Record<string, any>;
+  resolvedControls: Record<string, any>;
+  seed?: number;
+  resultUrl?: string;
+  resultText?: string;
+  mediaType?: DatasetPreviewType;
+  error?: {
+    code?: string;
+    message: string;
+  };
+  startedAt?: number;
+  finishedAt?: number;
 }
 
 export interface EvalDimension {

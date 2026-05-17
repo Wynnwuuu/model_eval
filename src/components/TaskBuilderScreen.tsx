@@ -8,6 +8,19 @@ import Papa from 'papaparse';
 import MediaRenderer from './MediaRenderer';
 import DimensionChips from './DimensionChips';
 import { getDimensionValuesForItem, getDimensionValuesFromRecord, isLikelyDimensionColumn } from '../dimensionUtils';
+import {
+  STANDARD_DATASET_FIELDS,
+  appendDatasetVersion,
+  buildDatasetCard,
+  buildDatasetSchema,
+  getDatasetColumnMappings,
+  inferDatasetMappings,
+  inferDatasetModality,
+  inferInputTypeFromDataset,
+  inferOutputTypeFromDataset,
+  normalizeDatasetRows,
+  validateDatasetItems
+} from '../datasetManifest';
 
 interface TaskBuilderScreenProps {
   projectId?: string;
@@ -165,6 +178,34 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
     setModelColumns(prev => prev.filter(col => !columns.includes(col)));
   };
 
+  const applyDatasetDefaults = (dataset: EvalDataset, templateId = newTask.templateId) => {
+    const headers = dataset.items?.[0]
+      ? Object.keys(dataset.items[0]).filter(key => key !== '_originalData')
+      : dataset.inputSchema?.map(field => field.key) || [];
+    const mappings = getDatasetColumnMappings(dataset, headers);
+    const selectedParadigm = templates.find(t => t.id === templateId)?.paradigm;
+    const fallbackDimensions = autoDetectDimensionColumns(headers, mappings.inputColumns);
+    const fallbackOutputs = headers.filter(header =>
+      !mappings.inputColumns.includes(header) &&
+      !fallbackDimensions.includes(header) &&
+      !header.toLowerCase().includes('id') &&
+      header !== '_originalData'
+    );
+    const outputColumns = mappings.outputColumns.length ? mappings.outputColumns : fallbackOutputs;
+
+    setCsvHeaders(headers);
+    setInputColumns(mappings.inputColumns.length ? mappings.inputColumns.filter(col => headers.includes(col)) : headers.slice(0, 1));
+    setDimensionColumns(mappings.dimensionColumns.length ? mappings.dimensionColumns.filter(col => headers.includes(col)) : fallbackDimensions);
+    setModelColumns(selectedParadigm === 'Arena-rank' ? outputColumns.filter(col => headers.includes(col)) : outputColumns.filter(col => headers.includes(col)).slice(0, 2));
+    const inferredInputType = inferInputTypeFromDataset(dataset);
+    setInputType(dataset.inputType && dataset.inputType !== 'text' ? dataset.inputType : inferredInputType);
+    setNewTask(prev => ({
+      ...prev,
+      datasetId: dataset.id,
+      outputType: inferOutputTypeFromDataset(dataset)
+    }));
+  };
+
   const handleCreateTask = async () => {
     if (isSubmitting) return;
     
@@ -180,27 +221,21 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
 
       // If CSV data is uploaded, create a new Dataset first if requested
       if (csvData.length > 0 && !newTask.datasetId && saveDatasetToPlatform) {
-        const datasetItems = csvData.map((row, idx) => {
-          const item: any = { id: row.id || `item-${Date.now()}-${idx}` };
-          // Copy all fields except the model result columns
-          Object.keys(row).forEach(key => {
-            if (!modelColumns.includes(key)) {
-              item[key] = row[key];
-            }
-          });
-          // Ensure prompt is set if not already
-          if (inputColumns.length > 0) {
-            if (inputColumns.length === 1) {
-              item.prompt = row[inputColumns[0]];
-            } else {
-              item.inputs = {};
-              inputColumns.forEach(col => {
-                item.inputs[col] = row[col];
-              });
-            }
-          }
-          return item;
-        });
+        const rawDatasetItems = csvData.map((row, idx) => ({
+          id: row.id || row['用例ID'] || `item-${Date.now()}-${idx}`,
+          ...row
+        }));
+        const datasetHeaders = Object.keys(rawDatasetItems[0] || {}).filter(key => key !== '_originalData');
+        const inferredMappings = inferDatasetMappings(datasetHeaders, rawDatasetItems);
+        const datasetMappings = {
+          ...inferredMappings,
+          inputColumns,
+          outputColumns: modelColumns,
+          dimensionColumns,
+          referenceColumns: inferredMappings.referenceColumns,
+          standard: inferredMappings.standard
+        };
+        const datasetItems = normalizeDatasetRows(rawDatasetItems, datasetMappings);
 
         // Deduplication logic: check if an identical dataset already exists
         const isSameItem = (itemA: any, itemB: any) => {
@@ -217,25 +252,43 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
         if (existingDataset) {
           finalDatasetId = existingDataset.id;
         } else {
-          // Generate input schema based on the saved keys
-          const inputSchema = Object.keys(datasetItems[0] || {})
-            .filter(key => key !== 'id')
-            .map(key => ({
-              key,
-              label: dimensionColumns.includes(key) ? `评测维度: ${key}` : inputColumns.includes(key) ? `输入: ${key}` : key,
-              type: 'text' as const
-            }));
-          
-          // Ensure 'id' is always the first schema field
-          inputSchema.unshift({ key: 'id', label: '用例ID', type: 'text' as const });
+          const modality = inferDatasetModality(datasetItems, datasetMappings);
+          const versionMeta = appendDatasetVersion(
+            {},
+            auth.currentUser.displayName || auth.currentUser.email || 'Anonymous',
+            '从物料构建器保存完整评测集',
+            0,
+            datasetItems.length
+          );
 
           const newDataset = {
             name: `${newTask.name} - 自动提取评测集`.substring(0, 99),
-            description: '通过上传带有生成结果的CSV自动提取的评测集',
+            description: '通过上传带有生成结果的 CSV 自动提取的结构化评测集',
             tags: ['自动提取', 'CSV导入'],
-            inputSchema: inputSchema,
+            inputSchema: buildDatasetSchema(datasetHeaders, datasetItems, datasetMappings),
             inputType,
+            modality,
+            categoryPath: ['自动提取'],
+            standardFields: STANDARD_DATASET_FIELDS,
+            columnMappings: datasetMappings,
             items: datasetItems,
+            datasetCard: buildDatasetCard(
+              {
+                name: `${newTask.name} - 自动提取评测集`,
+                description: '通过上传带有生成结果的 CSV 自动提取的结构化评测集',
+                tags: ['自动提取', 'CSV导入'],
+                items: datasetItems,
+                modality
+              },
+              datasetMappings,
+              {
+                source: '物料构建器 CSV 导入',
+                latestChange: '从物料构建器保存完整评测集',
+                modality
+              }
+            ),
+            validationSummary: validateDatasetItems(datasetItems, datasetMappings),
+            ...versionMeta,
             creatorUid: auth.currentUser.uid,
             creatorName: auth.currentUser.displayName || auth.currentUser.email || 'Anonymous',
             createdAt: Date.now(),
@@ -510,69 +563,40 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
 
     setCsvHeaders(headers);
     setCsvData(data);
-    
-    // Auto-detect prompt column
-    const promptCol = headers.find(h => 
-      h.toLowerCase().includes('prompt') || 
-      h.includes('提示词') || 
-      h.includes('输入')
-    );
-    let detectedInputColumns = promptCol ? [promptCol] : [headers[0]];
 
-    // Auto-detect start image
-    const startImgCol = headers.find(h => 
-      h.toLowerCase().includes('image') || 
-      h.includes('首帧') || 
-      h.includes('Start Image') ||
-      h.includes('输入图')
+    const detectedMappings = inferDatasetMappings(headers, data);
+    const selectedParadigm = templates.find(t => t.id === newTask.templateId)?.paradigm;
+    const detectedInputColumns = detectedMappings.inputColumns.length ? detectedMappings.inputColumns : headers.slice(0, 1);
+    const detectedDimensionColumns = detectedMappings.dimensionColumns.length ? detectedMappings.dimensionColumns : autoDetectDimensionColumns(headers, detectedInputColumns);
+    const fallbackModelColumns = headers.filter(h =>
+      !detectedInputColumns.includes(h) &&
+      !detectedDimensionColumns.includes(h) &&
+      !detectedMappings.referenceColumns.includes(h) &&
+      !h.toLowerCase().includes('id') &&
+      h !== '_originalData'
     );
-    if (startImgCol) {
-      detectedInputColumns = [...new Set([...detectedInputColumns, startImgCol])];
-    }
+    const detectedModelColumns = detectedMappings.outputColumns.length ? detectedMappings.outputColumns : fallbackModelColumns;
 
-    const detectedDimensionColumns = autoDetectDimensionColumns(headers, detectedInputColumns);
     setInputColumns(detectedInputColumns);
     setDimensionColumns(detectedDimensionColumns);
+    setModelColumns(selectedParadigm === 'Arena-rank' ? detectedModelColumns : detectedModelColumns.slice(0, 2));
 
-    // Auto-detect model columns
-    const models = headers.filter(h => 
-      h !== promptCol && 
-      h !== startImgCol &&
-      !detectedDimensionColumns.includes(h) &&
-      !h.toLowerCase().includes('id') && 
-      !h.includes('结果') &&
-      (h.includes('Slot') || h.includes('Out') || h.includes('Model') || h.includes('模型') || h.includes('URL_'))
-    );
-    
-    const selectedParadigm = templates.find(t => t.id === newTask.templateId)?.paradigm;
-    if (models.length >= 2) {
-      setModelColumns(selectedParadigm === 'Arena-rank' ? models : models.slice(0, 2));
-    } else {
-      const otherCols = headers.filter(h => h !== promptCol && h !== startImgCol && !detectedDimensionColumns.includes(h) && !h.toLowerCase().includes('id'));
-      setModelColumns(selectedParadigm === 'Arena-rank' ? otherCols : otherCols.slice(0, 2));
-    }
-    
-    // Auto-detect output type
-    const firstRow = data[0];
-    let detectedType: 'text' | 'image' | 'video' | 'markdown' = 'text';
-    const sampleCol = modelColumns.length > 0 ? modelColumns[0] : (headers.length > 1 ? headers[1] : null);
-    
-    if (sampleCol) {
-      const sampleOutput = firstRow[sampleCol];
-      if (typeof sampleOutput === 'string') {
-        const cleanSample = sampleOutput.replace(/[\u200B-\u200D\uFEFF]/g, '').trim().replace(/^["']|["']$/g, '');
-        if (cleanSample.match(/\.(mp4|webm|ogg)$/i) || cleanSample.includes('video')) {
-          detectedType = 'video';
-        } else if (cleanSample.match(/\.(jpeg|jpg|gif|png|webp)$/i) || cleanSample.includes('image')) {
-          detectedType = 'image';
-        }
-      }
-    }
-    
+    const tempDataset = {
+      id: 'temp',
+      name: 'temp',
+      description: '',
+      tags: [],
+      inputSchema: buildDatasetSchema(headers, data, detectedMappings),
+      items: data,
+      columnMappings: { ...detectedMappings, outputColumns: detectedModelColumns },
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    } as EvalDataset;
+
     setNewTask(prev => ({
       ...prev,
       datasetId: '',
-      outputType: detectedType
+      outputType: inferOutputTypeFromDataset(tempDataset)
     }));
     
     if (isPasted) setIsPasting(false);
@@ -806,21 +830,8 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                         if (dsId) {
                           setCsvData([]);
                           const ds = datasets.find(d => d.id === dsId);
-                          if (ds && ds.items && ds.items.length > 0) {
-                            const headers = Object.keys(ds.items[0]);
-                            setCsvHeaders(headers);
-                            
-                            // Auto-detect prompt column
-                            const promptCol = headers.find(h => h.toLowerCase().includes('prompt') || h.includes('提示词') || h.includes('输入'));
-                            const detectedInputColumns = promptCol ? [promptCol] : [headers[0]];
-                            const detectedDimensionColumns = autoDetectDimensionColumns(headers, detectedInputColumns);
-                            setInputColumns(detectedInputColumns);
-                            setDimensionColumns(detectedDimensionColumns);
-
-                            // Auto-detect model columns
-                            const models = headers.filter(h => h !== promptCol && !detectedDimensionColumns.includes(h) && !h.toLowerCase().includes('id') && !h.includes('结果'));
-                            const selectedParadigm = templates.find(t => t.id === newTask.templateId)?.paradigm;
-                            setModelColumns(selectedParadigm === 'Arena-rank' ? models : models.slice(0, 2)); // Default to first 2 unless rank needs all
+                          if (ds) {
+                            applyDatasetDefaults(ds);
                           } else {
                             setCsvHeaders([]);
                             setDimensionColumns([]);
@@ -913,7 +924,10 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                       if (e.target.value === 'CREATE_NEW') {
                         setShowCreateTemplateModal(true);
                       } else {
-                        setNewTask({...newTask, templateId: e.target.value});
+                        const nextTemplateId = e.target.value;
+                        setNewTask({...newTask, templateId: nextTemplateId});
+                        const ds = datasets.find(d => d.id === newTask.datasetId);
+                        if (ds) applyDatasetDefaults(ds, nextTemplateId);
                       }
                     }}
                     className="w-full px-4 py-2 glass-input rounded-xl focus:ring-2 focus:ring-amber-500 focus:border-amber-500"

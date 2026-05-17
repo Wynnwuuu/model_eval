@@ -101,6 +101,7 @@ const initialState = (): LocalPlatformState => ({
     projects: {},
     datasets: {},
     evalDatasets: {},
+    evalGenerationJobs: {},
     evalTemplates: {},
     evalTasks: {}
   }

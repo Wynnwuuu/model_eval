@@ -144,10 +144,42 @@ service cloud.firestore {
           incoming().creatorUid == existing().creatorUid &&
           incoming().createdAt == existing().createdAt &&
           incoming().updatedAt is int &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['name', 'description', 'tags', 'inputSchema', 'inputType', 'items', 'updatedAt'])
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'description', 'tags', 'inputSchema', 'inputType', 'items', 'updatedAt',
+            'modality', 'categoryPath', 'standardFields', 'columnMappings', 'datasetCard',
+            'version', 'versionHistory', 'validationSummary'
+          ])
         )
       );
       allow delete: if isAdmin() || isOwner(existing().creatorUid);
+    }
+
+    match /evalGenerationJobs/{jobId} {
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(jobId) &&
+        incoming().keys().hasAll(['datasetId', 'modelConfig', 'targetColumn', 'status', 'total', 'createdAt', 'updatedAt']) &&
+        incoming().datasetId is string &&
+        exists(/databases/$(database)/documents/evalDatasets/$(incoming().datasetId)) &&
+        incoming().targetColumn is string &&
+        incoming().status in ['draft', 'queued', 'running', 'completed', 'partial', 'failed', 'cancelled'] &&
+        incoming().total is int &&
+        incoming().createdAt is int &&
+        incoming().updatedAt is int &&
+        (!('createdByUid' in incoming()) || incoming().createdByUid == request.auth.uid);
+      allow update: if isSignedIn() && (
+        isAdmin() || !('createdByUid' in existing()) || existing().createdByUid == request.auth.uid
+      );
+      allow delete: if isAdmin() || (isSignedIn() && 'createdByUid' in existing() && existing().createdByUid == request.auth.uid);
+
+      match /items/{itemId} {
+        allow read: if isSignedIn();
+        allow create, update: if isSignedIn() && (
+          isAdmin() ||
+          !('createdByUid' in get(/databases/$(database)/documents/evalGenerationJobs/$(jobId)).data) ||
+          get(/databases/$(database)/documents/evalGenerationJobs/$(jobId)).data.createdByUid == request.auth.uid
+        );
+        allow delete: if isAdmin();
+      }
     }
 
     match /evalTemplates/{templateId} {
