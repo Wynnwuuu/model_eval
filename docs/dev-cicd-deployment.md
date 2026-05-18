@@ -57,6 +57,7 @@
 
 | Secret | 说明 |
 | --- | --- |
+| `EVAL_STUDIO_DATABASE_URL_DEV` | dev PostgreSQL / PolarDB PostgreSQL 连接串 |
 | `FEISHU_WEBHOOK_URL` | 飞书通知 webhook |
 
 ## GitHub Variables
@@ -79,14 +80,20 @@ dev 部署已按 `vidmuse-admin` 的方式在 workflow 内固定 ACK 集群和�
 | `EVAL_STUDIO_IMAGE` | `eval-studio` | 镜像名 |
 | `EVAL_STUDIO_PUBLIC_API_BASE_URL` | 空 | 生产默认同源，通常不需要设置 |
 
-## ACK Secret
+## Dev 数据库配置
 
-dev 命名空间需要提前创建数据库连接 secret：
+dev 数据库连接串不需要手动进入 ACK 创建 Kubernetes Secret。当前 workflow 会从 GitHub Actions Secret 读取 `EVAL_STUDIO_DATABASE_URL_DEV`，并在部署时注入到 Deployment 和 migration Job。
+
+如果使用阿里云 PolarDB PostgreSQL，连接串示例：
 
 ```bash
-kubectl create secret generic eval-studio-secrets \
-  -n default \
-  --from-literal=DATABASE_URL='postgresql://USER:PASSWORD@HOST:5432/DB_NAME'
+postgresql://USER:PASSWORD@HOST:5432/DB_NAME
+```
+
+如 PolarDB PostgreSQL 要求 SSL，可以追加：
+
+```bash
+postgresql://USER:PASSWORD@HOST:5432/DB_NAME?sslmode=require
 ```
 
 当前 dev 部署命名空间固定为 `default`。如后续要切换命名空间，需要同步修改 workflow 内的 `ACK_NAMESPACE`。
