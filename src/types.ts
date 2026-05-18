@@ -167,10 +167,12 @@ export type AppState = AppRoute | 'setup' | 'analysis' | 'dashboard' | 'dataset_
 export interface RouteContext {
   projectId?: string;
   taskId?: string;
+  templateId?: string;
   materialId?: string;
   materialStatusFilter?: 'draft' | 'active' | 'completed';
   datasetId?: string;
   source?: 'dashboard' | 'task' | 'dataset';
+  taskBuilderMode?: 'create' | 'list';
 }
 
 export interface NavItem {

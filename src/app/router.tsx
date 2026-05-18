@@ -1,0 +1,147 @@
+import React, { useEffect, useMemo } from 'react';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { ModelEvalApp } from '../components/ModelEvalApp';
+import { AppRoute, RouteContext } from '../types';
+
+const buildRoutePath = (route: AppRoute, context: RouteContext = {}) => {
+  const search = new URLSearchParams();
+
+  if (context.materialStatusFilter) {
+    search.set('status', context.materialStatusFilter);
+  }
+
+  const suffix = search.toString();
+  const withSearch = (path: string) => suffix ? `${path}?${suffix}` : path;
+
+  switch (route) {
+    case 'overview':
+      return '/';
+    case 'projects':
+      return context.projectId ? `/projects/${context.projectId}` : '/projects';
+    case 'datasets':
+      return context.datasetId ? `/datasets/${context.datasetId}` : '/datasets';
+    case 'generation':
+      return context.datasetId ? `/datasets/${context.datasetId}/generation` : '/generation';
+    case 'templates':
+      return context.templateId ? `/templates/${context.templateId}` : '/templates';
+    case 'tasks':
+      if (context.taskBuilderMode === 'create') {
+        if (context.projectId) search.set('projectId', context.projectId);
+        return withSearch('/tasks/new');
+      }
+      return withSearch(context.projectId ? `/projects/${context.projectId}/tasks` : '/tasks');
+    case 'evaluation':
+      return context.taskId ? `/tasks/${context.taskId}/evaluate` : '/evaluation';
+    case 'insights':
+      if (context.projectId) return withSearch(`/projects/${context.projectId}/insights`);
+      if (context.taskId || context.materialId) return withSearch(`/tasks/${context.taskId || context.materialId}/insights`);
+      return withSearch('/insights');
+    case 'history':
+      return '/history';
+    case 'voting':
+      return context.taskId ? `/tasks/${context.taskId}/evaluate` : '/evaluation/run';
+    case 'results':
+      return context.taskId ? `/tasks/${context.taskId}/results` : '/evaluation/results';
+    default:
+      return '/';
+  }
+};
+
+const isStatusFilter = (value: string | null): value is NonNullable<RouteContext['materialStatusFilter']> =>
+  value === 'draft' || value === 'active' || value === 'completed';
+
+const withSearchContext = (context: RouteContext, searchParams: URLSearchParams): RouteContext => {
+  const status = searchParams.get('status');
+  const projectId = searchParams.get('projectId') || context.projectId;
+
+  return {
+    ...context,
+    projectId,
+    materialStatusFilter: isStatusFilter(status) ? status : context.materialStatusFilter,
+  };
+};
+
+const routeFromPath = (pathname: string, searchParams: URLSearchParams): { route: AppRoute; context?: RouteContext; redirectTo?: string } => {
+  const path = pathname.replace(/\/+$/, '') || '/';
+
+  if (path === '/') return { route: 'overview' };
+  if (path === '/overview') return { route: 'overview', redirectTo: '/' };
+  if (path === '/dashboard') return { route: 'projects', redirectTo: '/projects' };
+  if (path === '/dataset_repo') return { route: 'datasets', redirectTo: '/datasets' };
+  if (path === '/template_repo') return { route: 'templates', redirectTo: '/templates' };
+  if (path === '/task_builder') return { route: 'tasks', context: { taskBuilderMode: 'create' }, redirectTo: '/tasks/new' };
+
+  if (path === '/projects') return { route: 'projects' };
+  const projectTasks = path.match(/^\/projects\/([^/]+)\/tasks$/);
+  if (projectTasks) return { route: 'tasks', context: { projectId: projectTasks[1], source: 'dashboard', taskBuilderMode: 'list' } };
+  const projectInsights = path.match(/^\/projects\/([^/]+)\/insights$/);
+  if (projectInsights) return { route: 'insights', context: { projectId: projectInsights[1], source: 'dashboard' } };
+  const projectDetail = path.match(/^\/projects\/([^/]+)$/);
+  if (projectDetail) return { route: 'projects', context: { projectId: projectDetail[1], source: 'dashboard' } };
+
+  if (path === '/datasets') return { route: 'datasets' };
+  const datasetGeneration = path.match(/^\/datasets\/([^/]+)\/generation$/);
+  if (datasetGeneration) return { route: 'generation', context: { datasetId: datasetGeneration[1], source: 'dataset' } };
+  const datasetDetail = path.match(/^\/datasets\/([^/]+)$/);
+  if (datasetDetail) return { route: 'datasets', context: { datasetId: datasetDetail[1], source: 'dataset' } };
+  if (path === '/generation') return { route: 'generation' };
+
+  if (path === '/templates') return { route: 'templates' };
+  const templateDetail = path.match(/^\/templates\/([^/]+)$/);
+  if (templateDetail) return { route: 'templates', context: { templateId: templateDetail[1] } };
+
+  if (path === '/tasks') return { route: 'tasks', context: { taskBuilderMode: 'list' } };
+  if (path === '/tasks/new') return { route: 'tasks', context: { taskBuilderMode: 'create' } };
+  const taskEvaluate = path.match(/^\/tasks\/([^/]+)\/evaluate$/);
+  if (taskEvaluate) return { route: 'voting', context: { taskId: taskEvaluate[1], materialId: taskEvaluate[1], source: 'task' } };
+  const taskResults = path.match(/^\/tasks\/([^/]+)\/results$/);
+  if (taskResults) return { route: 'results', context: { taskId: taskResults[1], materialId: taskResults[1], source: 'task' } };
+  const taskInsights = path.match(/^\/tasks\/([^/]+)\/insights$/);
+  if (taskInsights) return { route: 'insights', context: { taskId: taskInsights[1], materialId: taskInsights[1], source: 'task' } };
+  const taskDetail = path.match(/^\/tasks\/([^/]+)$/);
+  if (taskDetail) return { route: 'tasks', context: { taskId: taskDetail[1], materialId: taskDetail[1], source: 'task', taskBuilderMode: 'list' } };
+
+  if (path === '/evaluation') return { route: 'evaluation' };
+  if (path === '/evaluation/run') return { route: 'voting' };
+  if (path === '/evaluation/results') return { route: 'results' };
+  if (path === '/insights') return { route: 'insights' };
+  if (path === '/history') return { route: 'history' };
+
+  return { route: 'overview', redirectTo: '/' };
+};
+
+export default function AppRouter() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [searchParams] = useSearchParams();
+  const routeState = useMemo(
+    () => {
+      const next = routeFromPath(location.pathname, searchParams);
+      return {
+        ...next,
+        context: withSearchContext(next.context || {}, searchParams),
+      };
+    },
+    [location.pathname, searchParams],
+  );
+
+  useEffect(() => {
+    if (routeState.redirectTo && routeState.redirectTo !== `${location.pathname}${location.search}`) {
+      navigate(routeState.redirectTo, { replace: true });
+    }
+  }, [location.pathname, location.search, navigate, routeState.redirectTo]);
+
+  return (
+    <ModelEvalApp
+      initialRoute={routeState.route}
+      initialContext={routeState.context}
+      onRouteChange={(nextRoute, nextContext = {}) => {
+        const nextPath = buildRoutePath(nextRoute, nextContext);
+        const currentPath = `${location.pathname}${location.search}`;
+        if (nextPath !== currentPath) {
+          navigate(nextPath);
+        }
+      }}
+    />
+  );
+}

@@ -10,6 +10,7 @@ import { getEvaluationMethodShortLabel, getParadigmFromMethod, normalizeEvaluati
 
 interface DashboardScreenProps {
   initialProject?: EvaluationProject | null;
+  initialProjectId?: string;
   onProjectSelect?: (project: EvaluationProject | null) => void;
   onGoToExecution: (project: EvaluationProject, taskItems?: EvaluationItem[], taskName?: string, modelNames?: { a: string, b: string }, taskId?: string, existingVotes?: any[], paradigm?: EvalParadigm, models?: { id: string; name: string }[], evaluationConfig?: EvaluationConfig) => void;
   onGoToAnalysis: (project: EvaluationProject) => void;
@@ -18,7 +19,7 @@ interface DashboardScreenProps {
   onGoToTaskBuilder: (project: EvaluationProject, mode?: 'create' | 'list') => void;
 }
 
-export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject, onProjectSelect, onGoToExecution, onGoToAnalysis, onGoToDatasetRepo, onGoToTemplateRepo, onGoToTaskBuilder }) => {
+export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject, initialProjectId, onProjectSelect, onGoToExecution, onGoToAnalysis, onGoToDatasetRepo, onGoToTemplateRepo, onGoToTaskBuilder }) => {
   const [projects, setProjects] = useState<EvaluationProject[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedProject, setSelectedProject] = useState<EvaluationProject | null>(initialProject || null);
@@ -152,6 +153,20 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
 
     return () => unsubscribe();
   }, [user]);
+
+  useEffect(() => {
+    if (initialProject?.id && selectedProject?.id !== initialProject.id) {
+      setSelectedProject(initialProject);
+      return;
+    }
+
+    if (initialProjectId && selectedProject?.id !== initialProjectId) {
+      const matchedProject = projects.find(project => project.id === initialProjectId);
+      if (matchedProject) {
+        setSelectedProject(matchedProject);
+      }
+    }
+  }, [initialProject, initialProjectId, projects, selectedProject?.id]);
 
   const handleCreateProject = async (projectData: Partial<EvaluationProject>) => {
     if (!user) return;

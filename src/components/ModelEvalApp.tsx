@@ -14,20 +14,23 @@ import TaskBuilderScreen from './TaskBuilderScreen';
 import { ConfirmModal } from './ConfirmModal';
 import AppShell from './AppShell';
 import OverviewScreen from './OverviewScreen';
-import { AppRoute, EvalParadigm, EvaluationConfig, EvaluationItem, HistorySession, RankingEntry, RouteContext, VoteRecord, VoteType, EvaluationProject } from '../types';
+import { AppRoute, EvalParadigm, EvaluationConfig, EvaluationItem, HistorySession, RankingEntry, RouteContext, VoteRecord, VoteType, EvaluationProject, EvalTask, EvalTemplate } from '../types';
 import { auth, signInWithGoogle, logout, shouldUseFirebase } from '../firebase';
-import { getDefaultEvaluationConfig, getMethodFromParadigm, getParadigmFromMethod, isRankMethod, isScoreMethod } from '../evaluationMethods';
+import { getDefaultEvaluationConfig, getMethodFromParadigm, getParadigmFromMethod, isRankMethod, isScoreMethod, normalizeEvaluationConfig } from '../evaluationMethods';
+import { getDimensionValuesForItem, getDimensionValuesFromRecord } from '../dimensionUtils';
 
 const STORAGE_KEY = 'modeleval_session';
 const HISTORY_KEY = 'modeleval_history';
 
 interface ModelEvalAppProps {
   initialRoute?: AppRoute;
+  initialContext?: RouteContext;
+  onRouteChange?: (route: AppRoute, context?: RouteContext) => void;
 }
 
-export function ModelEvalApp({ initialRoute = 'overview' }: ModelEvalAppProps) {
+export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, onRouteChange }: ModelEvalAppProps) {
   const [currentRoute, setCurrentRoute] = useState<AppRoute>(initialRoute);
-  const [routeContext, setRouteContext] = useState<RouteContext>({});
+  const [routeContext, setRouteContext] = useState<RouteContext>(initialContext);
   const [items, setItems] = useState<EvaluationItem[]>([]);
   const [votes, setVotes] = useState<VoteRecord[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -48,6 +51,8 @@ export function ModelEvalApp({ initialRoute = 'overview' }: ModelEvalAppProps) {
   const [activeProject, setActiveProject] = useState<EvaluationProject | null>(null);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [taskBuilderMode, setTaskBuilderMode] = useState<'create' | 'list'>('create');
+  const [routeTaskLoading, setRouteTaskLoading] = useState(false);
+  const [routeTaskError, setRouteTaskError] = useState<string | null>(null);
 
   // Confirm Modal State
   const [confirmConfig, setConfirmConfig] = useState<{
@@ -61,6 +66,20 @@ export function ModelEvalApp({ initialRoute = 'overview' }: ModelEvalAppProps) {
     message: '',
     onConfirm: () => {},
   });
+
+  const goToRoute = (route: AppRoute, context: RouteContext = {}) => {
+    const nextContext: RouteContext = route === 'tasks'
+      ? { taskBuilderMode: 'list', ...context }
+      : context;
+
+    if (route === 'tasks') {
+      setTaskBuilderMode(nextContext.taskBuilderMode || 'list');
+    }
+
+    setRouteContext(nextContext);
+    setCurrentRoute(route);
+    onRouteChange?.(route, nextContext);
+  };
 
   useEffect(() => {
     const unsubscribe = auth.onAuthStateChanged(user => {
@@ -76,6 +95,13 @@ export function ModelEvalApp({ initialRoute = 'overview' }: ModelEvalAppProps) {
   useEffect(() => {
     setCurrentRoute(initialRoute);
   }, [initialRoute]);
+
+  useEffect(() => {
+    setRouteContext(initialContext);
+    if (initialContext.taskBuilderMode) {
+      setTaskBuilderMode(initialContext.taskBuilderMode);
+    }
+  }, [initialContext]);
 
   // Load History on Mount
   useEffect(() => {
@@ -115,6 +141,199 @@ export function ModelEvalApp({ initialRoute = 'overview' }: ModelEvalAppProps) {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(sessionData));
     }
   }, [items, votes, currentIndex, currentRoute, userName, modelNames, taskModels, taskParadigm, taskEvaluationConfig, sessionId]);
+
+  useEffect(() => {
+    const taskId = routeContext.taskId;
+    const shouldHydrateTask = (currentRoute === 'voting' || currentRoute === 'results') && !!taskId;
+    if (!shouldHydrateTask) return;
+    if (activeTaskId === taskId && items.length > 0) return;
+
+    let cancelled = false;
+
+    const snapshotExists = (snapshot: any) => {
+      if (!snapshot) return false;
+      return typeof snapshot.exists === 'function' ? snapshot.exists() : !!snapshot.exists;
+    };
+
+    const hydrateTaskFromRoute = async () => {
+      setRouteTaskLoading(true);
+      setRouteTaskError(null);
+
+      try {
+        const { collection, doc, getDoc, getDocs, setDoc, updateDoc } = await import('../datastore');
+        const { db } = await import('../firebase');
+
+        const taskSnapshot = await getDoc(doc(db, 'evalTasks', taskId));
+        if (!snapshotExists(taskSnapshot)) {
+          throw new Error('未找到这份评测物料。');
+        }
+
+        const task = { id: taskSnapshot.id, ...taskSnapshot.data() } as EvalTask;
+        const templateSnapshot = task.templateId
+          ? await getDoc(doc(db, 'evalTemplates', task.templateId))
+          : null;
+        const template = templateSnapshot && snapshotExists(templateSnapshot)
+          ? ({ id: templateSnapshot.id, ...templateSnapshot.data() } as EvalTemplate)
+          : undefined;
+
+        if (task.projectId && !activeProject) {
+          try {
+            const projectSnapshot = await getDoc(doc(db, 'projects', task.projectId));
+            if (!cancelled && snapshotExists(projectSnapshot)) {
+              setActiveProject({ id: projectSnapshot.id, ...projectSnapshot.data() } as EvaluationProject);
+            }
+          } catch (projectError) {
+            console.error('Failed to load project for task route', projectError);
+          }
+        }
+
+        const evaluationConfig = normalizeEvaluationConfig(task, template);
+        const paradigm = getParadigmFromMethod(evaluationConfig.method);
+        const taskModelList = task.models?.length ? task.models : [
+          { id: 'model-a', name: 'Model A' },
+          { id: 'model-b', name: 'Model B' }
+        ];
+
+        const itemsSnapshot = await getDocs(collection(db, 'evalTasks', task.id, 'items'));
+        let loadedItems = itemsSnapshot.docs.map((docSnap: any) => {
+          const data = { id: docSnap.id, ...docSnap.data() } as EvaluationItem;
+          data.dimensionValues = getDimensionValuesForItem(data as any, task.dimensionColumns || []);
+          if (!data.modelOutputs?.length) {
+            const originalData = (data as any).originalData || {};
+            data.modelOutputs = taskModelList.map((model, idx) => ({
+              modelId: model.id || `model-${idx}`,
+              modelName: model.name || `Model ${idx + 1}`,
+              url: idx === 0
+                ? data.modelA_Url
+                : idx === 1
+                  ? data.modelB_Url
+                  : originalData[model.name] || originalData[model.id] || ''
+            })).filter(output => output.url);
+          }
+          return data;
+        }).sort((a: any, b: any) => {
+          const leftOrder = Number(a.itemOrder ?? 0);
+          const rightOrder = Number(b.itemOrder ?? 0);
+          if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+          return String(a.id).localeCompare(String(b.id));
+        });
+
+        if (loadedItems.length === 0 && task.datasetId && task.datasetId !== 'external-csv') {
+          const datasetSnapshot = await getDoc(doc(db, 'evalDatasets', task.datasetId));
+          if (snapshotExists(datasetSnapshot)) {
+            const datasetData = datasetSnapshot.data() as any;
+            if (datasetData.items?.length) {
+              loadedItems = datasetData.items.map((row: any, idx: number) => {
+                const keys = Object.keys(row);
+                const fallbackModelKeys = keys.filter(key => !key.toLowerCase().includes('id')).slice(-(taskModelList.length || 2));
+                const modelKeys = taskModelList.map((model, modelIdx) => (
+                  row[model.name] !== undefined ? model.name :
+                  row[model.id] !== undefined ? model.id :
+                  fallbackModelKeys[modelIdx]
+                )).filter(Boolean);
+                const modelAKey = modelKeys[0] || keys[keys.length - 2];
+                const modelBKey = modelKeys[1] || keys[keys.length - 1];
+                const inputs = { ...row };
+                modelKeys.forEach(key => delete inputs[key]);
+                (task.dimensionColumns || []).forEach(key => delete inputs[key]);
+
+                let startImageUrl: string | undefined;
+                const referenceUrls: string[] = [];
+                Object.keys(inputs).forEach(col => {
+                  const val = inputs[col];
+                  if (typeof val !== 'string') return;
+                  const urls = val.match(/https?:\/\/[^\s"'\t|,;>]+/g);
+                  if (!urls) return;
+                  const lowerCol = col.toLowerCase();
+                  urls.forEach(u => {
+                    if (lowerCol.includes('start') || lowerCol.includes('首帧') || lowerCol.includes('first')) {
+                      if (!startImageUrl) startImageUrl = u;
+                      else referenceUrls.push(u);
+                    } else if (lowerCol.includes('ref') || lowerCol.includes('参考')) {
+                      referenceUrls.push(u);
+                    } else {
+                      if (!startImageUrl) startImageUrl = u;
+                      else referenceUrls.push(u);
+                    }
+                  });
+                });
+
+                return {
+                  id: `ds-item-${idx}`,
+                  modelA_Url: row[modelAKey] || '',
+                  modelB_Url: row[modelBKey] || '',
+                  modelOutputs: taskModelList.map((model, modelIdx) => ({
+                    modelId: model.id || `model-${modelIdx}`,
+                    modelName: model.name || `Model ${modelIdx + 1}`,
+                    url: row[modelKeys[modelIdx]] || ''
+                  })).filter(output => output.url),
+                  inputs,
+                  dimensionValues: getDimensionValuesFromRecord(row, task.dimensionColumns || []),
+                  prompt: inputs['prompt'] || inputs['提示词'] || Object.values(inputs)[0] || '',
+                  type: task.outputType || 'text',
+                  startImageUrl,
+                  referenceUrls: referenceUrls.length > 0 ? referenceUrls : undefined
+                } as EvaluationItem;
+              });
+            }
+          }
+        }
+
+        if (loadedItems.length === 0) {
+          throw new Error('这份评测物料没有可执行的 case 数据。');
+        }
+
+        if (task.totalItems !== loadedItems.length) {
+          updateDoc(doc(db, 'evalTasks', task.id), { totalItems: loadedItems.length }).catch(error => {
+            console.error('Failed to update totalItems', error);
+          });
+        }
+
+        const hydratedUserName = auth.currentUser?.email || auth.currentUser?.displayName || localStorage.getItem('eval_username') || 'Anonymous';
+        let existingVotes: VoteRecord[] = [];
+        try {
+          const voteSnapshot = await getDoc(doc(db, 'evalTasks', task.id, 'userVotes', hydratedUserName));
+          if (snapshotExists(voteSnapshot)) {
+            existingVotes = voteSnapshot.data().votes || [];
+          }
+          if (task.progress?.[hydratedUserName] === undefined) {
+            await setDoc(doc(db, 'evalTasks', task.id), { progress: { [hydratedUserName]: existingVotes.length } }, { merge: true });
+          }
+        } catch (voteError) {
+          console.error('Failed to hydrate task votes', voteError);
+        }
+
+        if (cancelled) return;
+
+        setItems(loadedItems);
+        setVotes(existingVotes);
+        setCurrentIndex(Math.min(existingVotes.length, Math.max(loadedItems.length - 1, 0)));
+        setUserName(hydratedUserName);
+        setModelNames({
+          a: taskModelList[0]?.name || 'Model A',
+          b: taskModelList[1]?.name || 'Model B'
+        });
+        setTaskModels(taskModelList);
+        setTaskParadigm(paradigm);
+        setTaskEvaluationConfig(evaluationConfig);
+        setActiveTaskId(task.id);
+        setSessionId(`session-${task.id}-${Date.now()}`);
+      } catch (error: any) {
+        if (!cancelled) {
+          console.error('Failed to load task from route', error);
+          setRouteTaskError(error?.message || '加载评测物料失败。');
+        }
+      } finally {
+        if (!cancelled) setRouteTaskLoading(false);
+      }
+    };
+
+    hydrateTaskFromRoute();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProject, activeTaskId, currentRoute, items.length, routeContext.taskId]);
 
   // Save to History when session is complete (moved to results)
   const saveToHistory = (completedVotes: VoteRecord[]) => {
@@ -162,7 +381,7 @@ export function ModelEvalApp({ initialRoute = 'overview' }: ModelEvalAppProps) {
           setTaskEvaluationConfig(getDefaultEvaluationConfig(getMethodFromParadigm(data.taskParadigm)));
         }
         setSessionId(data.sessionId || `session-${Date.now()}`); // Ensure ID exists
-        setCurrentRoute('voting');
+        goToRoute('voting');
       } catch (e) {
         console.error("Failed to parse saved session");
       }
@@ -211,15 +430,15 @@ export function ModelEvalApp({ initialRoute = 'overview' }: ModelEvalAppProps) {
       setVotes(existingVotes);
       if (existingVotes.length >= parsedItems.length) {
         setCurrentIndex(parsedItems.length - 1);
-        setCurrentRoute('results');
+        goToRoute('results', taskId ? { taskId } : {});
       } else {
         setCurrentIndex(existingVotes.length);
-        setCurrentRoute('voting');
+        goToRoute('voting', taskId ? { taskId } : {});
       }
     } else {
       setCurrentIndex(0);
       setVotes([]);
-      setCurrentRoute('voting');
+      goToRoute('voting', taskId ? { taskId } : {});
     }
   };
 
@@ -269,7 +488,7 @@ export function ModelEvalApp({ initialRoute = 'overview' }: ModelEvalAppProps) {
       setCurrentIndex(prev => prev + 1);
     } else {
       saveToHistory(updatedVotes);
-      setCurrentRoute('results');
+      goToRoute('results', activeTaskId ? { taskId: activeTaskId } : routeContext);
     }
   };
 
@@ -333,7 +552,7 @@ export function ModelEvalApp({ initialRoute = 'overview' }: ModelEvalAppProps) {
       title: '清除评测会话',
       message: '确定要清除当前评测会话数据吗？',
       onConfirm: () => {
-        setCurrentRoute('evaluation');
+        goToRoute('evaluation');
         setItems([]);
         setVotes([]);
         setCurrentIndex(0);
@@ -354,7 +573,7 @@ export function ModelEvalApp({ initialRoute = 'overview' }: ModelEvalAppProps) {
   const handleEndSessionEarly = () => {
     if (votes.length > 0) {
       saveToHistory(votes);
-      setCurrentRoute('results');
+      goToRoute('results', activeTaskId ? { taskId: activeTaskId } : routeContext);
     } else {
       handleReset();
     }
@@ -387,9 +606,7 @@ export function ModelEvalApp({ initialRoute = 'overview' }: ModelEvalAppProps) {
   };
 
   const navigate = (route: AppRoute, context: RouteContext = {}) => {
-    if (route === 'tasks') setTaskBuilderMode('list');
-    setRouteContext(context);
-    setCurrentRoute(route);
+    goToRoute(route, context);
   };
 
   const renderRoute = () => {
@@ -401,6 +618,30 @@ export function ModelEvalApp({ initialRoute = 'overview' }: ModelEvalAppProps) {
             <h1 className="text-2xl font-semibold text-white">登录 Eval Studio</h1>
             <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">进入评测一体化平台，管理评测集、评测物料、参与评测、结果洞察和生产流程。</p>
             <button onClick={signInWithGoogle} className="btn-primary mt-6 w-full">使用 Google 登录</button>
+          </div>
+        </div>
+      );
+    }
+
+    if ((currentRoute === 'voting' || currentRoute === 'results') && routeContext.taskId && routeTaskLoading) {
+      return (
+        <div className="flex min-h-[calc(100vh-64px)] items-center justify-center px-4">
+          <div className="w-full max-w-md rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-panel)] p-8 text-center">
+            <div className="mx-auto mb-5 h-10 w-10 animate-spin rounded-full border-2 border-[var(--accent)] border-t-transparent" />
+            <h1 className="text-xl font-semibold text-white">正在加载评测物料</h1>
+            <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">正在根据 URL 加载任务配置、case 和评测进度。</p>
+          </div>
+        </div>
+      );
+    }
+
+    if ((currentRoute === 'voting' || currentRoute === 'results') && routeContext.taskId && routeTaskError) {
+      return (
+        <div className="flex min-h-[calc(100vh-64px)] items-center justify-center px-4">
+          <div className="w-full max-w-md rounded-lg border border-red-500/30 bg-[var(--surface-panel)] p-8 text-center">
+            <h1 className="text-xl font-semibold text-white">评测物料加载失败</h1>
+            <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">{routeTaskError}</p>
+            <button onClick={() => navigate('tasks')} className="btn-primary mt-6 w-full">返回评测物料</button>
           </div>
         </div>
       );
@@ -424,6 +665,7 @@ export function ModelEvalApp({ initialRoute = 'overview' }: ModelEvalAppProps) {
         <div className="py-6">
           <DashboardScreen
             initialProject={activeProject}
+            initialProjectId={routeContext.projectId}
             onProjectSelect={setActiveProject}
             onGoToExecution={(project, taskItems, taskName, modelNames, taskId, existingVotes, paradigm, models, evaluationConfig) => {
               setActiveProject(project);
@@ -444,7 +686,7 @@ export function ModelEvalApp({ initialRoute = 'overview' }: ModelEvalAppProps) {
             onGoToTaskBuilder={(project, mode) => {
               setActiveProject(project);
               setTaskBuilderMode(mode || 'create');
-              navigate('tasks', { projectId: project.id, source: 'dashboard' });
+              navigate('tasks', { projectId: project.id, source: 'dashboard', taskBuilderMode: mode || 'create' });
             }}
           />
         </div>
@@ -457,6 +699,7 @@ export function ModelEvalApp({ initialRoute = 'overview' }: ModelEvalAppProps) {
           <DatasetRepositoryScreen
             onBack={() => navigate('overview')}
             mode={currentRoute === 'generation' ? 'generation' : 'repository'}
+            initialDatasetId={routeContext.datasetId}
           />
         </div>
       );
@@ -475,7 +718,7 @@ export function ModelEvalApp({ initialRoute = 'overview' }: ModelEvalAppProps) {
         <div className="py-6">
           <TaskBuilderScreen
             projectId={activeProject?.id || routeContext.projectId}
-            initialMode={taskBuilderMode}
+            initialMode={routeContext.taskBuilderMode || taskBuilderMode}
             initialStatusFilter={routeContext.materialStatusFilter}
             onBack={() => navigate('projects')}
           />

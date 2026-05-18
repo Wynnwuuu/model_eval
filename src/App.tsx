@@ -4,8 +4,13 @@
  */
 
 import React from 'react';
-import { ModelEvalApp } from './components/ModelEvalApp';
+import { BrowserRouter } from 'react-router-dom';
+import AppRouter from './app/router';
 
 export default function App() {
-  return <ModelEvalApp initialRoute="overview" />;
+  return (
+    <BrowserRouter>
+      <AppRouter />
+    </BrowserRouter>
+  );
 }

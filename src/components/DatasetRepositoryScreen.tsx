@@ -52,6 +52,7 @@ import {
 interface DatasetRepositoryScreenProps {
   onBack: () => void;
   mode?: 'repository' | 'generation';
+  initialDatasetId?: string;
 }
 
 type WizardMode = 'create' | 'append';
@@ -358,7 +359,7 @@ const MediaCell = ({ value, previewType }: { value: any; previewType?: DatasetPr
   return <span className="text-xs text-slate-300 line-clamp-3 max-w-[260px] whitespace-pre-wrap">{String(value)}</span>;
 };
 
-const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBack, mode = 'repository' }) => {
+const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBack, mode = 'repository', initialDatasetId }) => {
   const [datasets, setDatasets] = useState<EvalDataset[]>([]);
   const [datasetToDelete, setDatasetToDelete] = useState<string | null>(null);
   const [selectedDatasetId, setSelectedDatasetId] = useState('');
@@ -434,6 +435,12 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
       setSelectedDatasetId(filteredDatasets[0].id);
     }
   }, [filteredDatasets, selectedDatasetId]);
+
+  useEffect(() => {
+    if (initialDatasetId && normalizedDatasets.some(dataset => dataset.id === initialDatasetId)) {
+      setSelectedDatasetId(initialDatasetId);
+    }
+  }, [initialDatasetId, normalizedDatasets]);
 
   const selectedDataset = normalizedDatasets.find(dataset => dataset.id === selectedDatasetId) || filteredDatasets[0];
   const selectedMappings = getDatasetColumnMappings(selectedDataset);
