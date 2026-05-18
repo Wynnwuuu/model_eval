@@ -1,11 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { LayoutTemplate, Plus, Settings, ArrowRight, Trash2, Edit2, FileText, CheckCircle2 } from 'lucide-react';
 import { EvalTemplate, EvalDimension, EvalParadigm } from '../types';
-import { db, auth } from '../firebase';
-import { doc, setDoc, deleteDoc } from '../datastore';
+import { auth } from '../firebase';
 import { ConfirmModal } from './ConfirmModal';
 import { DEFAULT_SCORE_LEVELS, buildDefaultDimensionsForMethod, getEvaluationMethodShortLabel, getMethodFromParadigm, normalizeDimensions } from '../evaluationMethods';
-import { subscribeTemplates } from '../features/templates/api';
+import { deleteTemplate, saveTemplate, subscribeTemplates } from '../features/templates/api';
 
 interface TemplateRepositoryScreenProps {
   onBack: () => void;
@@ -63,7 +62,7 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
   const confirmDeleteTemplate = async () => {
     if (!templateToDelete) return;
     try {
-      await deleteDoc(doc(db, 'evalTemplates', templateToDelete));
+      await deleteTemplate(templateToDelete);
       setTemplateToDelete(null);
     } catch (error: any) {
       console.error("Error deleting template:", error);
@@ -97,7 +96,7 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
     };
 
     try {
-      await setDoc(doc(db, 'evalTemplates', templateId), templateData);
+      await saveTemplate(templateData);
       setIsCreating(false);
       setEditingTemplateId(null);
       

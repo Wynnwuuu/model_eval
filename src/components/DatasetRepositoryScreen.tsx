@@ -26,12 +26,12 @@ import {
 import Papa from 'papaparse';
 import { DatasetColumnMappings, DatasetFieldRole, DatasetGenerationJob, DatasetModality, DatasetPreviewType, DatasetSchemaField, EvalDataset } from '../types';
 import { db, auth } from '../firebase';
-import { collection, doc, setDoc, onSnapshot, query, deleteDoc, where } from '../datastore';
+import { collection, doc, setDoc, onSnapshot, query, where } from '../datastore';
 import { ConfirmModal } from './ConfirmModal';
 import MediaRenderer from './MediaRenderer';
 import DatasetGenerationModal from './DatasetGenerationModal';
 import { normalizeUrl } from '../utils';
-import { subscribeDatasets } from '../features/datasets/api';
+import { deleteDataset, saveDataset, subscribeDatasets } from '../features/datasets/api';
 import {
   DATASET_MODALITIES,
   STANDARD_DATASET_FIELDS,
@@ -140,23 +140,6 @@ const fieldSample = (field: Pick<DatasetSchemaField, 'sourceKey' | 'key'>, rows:
   const sourceKey = field.sourceKey || field.key;
   const sample = rows.find(row => String(row[sourceKey] ?? row[field.key] ?? '').trim());
   return sample ? String(sample[sourceKey] ?? sample[field.key] ?? '') : '';
-};
-
-const sanitizeFirestoreValue = (value: any): any => {
-  if (value === undefined) return undefined;
-  if (value === null) return null;
-  if (Array.isArray(value)) {
-    return value.map(item => item === undefined ? null : sanitizeFirestoreValue(item));
-  }
-  if (typeof value === 'object') {
-    const next: Record<string, any> = {};
-    Object.entries(value).forEach(([key, item]) => {
-      const sanitized = sanitizeFirestoreValue(item);
-      if (sanitized !== undefined) next[key] = sanitized;
-    });
-    return next;
-  }
-  return value;
 };
 
 const ensureUniqueFieldKey = (baseValue: string, existingKeys: string[]) => {
@@ -691,7 +674,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
     };
 
     try {
-      await setDoc(doc(db, 'evalDatasets', datasetBase.id), sanitizeFirestoreValue(datasetBase));
+      await saveDataset(datasetBase);
       setSelectedDatasetId(datasetBase.id);
       setSelectedRowIndex(0);
       closeWizard();
@@ -704,7 +687,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
   const confirmDeleteDataset = async () => {
     if (!datasetToDelete) return;
     try {
-      await deleteDoc(doc(db, 'evalDatasets', datasetToDelete));
+      await deleteDataset(datasetToDelete);
       setDatasetToDelete(null);
       if (selectedDatasetId === datasetToDelete) {
         setSelectedDatasetId('');

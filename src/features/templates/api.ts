@@ -1,4 +1,4 @@
-import { collection, onSnapshot, orderBy, query } from '../../datastore';
+import { collection, deleteDoc, doc, onSnapshot, orderBy, query, setDoc } from '../../datastore';
 import { db } from '../../firebase';
 import { EvalTemplate } from '../../types';
 
@@ -14,4 +14,13 @@ export function subscribeTemplates(
     });
     onNext(templates);
   }, onError);
+}
+
+export async function saveTemplate(template: EvalTemplate) {
+  await setDoc(doc(db, 'evalTemplates', template.id), template);
+  return template;
+}
+
+export async function deleteTemplate(templateId: string) {
+  await deleteDoc(doc(db, 'evalTemplates', templateId));
 }

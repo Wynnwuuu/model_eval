@@ -9,8 +9,8 @@ import MediaRenderer from './MediaRenderer';
 import DimensionChips from './DimensionChips';
 import { getDimensionValuesForItem, getDimensionValuesFromRecord, isLikelyDimensionColumn } from '../dimensionUtils';
 import { loadTaskItems, subscribeTasks } from '../features/tasks/api';
-import { subscribeDatasets } from '../features/datasets/api';
-import { subscribeTemplates } from '../features/templates/api';
+import { createDataset, subscribeDatasets } from '../features/datasets/api';
+import { saveTemplate, subscribeTemplates } from '../features/templates/api';
 import {
   STANDARD_DATASET_FIELDS,
   appendDatasetVersion,
@@ -363,8 +363,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
           };
 
           try {
-            const dsRef = await addDoc(collection(db, 'evalDatasets'), newDataset);
-            finalDatasetId = dsRef.id;
+            finalDatasetId = await createDataset(newDataset);
           } catch (err: any) {
             console.error("Error creating dataset:", err);
             throw new Error("创建评测集失败: " + err.message);
@@ -385,7 +384,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
           creatorName: auth.currentUser.displayName || auth.currentUser.email || 'Unknown',
           createdAt: Date.now()
         };
-        await setDoc(doc(db, 'evalTemplates', templateId), templateData);
+        await saveTemplate(templateData);
         finalTemplateId = templateId;
       }
 
@@ -794,7 +793,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
     };
 
     try {
-      await setDoc(doc(db, 'evalTemplates', newTemplate.id), newTemplate);
+      await saveTemplate(newTemplate);
       setNewTask(prev => ({ ...prev, templateId: newTemplate.id }));
       setEvaluationConfig(normalizeEvaluationConfig(undefined, newTemplate));
       setShowCreateTemplateModal(false);
