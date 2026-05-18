@@ -1,0 +1,13 @@
+import 'dotenv/config';
+
+const DEFAULT_DATABASE_URL = 'postgresql://eval_studio:eval_studio_dev@localhost:5432/eval_studio';
+
+const parsePort = (value: string | undefined, fallback: number): number => {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+export const serverConfig = {
+  apiPort: parsePort(process.env.API_PORT, 8787),
+  databaseUrl: process.env.DATABASE_URL || DEFAULT_DATABASE_URL,
+};

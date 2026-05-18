@@ -14,6 +14,14 @@
 前端 -> features/*/api.ts -> 后端 HTTP API -> PostgreSQL
 ```
 
+当前本地后端已提供数据库连通性检查：
+
+```bash
+npm run api:dev
+curl http://localhost:8787/api/health
+curl http://localhost:8787/api/db/health
+```
+
 ## 启动数据库
 
 ```bash

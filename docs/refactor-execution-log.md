@@ -104,6 +104,8 @@ npm run build
 - 新增 `docs/postgres-local.md`，记录启动、连接、验证和重置方式。
 - `.env.example` 增加 PostgreSQL 本地开发环境变量。
 - `package.json` 增加 `db:up`、`db:down`、`db:logs`、`db:psql` 脚本。
+- 新增最小本地后端入口 `server/index.ts`，提供 `/api/health` 和 `/api/db/health`。
+- 新增 PostgreSQL 连接池 `server/db/client.ts`，后续项目/数据集/模板 API 会从这里接入数据库。
 
 当前数据路径仍是：
 
@@ -122,6 +124,7 @@ npm run build
 ```bash
 npm run db:up
 npm run db:psql
+npm run api:dev
 npm run lint
 npm run build
 ```
