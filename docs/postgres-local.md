@@ -1,14 +1,14 @@
 # 本地 PostgreSQL 开发环境
 
-本阶段只建立本地数据库基座，还没有把前端数据读写切到 PostgreSQL。
+本地数据库基座和核心 HTTP/PostgreSQL 数据链路已经落地。
 
-当前数据路径仍是：
+未开启 HTTP 后端时：
 
 ```text
 前端 -> features/*/api.ts -> datastore.ts -> localStorage 或 Firestore
 ```
 
-后续目标路径是：
+开启 HTTP 后端时：
 
 ```text
 前端 -> features/*/api.ts -> 后端 HTTP API -> PostgreSQL

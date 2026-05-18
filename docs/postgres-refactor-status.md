@@ -20,6 +20,12 @@
   - 支持 localStorage/localPlatform JSON 和 Firestore 同构 JSON。
   - 支持 dry-run 计数和基础 warning。
   - 覆盖项目、评测集、模板、任务、任务 items、投票、生产任务、生产任务 items。
+- 部署方案：
+  - 新增 `docs/deployment-postgres.md`。
+  - 补充阿里云 RDS PostgreSQL + DMS、后端 API、前端静态站点、上线验证和回滚顺序。
+- Firestore fallback 策略：
+  - 新增 `docs/firestore-fallback-strategy.md`。
+  - 明确 `VITE_USE_API_BACKEND` 与 `VITE_USE_FIREBASE` 的边界。
 
 ## 进行中
 
@@ -28,11 +34,11 @@
 
 ## 未完成
 
-- 部署方案：阿里云 RDS/DMS、后端部署、生产环境变量、CI/CD。
-- Firestore fallback 策略：明确长期保留还是逐步删除。
+- 部署工程化：后端 Dockerfile、server build 产物、CI/CD 自动部署。
+- Firestore fallback 清理：如果确定线上全面切 PostgreSQL，继续删除业务域 Firestore 写路径。
 
 ## 当前建议顺序
 
-1. 部署方案。
+1. 后端 Dockerfile / server build / CI/CD。
 2. 权限模型深化：成员管理、更多数据域鉴权。
-3. Firestore fallback 决策与清理。
+3. Firestore fallback 代码清理。

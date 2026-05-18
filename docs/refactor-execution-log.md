@@ -132,6 +132,8 @@ npm run build
 - API smoke test 增加权限负例：非项目成员更新项目会返回 `403 FORBIDDEN`。
 - 新增 `npm run migrate:postgres` 数据迁移脚本，支持 localStorage/localPlatform JSON 和 Firestore 同构 JSON 迁移到 PostgreSQL。
 - 新增 `docs/data-migration.md`，记录导出格式、dry-run、导入和验证步骤。
+- 新增 `docs/deployment-postgres.md`，记录阿里云 RDS PostgreSQL/DMS、后端 API、前端静态部署、验证和回滚方案。
+- 新增 `docs/firestore-fallback-strategy.md`，明确 PostgreSQL 模式与 Firestore/localStorage fallback 的边界。
 
 当前数据路径仍是：
 
