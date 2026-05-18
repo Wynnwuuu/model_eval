@@ -148,6 +148,11 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
   }, [user]);
 
   useEffect(() => {
+    if (!initialProject?.id && !initialProjectId) {
+      setSelectedProject(null);
+      return;
+    }
+
     if (initialProject?.id && selectedProject?.id !== initialProject.id) {
       setSelectedProject(initialProject);
       return;

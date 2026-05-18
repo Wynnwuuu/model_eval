@@ -518,9 +518,18 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
       return (
         <div className="py-6">
           <ProjectListPage
-            initialProject={activeProject}
+            initialProject={routeContext.projectId ? activeProject : null}
             initialProjectId={routeContext.projectId}
-            onProjectSelect={setActiveProject}
+            onProjectSelect={(project) => {
+              setActiveProject(project);
+              if (currentRoute === 'projects') {
+                if (project && routeContext.projectId !== project.id) {
+                  navigate('projects', { projectId: project.id, source: 'dashboard' });
+                } else if (!project && routeContext.projectId) {
+                  navigate('projects');
+                }
+              }
+            }}
             onGoToExecution={(project, taskItems, taskName, modelNames, taskId, existingVotes, paradigm, models, evaluationConfig) => {
               setActiveProject(project);
               setRouteContext({ projectId: project.id, taskId, source: 'dashboard' });
