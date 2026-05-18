@@ -13,7 +13,10 @@ import ScoreInsightsScreen from './ScoreInsightsScreen';
 import { calculateRankDimensionSummaries, calculateVoteDimensionSummaries, getDimensionColumnsForCsv, getDimensionCsvValues, getDimensionValuesForItem, getDimensionValuesFromRecord } from '../dimensionUtils';
 import Papa from 'papaparse';
 import { getParadigmFromMethod, isPairwiseMethod, isScoreMethod, normalizeEvaluationConfig } from '../evaluationMethods';
+import { subscribeProjects } from '../features/projects/api';
+import { subscribeTemplates } from '../features/templates/api';
 import { loadTaskItems, loadTaskVotes, USE_TASK_API_BACKEND } from '../features/tasks/api';
+import { subscribeTasks } from '../features/tasks/api';
 
 interface AnalysisScreenProps {
   onBack: () => void;
@@ -378,37 +381,20 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   const [showInsights, setShowInsights] = useState(true);
 
   useEffect(() => {
-    const fetchTasks = async () => {
-      setLoadingTasks(true);
-      try {
-        const q = query(collection(db, 'evalTasks'), orderBy('createdAt', 'desc'));
-        const snapshot = await getDocs(q);
-        const fetchedTasks: EvalTask[] = [];
-        snapshot.forEach(doc => {
-          fetchedTasks.push({ id: doc.id, ...doc.data() } as EvalTask);
-        });
-        setTasks(fetchedTasks);
-
-        const templatesSnapshot = await getDocs(collection(db, 'evalTemplates'));
-        const fetchedTemplates: EvalTemplate[] = [];
-        templatesSnapshot.forEach(doc => {
-          fetchedTemplates.push({ id: doc.id, ...doc.data() } as EvalTemplate);
-        });
-        setTemplates(fetchedTemplates);
-
-        const projectsSnapshot = await getDocs(query(collection(db, 'projects'), orderBy('createdAt', 'desc')));
-        const fetchedProjects: EvaluationProject[] = [];
-        projectsSnapshot.forEach(doc => {
-          fetchedProjects.push({ id: doc.id, ...doc.data() } as EvaluationProject);
-        });
-        setProjects(fetchedProjects);
-      } catch (err) {
-        handleFirestoreError(err, 'list', 'evalTasks');
-      } finally {
+    setLoadingTasks(true);
+    const unsubscribers = [
+      subscribeTasks({}, (nextTasks) => {
+        setTasks(nextTasks);
         setLoadingTasks(false);
-      }
-    };
-    fetchTasks();
+      }, (err) => {
+        handleFirestoreError(err, 'list', 'evalTasks');
+        setLoadingTasks(false);
+      }),
+      subscribeTemplates(setTemplates, (err) => handleFirestoreError(err, 'list', 'evalTemplates')),
+      subscribeProjects(setProjects, (err) => handleFirestoreError(err, 'list', 'projects')),
+    ];
+
+    return () => unsubscribers.forEach(unsubscribe => unsubscribe());
   }, []);
 
   const getMaterialEvaluationConfig = (task?: EvalTask): EvaluationConfig => {
@@ -1069,24 +1055,27 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     setError(null);
 
     try {
-      const itemsRef = collection(db, 'evalTasks', selectedTaskId, 'items');
-      const snapshot = await getDocs(itemsRef);
-      
-      if (snapshot.empty) {
+      const selectedTask = tasks.find(t => t.id === selectedTaskId);
+      if (!selectedTask) {
+        setError("未找到这份评测物料。");
+        setIsDownloadingTemplate(false);
+        return;
+      }
+
+      const items = await loadTaskItems(selectedTask);
+      if (items.length === 0) {
         setError("该评测物料没有 case 数据。");
         setIsDownloadingTemplate(false);
         return;
       }
 
       const csvData: any[] = [];
-      const selectedTask = tasks.find(t => t.id === selectedTaskId);
       const selectedTemplate = templates.find(t => t.id === selectedTask?.templateId);
       const isRankTemplate = selectedTemplate?.paradigm === 'Arena-rank';
-      const maxOutputs = Math.max(0, ...snapshot.docs.map(doc => (doc.data().modelOutputs || []).length));
+      const maxOutputs = Math.max(0, ...items.map(item => (item.modelOutputs || []).length));
       
-      snapshot.docs.forEach(doc => {
-        const data = doc.data();
-        const row: any = { 'Item ID': doc.id };
+      items.forEach(data => {
+        const row: any = { 'Item ID': data.id };
         
         // Add original data columns if available
         if (data.originalData) {
