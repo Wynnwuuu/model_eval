@@ -22,6 +22,7 @@
 - `/projects/:projectId` 会把 `projectId` 传给项目页面并自动选中项目。
 - `/datasets/:datasetId` 会把 `datasetId` 传给数据集页面并自动选中数据集。
 - `/projects/:projectId/tasks`、`/projects/:projectId/insights`、`/tasks/:taskId/evaluate`、`/tasks/:taskId/results` 等路径已建立。
+- 建立 `src/pages/*` 页面壳，`ModelEvalApp` 开始通过 page 层渲染核心模块，后续再逐步把业务逻辑从 screen 组件迁入 page/feature 结构。
 
 当前可验证 URL：
 

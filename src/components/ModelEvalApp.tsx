@@ -5,15 +5,15 @@ import VotingScreen from './VotingScreen';
 import ArenaRankVotingScreen from './ArenaRankVotingScreen';
 import ScoreEvaluationScreen from './ScoreEvaluationScreen';
 import ResultsScreen from './ResultsScreen';
-import AnalysisScreen from './AnalysisScreen';
-import HistoryScreen from './HistoryScreen';
-import { DashboardScreen } from './DashboardScreen';
-import DatasetRepositoryScreen from './DatasetRepositoryScreen';
-import TemplateRepositoryScreen from './TemplateRepositoryScreen';
-import TaskBuilderScreen from './TaskBuilderScreen';
 import { ConfirmModal } from './ConfirmModal';
 import AppShell from './AppShell';
-import OverviewScreen from './OverviewScreen';
+import OverviewPage from '../pages/overview/OverviewPage';
+import ProjectListPage from '../pages/projects/ProjectListPage';
+import DatasetListPage from '../pages/datasets/DatasetListPage';
+import TemplateListPage from '../pages/templates/TemplateListPage';
+import TaskListPage from '../pages/tasks/TaskListPage';
+import InsightDashboardPage from '../pages/insights/InsightDashboardPage';
+import HistoryPage from '../pages/history/HistoryPage';
 import { AppRoute, EvalParadigm, EvaluationConfig, EvaluationItem, HistorySession, RankingEntry, RouteContext, VoteRecord, VoteType, EvaluationProject, EvalTask, EvalTemplate } from '../types';
 import { auth, signInWithGoogle, logout, shouldUseFirebase } from '../firebase';
 import { getDefaultEvaluationConfig, getMethodFromParadigm, getParadigmFromMethod, isRankMethod, isScoreMethod, normalizeEvaluationConfig } from '../evaluationMethods';
@@ -649,7 +649,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
 
     if (currentRoute === 'overview') {
       return (
-        <OverviewScreen
+        <OverviewPage
           onGoToProjects={() => navigate('projects')}
           onGoToDatasets={() => navigate('datasets')}
           onGoToTasks={(statusFilter) => navigate('tasks', { materialStatusFilter: statusFilter })}
@@ -663,7 +663,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     if (currentRoute === 'projects') {
       return (
         <div className="py-6">
-          <DashboardScreen
+          <ProjectListPage
             initialProject={activeProject}
             initialProjectId={routeContext.projectId}
             onProjectSelect={setActiveProject}
@@ -696,7 +696,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     if (currentRoute === 'datasets' || currentRoute === 'generation') {
       return (
         <div className="py-6">
-          <DatasetRepositoryScreen
+          <DatasetListPage
             onBack={() => navigate('overview')}
             mode={currentRoute === 'generation' ? 'generation' : 'repository'}
             initialDatasetId={routeContext.datasetId}
@@ -708,7 +708,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     if (currentRoute === 'templates') {
       return (
         <div className="py-6">
-          <TemplateRepositoryScreen onBack={() => navigate('overview')} />
+          <TemplateListPage onBack={() => navigate('overview')} />
         </div>
       );
     }
@@ -716,7 +716,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     if (currentRoute === 'tasks') {
       return (
         <div className="py-6">
-          <TaskBuilderScreen
+          <TaskListPage
             projectId={activeProject?.id || routeContext.projectId}
             initialMode={routeContext.taskBuilderMode || taskBuilderMode}
             initialStatusFilter={routeContext.materialStatusFilter}
@@ -747,7 +747,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     if (currentRoute === 'insights') {
       return (
         <div className="py-6">
-          <AnalysisScreen
+          <InsightDashboardPage
             onBack={() => navigate('evaluation')}
             onGoToDashboard={() => navigate('overview')}
             initialProjectId={routeContext.projectId}
@@ -761,7 +761,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     if (currentRoute === 'history') {
       return (
         <div className="py-6">
-          <HistoryScreen
+          <HistoryPage
             history={history}
             onBack={() => navigate('evaluation')}
             onGoToDashboard={() => navigate('overview')}
