@@ -17,7 +17,7 @@ import HistoryPage from '../pages/history/HistoryPage';
 import { AppRoute, EvalParadigm, EvaluationConfig, EvaluationItem, HistorySession, RankingEntry, RouteContext, VoteRecord, VoteType, EvaluationProject } from '../types';
 import { auth, signInWithGoogle, logout, shouldUseFirebase } from '../firebase';
 import { getDefaultEvaluationConfig, getMethodFromParadigm, getParadigmFromMethod, isRankMethod, isScoreMethod } from '../evaluationMethods';
-import { loadTaskEvaluation } from '../features/tasks/loadTaskEvaluation';
+import { loadTaskEvaluation } from '../features/tasks/api';
 
 const STORAGE_KEY = 'modeleval_session';
 const HISTORY_KEY = 'modeleval_history';

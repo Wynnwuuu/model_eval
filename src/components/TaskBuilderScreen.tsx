@@ -2,13 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { ArrowLeft, Plus, Save, Trash2, Database, LayoutTemplate, Box, CheckCircle2, Play, Link as LinkIcon, Upload, X, Users, Edit, Eye, Loader2, ClipboardList } from 'lucide-react';
 import { EvalDataset, EvalTemplate, EvalTask, EvalDimension, EvalParadigm, EvaluationConfig, EvaluationItem, EvaluationMethod } from '../types';
 import { db, auth } from '../firebase';
-import { collection, onSnapshot, addDoc, query, orderBy, doc, updateDoc, deleteDoc, where, setDoc } from '../datastore';
+import { collection, onSnapshot, addDoc, query, orderBy, doc, updateDoc, deleteDoc, setDoc } from '../datastore';
 import { ConfirmModal } from './ConfirmModal';
 import Papa from 'papaparse';
 import MediaRenderer from './MediaRenderer';
 import DimensionChips from './DimensionChips';
 import { getDimensionValuesForItem, getDimensionValuesFromRecord, isLikelyDimensionColumn } from '../dimensionUtils';
-import { loadTaskItems } from '../features/tasks/loadTaskItems';
+import { loadTaskItems, subscribeTasks } from '../features/tasks/api';
 import {
   STANDARD_DATASET_FIELDS,
   appendDatasetVersion,
@@ -103,20 +103,9 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
   }, [initialStatusFilter]);
 
   useEffect(() => {
-    // Filter tasks by projectId if provided
-    const tasksRef = collection(db, 'evalTasks');
-    const tasksQuery = projectId 
-      ? query(tasksRef, where('projectId', '==', projectId))
-      : query(tasksRef);
-      
-    const unsubscribeTasks = onSnapshot(tasksQuery, (snapshot) => {
-      const fetchedTasks: EvalTask[] = [];
-      snapshot.forEach((docSnap) => {
-        fetchedTasks.push({ id: docSnap.id, ...docSnap.data() } as EvalTask);
-      });
-      // Sort in memory since we might not have a composite index for projectId + createdAt
-      fetchedTasks.sort((a, b) => b.createdAt - a.createdAt);
-      setTasks(fetchedTasks);
+    const unsubscribeTasks = subscribeTasks({ projectId }, setTasks, (error) => {
+      console.error("Error fetching tasks:", error);
+      setError("加载评测物料失败");
     });
 
     const datasetsQuery = query(collection(db, 'evalDatasets'), orderBy('createdAt', 'desc'));

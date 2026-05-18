@@ -6,7 +6,7 @@ import { db, auth, signInWithGoogle, logout } from '../firebase';
 import { collection, onSnapshot, addDoc, query, orderBy, doc, updateDoc, where, deleteDoc } from '../datastore';
 import { EmptyState, PageFrame, PageHeader, StatTile, Toolbar } from './ui';
 import { getEvaluationMethodShortLabel, normalizeEvaluationConfig } from '../evaluationMethods';
-import { loadTaskEvaluation } from '../features/tasks/loadTaskEvaluation';
+import { loadTaskEvaluation } from '../features/tasks/api';
 
 interface DashboardScreenProps {
   initialProject?: EvaluationProject | null;
