@@ -15,6 +15,11 @@
   - 项目更新需要 `owner/editor`，项目删除需要 `owner`。
   - 前端 HTTP API 和 smoke test 已带用户身份头。
   - smoke test 已覆盖非项目成员更新项目返回 `403 FORBIDDEN`。
+- 数据迁移工具第一版：
+  - 新增 `npm run migrate:postgres`。
+  - 支持 localStorage/localPlatform JSON 和 Firestore 同构 JSON。
+  - 支持 dry-run 计数和基础 warning。
+  - 覆盖项目、评测集、模板、任务、任务 items、投票、生产任务、生产任务 items。
 
 ## 进行中
 
@@ -23,13 +28,11 @@
 
 ## 未完成
 
-- 数据迁移工具：Firestore/localStorage 导出、PostgreSQL 导入、dry-run、数据校验。
 - 部署方案：阿里云 RDS/DMS、后端部署、生产环境变量、CI/CD。
 - Firestore fallback 策略：明确长期保留还是逐步删除。
 
 ## 当前建议顺序
 
-1. 数据迁移工具。
-2. 部署方案。
-3. 权限模型深化：成员管理、更多数据域鉴权。
-4. Firestore fallback 决策与清理。
+1. 部署方案。
+2. 权限模型深化：成员管理、更多数据域鉴权。
+3. Firestore fallback 决策与清理。

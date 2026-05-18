@@ -130,6 +130,8 @@ npm run build
 - 新建项目会同步写入 `project_members.owner`；项目更新要求 `owner/editor`，项目删除要求 `owner`。
 - 前端 HTTP/PostgreSQL 模式的 projects、datasets、templates、tasks、generation 请求已统一携带当前用户身份头。
 - API smoke test 增加权限负例：非项目成员更新项目会返回 `403 FORBIDDEN`。
+- 新增 `npm run migrate:postgres` 数据迁移脚本，支持 localStorage/localPlatform JSON 和 Firestore 同构 JSON 迁移到 PostgreSQL。
+- 新增 `docs/data-migration.md`，记录导出格式、dry-run、导入和验证步骤。
 
 当前数据路径仍是：
 
@@ -154,4 +156,5 @@ npm run api:dev
 npm run lint
 npm run build
 npm run test:api:smoke
+npm run migrate:postgres -- --source ./local-export.json --dry-run
 ```

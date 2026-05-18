@@ -248,6 +248,24 @@ export const createTask = async (
           $11::jsonb, $12::jsonb, $13, $14, $15, $16::jsonb,
           to_timestamp($17 / 1000.0), to_timestamp($17 / 1000.0)
         )
+        ON CONFLICT (id) DO UPDATE SET
+          project_id = EXCLUDED.project_id,
+          dataset_id = EXCLUDED.dataset_id,
+          template_id = EXCLUDED.template_id,
+          name = EXCLUDED.name,
+          status = EXCLUDED.status,
+          output_type = EXCLUDED.output_type,
+          input_type = EXCLUDED.input_type,
+          evaluation_config_json = EXCLUDED.evaluation_config_json,
+          dimension_columns_json = EXCLUDED.dimension_columns_json,
+          assignees_json = EXCLUDED.assignees_json,
+          progress_json = EXCLUDED.progress_json,
+          total_items = EXCLUDED.total_items,
+          external_results_link = EXCLUDED.external_results_link,
+          has_imported_data = EXCLUDED.has_imported_data,
+          source_json = EXCLUDED.source_json,
+          updated_at = EXCLUDED.updated_at,
+          deleted_at = NULL
       `,
       [
         id,
@@ -436,7 +454,8 @@ export const getTaskUserVotes = async (taskId: string, userName: string): Promis
 };
 
 const ensureVoteUser = async (client: any, userName: string) => {
-  const email = userName.includes('@') ? userName : `${userName.replace(/[^a-zA-Z0-9._-]/g, '_')}@local.eval`;
+  const safeName = userName.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const email = `${safeName}@votes.local.eval`;
   await client.query(
     `
       INSERT INTO users (id, email, display_name)
