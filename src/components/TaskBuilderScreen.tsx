@@ -2,12 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { ArrowLeft, Plus, Save, Trash2, Database, LayoutTemplate, Box, CheckCircle2, Play, Link as LinkIcon, Upload, X, Users, Edit, Eye, Loader2, ClipboardList } from 'lucide-react';
 import { EvalDataset, EvalTemplate, EvalTask, EvalDimension, EvalParadigm, EvaluationConfig, EvaluationItem, EvaluationMethod } from '../types';
 import { db, auth } from '../firebase';
-import { collection, onSnapshot, addDoc, query, orderBy, doc, updateDoc, deleteDoc, where, setDoc, getDocs } from '../datastore';
+import { collection, onSnapshot, addDoc, query, orderBy, doc, updateDoc, deleteDoc, where, setDoc } from '../datastore';
 import { ConfirmModal } from './ConfirmModal';
 import Papa from 'papaparse';
 import MediaRenderer from './MediaRenderer';
 import DimensionChips from './DimensionChips';
 import { getDimensionValuesForItem, getDimensionValuesFromRecord, isLikelyDimensionColumn } from '../dimensionUtils';
+import { loadTaskItems } from '../features/tasks/loadTaskItems';
 import {
   STANDARD_DATASET_FIELDS,
   appendDatasetVersion,
@@ -839,26 +840,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
     setViewingTask(task);
     setLoadingItems(true);
     try {
-      let items: EvaluationItem[] = [];
-      const itemsSnapshot = await getDocs(collection(db, 'evalTasks', task.id, 'items'));
-      if (!itemsSnapshot.empty) {
-        items = itemsSnapshot.docs.map(doc => {
-          const item = { id: doc.id, ...doc.data() } as EvaluationItem;
-          return {
-            ...item,
-            dimensionValues: getDimensionValuesForItem(item as any, task.dimensionColumns || [])
-          };
-        });
-      } else if (task.datasetId && task.datasetId !== 'external-csv') {
-        const dataset = datasets.find(d => d.id === task.datasetId);
-        if (dataset && dataset.items) {
-          items = dataset.items.map((item: any, index: number) => ({
-            ...item,
-            id: item.id || `ds-item-${index}`,
-            dimensionValues: getDimensionValuesFromRecord(item, task.dimensionColumns || [])
-          }));
-        }
-      }
+      const items = await loadTaskItems(task);
       setViewingTaskItems(items);
     } catch (err) {
       console.error('Error fetching task items:', err);
@@ -878,7 +860,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
     if (alreadyLoaded) return;
 
     handleViewTask(targetTask);
-  }, [initialTaskId, tasks, datasets, viewingTask?.id, viewingTaskItems.length, loadingItems]);
+  }, [initialTaskId, tasks, viewingTask?.id, viewingTaskItems.length, loadingItems]);
 
   const handleSaveItemEdit = async (itemId: string) => {
     if (!viewingTask) return;
