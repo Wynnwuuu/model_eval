@@ -3,7 +3,7 @@ import { Upload, FileText, BarChart3, Users, AlertCircle, PlusCircle, Download, 
 import { AggregatedResult, EvalParadigm, EvaluationConfig, EvalTask, EvalTemplate, EvaluationItem, EvaluationProject, ModelOutput, RankingEntry, VoteRecord, VoteType } from '../types';
 import { ArenaRankPromptItem, calculateArenaRankCaseSummaries, calculateArenaRankModelStats, getArenaRankModelOutputUrl, getBordaScore, getModelOutputsForItem, isArenaRankVote, resolveEvaluationItemPrompt, sortRanking } from '../rankingUtils';
 import { VIDEO_EXTENSIONS } from '../constants';
-import { db, handleFirestoreError } from '../firebase';
+import { db, handlePersistenceError } from '../firebase';
 import { collection, getDocs, query, orderBy } from '../datastore';
 import ArenaRankVideoPreviewList from './ArenaRankVideoPreviewList';
 import MediaRenderer from './MediaRenderer';
@@ -387,11 +387,11 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         setTasks(nextTasks);
         setLoadingTasks(false);
       }, (err) => {
-        handleFirestoreError(err, 'list', 'evalTasks');
+        handlePersistenceError(err, 'list', 'evalTasks');
         setLoadingTasks(false);
       }),
-      subscribeTemplates(setTemplates, (err) => handleFirestoreError(err, 'list', 'evalTemplates')),
-      subscribeProjects(setProjects, (err) => handleFirestoreError(err, 'list', 'projects')),
+      subscribeTemplates(setTemplates, (err) => handlePersistenceError(err, 'list', 'evalTemplates')),
+      subscribeProjects(setProjects, (err) => handlePersistenceError(err, 'list', 'projects')),
     ];
 
     return () => unsubscribers.forEach(unsubscribe => unsubscribe());
@@ -822,7 +822,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
       setShowInsights(true);
       setLoadedScopeKey(`${selectedProjectId}|${statusFilter}|${selectedMaterialScope}|${materialIds.join('|')}`);
     } catch (err: any) {
-      handleFirestoreError(err, 'list', `evalTasks/${materialIds.join(',')}/userVotes`);
+      handlePersistenceError(err, 'list', `evalTasks/${materialIds.join(',')}/userVotes`);
     } finally {
       setLoadingResults(false);
     }
@@ -1076,10 +1076,11 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
       
       items.forEach(data => {
         const row: any = { 'Item ID': data.id };
+        const originalData = (data as any).originalData;
         
         // Add original data columns if available
-        if (data.originalData) {
-          Object.assign(row, data.originalData);
+        if (originalData) {
+          Object.assign(row, originalData);
         } else {
           // Fallback if originalData is missing
           if (data.prompt) row['Prompt'] = data.prompt;
@@ -1118,7 +1119,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
       link.click();
       document.body.removeChild(link);
     } catch (err: any) {
-      handleFirestoreError(err, 'list', `evalTasks/${selectedTaskId}/items`);
+      handlePersistenceError(err, 'list', `evalTasks/${selectedTaskId}/items`);
     } finally {
       setIsDownloadingTemplate(false);
     }

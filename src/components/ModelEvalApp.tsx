@@ -15,7 +15,7 @@ import TaskListPage from '../pages/tasks/TaskListPage';
 import InsightDashboardPage from '../pages/insights/InsightDashboardPage';
 import HistoryPage from '../pages/history/HistoryPage';
 import { AppRoute, EvalParadigm, EvaluationConfig, EvaluationItem, HistorySession, RankingEntry, RouteContext, VoteRecord, VoteType, EvaluationProject } from '../types';
-import { auth, signInWithGoogle, logout, shouldUseFirebase } from '../firebase';
+import { auth, signInWithGoogle, logout, shouldUseCloudAuth } from '../firebase';
 import { getDefaultEvaluationConfig, getMethodFromParadigm, getParadigmFromMethod, isRankMethod, isScoreMethod } from '../evaluationMethods';
 import { saveTaskUserVotes, loadTaskEvaluation } from '../features/tasks/api';
 
@@ -470,7 +470,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
   };
 
   const renderRoute = () => {
-    if (!user && shouldUseFirebase) {
+    if (!user && shouldUseCloudAuth) {
       return (
         <div className="flex min-h-[calc(100vh-64px)] items-center justify-center px-4">
           <div className="w-full max-w-md rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-panel)] p-8 text-center">
@@ -715,7 +715,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
       currentRoute={currentRoute}
       onNavigate={navigate}
       user={user}
-      shouldUseFirebase={shouldUseFirebase}
+      usesCloudAuth={shouldUseCloudAuth}
       onSignIn={signInWithGoogle}
       onLogout={logout}
       onClearLocalSession={discardSession}

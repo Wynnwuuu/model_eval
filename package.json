@@ -26,7 +26,8 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "@firebase/eslint-plugin-security-rules": "^0.0.2",
+    "@firebase/app": "^0.14.12",
+    "@firebase/auth": "^1.13.1",
     "@google/genai": "^1.29.0",
     "@tailwindcss/vite": "^4.1.14",
     "@tanstack/react-table": "^8.21.3",
@@ -35,7 +36,6 @@
     "@vitejs/plugin-react": "^5.0.4",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
-    "firebase": "^12.10.0",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "papaparse": "^5.5.3",

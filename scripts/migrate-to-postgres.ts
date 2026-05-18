@@ -59,7 +59,7 @@ Usage:
   npm run migrate:postgres -- --source ./local-export.json
 
 Options:
-  --source <path>             JSON export file from localStorage/localPlatform or Firestore-shaped export.
+  --source <path>             JSON export file from localStorage/localPlatform or legacy collection-shaped export.
   --dry-run                   Parse and validate without writing PostgreSQL.
   --user-id <id>              Migration actor user id. Default: migration-user.
   --user-email <email>        Migration actor email. Default: migration-user@local.eval.

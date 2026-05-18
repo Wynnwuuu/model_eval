@@ -70,35 +70,22 @@
     - Payload: `{ "name": "Data" }` (Create)
     - Reason: Testing default-deny for guests.
 
-## Test Runner (firestore.rules.test.ts)
+## Test Runner
 
 ```typescript
-import {
-  assertFails,
-  assertSucceeds,
-  initializeTestEnvironment,
-  RulesTestEnvironment,
-} from "@firebase/rules-unit-testing";
-import { doc, setDoc, getDoc, updateDoc } from "firebase/firestore";
-
-let testEnv: RulesTestEnvironment;
-
-beforeAll(async () => {
-  testEnv = await initializeTestEnvironment({
-    projectId: "evaltrack-test",
-    firestore: {
-      rules: await fs.readFile("firestore.rules", "utf8"),
-    },
-  });
-});
-
-afterAll(async () => {
-  await testEnv.cleanup();
-});
-
 test("Self-Admin Promotion should fail", async () => {
-  const alice = testEnv.authenticatedContext("alice");
-  await assertFails(updateDoc(doc(alice.firestore(), "users/alice"), { role: "admin" }));
+  const response = await fetch(`${API_BASE_URL}/api/projects/project-1/members/alice`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      "X-User-Id": "alice",
+      "X-User-Email": "alice@example.com"
+    },
+    body: JSON.stringify({
+      member: { email: "alice@example.com", role: "owner" }
+    })
+  });
+  expect(response.status).toBe(403);
 });
 
 // ... More tests for each dirty dozen payload

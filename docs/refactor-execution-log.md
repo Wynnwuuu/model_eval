@@ -109,7 +109,7 @@ npm run build
 - 新增 PostgreSQL 连接池 `server/db/client.ts`，后续项目/数据集/模板 API 会从这里接入数据库。
 - 新增 `/api/projects` 后端接口，支持项目列表、详情、新建、更新和删除。
 - `features/projects/api.ts` 支持通过 `VITE_USE_API_BACKEND=true` 和 `VITE_API_BASE_URL` 切换到 HTTP/PostgreSQL 链路。
-- `DashboardScreen` 中旧项目 steps 自动迁移写入已改走 project feature API，避免切换后仍绕回 Firestore。
+- `DashboardScreen` 中旧项目 steps 自动迁移写入已改走 project feature API，避免切换后仍绕回 legacy document store。
 - 新增 `/api/datasets` 后端接口，支持评测集列表、详情、保存和删除；数据落到 `datasets`、`dataset_versions`、`dataset_items`。
 - 新增 `/api/templates` 后端接口，支持模板列表、详情、保存和删除；维度落到 `template_dimensions`。
 - `features/datasets/api.ts` 和 `features/templates/api.ts` 支持同一个 HTTP/PostgreSQL 开关。
@@ -130,17 +130,17 @@ npm run build
 - 新建项目会同步写入 `project_members.owner`；项目更新要求 `owner/editor`，项目删除要求 `owner`。
 - 前端 HTTP/PostgreSQL 模式的 projects、datasets、templates、tasks、generation 请求已统一携带当前用户身份头。
 - API smoke test 增加权限负例：非项目成员更新项目会返回 `403 FORBIDDEN`。
-- 新增 `npm run migrate:postgres` 数据迁移脚本，支持 localStorage/localPlatform JSON 和 Firestore 同构 JSON 迁移到 PostgreSQL。
+- 新增 `npm run migrate:postgres` 数据迁移脚本，支持 localStorage/localPlatform JSON 和 legacy collection-shaped JSON 迁移到 PostgreSQL。
 - 新增 `docs/data-migration.md`，记录导出格式、dry-run、导入和验证步骤。
 - 新增 `docs/deployment-postgres.md`，记录阿里云 RDS PostgreSQL/DMS、后端 API、前端静态部署、验证和回滚方案。
-- 新增 `docs/firestore-fallback-strategy.md`，明确 PostgreSQL 模式与 Firestore/localStorage fallback 的边界。
+- 明确 PostgreSQL 模式与 localStorage demo/offline fallback 的边界。
 - 新增后端生产构建脚本、API Dockerfile 和 `.github/workflows/postgres-api-ci.yml`，CI 会跑 lint、前端 build、server build、迁移和 API smoke test。
 - 项目权限继续深化：新增项目成员管理 API，并对任务创建/更新/删除、任务 item 更新、投票保存增加项目角色校验。
 
 当前数据路径仍是：
 
 ```text
-未迁移数据域：前端 -> datastore.ts -> localStorage 或 Firestore
+未迁移数据域：前端 -> datastore.ts -> localStorage
 已迁移数据域：前端 -> features/{projects,datasets,templates,tasks}/api.ts -> /api/* -> PostgreSQL（开启 VITE_USE_API_BACKEND 后）
 ```
 

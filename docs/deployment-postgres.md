@@ -108,4 +108,4 @@ API_BASE_URL=https://<api-domain> npm run test:api:smoke
 
 - 已提供 `server:build`、`api:start` 和 API Dockerfile；后续需要按实际云厂商补镜像推送和发布流水线。
 - 线上权限模型已具备项目级写权限基础版，但成员管理 UI/API 仍需继续补齐。
-- Firestore/localStorage 仍作为 fallback 模式保留，详见 `docs/firestore-fallback-strategy.md`。
+- 标准协作环境应固定使用 HTTP/PostgreSQL；localStorage 仅保留为本地 demo/offline fallback。

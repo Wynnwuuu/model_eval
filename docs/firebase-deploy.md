@@ -1,6 +1,6 @@
 # Firebase 自动部署
 
-本项目通过 GitHub Actions 在 `main` 分支更新后自动部署 Firebase Hosting 和 Firestore Rules。
+本项目通过 GitHub Actions 在 `main` 分支更新后自动部署 Firebase Hosting。
 
 ## GitHub 配置
 
@@ -34,11 +34,9 @@ VITE_FIREBASE_APP_ID=<你的 appId>
 3. `Project settings -> Service accounts`：创建/下载服务账号 JSON，填入 GitHub secret `FIREBASE_SERVICE_ACCOUNT_JSON`。
 4. 服务账号至少需要这些角色：
    - Firebase Hosting Admin
-   - Cloud Datastore User
-   - Firebase Rules Admin
    - Service Usage Viewer
 
-如果 Firestore API / Firebase Hosting API 还没启用，先由项目 Owner 在控制台启用，或临时给服务账号加 `Service Usage Admin` 完成首次部署后再移除。
+如果 Firebase Hosting API 还没启用，先由项目 Owner 在控制台启用，或临时给服务账号加 `Service Usage Admin` 完成首次部署后再移除。
 
 ## 部署触发
 
@@ -48,7 +46,7 @@ VITE_FIREBASE_APP_ID=<你的 appId>
 npm ci
 npm run lint
 npm run build
-firebase deploy --only hosting,firestore:rules
+firebase deploy --only hosting
 ```
 
 也可以在 GitHub Actions 页面手动运行 `Deploy Firebase`。

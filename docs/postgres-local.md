@@ -5,7 +5,7 @@
 未开启 HTTP 后端时：
 
 ```text
-前端 -> features/*/api.ts -> datastore.ts -> localStorage 或 Firestore
+前端 -> features/*/api.ts -> datastore.ts -> localStorage
 ```
 
 开启 HTTP 后端时：
@@ -54,7 +54,7 @@ VITE_API_BASE_URL=http://localhost:8787
 前端 -> features/{projects,datasets,templates,tasks}/api.ts -> /api/* -> PostgreSQL
 ```
 
-当前仍有少量账号/用户列表等辅助数据沿用当前的 localStorage 或 Firestore 路径。
+当前仍有少量账号/用户列表等辅助数据沿用 localStorage fallback 路径。
 
 ## Smoke Test
 

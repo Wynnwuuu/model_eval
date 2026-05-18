@@ -1,6 +1,6 @@
 # 数据迁移工具
 
-目标：把旧的 localStorage/localPlatform 或 Firestore 导出数据迁移到本地/线上 PostgreSQL。
+目标：把旧的 localStorage/localPlatform 或 legacy JSON 导出数据迁移到本地/线上 PostgreSQL。
 
 ## 迁移命令
 
@@ -34,9 +34,9 @@ copy(localStorage.getItem('evaltrack_local_platform_v1'))
 npm run migrate:postgres -- --source ./local-export.json --dry-run
 ```
 
-## Firestore 导出格式
+## Legacy JSON 导出格式
 
-迁移脚本不直接绑定 Firebase Admin 凭据。Firestore 可以先导出为同构 JSON：
+迁移脚本支持先导出为同构 JSON：
 
 ```json
 {

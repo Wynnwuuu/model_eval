@@ -1,7 +1,5 @@
-
-import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
-import { initializeFirestore } from 'firebase/firestore';
+import { initializeApp } from '@firebase/app';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from '@firebase/auth';
 import { localDb, localUser } from './localPlatform';
 
 const firebaseConfig = {
@@ -13,34 +11,17 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
 
-/**
- * When true: real Firebase Auth + Firestore. When false: localPlatform (localStorage).
- * - Set `VITE_USE_FIREBASE=true` to force cloud even in dev (e.g. emulator or staging).
- * - Set `VITE_USE_FIREBASE=false` to force local even in production builds (e.g. AI Studio preview).
- * - If unset: follow Vite's `import.meta.env.PROD` (true after `vite build`, false in `vite dev`).
- *
- * Prefer this over `process.env.NODE_ENV`: some hosted build pipelines do not define the latter
- * in the browser bundle, which incorrectly kept production deploys on the local backend.
- */
-const viteFirebaseFlag = import.meta.env.VITE_USE_FIREBASE;
-export const shouldUseFirebase =
-  viteFirebaseFlag === 'true'
-    ? true
-    : viteFirebaseFlag === 'false'
-      ? false
-      : import.meta.env.PROD;
+const viteCloudAuthFlag = import.meta.env.VITE_USE_FIREBASE_AUTH;
+export const shouldUseCloudAuth = viteCloudAuthFlag === 'true';
 
-let db, auth, googleProvider;
+let auth: any;
+let googleProvider: GoogleAuthProvider | null = null;
 
-if (shouldUseFirebase) {
+if (shouldUseCloudAuth) {
   const app = initializeApp(firebaseConfig);
-  db = initializeFirestore(app, {
-    ignoreUndefinedProperties: true
-  });
   auth = getAuth(app);
   googleProvider = new GoogleAuthProvider();
 } else {
-  db = localDb;
   auth = {
     currentUser: localUser,
     onAuthStateChanged: (callback: (user: typeof localUser | null) => void) => {
@@ -55,17 +36,17 @@ if (shouldUseFirebase) {
       console.info('Local test mode keeps the Local Tester account signed in.');
     }
   };
-  googleProvider = null;
 }
 
-export { db, auth, googleProvider };
+export const db = localDb;
+export { auth, googleProvider };
 
 export const signInWithGoogle = async () => {
-  if (shouldUseFirebase) {
+  if (shouldUseCloudAuth && googleProvider) {
     try {
       await signInWithPopup(auth, googleProvider);
     } catch (error) {
-      console.error("Error signing in with Google: ", error);
+      console.error('Error signing in with Google: ', error);
     }
   } else {
     console.info('Local test mode uses the built-in Local Tester account.');
@@ -73,18 +54,18 @@ export const signInWithGoogle = async () => {
 };
 
 export const logout = async () => {
-  if (shouldUseFirebase) {
+  if (shouldUseCloudAuth) {
     try {
       await signOut(auth);
     } catch (error) {
-      console.error("Error signing out: ", error);
+      console.error('Error signing out: ', error);
     }
   } else {
     console.info('Local test mode keeps the Local Tester account signed in.');
   }
 };
 
-export interface FirestoreErrorInfo {
+export interface PersistenceErrorInfo {
   error: string;
   operationType: 'create' | 'update' | 'delete' | 'list' | 'get' | 'write';
   path: string | null;
@@ -97,26 +78,25 @@ export interface FirestoreErrorInfo {
   };
 }
 
-export const handleFirestoreError = (
+export const handlePersistenceError = (
   error: any,
-  operationType: FirestoreErrorInfo['operationType'],
+  operationType: PersistenceErrorInfo['operationType'],
   path: string | null = null
 ) => {
-  const user = auth.currentUser;
-  const errorInfo: FirestoreErrorInfo = {
+  const user = auth.currentUser || localUser;
+  const errorInfo: PersistenceErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     operationType,
     path,
     authInfo: {
       userId: user.uid,
       email: user.email,
-      emailVerified: user.emailVerified,
-      isAnonymous: user.isAnonymous,
-      providerInfo: user.providerData
+      emailVerified: Boolean(user.emailVerified),
+      isAnonymous: Boolean(user.isAnonymous),
+      providerInfo: user.providerData || []
     }
   };
 
-  console.error('Firestore operation failed', errorInfo);
+  console.error('Persistence operation failed', errorInfo);
   throw error;
 };
-

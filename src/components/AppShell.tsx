@@ -23,7 +23,7 @@ interface AppShellProps {
   onNavigate: (route: AppRoute) => void;
   children: React.ReactNode;
   user?: any;
-  shouldUseFirebase?: boolean;
+  usesCloudAuth?: boolean;
   onSignIn?: () => void;
   onLogout?: () => void;
   onClearLocalSession?: () => void;
@@ -190,7 +190,7 @@ const AppShell: React.FC<AppShellProps> = ({
   onNavigate,
   children,
   user,
-  shouldUseFirebase,
+  usesCloudAuth,
   onSignIn,
   onLogout,
   onClearLocalSession,
@@ -204,7 +204,7 @@ const AppShell: React.FC<AppShellProps> = ({
   const title = useMemo(() => contextTitle || routeTitles[currentRoute] || 'Eval Studio', [contextTitle, currentRoute]);
   const userLabel = user?.displayName || user?.email || 'Local Tester';
   const initial = String(userLabel || 'L').slice(0, 1).toUpperCase();
-  const workspaceLabel = shouldUseFirebase ? '在线工作区' : '本地测试工作区';
+  const workspaceLabel = usesCloudAuth ? '在线账号' : '本地测试用户';
 
   useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {
@@ -305,12 +305,12 @@ const AppShell: React.FC<AppShellProps> = ({
                     <div className="font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--accent)]">{workspaceLabel}</div>
                     <div className="mt-1 truncate font-semibold text-white">{userLabel}</div>
                     <div className="mt-1 text-xs text-[var(--text-muted)]">
-                      {shouldUseFirebase ? '当前使用在线账号同步数据。' : '当前使用本地测试用户，数据保存在本机浏览器。'}
+                      {usesCloudAuth ? '当前使用在线账号，业务数据通过 API 保存。' : '当前使用本地测试用户。'}
                     </div>
                   </div>
 
                   <div className="mt-3 space-y-2">
-                    {shouldUseFirebase ? (
+                    {usesCloudAuth ? (
                       user ? (
                         <button
                           type="button"

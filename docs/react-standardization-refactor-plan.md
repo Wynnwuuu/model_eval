@@ -5,15 +5,15 @@
 当前项目已经具备评测项目管理、评测集仓库、Rubric 模板、评测任务、评测执行、结果洞察、批量生产等核心能力，但工程形态仍偏 Demo / 原型：
 
 - 页面路由由 `ModelEvalApp` 内部 `currentRoute` 状态驱动，URL 无法表达具体页面、项目、数据集、任务。
-- 组件直接访问 `datastore.ts` 暴露的 Firestore 风格 API，数据请求、权限、缓存、错误处理分散在页面组件中。
-- 开发环境依赖 `localStorage`，线上依赖 Firebase Authentication + Firestore；协作能力可用，但与标准企业级关系型数据、审计、备份、权限治理存在距离。
+- 组件直接访问 `datastore.ts` 暴露的 legacy document store 风格 API，数据请求、权限、缓存、错误处理分散在页面组件中。
+- 开发环境依赖 `localStorage`，线上依赖 Firebase Authentication plus PostgreSQL API；协作能力可用，但与标准企业级关系型数据、审计、备份、权限治理存在距离。
 - 多个业务实体已经成型，但缺少稳定的后端 API、数据库迁移、领域分层、测试体系和持续迭代流程。
 
 本次重构目标：
 
 1. 将项目改造成标准 React 项目：每个核心页面拥有可直接访问、可分享、可回放的 URL 路由。
 2. 将业务模块拆分为稳定边界：项目、数据集、模板、任务、执行、洞察、生产分别拥有独立页面、数据服务和类型模型。
-3. 将线上数据层从 Firebase/Firestore 迁移到更标准的后端 API + 关系型数据库方案。阿里云 DMS 建议作为数据库治理、权限审批、SQL 审核和变更管理平台；真实业务数据库建议使用阿里云 RDS MySQL 或 PostgreSQL。
+3. 将线上数据层从 Firebase Auth and PostgreSQL 迁移到更标准的后端 API + 关系型数据库方案。阿里云 DMS 建议作为数据库治理、权限审批、SQL 审核和变更管理平台；真实业务数据库建议使用阿里云 RDS MySQL 或 PostgreSQL。
 4. 建立可持续迭代的工程化体系：目录规范、API 契约、数据库迁移、权限模型、测试、CI/CD、观测、发布治理。
 
 ## 2. 现状判断
@@ -24,9 +24,9 @@
 | --- | --- | --- |
 | 前端框架 | Vite + React 19 + TypeScript + Tailwind CSS | 基础可用，但页面/业务/数据层混在组件内 |
 | 路由 | `ModelEvalApp` 内部状态 `currentRoute` | URL 不可分享，刷新丢页面上下文，深链能力弱 |
-| 数据访问 | `src/datastore.ts` 在 Firebase 与 `localPlatform` 间切换 | UI 依赖 Firestore 调用形态，未来迁移成本高 |
+| 数据访问 | `src/datastore.ts` 在 Firebase 与 `localPlatform` 间切换 | UI 依赖 legacy document store 调用形态，未来迁移成本高 |
 | 本地数据 | `localStorage` | 适合单机调试，不适合多人协作和长期数据管理 |
-| 线上数据 | Firebase Auth + Firestore | 已支持基础协作，但不利于关系型查询、审计、SQL 治理 |
+| 线上数据 | Firebase Auth plus PostgreSQL API | 已支持基础协作，但不利于关系型查询、审计、SQL 治理 |
 | 部署 | Firebase Hosting + GitHub Actions | 静态前端部署可保留或替换，后端需要新增部署链路 |
 
 ### 2.2 当前主要业务实体
@@ -48,9 +48,9 @@
 | --- | --- | --- |
 | URL 不表达业务对象 | 无法直接分享某个项目/数据集/任务/洞察页面 | 引入 React Router，使用参数路由 |
 | 组件直接访问数据库 | 后端迁移会触发大量 UI 改动 | 建立 API Client + Repository/Service 层 |
-| Firestore 文档模型不适合复杂分析 | 跨项目、跨任务、跨维度统计成本高 | 使用关系型表 + JSON 字段组合 |
+| legacy document store 文档模型不适合复杂分析 | 跨项目、跨任务、跨维度统计成本高 | 使用关系型表 + JSON 字段组合 |
 | 投票以数组存在一个用户文档中 | 难以做增量、审计、并发、按 case 统计 | 拆成 `evaluation_votes` 行级记录 |
-| 权限逻辑分散在前端和 Firestore rules | 迁移后需要后端统一鉴权 | 引入组织、成员、角色、资源权限 |
+| 权限逻辑分散在前端和 backend permission rules | 迁移后需要后端统一鉴权 | 引入组织、成员、角色、资源权限 |
 | 缺少迁移与版本管理 | 数据结构变动风险高 | 引入 SQL migration 与 seed 数据 |
 | 缺少测试分层 | 迭代容易回归 | 建立单测、组件测试、E2E、契约测试 |
 
@@ -226,7 +226,7 @@ src/
 
 ### 4.4 数据访问层重构
 
-当前 `datastore.ts` 模拟 Firestore API。迁移后应拆成：
+当前 `datastore.ts` 模拟 legacy document store API。迁移后应拆成：
 
 ```text
 shared/api/httpClient.ts
@@ -383,7 +383,7 @@ server/
 
 ### 6.1 迁移对象
 
-需要从 Firestore 导出的集合：
+需要从 legacy document store 导出的集合：
 
 - `users`
 - `projects`
@@ -401,8 +401,8 @@ server/
 
 1. 设计并创建 RDS 数据库、DMS 实例接入、账号和白名单。
 2. 在后端项目建立 migration，创建第一版 schema。
-3. 编写 Firestore export 脚本，把集合导出成 JSONL。
-4. 编写 transform 脚本，将 Firestore 文档转换成关系型表行。
+3. 编写 legacy document store export 脚本，把集合导出成 JSONL。
+4. 编写 transform 脚本，将 legacy document store 文档转换成关系型表行。
 5. 先导入 staging 数据库，执行校验 SQL：
    - 项目数一致。
    - 数据集数、版本数、item 数一致。
@@ -416,10 +416,10 @@ server/
 
 | 阶段 | 前端 | 后端 | 数据 |
 | --- | --- | --- | --- |
-| Phase A | 仍读 Firestore | 新 API 开发中 | Firestore 主库 |
-| Phase B | 部分页面读新 API | API 只读 | Firestore 主库 + RDS 影子库 |
-| Phase C | 全页面读新 API，写仍可双写 | API 支持写 | RDS 与 Firestore 对账 |
-| Phase D | 全量读写新 API | API 主库 | RDS 主库，Firestore 归档 |
+| Phase A | 仍读 legacy document store | 新 API 开发中 | legacy document store 主库 |
+| Phase B | 部分页面读新 API | API 只读 | legacy document store 主库 + RDS 影子库 |
+| Phase C | 全页面读新 API，写仍可双写 | API 支持写 | RDS 与 legacy document store 对账 |
+| Phase D | 全量读写新 API | API 主库 | RDS 主库，legacy document store 归档 |
 
 不建议长期双写。双写只用于短期迁移对账。
 
@@ -528,7 +528,7 @@ server/
 
 ### 阶段 2：前端数据层抽象，4-6 天
 
-目标：页面不再直接调用 Firestore 风格 API。
+目标：页面不再直接调用 legacy document store 风格 API。
 
 任务：
 
@@ -565,11 +565,11 @@ server/
 
 ### 阶段 4：数据迁移与对账，5-8 天
 
-目标：把 Firestore 数据安全迁移到 RDS。
+目标：把 legacy document store 数据安全迁移到 RDS。
 
 任务：
 
-- 编写 Firestore export。
+- 编写 legacy document store export。
 - 编写 JSONL 到 SQL 的 transform/import。
 - 在 staging 导入并对账。
 - 修正字段映射和历史异常数据。
@@ -617,7 +617,7 @@ server/
 | 风险 | 应对 |
 | --- | --- |
 | 一次性重构过大 | 路由、数据层、后端、迁移分阶段，每阶段可独立上线 |
-| Firestore 历史数据形态不一致 | 迁移前做 profiling，transform 脚本容错并输出异常清单 |
+| legacy document store 历史数据形态不一致 | 迁移前做 profiling，transform 脚本容错并输出异常清单 |
 | 投票并发覆盖 | 新库投票按 `task_item_id + user_id` 唯一约束，使用事务/upsert |
 | 媒体资源跨域或 referer 限制 | 统一迁移到 OSS 或配置 CDN 白名单，前端记录加载失败 |
 | 后端权限遗漏 | 所有 API 默认需要组织成员身份，高危操作加角色校验和审计 |
@@ -651,7 +651,7 @@ server/
 | PR | 内容 | 不做什么 |
 | --- | --- | --- |
 | PR 1 | 引入 React Router，新增 route config，现有页面挂到 URL | 不改数据层 |
-| PR 2 | 把 `ModelEvalApp` 的 route state 拆到页面层，移除大部分 `currentRoute` 判断 | 不改 Firestore |
+| PR 2 | 把 `ModelEvalApp` 的 route state 拆到页面层，移除大部分 `currentRoute` 判断 | 不改 legacy document store |
 | PR 3 | 新增 `features/*/api.ts` 和 hooks，用 adapter 包住现有 datastore | 不接真实后端 |
 | PR 4 | 新建 `server/`、migration、基础项目/数据集 API | 不迁移生产 |
 | PR 5 | 前端项目/数据集页面切到新 API | 不切任务执行 |

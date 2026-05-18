@@ -15,7 +15,7 @@
 | `Deploy Firebase Preview` | 否 | 否 | 分支预览、PR 评审、线上试用 |
 | `Deploy Firebase` | 是 | 通常是 | 正式发布 |
 
-Preview channel 只部署 Hosting 内容和 Hosting 配置，不部署 Firestore rules。应用仍会连接同一个 Firebase 项目，因此登录、Firestore 数据和权限规则仍是线上真实环境。
+Preview channel 只部署 Hosting 内容和 Hosting 配置。应用业务数据连接 `VITE_API_BASE_URL` 指向的后端 API。
 
 ## 首次启用
 

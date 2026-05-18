@@ -19,16 +19,16 @@
   - smoke test 已覆盖非项目成员 `403 FORBIDDEN`、添加 editor、editor 更新项目。
 - 数据迁移工具第一版：
   - 新增 `npm run migrate:postgres`。
-  - 支持 localStorage/localPlatform JSON 和 Firestore 同构 JSON。
+  - 支持 localStorage/localPlatform JSON 和 legacy collection-shaped JSON。
   - 支持 dry-run 计数和基础 warning。
   - 覆盖项目、评测集、模板、任务、任务 items、投票、生产任务、生产任务 items。
 - 部署方案：
   - 新增 `docs/deployment-postgres.md`。
   - 补充阿里云 RDS PostgreSQL + DMS、后端 API、前端静态站点、上线验证和回滚顺序。
   - 新增 `server:build`、`api:start`、`db:migrate:prod`、API Dockerfile 和 PostgreSQL API CI。
-- Firestore fallback 策略：
-  - 新增 `docs/firestore-fallback-strategy.md`。
-  - 明确 `VITE_USE_API_BACKEND` 与 `VITE_USE_FIREBASE` 的边界。
+- 前端持久化边界：
+  - 标准协作环境固定使用 HTTP/PostgreSQL。
+  - localStorage 仅保留为本地 demo/offline fallback。
 
 ## 进行中
 
@@ -38,10 +38,10 @@
 ## 未完成
 
 - 部署工程化：镜像推送、目标云服务发布、生产环境密钥接入。
-- Firestore fallback 清理：如果确定线上全面切 PostgreSQL，继续删除业务域 Firestore 写路径。
+- localStorage fallback 清理：如果确定不再支持 demo/offline，可继续删除本地 fallback 写路径。
 
 ## 当前建议顺序
 
 1. 镜像推送与目标云服务发布。
 2. 权限模型深化：成员管理 UI、更多数据域鉴权。
-3. Firestore fallback 代码清理。
+3. localStorage fallback 代码清理。

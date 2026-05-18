@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Activity, BarChart3, ClipboardCheck, Database, FileText, PlayCircle, Wand2 } from 'lucide-react';
 import { DatasetGenerationJob, EvalDataset, EvalTask } from '../types';
-import { handleFirestoreError } from '../firebase';
+import { handlePersistenceError } from '../firebase';
 import { DataTableShell, EmptyState, PageFrame, PageHeader, SectionPanel, StatTile, StatusBadge, Toolbar } from './ui';
 import { subscribeDatasets } from '../features/datasets/api';
 import { subscribeGenerationJobs } from '../features/generation/api';
@@ -91,7 +91,7 @@ const OverviewScreen: React.FC<OverviewScreenProps> = ({
       unsubscribers.push(subscribeDatasets(setDatasets));
       unsubscribers.push(subscribeGenerationJobs({}, setJobs));
     } catch (err) {
-      handleFirestoreError(err, 'list', 'overview');
+      handlePersistenceError(err, 'list', 'overview');
       setLoading(false);
     }
     return () => unsubscribers.forEach(unsubscribe => unsubscribe());
