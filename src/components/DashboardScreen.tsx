@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Layers, Plus, Search, Filter, Calendar, Users, BarChart2, ArrowRight, Activity, Target, Link as LinkIcon, LogIn, LogOut, X, Edit2, Database, LayoutTemplate, Play, ChevronRight, FolderOpen, Trash2 } from 'lucide-react';
 import { EvalParadigm, EvaluationConfig, EvaluationProject, EvaluationStep, EvaluationItem, EvalTask } from '../types';
 import { CreateProjectModal } from './CreateProjectModal';
@@ -41,12 +41,15 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
   const [templates, setTemplates] = useState<any[]>([]);
   const [isEditingLink, setIsEditingLink] = useState(false);
   const [tempLink, setTempLink] = useState('');
+  const onProjectSelectRef = useRef(onProjectSelect);
 
   useEffect(() => {
-    if (onProjectSelect) {
-      onProjectSelect(selectedProject);
-    }
-  }, [selectedProject, onProjectSelect]);
+    onProjectSelectRef.current = onProjectSelect;
+  }, [onProjectSelect]);
+
+  useEffect(() => {
+    onProjectSelectRef.current?.(selectedProject);
+  }, [selectedProject]);
 
   useEffect(() => {
     if (!selectedProject?.id) {
