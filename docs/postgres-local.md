@@ -22,20 +22,20 @@ curl http://localhost:8787/api/health
 curl http://localhost:8787/api/db/health
 ```
 
-项目数据链路已支持切换到本地后端：
+项目、评测集、模板数据链路已支持切换到本地后端：
 
 ```env
 VITE_USE_API_BACKEND=true
 VITE_API_BASE_URL=http://localhost:8787
 ```
 
-开启后，项目列表、新建项目、更新项目、删除项目会走：
+开启后，项目、评测集、模板的列表、新建/保存、删除会走：
 
 ```text
-前端 -> features/projects/api.ts -> /api/projects -> PostgreSQL
+前端 -> features/{projects,datasets,templates}/api.ts -> /api/* -> PostgreSQL
 ```
 
-其他数据域仍沿用当前的 localStorage 或 Firestore 路径。
+任务、评测进度、评测结果等数据域仍沿用当前的 localStorage 或 Firestore 路径。
 
 ## 启动数据库
 

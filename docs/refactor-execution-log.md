@@ -110,12 +110,15 @@ npm run build
 - 新增 `/api/projects` 后端接口，支持项目列表、详情、新建、更新和删除。
 - `features/projects/api.ts` 支持通过 `VITE_USE_API_BACKEND=true` 和 `VITE_API_BASE_URL` 切换到 HTTP/PostgreSQL 链路。
 - `DashboardScreen` 中旧项目 steps 自动迁移写入已改走 project feature API，避免切换后仍绕回 Firestore。
+- 新增 `/api/datasets` 后端接口，支持评测集列表、详情、保存和删除；数据落到 `datasets`、`dataset_versions`、`dataset_items`。
+- 新增 `/api/templates` 后端接口，支持模板列表、详情、保存和删除；维度落到 `template_dimensions`。
+- `features/datasets/api.ts` 和 `features/templates/api.ts` 支持同一个 HTTP/PostgreSQL 开关。
 
 当前数据路径仍是：
 
 ```text
-大部分数据域：前端 -> features/*/api.ts -> datastore.ts -> localStorage 或 Firestore
-项目数据域：前端 -> features/projects/api.ts -> /api/projects -> PostgreSQL（开启 VITE_USE_API_BACKEND 后）
+未迁移数据域：前端 -> features/*/api.ts -> datastore.ts -> localStorage 或 Firestore
+已迁移数据域：前端 -> features/{projects,datasets,templates}/api.ts -> /api/* -> PostgreSQL（开启 VITE_USE_API_BACKEND 后）
 ```
 
 目标数据路径是：
