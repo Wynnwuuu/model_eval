@@ -123,6 +123,7 @@ npm run build
 - `DatasetGenerationModal` 中生产结果回写评测集已改走 `features/datasets/api.ts`，开启 HTTP 后会写入 PostgreSQL。
 - 新增 `npm run dev:full`，一键启动 PostgreSQL、执行迁移、启动 API 和 Vite 前端。
 - 新增 `npm run test:api:smoke`，通过 HTTP API 验证项目、评测集、模板、任务、投票、生产任务的 PostgreSQL 链路。
+- `db:migrate` 改为 TypeScript 迁移执行器，使用 `schema_migrations` 记录已执行 SQL，避免每次重放全部迁移。
 
 当前数据路径仍是：
 

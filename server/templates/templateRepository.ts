@@ -29,6 +29,13 @@ const toTimestamp = (date: Date | string | number | null | undefined) => {
   return date instanceof Date ? date.getTime() : new Date(date).getTime();
 };
 
+const toStoredDimensionId = (templateId: string, dimensionId: string) => `${templateId}:${dimensionId}`;
+
+const fromStoredDimensionId = (templateId: string, dimensionId: string) => {
+  const prefix = `${templateId}:`;
+  return dimensionId.startsWith(prefix) ? dimensionId.slice(prefix.length) : dimensionId;
+};
+
 const mapTemplate = (row: TemplateRow, dimensions: TemplateDimensionRow[]): EvalTemplate => ({
   id: row.id,
   name: row.name,
@@ -38,7 +45,7 @@ const mapTemplate = (row: TemplateRow, dimensions: TemplateDimensionRow[]): Eval
     .filter(dimension => dimension.template_id === row.id)
     .sort((a, b) => a.dimension_order - b.dimension_order)
     .map(dimension => ({
-      id: dimension.id,
+      id: fromStoredDimensionId(row.id, dimension.id),
       name: dimension.name,
       description: dimension.description || '',
       type: dimension.type,
@@ -144,7 +151,7 @@ export const saveTemplate = async (template: EvalTemplate): Promise<EvalTemplate
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11, $12)
         `,
         [
-          dimension.id,
+          toStoredDimensionId(template.id, dimension.id),
           template.id,
           index,
           dimension.name,

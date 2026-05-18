@@ -123,7 +123,7 @@ npm run db:down
 ## 重要说明
 
 - 初始 schema 位于 `server/db/migrations/001_initial_schema.sql`。
-- 增量迁移也放在 `server/db/migrations/`，本地执行 `npm run db:migrate` 会按文件名顺序重放这些 SQL。
+- 增量迁移也放在 `server/db/migrations/`，本地执行 `npm run db:migrate` 会按文件名顺序执行尚未记录到 `schema_migrations` 的 SQL。
 - Docker 官方 PostgreSQL 镜像只会在数据卷首次创建时执行 `/docker-entrypoint-initdb.d` 下的初始化 SQL。
 - 如果修改了初始化 SQL 并希望重新初始化本地数据库，需要删除 volume：
 
