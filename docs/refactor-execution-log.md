@@ -38,6 +38,7 @@
 - 新增 `src/features/tasks/loadTaskEvaluation.ts`。
 - 将 `/tasks/:taskId/evaluate` 和 `/tasks/:taskId/results` 所需的任务、模板、case、用户进度加载逻辑从 `ModelEvalApp` 抽到 feature 层。
 - `ModelEvalApp` 只负责路由状态和评测执行状态写入，不再直接拼装任务评测数据。
+- 项目大盘中的“开始评测”也复用 `loadTaskEvaluation`，点击进入评测和 URL 直达评测走同一套任务加载逻辑。
 
 当前可验证 URL：
 

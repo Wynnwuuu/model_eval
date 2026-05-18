@@ -3,10 +3,10 @@ import { Layers, Plus, Search, Filter, Calendar, Users, BarChart2, ArrowRight, A
 import { EvalParadigm, EvaluationConfig, EvaluationProject, EvaluationStep, EvaluationItem, EvalTask } from '../types';
 import { CreateProjectModal } from './CreateProjectModal';
 import { db, auth, signInWithGoogle, logout } from '../firebase';
-import { collection, onSnapshot, addDoc, query, orderBy, doc, updateDoc, where, getDocs, getDoc, setDoc, deleteDoc } from '../datastore';
-import { getDimensionValuesForItem, getDimensionValuesFromRecord } from '../dimensionUtils';
+import { collection, onSnapshot, addDoc, query, orderBy, doc, updateDoc, where, deleteDoc } from '../datastore';
 import { EmptyState, PageFrame, PageHeader, StatTile, Toolbar } from './ui';
-import { getEvaluationMethodShortLabel, getParadigmFromMethod, normalizeEvaluationConfig } from '../evaluationMethods';
+import { getEvaluationMethodShortLabel, normalizeEvaluationConfig } from '../evaluationMethods';
+import { loadTaskEvaluation } from '../features/tasks/loadTaskEvaluation';
 
 interface DashboardScreenProps {
   initialProject?: EvaluationProject | null;
@@ -297,138 +297,22 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
 
   const handleStartTask = async (task: EvalTask) => {
     try {
-      const template = templates.find(t => t.id === task.templateId);
-      const evaluationConfig = normalizeEvaluationConfig(task, template);
-      const paradigm = getParadigmFromMethod(evaluationConfig.method);
-      const taskModelList = task.models?.length ? task.models : [
-        { id: 'model-a', name: 'Model A' },
-        { id: 'model-b', name: 'Model B' }
-      ];
-      const itemsSnapshot = await getDocs(collection(db, 'evalTasks', task.id, 'items'));
-      let items = itemsSnapshot.docs.map(docSnap => {
-        const data = { id: docSnap.id, ...docSnap.data() } as EvaluationItem;
-        data.dimensionValues = getDimensionValuesForItem(data as any, task.dimensionColumns || []);
-        if (!data.modelOutputs?.length) {
-          const originalData = (data as any).originalData || {};
-          data.modelOutputs = taskModelList.map((model, idx) => ({
-            modelId: model.id || `model-${idx}`,
-            modelName: model.name || `Model ${idx + 1}`,
-            url: idx === 0
-              ? data.modelA_Url
-              : idx === 1
-                ? data.modelB_Url
-                : originalData[model.name] || originalData[model.id] || ''
-          })).filter(output => output.url);
-        }
-        return data;
-      }).sort((a: any, b: any) => {
-        const leftOrder = Number(a.itemOrder ?? 0);
-        const rightOrder = Number(b.itemOrder ?? 0);
-        if (leftOrder !== rightOrder) return leftOrder - rightOrder;
-        return String(a.id).localeCompare(String(b.id));
-      });
-      
-      if (items.length === 0 && task.datasetId && task.datasetId !== 'external-csv') {
-        // Fetch from dataset
-        const dsDoc = await getDoc(doc(db, 'evalDatasets', task.datasetId));
-        if (dsDoc.exists) {
-          const dsData = dsDoc.data() as any;
-          if (dsData.items && dsData.items.length > 0) {
-            items = dsData.items.map((row: any, idx: number) => {
-              const keys = Object.keys(row);
-              const fallbackModelKeys = keys.filter(key => !key.toLowerCase().includes('id')).slice(-(taskModelList.length || 2));
-              const modelKeys = taskModelList.map((model, modelIdx) => (
-                row[model.name] !== undefined ? model.name :
-                row[model.id] !== undefined ? model.id :
-                fallbackModelKeys[modelIdx]
-              )).filter(Boolean);
-              const modelAKey = modelKeys[0] || keys[keys.length - 2];
-              const modelBKey = modelKeys[1] || keys[keys.length - 1];
-              
-              const inputs = { ...row };
-              modelKeys.forEach(key => delete inputs[key]);
-              (task.dimensionColumns || []).forEach(key => delete inputs[key]);
-              
-              let startImageUrl: string | undefined;
-              let referenceUrls: string[] = [];
-              
-              Object.keys(inputs).forEach(col => {
-                const val = inputs[col];
-                if (typeof val === 'string') {
-                  const urls = val.match(/https?:\/\/[^\s"'\t|,;>]+/g);
-                  if (urls) {
-                    const lowerCol = col.toLowerCase();
-                    urls.forEach(u => {
-                      if (lowerCol.includes('start') || lowerCol.includes('首帧') || lowerCol.includes('first')) {
-                        if (!startImageUrl) startImageUrl = u;
-                        else referenceUrls.push(u);
-                      } else if (lowerCol.includes('ref') || lowerCol.includes('参考')) {
-                        referenceUrls.push(u);
-                      } else {
-                        if (!startImageUrl) startImageUrl = u;
-                        else referenceUrls.push(u);
-                      }
-                    });
-                  }
-                }
-              });
-
-              return {
-                id: `ds-item-${idx}`,
-                modelA_Url: row[modelAKey] || '',
-                modelB_Url: row[modelBKey] || '',
-                modelOutputs: taskModelList.map((model, modelIdx) => ({
-                  modelId: model.id || `model-${modelIdx}`,
-                  modelName: model.name || `Model ${modelIdx + 1}`,
-                  url: row[modelKeys[modelIdx]] || ''
-                })).filter(output => output.url),
-                inputs,
-                dimensionValues: getDimensionValuesFromRecord(row, task.dimensionColumns || []),
-                prompt: inputs['prompt'] || inputs['提示词'] || Object.values(inputs)[0] || '',
-                type: task.outputType || 'text',
-                startImageUrl,
-                referenceUrls: referenceUrls.length > 0 ? referenceUrls : undefined
-              } as EvaluationItem;
-            });
-          }
-        }
+      const loaded = await loadTaskEvaluation(task.id);
+      const executionProject = selectedProject || loaded.project;
+      if (!executionProject) {
+        throw new Error('未找到该评测物料所属项目。');
       }
-
-      // Update totalItems if it's missing or incorrect
-      if (items.length > 0 && task.totalItems !== items.length) {
-        try {
-          await updateDoc(doc(db, 'evalTasks', task.id), { totalItems: items.length });
-        } catch (e) {
-          console.error("Failed to update totalItems", e);
-        }
-      }
-      
-      const modelNames = {
-        a: taskModelList[0]?.name || 'Model A',
-        b: taskModelList[1]?.name || 'Model B'
-      };
-      
-      const userName = auth.currentUser?.email || auth.currentUser?.displayName || localStorage.getItem('eval_username') || 'Anonymous';
-      let existingVotes: any[] = [];
-      try {
-        const voteDoc = await getDoc(doc(db, 'evalTasks', task.id, 'userVotes', userName));
-        if (voteDoc.exists) {
-          existingVotes = voteDoc.data().votes || [];
-        }
-        
-        // Initialize progress for this user if not present
-        if (task.progress?.[userName] === undefined) {
-          await setDoc(doc(db, 'evalTasks', task.id), {
-            progress: {
-              [userName]: existingVotes.length
-            }
-          }, { merge: true });
-        }
-      } catch (e) {
-        console.error("Failed to fetch existing votes or update progress", e);
-      }
-      
-      onGoToExecution(selectedProject!, items, task.name, modelNames, task.id, existingVotes, paradigm, taskModelList, evaluationConfig);
+      onGoToExecution(
+        executionProject,
+        loaded.items,
+        task.name,
+        loaded.modelNames,
+        loaded.task.id,
+        loaded.votes,
+        loaded.paradigm,
+        loaded.models,
+        loaded.evaluationConfig
+      );
     } catch (error) {
       console.error("Error fetching task items:", error);
       alert("获取评测数据失败");
