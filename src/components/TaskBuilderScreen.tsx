@@ -39,9 +39,10 @@ interface TaskBuilderScreenProps {
   onBack: () => void;
   initialMode?: 'create' | 'list';
   initialStatusFilter?: EvalTask['status'];
+  initialTaskId?: string;
 }
 
-export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'create', initialStatusFilter }: TaskBuilderScreenProps) {
+export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'create', initialStatusFilter, initialTaskId }: TaskBuilderScreenProps) {
   const [tasks, setTasks] = useState<EvalTask[]>([]);
   const [datasets, setDatasets] = useState<EvalDataset[]>([]);
   const [templates, setTemplates] = useState<EvalTemplate[]>([]);
@@ -866,6 +867,18 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
       setLoadingItems(false);
     }
   };
+
+  useEffect(() => {
+    if (!initialTaskId) return;
+
+    const targetTask = tasks.find(task => task.id === initialTaskId);
+    if (!targetTask) return;
+
+    const alreadyLoaded = viewingTask?.id === initialTaskId && (viewingTaskItems.length > 0 || loadingItems);
+    if (alreadyLoaded) return;
+
+    handleViewTask(targetTask);
+  }, [initialTaskId, tasks, datasets, viewingTask?.id, viewingTaskItems.length, loadingItems]);
 
   const handleSaveItemEdit = async (itemId: string) => {
     if (!viewingTask) return;

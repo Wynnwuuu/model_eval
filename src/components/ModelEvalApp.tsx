@@ -720,6 +720,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
             projectId={activeProject?.id || routeContext.projectId}
             initialMode={routeContext.taskBuilderMode || taskBuilderMode}
             initialStatusFilter={routeContext.materialStatusFilter}
+            initialTaskId={routeContext.taskId}
             onBack={() => navigate('projects')}
           />
         </div>

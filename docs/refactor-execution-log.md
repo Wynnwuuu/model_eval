@@ -18,6 +18,7 @@
 - `ModelEvalApp` 支持接收 URL 上下文，并在应用内导航时同步浏览器地址。
 - `AppRouter` 使用单个稳定宿主组件读取 URL，避免从准备页进入评测页时卸载评测状态。
 - `/tasks/:taskId/evaluate` 与 `/tasks/:taskId/results` 支持直接打开 URL 后按 `taskId` 加载任务配置、case、模板和当前用户进度。
+- `/tasks/:taskId` 支持直接打开 URL 后自动进入对应物料详情弹层，并加载该物料的 case 数据。
 - `/projects/:projectId` 会把 `projectId` 传给项目页面并自动选中项目。
 - `/datasets/:datasetId` 会把 `datasetId` 传给数据集页面并自动选中数据集。
 - `/projects/:projectId/tasks`、`/projects/:projectId/insights`、`/tasks/:taskId/evaluate`、`/tasks/:taskId/results` 等路径已建立。
@@ -38,6 +39,7 @@
 | `/templates` | 打开 Rubric 库 |
 | `/tasks` | 打开评测物料列表 |
 | `/tasks/new` | 打开新建评测物料 |
+| `/tasks/:taskId` | 打开评测物料列表并自动进入指定物料详情 |
 | `/tasks/:taskId/evaluate` | 打开指定任务的评测入口 |
 | `/tasks/:taskId/results` | 打开指定任务结果页 |
 | `/insights` | 打开结果洞察 |
