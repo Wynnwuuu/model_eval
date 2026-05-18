@@ -86,3 +86,42 @@ npm run build
 
 - 用浏览器检查核心 URL 的直达和刷新行为。
 - 继续把旧 `currentRoute` 分支逐步拆成 `pages/*` 页面组件。
+
+## 阶段 3：PostgreSQL 数据基座
+
+状态：已起步，本地 PostgreSQL 基座已落地。
+
+本阶段目标：
+
+- 先建立可本地启动、可验证、可重置的 PostgreSQL 开发环境。
+- 设计第一版关系型 schema，覆盖项目、数据集、模板、评测任务、评测条目、评测结果、生产任务和审计记录。
+- 暂不直接把前端读写切到 PostgreSQL，避免在没有后端 API 的情况下让浏览器直连数据库。
+
+已完成：
+
+- 新增 `docker-compose.yml`，提供 `postgres:16-alpine` 本地数据库服务。
+- 新增 `server/db/migrations/001_initial_schema.sql`，作为第一版初始化 schema。
+- 新增 `docs/postgres-local.md`，记录启动、连接、验证和重置方式。
+- `.env.example` 增加 PostgreSQL 本地开发环境变量。
+- `package.json` 增加 `db:up`、`db:down`、`db:logs`、`db:psql` 脚本。
+
+当前数据路径仍是：
+
+```text
+前端 -> features/*/api.ts -> datastore.ts -> localStorage 或 Firestore
+```
+
+目标数据路径是：
+
+```text
+前端 -> features/*/api.ts -> 后端 HTTP API -> PostgreSQL
+```
+
+验证命令：
+
+```bash
+npm run db:up
+npm run db:psql
+npm run lint
+npm run build
+```
