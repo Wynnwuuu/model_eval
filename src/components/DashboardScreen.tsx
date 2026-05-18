@@ -2,11 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { Layers, Plus, Search, Filter, Calendar, Users, BarChart2, ArrowRight, Activity, Target, Link as LinkIcon, LogIn, LogOut, X, Edit2, Database, LayoutTemplate, Play, ChevronRight, FolderOpen, Trash2 } from 'lucide-react';
 import { EvalParadigm, EvaluationConfig, EvaluationProject, EvaluationStep, EvaluationItem, EvalTask } from '../types';
 import { CreateProjectModal } from './CreateProjectModal';
-import { db, auth, signInWithGoogle, logout } from '../firebase';
-import { collection, onSnapshot, query, doc, where, deleteDoc } from '../datastore';
+import { auth, signInWithGoogle, logout } from '../firebase';
 import { EmptyState, PageFrame, PageHeader, StatTile, Toolbar } from './ui';
 import { getEvaluationMethodShortLabel, normalizeEvaluationConfig } from '../evaluationMethods';
-import { loadTaskEvaluation } from '../features/tasks/api';
+import { deleteTask, loadTaskEvaluation, subscribeTasks } from '../features/tasks/api';
 import { subscribeDatasets } from '../features/datasets/api';
 import { subscribeTemplates } from '../features/templates/api';
 import { createProject, deleteProject, subscribeProjects, updateProject, updateProjectSteps } from '../features/projects/api';
@@ -52,12 +51,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
       setProjectTasks([]);
       return;
     }
-    const q = query(collection(db, 'evalTasks'), where('projectId', '==', selectedProject.id));
-    const unsubscribeTasks = onSnapshot(q, (snapshot) => {
-      const tasks: any[] = [];
-      snapshot.forEach(doc => tasks.push({ id: doc.id, ...doc.data() }));
-      setProjectTasks(tasks);
-    });
+    const unsubscribeTasks = subscribeTasks({ projectId: selectedProject.id }, setProjectTasks);
     
     const unsubscribeDatasets = subscribeDatasets(setDatasets);
     const unsubscribeTemplates = subscribeTemplates(setTemplates);
@@ -258,7 +252,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
   const handleDeleteTask = async (taskId: string) => {
     if (window.confirm('确定要删除这个评测物料吗？删除后不可恢复。')) {
       try {
-        await deleteDoc(doc(db, 'evalTasks', taskId));
+        await deleteTask(taskId);
       } catch (error) {
         console.error("Error deleting task:", error);
         alert("删除失败，请检查权限");

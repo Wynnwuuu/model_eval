@@ -2,13 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { ArrowLeft, Plus, Save, Trash2, Database, LayoutTemplate, Box, CheckCircle2, Play, Link as LinkIcon, Upload, X, Users, Edit, Eye, Loader2, ClipboardList } from 'lucide-react';
 import { EvalDataset, EvalTemplate, EvalTask, EvalDimension, EvalParadigm, EvaluationConfig, EvaluationItem, EvaluationMethod } from '../types';
 import { db, auth } from '../firebase';
-import { collection, onSnapshot, addDoc, query, doc, updateDoc, deleteDoc, setDoc } from '../datastore';
+import { collection, onSnapshot, query } from '../datastore';
 import { ConfirmModal } from './ConfirmModal';
 import Papa from 'papaparse';
 import MediaRenderer from './MediaRenderer';
 import DimensionChips from './DimensionChips';
 import { getDimensionValuesForItem, getDimensionValuesFromRecord, isLikelyDimensionColumn } from '../dimensionUtils';
-import { loadTaskItems, subscribeTasks } from '../features/tasks/api';
+import { createTaskWithItems, deleteTask, loadTaskItems, subscribeTasks, updateTask, updateTaskItem } from '../features/tasks/api';
 import { createDataset, subscribeDatasets } from '../features/datasets/api';
 import { saveTemplate, subscribeTemplates } from '../features/templates/api';
 import {
@@ -423,19 +423,10 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
         progress: {}
       };
 
-      let docRef;
-      try {
-        docRef = await addDoc(collection(db, 'evalTasks'), taskData);
-      } catch (err: any) {
-        console.error("Error creating task doc:", err);
-        throw new Error("创建物料记录失败: " + err.message);
-      }
-
       const dataToSave = csvData.length > 0 ? csvData : (datasets.find(d => d.id === finalDatasetId)?.items || []);
+      const taskItemsToSave: EvaluationItem[] = [];
 
-      if (dataToSave.length > 0 && docRef) {
-        // Save data to a subcollection
-        const itemsRef = collection(db, 'evalTasks', docRef.id, 'items');
+      if (dataToSave.length > 0) {
         try {
           for (const [rowIndex, row] of dataToSave.entries()) {
             let startImageUrl: string | undefined;
@@ -516,16 +507,23 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                   },
                   itemOrder: rowIndex
                 };
-                await addDoc(itemsRef, pairItemData);
+                taskItemsToSave.push(pairItemData);
               }
             } else {
-              await addDoc(itemsRef, { ...baseItemData, itemOrder: rowIndex });
+              taskItemsToSave.push({ ...baseItemData, itemOrder: rowIndex });
             }
           }
         } catch (err: any) {
           console.error("Error creating task items:", err);
           throw new Error("保存物料数据失败: " + err.message);
         }
+      }
+
+      try {
+        await createTaskWithItems(taskData, taskItemsToSave);
+      } catch (err: any) {
+        console.error("Error creating task:", err);
+        throw new Error("创建物料记录失败: " + err.message);
       }
 
       setIsCreating(false);
@@ -812,7 +810,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
   const confirmDeleteTask = async () => {
     if (!taskToDelete) return;
     try {
-      await deleteDoc(doc(db, 'evalTasks', taskToDelete));
+      await deleteTask(taskToDelete);
       setTaskToDelete(null);
     } catch (err: any) {
       console.error("Error deleting task:", err);
@@ -850,8 +848,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
   const handleSaveItemEdit = async (itemId: string) => {
     if (!viewingTask) return;
     try {
-      const itemRef = doc(db, 'evalTasks', viewingTask.id, 'items', itemId);
-      await updateDoc(itemRef, editItemForm);
+      await updateTaskItem(viewingTask.id, itemId, editItemForm);
       setViewingTaskItems(prev => prev.map(item => item.id === itemId ? { ...item, ...editItemForm } : item));
       setEditingItemId(null);
     } catch (error) {
@@ -862,7 +859,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
 
   const handleUpdateTaskStatus = async (id: string, status: 'draft' | 'active' | 'completed') => {
     try {
-      await updateDoc(doc(db, 'evalTasks', id), { status });
+      await updateTask(id, { status });
     } catch (err: any) {
       console.error("Error updating task status:", err);
       setError("更新状态失败: " + err.message);
@@ -1847,7 +1844,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                         const newName = e.target.value;
                         setViewingTask({...viewingTask, name: newName});
                         try {
-                          await updateDoc(doc(db, 'evalTasks', viewingTask.id), { name: newName });
+                          await updateTask(viewingTask.id, { name: newName });
                         } catch (err) {
                           console.error("Error updating task name:", err);
                         }
@@ -1880,7 +1877,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                                 }
                                 setViewingTask({...viewingTask, assignees: newAssignees});
                                 try {
-                                  await updateDoc(doc(db, 'evalTasks', viewingTask.id), { assignees: newAssignees });
+                                  await updateTask(viewingTask.id, { assignees: newAssignees });
                                 } catch (err) {
                                   console.error("Error updating task assignees:", err);
                                 }

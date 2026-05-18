@@ -4,6 +4,9 @@ import { getParadigmFromMethod, normalizeEvaluationConfig } from '../../evaluati
 import { EvalTask, EvalTemplate, EvaluationItem, EvaluationProject, VoteRecord } from '../../types';
 import { loadTaskItems } from './loadTaskItems';
 
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
+const USE_API_BACKEND = import.meta.env.VITE_USE_API_BACKEND === 'true' && Boolean(API_BASE_URL);
+
 const snapshotExists = (snapshot: any) => {
   if (!snapshot) return false;
   return typeof snapshot.exists === 'function' ? snapshot.exists() : !!snapshot.exists;
@@ -22,26 +25,49 @@ export interface LoadedTaskEvaluation {
 }
 
 export async function loadTaskEvaluation(taskId: string): Promise<LoadedTaskEvaluation> {
-  const taskSnapshot = await getDoc(doc(db, 'evalTasks', taskId));
-  if (!snapshotExists(taskSnapshot)) {
-    throw new Error('未找到这份评测物料。');
-  }
-
-  const task = { id: taskSnapshot.id, ...taskSnapshot.data() } as EvalTask;
-  const templateSnapshot = task.templateId ? await getDoc(doc(db, 'evalTemplates', task.templateId)) : null;
-  const template = templateSnapshot && snapshotExists(templateSnapshot)
-    ? ({ id: templateSnapshot.id, ...templateSnapshot.data() } as EvalTemplate)
-    : undefined;
-
+  let task: EvalTask;
+  let template: EvalTemplate | undefined;
   let project: EvaluationProject | undefined;
-  if (task.projectId) {
-    try {
-      const projectSnapshot = await getDoc(doc(db, 'projects', task.projectId));
-      if (snapshotExists(projectSnapshot)) {
-        project = { id: projectSnapshot.id, ...projectSnapshot.data() } as EvaluationProject;
+
+  if (USE_API_BACKEND) {
+    const taskResponse = await fetch(`${API_BASE_URL}/api/tasks/${taskId}`);
+    if (!taskResponse.ok) throw new Error('未找到这份评测物料。');
+    task = ((await taskResponse.json()) as { task: EvalTask }).task;
+
+    if (task.templateId) {
+      const templateResponse = await fetch(`${API_BASE_URL}/api/templates/${task.templateId}`);
+      if (templateResponse.ok) {
+        template = ((await templateResponse.json()) as { template: EvalTemplate }).template;
       }
-    } catch (error) {
-      console.error('Failed to load project for task route', error);
+    }
+
+    if (task.projectId) {
+      const projectResponse = await fetch(`${API_BASE_URL}/api/projects/${task.projectId}`);
+      if (projectResponse.ok) {
+        project = ((await projectResponse.json()) as { project: EvaluationProject }).project;
+      }
+    }
+  } else {
+    const taskSnapshot = await getDoc(doc(db, 'evalTasks', taskId));
+    if (!snapshotExists(taskSnapshot)) {
+      throw new Error('未找到这份评测物料。');
+    }
+
+    task = { id: taskSnapshot.id, ...taskSnapshot.data() } as EvalTask;
+    const templateSnapshot = task.templateId ? await getDoc(doc(db, 'evalTemplates', task.templateId)) : null;
+    template = templateSnapshot && snapshotExists(templateSnapshot)
+      ? ({ id: templateSnapshot.id, ...templateSnapshot.data() } as EvalTemplate)
+      : undefined;
+
+    if (task.projectId) {
+      try {
+        const projectSnapshot = await getDoc(doc(db, 'projects', task.projectId));
+        if (snapshotExists(projectSnapshot)) {
+          project = { id: projectSnapshot.id, ...projectSnapshot.data() } as EvaluationProject;
+        }
+      } catch (error) {
+        console.error('Failed to load project for task route', error);
+      }
     }
   }
 
@@ -61,6 +87,23 @@ export async function loadTaskEvaluation(taskId: string): Promise<LoadedTaskEval
   const userName = auth.currentUser?.email || auth.currentUser?.displayName || localStorage.getItem('eval_username') || 'Anonymous';
   let votes: VoteRecord[] = [];
   try {
+    if (USE_API_BACKEND) {
+      return {
+        task,
+        project,
+        items,
+        votes,
+        userName,
+        modelNames: {
+          a: models[0]?.name || 'Model A',
+          b: models[1]?.name || 'Model B'
+        },
+        models,
+        paradigm,
+        evaluationConfig
+      };
+    }
+
     const voteSnapshot = await getDoc(doc(db, 'evalTasks', task.id, 'userVotes', userName));
     if (snapshotExists(voteSnapshot)) {
       votes = voteSnapshot.data().votes || [];

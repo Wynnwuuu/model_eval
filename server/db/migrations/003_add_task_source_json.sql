@@ -1,0 +1,2 @@
+ALTER TABLE eval_tasks
+ADD COLUMN IF NOT EXISTS source_json JSONB NOT NULL DEFAULT '{}'::jsonb;

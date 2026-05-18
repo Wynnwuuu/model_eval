@@ -3,6 +3,9 @@ import { db } from '../../firebase';
 import { getDimensionValuesForItem, getDimensionValuesFromRecord } from '../../dimensionUtils';
 import { EvalTask, EvaluationItem } from '../../types';
 
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
+const USE_API_BACKEND = import.meta.env.VITE_USE_API_BACKEND === 'true' && Boolean(API_BASE_URL);
+
 const snapshotExists = (snapshot: any) => {
   if (!snapshot) return false;
   return typeof snapshot.exists === 'function' ? snapshot.exists() : !!snapshot.exists;
@@ -13,6 +16,24 @@ interface LoadTaskItemsOptions {
 }
 
 export async function loadTaskItems(task: EvalTask, options: LoadTaskItemsOptions = {}) {
+  if (USE_API_BACKEND) {
+    const response = await fetch(`${API_BASE_URL}/api/tasks/${task.id}/items`);
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      throw new Error(errorBody.error || `加载任务用例失败: ${response.status}`);
+    }
+    const data = await response.json() as { items: EvaluationItem[] };
+    return data.items.map(item => ({
+      ...item,
+      dimensionValues: getDimensionValuesForItem(item as any, task.dimensionColumns || []),
+    })).sort((a: any, b: any) => {
+      const leftOrder = Number(a.itemOrder ?? 0);
+      const rightOrder = Number(b.itemOrder ?? 0);
+      if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+      return String(a.id).localeCompare(String(b.id));
+    });
+  }
+
   const models = task.models?.length ? task.models : [
     { id: 'model-a', name: 'Model A' },
     { id: 'model-b', name: 'Model B' }

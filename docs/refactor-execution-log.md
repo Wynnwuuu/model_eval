@@ -113,12 +113,15 @@ npm run build
 - 新增 `/api/datasets` 后端接口，支持评测集列表、详情、保存和删除；数据落到 `datasets`、`dataset_versions`、`dataset_items`。
 - 新增 `/api/templates` 后端接口，支持模板列表、详情、保存和删除；维度落到 `template_dimensions`。
 - `features/datasets/api.ts` 和 `features/templates/api.ts` 支持同一个 HTTP/PostgreSQL 开关。
+- 新增 `/api/tasks` 后端接口，支持评测物料列表、详情、创建、更新、删除，以及物料 items 读取和编辑。
+- `features/tasks/api.ts` 支持同一个 HTTP/PostgreSQL 开关；`TaskBuilderScreen` 的任务创建、删除、状态更新、名称/负责人更新、item 编辑已收口到 task feature API。
+- `/tasks/:taskId/evaluate` 的任务配置和 items 加载已支持从 HTTP/PostgreSQL 读取；投票进度仍暂未迁移。
 
 当前数据路径仍是：
 
 ```text
-未迁移数据域：前端 -> features/*/api.ts -> datastore.ts -> localStorage 或 Firestore
-已迁移数据域：前端 -> features/{projects,datasets,templates}/api.ts -> /api/* -> PostgreSQL（开启 VITE_USE_API_BACKEND 后）
+未迁移数据域：前端 -> datastore.ts -> localStorage 或 Firestore
+已迁移数据域：前端 -> features/{projects,datasets,templates,tasks}/api.ts -> /api/* -> PostgreSQL（开启 VITE_USE_API_BACKEND 后）
 ```
 
 目标数据路径是：

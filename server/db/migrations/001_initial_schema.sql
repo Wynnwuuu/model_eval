@@ -176,6 +176,7 @@ CREATE TABLE IF NOT EXISTS eval_tasks (
   total_items INTEGER,
   external_results_link TEXT,
   has_imported_data BOOLEAN NOT NULL DEFAULT false,
+  source_json JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_by TEXT REFERENCES users(id),
   updated_by TEXT REFERENCES users(id),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

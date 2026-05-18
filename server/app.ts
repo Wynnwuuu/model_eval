@@ -3,6 +3,7 @@ import express from 'express';
 import { datasetRoutes } from './datasets/datasetRoutes.ts';
 import { checkDatabaseHealth } from './db/client.ts';
 import { projectRoutes } from './projects/projectRoutes.ts';
+import { taskRoutes } from './tasks/taskRoutes.ts';
 import { templateRoutes } from './templates/templateRoutes.ts';
 
 export const createApp = () => {
@@ -47,6 +48,7 @@ export const createApp = () => {
   app.use('/api/projects', projectRoutes);
   app.use('/api/datasets', datasetRoutes);
   app.use('/api/templates', templateRoutes);
+  app.use('/api/tasks', taskRoutes);
 
   return app;
 };
