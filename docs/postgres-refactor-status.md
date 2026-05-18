@@ -23,6 +23,7 @@
 - 部署方案：
   - 新增 `docs/deployment-postgres.md`。
   - 补充阿里云 RDS PostgreSQL + DMS、后端 API、前端静态站点、上线验证和回滚顺序。
+  - 新增 `server:build`、`api:start`、`db:migrate:prod`、API Dockerfile 和 PostgreSQL API CI。
 - Firestore fallback 策略：
   - 新增 `docs/firestore-fallback-strategy.md`。
   - 明确 `VITE_USE_API_BACKEND` 与 `VITE_USE_FIREBASE` 的边界。
@@ -34,11 +35,11 @@
 
 ## 未完成
 
-- 部署工程化：后端 Dockerfile、server build 产物、CI/CD 自动部署。
+- 部署工程化：镜像推送、目标云服务发布、生产环境密钥接入。
 - Firestore fallback 清理：如果确定线上全面切 PostgreSQL，继续删除业务域 Firestore 写路径。
 
 ## 当前建议顺序
 
-1. 后端 Dockerfile / server build / CI/CD。
+1. 镜像推送与目标云服务发布。
 2. 权限模型深化：成员管理、更多数据域鉴权。
 3. Firestore fallback 代码清理。

@@ -1,0 +1,78 @@
+name: PostgreSQL API CI
+
+on:
+  push:
+    branches:
+      - main
+      - refactor/init
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  api:
+    name: Build and smoke test API
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: eval_studio
+          POSTGRES_USER: eval_studio
+          POSTGRES_PASSWORD: eval_studio_dev
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U eval_studio -d eval_studio"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://eval_studio:eval_studio_dev@localhost:5432/eval_studio
+      API_PORT: 8787
+      CORS_ORIGIN: http://localhost:3000
+      API_BASE_URL: http://localhost:8787
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run lint
+
+      - run: npm run build
+
+      - run: npm run server:build
+
+      - run: npm run db:migrate
+
+      - name: Start API
+        run: |
+          npm run api:dev > /tmp/eval-studio-api.log 2>&1 &
+          echo $! > /tmp/eval-studio-api.pid
+
+      - name: Wait for API
+        run: |
+          for i in {1..30}; do
+            if curl -fsS http://localhost:8787/api/health; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/eval-studio-api.log
+          exit 1
+
+      - run: npm run test:api:smoke
+
+      - name: Stop API
+        if: always()
+        run: |
+          if [ -f /tmp/eval-studio-api.pid ]; then
+            kill "$(cat /tmp/eval-studio-api.pid)" || true
+          fi

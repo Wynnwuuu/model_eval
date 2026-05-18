@@ -41,12 +41,20 @@ API_PORT=8787
 CORS_ORIGIN=https://<frontend-domain>
 ```
 
-部署流程：
+源码部署流程：
 
 ```bash
 npm install
-npm run db:migrate
+npm run server:build
+npm run db:migrate:prod
 npm run api:start
+```
+
+Docker 部署：
+
+```bash
+docker build -t eval-studio-api .
+docker run --env-file .env.production -p 8787:8787 eval-studio-api
 ```
 
 上线检查：
@@ -98,6 +106,6 @@ API_BASE_URL=https://<api-domain> npm run test:api:smoke
 
 ## 当前限制
 
-- 后端仍是 TypeScript 直接启动，后续可以补独立 `server:build` 产物和 Dockerfile。
+- 已提供 `server:build`、`api:start` 和 API Dockerfile；后续需要按实际云厂商补镜像推送和发布流水线。
 - 线上权限模型已具备项目级写权限基础版，但成员管理 UI/API 仍需继续补齐。
 - Firestore/localStorage 仍作为 fallback 模式保留，详见 `docs/firestore-fallback-strategy.md`。
