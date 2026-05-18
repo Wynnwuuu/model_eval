@@ -9,7 +9,7 @@ import { getEvaluationMethodShortLabel, normalizeEvaluationConfig } from '../eva
 import { loadTaskEvaluation } from '../features/tasks/api';
 import { subscribeDatasets } from '../features/datasets/api';
 import { subscribeTemplates } from '../features/templates/api';
-import { subscribeProjects } from '../features/projects/api';
+import { createProject, deleteProject, subscribeProjects, updateProject, updateProjectSteps } from '../features/projects/api';
 
 interface DashboardScreenProps {
   initialProject?: EvaluationProject | null;
@@ -164,17 +164,8 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
   const handleCreateProject = async (projectData: Partial<EvaluationProject>) => {
     if (!user) return;
     
-    // Strip undefined values to prevent Firestore errors
-    const cleanProjectData = JSON.parse(JSON.stringify(projectData));
-    
     try {
-      await addDoc(collection(db, 'projects'), {
-        ...cleanProjectData,
-        initiatorUid: user.uid,
-        initiatorName: user.displayName || user.email || 'Anonymous',
-        createdAt: Date.now(),
-        lastUpdated: Date.now(),
-      });
+      await createProject(projectData, user);
     } catch (error) {
       console.error("Error adding document: ", error);
       alert("创建任务失败，请检查权限或重试。");
@@ -198,16 +189,8 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
     const completedCount = updatedSteps.filter(s => s.status === 'completed').length;
     const newProgress = Math.round((completedCount / updatedSteps.length) * 100);
 
-    // Strip undefined values to prevent Firestore errors
-    const cleanSteps = JSON.parse(JSON.stringify(updatedSteps));
-
     try {
-      const docRef = doc(db, 'projects', projectId);
-      await updateDoc(docRef, {
-        steps: cleanSteps,
-        progress: newProgress,
-        lastUpdated: Date.now()
-      });
+      await updateProjectSteps(projectId, updatedSteps, newProgress);
       
       // Update local state for selectedProject if it's the one being edited
       if (selectedProject?.id === projectId) {
@@ -229,16 +212,8 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
     const completedCount = updatedSteps.filter(s => s.status === 'completed').length;
     const newProgress = Math.round((completedCount / updatedSteps.length) * 100);
 
-    // Strip undefined values to prevent Firestore errors
-    const cleanSteps = JSON.parse(JSON.stringify(updatedSteps));
-
     try {
-      const docRef = doc(db, 'projects', editingStep.projectId);
-      await updateDoc(docRef, {
-        steps: cleanSteps,
-        progress: newProgress,
-        lastUpdated: Date.now()
-      });
+      await updateProjectSteps(editingStep.projectId, updatedSteps, newProgress);
       
       if (selectedProject?.id === editingStep.projectId) {
         setSelectedProject({ ...project, steps: updatedSteps, progress: newProgress });
@@ -253,8 +228,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
   const handleSaveLink = async () => {
     if (!selectedProject || !user) return;
     try {
-      const docRef = doc(db, 'projects', selectedProject.id);
-      await updateDoc(docRef, { link: tempLink });
+      await updateProject(selectedProject.id, { link: tempLink });
       setSelectedProject({ ...selectedProject, link: tempLink });
       setIsEditingLink(false);
     } catch (error) {
@@ -266,7 +240,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
   const handleDeleteProject = async (projectId: string) => {
     if (window.confirm('确定要删除这个项目吗？删除后不可恢复。')) {
       try {
-        await deleteDoc(doc(db, 'projects', projectId));
+        await deleteProject(projectId);
         if (selectedProject?.id === projectId) {
           setSelectedProject(null);
         }

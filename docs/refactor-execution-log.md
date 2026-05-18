@@ -46,6 +46,7 @@
 - 新增 `src/features/projects/api.ts`，项目列表订阅开始收口到 feature API；项目旧 steps 自动迁移逻辑暂保留在 `DashboardScreen`，避免数据副作用与读取抽象同时迁移。
 - 模板保存/删除写路径已收口到 `features/templates/api.ts` 的 `saveTemplate` / `deleteTemplate`。
 - 数据集创建/保存/删除写路径已收口到 `features/datasets/api.ts` 的 `createDataset` / `saveDataset` / `deleteDataset`。
+- 项目创建、步骤更新、链接更新、删除写路径已收口到 `features/projects/api.ts`；旧项目 steps 自动迁移副作用仍暂留页面组件中。
 
 当前可验证 URL：
 
