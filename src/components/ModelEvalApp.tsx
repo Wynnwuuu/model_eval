@@ -1,9 +1,9 @@
 
 import React, { useState, useEffect } from 'react';
-import { Layers, ChevronRight } from 'lucide-react';
 import SetupScreen from './SetupScreen';
 import VotingScreen from './VotingScreen';
 import ArenaRankVotingScreen from './ArenaRankVotingScreen';
+import ScoreEvaluationScreen from './ScoreEvaluationScreen';
 import ResultsScreen from './ResultsScreen';
 import AnalysisScreen from './AnalysisScreen';
 import HistoryScreen from './HistoryScreen';
@@ -12,18 +12,22 @@ import DatasetRepositoryScreen from './DatasetRepositoryScreen';
 import TemplateRepositoryScreen from './TemplateRepositoryScreen';
 import TaskBuilderScreen from './TaskBuilderScreen';
 import { ConfirmModal } from './ConfirmModal';
-import { AppState, EvalParadigm, EvaluationItem, HistorySession, RankingEntry, VoteRecord, VoteType, EvaluationProject } from '../types';
+import AppShell from './AppShell';
+import OverviewScreen from './OverviewScreen';
+import { AppRoute, EvalParadigm, EvaluationConfig, EvaluationItem, HistorySession, RankingEntry, RouteContext, VoteRecord, VoteType, EvaluationProject } from '../types';
 import { auth, signInWithGoogle, logout, shouldUseFirebase } from '../firebase';
+import { getDefaultEvaluationConfig, getMethodFromParadigm, getParadigmFromMethod, isRankMethod, isScoreMethod } from '../evaluationMethods';
 
 const STORAGE_KEY = 'modeleval_session';
 const HISTORY_KEY = 'modeleval_history';
 
 interface ModelEvalAppProps {
-  initialRoute?: AppState | 'dashboard' | 'dataset_repo' | 'template_repo' | 'task_builder';
+  initialRoute?: AppRoute;
 }
 
-export function ModelEvalApp({ initialRoute = 'dashboard' }: ModelEvalAppProps) {
-  const [appState, setAppState] = useState<AppState | 'dashboard' | 'dataset_repo' | 'template_repo' | 'task_builder'>(initialRoute);
+export function ModelEvalApp({ initialRoute = 'overview' }: ModelEvalAppProps) {
+  const [currentRoute, setCurrentRoute] = useState<AppRoute>(initialRoute);
+  const [routeContext, setRouteContext] = useState<RouteContext>({});
   const [items, setItems] = useState<EvaluationItem[]>([]);
   const [votes, setVotes] = useState<VoteRecord[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -34,6 +38,7 @@ export function ModelEvalApp({ initialRoute = 'dashboard' }: ModelEvalAppProps) 
     { id: 'model-b', name: 'Model B' }
   ]);
   const [taskParadigm, setTaskParadigm] = useState<EvalParadigm>('Arena');
+  const [taskEvaluationConfig, setTaskEvaluationConfig] = useState<EvaluationConfig>(getDefaultEvaluationConfig('ab_preference'));
   const [hasSavedSession, setHasSavedSession] = useState(false);
   const [sessionId, setSessionId] = useState<string>('');
   const [user, setUser] = useState(null);
@@ -69,7 +74,7 @@ export function ModelEvalApp({ initialRoute = 'dashboard' }: ModelEvalAppProps) 
 
   // Update state if initialRoute changes
   useEffect(() => {
-    setAppState(initialRoute);
+    setCurrentRoute(initialRoute);
   }, [initialRoute]);
 
   // Load History on Mount
@@ -90,11 +95,11 @@ export function ModelEvalApp({ initialRoute = 'dashboard' }: ModelEvalAppProps) 
     if (saved) {
       setHasSavedSession(true);
     }
-  }, [appState]);
+  }, [currentRoute]);
 
   // Auto-save current progress
   useEffect(() => {
-    if (appState === 'voting' && items.length > 0) {
+    if (currentRoute === 'voting' && items.length > 0) {
       const sessionData = {
         items,
         votes,
@@ -103,12 +108,13 @@ export function ModelEvalApp({ initialRoute = 'dashboard' }: ModelEvalAppProps) 
         modelNames,
         taskModels,
         taskParadigm,
+        taskEvaluationConfig,
         timestamp: Date.now(),
         sessionId // Persist the ID
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(sessionData));
     }
-  }, [items, votes, currentIndex, appState, userName, modelNames, taskModels, taskParadigm, sessionId]);
+  }, [items, votes, currentIndex, currentRoute, userName, modelNames, taskModels, taskParadigm, taskEvaluationConfig, sessionId]);
 
   // Save to History when session is complete (moved to results)
   const saveToHistory = (completedVotes: VoteRecord[]) => {
@@ -121,6 +127,7 @@ export function ModelEvalApp({ initialRoute = 'dashboard' }: ModelEvalAppProps) 
       modelNames,
       models: taskModels,
       paradigm: taskParadigm,
+      evaluationConfig: taskEvaluationConfig,
       items,
       votes: completedVotes
     };
@@ -149,8 +156,13 @@ export function ModelEvalApp({ initialRoute = 'dashboard' }: ModelEvalAppProps) 
         if (data.modelNames) setModelNames(data.modelNames);
         if (data.taskModels) setTaskModels(data.taskModels);
         if (data.taskParadigm) setTaskParadigm(data.taskParadigm);
+        if (data.taskEvaluationConfig) {
+          setTaskEvaluationConfig(data.taskEvaluationConfig);
+        } else if (data.taskParadigm) {
+          setTaskEvaluationConfig(getDefaultEvaluationConfig(getMethodFromParadigm(data.taskParadigm)));
+        }
         setSessionId(data.sessionId || `session-${Date.now()}`); // Ensure ID exists
-        setAppState('voting');
+        setCurrentRoute('voting');
       } catch (e) {
         console.error("Failed to parse saved session");
       }
@@ -160,8 +172,8 @@ export function ModelEvalApp({ initialRoute = 'dashboard' }: ModelEvalAppProps) 
   const discardSession = () => {
     setConfirmConfig({
       isOpen: true,
-      title: '放弃进度',
-      message: '您确定要放弃之前的进度吗？此操作无法撤销。',
+      title: '放弃当前评测进度',
+      message: '确定要清除当前保存的评测会话吗？清除后无法恢复。',
       onConfirm: () => {
         localStorage.removeItem(STORAGE_KEY);
         setHasSavedSession(false);
@@ -176,7 +188,8 @@ export function ModelEvalApp({ initialRoute = 'dashboard' }: ModelEvalAppProps) 
     taskId?: string,
     existingVotes?: VoteRecord[],
     paradigm: EvalParadigm = 'Arena',
-    models?: { id: string; name: string }[]
+    models?: { id: string; name: string }[],
+    evaluationConfig?: EvaluationConfig
   ) => {
     setItems(parsedItems);
     setUserName(name);
@@ -186,7 +199,9 @@ export function ModelEvalApp({ initialRoute = 'dashboard' }: ModelEvalAppProps) 
       { id: 'model-a', name: parsedNames?.a || 'Model A' },
       { id: 'model-b', name: parsedNames?.b || 'Model B' }
     ]);
-    setTaskParadigm(paradigm);
+    const nextConfig = evaluationConfig || getDefaultEvaluationConfig(getMethodFromParadigm(paradigm));
+    setTaskParadigm(getParadigmFromMethod(nextConfig.method));
+    setTaskEvaluationConfig(nextConfig);
     setActiveTaskId(taskId || null);
     
     // Generate unique ID for this session
@@ -196,113 +211,86 @@ export function ModelEvalApp({ initialRoute = 'dashboard' }: ModelEvalAppProps) 
       setVotes(existingVotes);
       if (existingVotes.length >= parsedItems.length) {
         setCurrentIndex(parsedItems.length - 1);
-        setAppState('results');
+        setCurrentRoute('results');
       } else {
         setCurrentIndex(existingVotes.length);
-        setAppState('voting');
+        setCurrentRoute('voting');
       }
     } else {
       setCurrentIndex(0);
       setVotes([]);
-      setAppState('voting');
+      setCurrentRoute('voting');
+    }
+  };
+
+  const persistVoteProgress = async (updatedVotes: VoteRecord[], nextProgress: number) => {
+    if (!activeTaskId || !userName) return;
+
+    try {
+      const { doc, updateDoc, FieldPath, setDoc } = await import('../datastore');
+      const { db } = await import('../firebase');
+      const taskRef = doc(db, 'evalTasks', activeTaskId);
+      try {
+        await updateDoc(taskRef, new FieldPath('progress', userName), nextProgress);
+      } catch (updateErr) {
+        try {
+          await setDoc(taskRef, { progress: { [userName]: nextProgress } }, { merge: true });
+        } catch (progressErr) {
+          console.error("Failed to update task progress", progressErr);
+        }
+      }
+
+      const voteRef = doc(db, 'evalTasks', activeTaskId, 'userVotes', userName);
+      try {
+        await setDoc(voteRef, { votes: updatedVotes }, { merge: true });
+      } catch (voteErr) {
+        console.error("Failed to save vote", voteErr);
+      }
+    } catch (e) {
+      console.error("Failed to initialize vote persistence", e);
+    }
+  };
+
+  const commitVoteRecord = async (votePayload: Partial<VoteRecord>) => {
+    const currentItem = items[currentIndex];
+    const newVote: VoteRecord = {
+      itemId: currentItem.id,
+      method: taskEvaluationConfig.method,
+      timestamp: Date.now(),
+      user: userName,
+      ...votePayload
+    };
+
+    const updatedVotes = [...votes, newVote];
+    setVotes(updatedVotes);
+    await persistVoteProgress(updatedVotes, currentIndex + 1);
+
+    if (currentIndex < items.length - 1) {
+      setCurrentIndex(prev => prev + 1);
+    } else {
+      saveToHistory(updatedVotes);
+      setCurrentRoute('results');
     }
   };
 
   const handleVote = async (vote: VoteType) => {
-    const currentItem = items[currentIndex];
-    
-    const newVote: VoteRecord = {
-      itemId: currentItem.id,
+    const currentItem = items[currentIndex] as any;
+    await commitVoteRecord({
       vote,
-      timestamp: Date.now(),
-      user: userName
-    };
-
-    const updatedVotes = [...votes, newVote];
-    setVotes(updatedVotes);
-
-    if (activeTaskId && userName) {
-      try {
-        const { doc, updateDoc, FieldPath, setDoc } = await import('../datastore');
-        const { db } = await import('../firebase');
-        const taskRef = doc(db, 'evalTasks', activeTaskId);
-        try {
-          await updateDoc(taskRef, new FieldPath('progress', userName), currentIndex + 1);
-        } catch (updateErr) {
-          // If progress map doesn't exist, updateDoc with FieldPath might fail.
-          // Fallback to setDoc with merge: true
-          try {
-            await setDoc(taskRef, { progress: { [userName]: currentIndex + 1 } }, { merge: true });
-          } catch (progressErr) {
-            console.error("Failed to update task progress", progressErr);
-          }
-        }
-        
-        const voteRef = doc(db, 'evalTasks', activeTaskId, 'userVotes', userName);
-        try {
-          await setDoc(voteRef, { votes: updatedVotes }, { merge: true });
-        } catch (voteErr) {
-          console.error("Failed to save vote", voteErr);
-        }
-      } catch (e) {
-        console.error("Failed to initialize vote persistence", e);
-      }
-    }
-
-    if (currentIndex < items.length - 1) {
-      setCurrentIndex(prev => prev + 1);
-    } else {
-      // Session Complete
-      saveToHistory(updatedVotes);
-      setAppState('results');
-    }
+      choice: vote,
+      pairContext: currentItem.pairContext
+    });
   };
 
   const handleRankVote = async (ranking: RankingEntry[]) => {
-    const currentItem = items[currentIndex];
+    await commitVoteRecord({
+      method: 'rank_order',
+      ranking
+    });
+  };
 
-    const newVote: VoteRecord = {
-      itemId: currentItem.id,
-      ranking,
-      timestamp: Date.now(),
-      user: userName
-    };
-
-    const updatedVotes = [...votes, newVote];
-    setVotes(updatedVotes);
-
-    if (activeTaskId && userName) {
-      try {
-        const { doc, updateDoc, FieldPath, setDoc } = await import('../datastore');
-        const { db } = await import('../firebase');
-        const taskRef = doc(db, 'evalTasks', activeTaskId);
-        try {
-          await updateDoc(taskRef, new FieldPath('progress', userName), currentIndex + 1);
-        } catch (updateErr) {
-          try {
-            await setDoc(taskRef, { progress: { [userName]: currentIndex + 1 } }, { merge: true });
-          } catch (progressErr) {
-            console.error("Failed to update task progress", progressErr);
-          }
-        }
-
-        const voteRef = doc(db, 'evalTasks', activeTaskId, 'userVotes', userName);
-        try {
-          await setDoc(voteRef, { votes: updatedVotes }, { merge: true });
-        } catch (voteErr) {
-          console.error("Failed to save ranking vote", voteErr);
-        }
-      } catch (e) {
-        console.error("Failed to initialize ranking persistence", e);
-      }
-    }
-
-    if (currentIndex < items.length - 1) {
-      setCurrentIndex(prev => prev + 1);
-    } else {
-      saveToHistory(updatedVotes);
-      setAppState('results');
-    }
+  const handleScoreVote = async (votePayload: Partial<VoteRecord>) => {
+    await commitVoteRecord(votePayload);
   };
 
   const handleGoBack = async () => {
@@ -342,10 +330,10 @@ export function ModelEvalApp({ initialRoute = 'dashboard' }: ModelEvalAppProps) 
   const handleReset = () => {
     setConfirmConfig({
       isOpen: true,
-      title: '清除数据',
-      message: '您确定吗？这将清除您当前的会话数据。',
+      title: '清除评测会话',
+      message: '确定要清除当前评测会话数据吗？',
       onConfirm: () => {
-        setAppState('setup');
+        setCurrentRoute('evaluation');
         setItems([]);
         setVotes([]);
         setCurrentIndex(0);
@@ -355,6 +343,7 @@ export function ModelEvalApp({ initialRoute = 'dashboard' }: ModelEvalAppProps) 
           { id: 'model-b', name: 'Model B' }
         ]);
         setTaskParadigm('Arena');
+        setTaskEvaluationConfig(getDefaultEvaluationConfig('ab_preference'));
         setSessionId('');
         localStorage.removeItem(STORAGE_KEY);
         setHasSavedSession(false);
@@ -365,7 +354,7 @@ export function ModelEvalApp({ initialRoute = 'dashboard' }: ModelEvalAppProps) 
   const handleEndSessionEarly = () => {
     if (votes.length > 0) {
       saveToHistory(votes);
-      setAppState('results');
+      setCurrentRoute('results');
     } else {
       handleReset();
     }
@@ -376,7 +365,7 @@ export function ModelEvalApp({ initialRoute = 'dashboard' }: ModelEvalAppProps) 
     setConfirmConfig({
       isOpen: true,
       title: '删除所有历史记录',
-      message: '删除所有历史记录？此操作无法撤销。',
+      message: '确定删除所有历史记录吗？此操作无法撤销。',
       onConfirm: () => {
         localStorage.removeItem(HISTORY_KEY);
         setHistory([]);
@@ -388,7 +377,7 @@ export function ModelEvalApp({ initialRoute = 'dashboard' }: ModelEvalAppProps) 
     setConfirmConfig({
       isOpen: true,
       title: '删除会话',
-      message: '删除此会话？',
+      message: '确定删除此会话吗？',
       onConfirm: () => {
         const updated = history.filter(h => h.id !== id);
         setHistory(updated);
@@ -397,174 +386,231 @@ export function ModelEvalApp({ initialRoute = 'dashboard' }: ModelEvalAppProps) 
     });
   };
 
-  if (!user && shouldUseFirebase) {
-    return (
-      <div className="h-screen flex items-center justify-center bg-gray-100">
-        <div className="text-center">
-          <h1 className="text-2xl font-bold mb-4">Welcome to ModelEval</h1>
-          <p className="mb-6">Please sign in to continue.</p>
-          <button
-            onClick={signInWithGoogle}
-            className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
-          >
-            Sign in with Google
-          </button>
+  const navigate = (route: AppRoute, context: RouteContext = {}) => {
+    if (route === 'tasks') setTaskBuilderMode('list');
+    setRouteContext(context);
+    setCurrentRoute(route);
+  };
+
+  const renderRoute = () => {
+    if (!user && shouldUseFirebase) {
+      return (
+        <div className="flex min-h-[calc(100vh-64px)] items-center justify-center px-4">
+          <div className="w-full max-w-md rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-panel)] p-8 text-center">
+            <div className="mx-auto mb-5 flex h-12 w-12 items-center justify-center rounded-lg bg-[var(--accent)] text-black font-bold">ES</div>
+            <h1 className="text-2xl font-semibold text-white">登录 Eval Studio</h1>
+            <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">进入评测一体化平台，管理评测集、评测物料、参与评测、结果洞察和生产流程。</p>
+            <button onClick={signInWithGoogle} className="btn-primary mt-6 w-full">使用 Google 登录</button>
+          </div>
         </div>
-      </div>
-    );
-  }
+      );
+    }
+
+    if (currentRoute === 'overview') {
+      return (
+        <OverviewScreen
+          onGoToProjects={() => navigate('projects')}
+          onGoToDatasets={() => navigate('datasets')}
+          onGoToTasks={(statusFilter) => navigate('tasks', { materialStatusFilter: statusFilter })}
+          onGoToEvaluation={() => navigate('evaluation')}
+          onGoToInsights={(statusFilter) => navigate('insights', { materialStatusFilter: statusFilter })}
+          onGoToGeneration={() => navigate('generation')}
+        />
+      );
+    }
+
+    if (currentRoute === 'projects') {
+      return (
+        <div className="py-6">
+          <DashboardScreen
+            initialProject={activeProject}
+            onProjectSelect={setActiveProject}
+            onGoToExecution={(project, taskItems, taskName, modelNames, taskId, existingVotes, paradigm, models, evaluationConfig) => {
+              setActiveProject(project);
+              setRouteContext({ projectId: project.id, taskId, source: 'dashboard' });
+              if (taskItems && taskItems.length > 0) {
+                const nextUserName = auth.currentUser?.email || auth.currentUser?.displayName || localStorage.getItem('eval_username') || 'Anonymous';
+                handleStart(taskItems, nextUserName, modelNames, taskId, existingVotes, paradigm, models, evaluationConfig);
+              } else {
+                navigate('evaluation', { projectId: project.id, source: 'dashboard' });
+              }
+            }}
+            onGoToAnalysis={(project) => {
+              setActiveProject(project);
+              navigate('insights', { projectId: project.id, source: 'dashboard' });
+            }}
+            onGoToDatasetRepo={() => navigate('datasets')}
+            onGoToTemplateRepo={() => navigate('templates')}
+            onGoToTaskBuilder={(project, mode) => {
+              setActiveProject(project);
+              setTaskBuilderMode(mode || 'create');
+              navigate('tasks', { projectId: project.id, source: 'dashboard' });
+            }}
+          />
+        </div>
+      );
+    }
+
+    if (currentRoute === 'datasets' || currentRoute === 'generation') {
+      return (
+        <div className="py-6">
+          <DatasetRepositoryScreen
+            onBack={() => navigate('overview')}
+            mode={currentRoute === 'generation' ? 'generation' : 'repository'}
+          />
+        </div>
+      );
+    }
+
+    if (currentRoute === 'templates') {
+      return (
+        <div className="py-6">
+          <TemplateRepositoryScreen onBack={() => navigate('overview')} />
+        </div>
+      );
+    }
+
+    if (currentRoute === 'tasks') {
+      return (
+        <div className="py-6">
+          <TaskBuilderScreen
+            projectId={activeProject?.id || routeContext.projectId}
+            initialMode={taskBuilderMode}
+            initialStatusFilter={routeContext.materialStatusFilter}
+            onBack={() => navigate('projects')}
+          />
+        </div>
+      );
+    }
+
+    if (currentRoute === 'evaluation') {
+      return (
+        <div className="min-h-[calc(100vh-64px)] py-6">
+          <SetupScreen
+            project={activeProject}
+            onStart={handleStart}
+            onGoToAnalysis={() => navigate('insights')}
+            onGoToHistory={() => navigate('history')}
+            onBack={() => navigate('overview')}
+            savedSession={hasSavedSession}
+            onResume={resumeSession}
+            onDiscardSession={discardSession}
+          />
+        </div>
+      );
+    }
+
+    if (currentRoute === 'insights') {
+      return (
+        <div className="py-6">
+          <AnalysisScreen
+            onBack={() => navigate('evaluation')}
+            onGoToDashboard={() => navigate('overview')}
+            initialProjectId={routeContext.projectId}
+            initialMaterialId={routeContext.materialId || routeContext.taskId}
+            initialStatusFilter={routeContext.materialStatusFilter}
+          />
+        </div>
+      );
+    }
+
+    if (currentRoute === 'history') {
+      return (
+        <div className="py-6">
+          <HistoryScreen
+            history={history}
+            onBack={() => navigate('evaluation')}
+            onGoToDashboard={() => navigate('overview')}
+            onClearHistory={clearHistory}
+            onDeleteSession={deleteSession}
+          />
+        </div>
+      );
+    }
+
+    if (currentRoute === 'voting' && items.length > 0 && isScoreMethod(taskEvaluationConfig)) {
+      return (
+        <ScoreEvaluationScreen
+          item={items[currentIndex]}
+          currentIndex={currentIndex}
+          totalItems={items.length}
+          models={taskModels}
+          config={taskEvaluationConfig}
+          onVote={handleScoreVote}
+          onEnd={handleEndSessionEarly}
+          onBack={() => navigate('overview')}
+          onGoBack={currentIndex > 0 ? handleGoBack : undefined}
+          allowTie={taskEvaluationConfig.tiePolicy !== 'disallow'}
+        />
+      );
+    }
+
+    if (currentRoute === 'voting' && items.length > 0 && !isRankMethod(taskEvaluationConfig)) {
+      return (
+        <VotingScreen
+          item={items[currentIndex]}
+          nextItem={items[currentIndex + 1]}
+          currentIndex={currentIndex}
+          totalItems={items.length}
+          onVote={handleVote}
+          onEnd={handleEndSessionEarly}
+          onBack={() => navigate('overview')}
+          onGoBack={currentIndex > 0 ? handleGoBack : undefined}
+        />
+      );
+    }
+
+    if (currentRoute === 'voting' && items.length > 0 && isRankMethod(taskEvaluationConfig)) {
+      return (
+        <ArenaRankVotingScreen
+          item={items[currentIndex]}
+          nextItem={items[currentIndex + 1]}
+          currentIndex={currentIndex}
+          totalItems={items.length}
+          models={taskModels}
+          onVote={handleRankVote}
+          onEnd={handleEndSessionEarly}
+          onBack={() => navigate('overview')}
+          onGoBack={currentIndex > 0 ? handleGoBack : undefined}
+        />
+      );
+    }
+
+    if (currentRoute === 'results') {
+      return (
+        <div className="py-6">
+          <ResultsScreen
+            votes={votes}
+            items={items}
+            onReset={handleReset}
+            userName={userName}
+            modelNames={modelNames}
+            models={taskModels}
+            paradigm={taskParadigm}
+            evaluationConfig={taskEvaluationConfig}
+            onGoToDashboard={() => navigate('overview')}
+          />
+        </div>
+      );
+    }
+
+    return null;
+  };
 
   return (
-    <div className="h-[calc(100vh-64px)] overflow-auto bg-bg-base text-text-primary font-sans selection:bg-amber-500/30">
-      {/* Main Container */}
-      <div className="h-full">
-      {user && shouldUseFirebase && (
-          <div className="absolute top-4 right-4 flex items-center">
-            <span className="mr-4">Welcome, {user.displayName}</span>
-            <button
-              onClick={logout}
-              className="bg-red-500 hover:bg-red-700 text-white font-bold py-2 px-4 rounded"
-            >
-              Logout
-            </button>
-          </div>
-        )}
-        {appState === 'dashboard' && (
-          <div className="h-full py-10">
-            <DashboardScreen 
-              initialProject={activeProject}
-              onProjectSelect={setActiveProject}
-              onGoToExecution={(project, taskItems, taskName, modelNames, taskId, existingVotes, paradigm, models) => {
-                setActiveProject(project);
-                if (taskItems && taskItems.length > 0) {
-                  const userName = auth.currentUser?.email || auth.currentUser?.displayName || localStorage.getItem('eval_username') || 'Anonymous';
-                  handleStart(taskItems, userName, modelNames, taskId, existingVotes, paradigm, models);
-                } else {
-                  setAppState('setup');
-                }
-              }}
-              onGoToAnalysis={(project) => {
-                setActiveProject(project);
-                setAppState('analysis');
-              }}
-              onGoToDatasetRepo={() => setAppState('dataset_repo')}
-              onGoToTemplateRepo={() => setAppState('template_repo')}
-              onGoToTaskBuilder={(project, mode) => {
-                setActiveProject(project);
-                setTaskBuilderMode(mode || 'create');
-                setAppState('task_builder');
-              }}
-            />
-          </div>
-        )}
-
-        {appState === 'dataset_repo' && (
-          <div className="h-full py-10">
-            <DatasetRepositoryScreen 
-              onBack={() => setAppState('dashboard')}
-            />
-          </div>
-        )}
-
-        {appState === 'template_repo' && (
-          <div className="h-full py-10">
-            <TemplateRepositoryScreen 
-              onBack={() => setAppState('dashboard')}
-            />
-          </div>
-        )}
-
-        {appState === 'task_builder' && (
-          <div className="h-full py-10">
-            <TaskBuilderScreen 
-              projectId={activeProject?.id}
-              initialMode={taskBuilderMode}
-              onBack={() => setAppState('dashboard')}
-            />
-          </div>
-        )}
-
-        {appState === 'setup' && (
-          <div className="min-h-full flex flex-col py-10">
-            <div className="my-auto">
-              <SetupScreen 
-                project={activeProject}
-                onStart={handleStart} 
-                onGoToAnalysis={() => setAppState('analysis')}
-                onGoToHistory={() => setAppState('history')}
-                onBack={() => setAppState('dashboard')}
-                savedSession={hasSavedSession}
-                onResume={resumeSession}
-                onDiscardSession={discardSession}
-              />
-            </div>
-          </div>
-        )}
-
-        {appState === 'analysis' && (
-          <div className="h-full py-10">
-            <AnalysisScreen 
-              onBack={() => setAppState('setup')} 
-              onGoToDashboard={() => setAppState('dashboard')}
-            />
-          </div>
-        )}
-
-        {appState === 'history' && (
-          <div className="h-full py-10">
-            <HistoryScreen 
-              history={history}
-              onBack={() => setAppState('setup')}
-              onGoToDashboard={() => setAppState('dashboard')}
-              onClearHistory={clearHistory}
-              onDeleteSession={deleteSession}
-            />
-          </div>
-        )}
-
-        {appState === 'voting' && items.length > 0 && taskParadigm !== 'Arena-rank' && (
-          <VotingScreen 
-            item={items[currentIndex]}
-            nextItem={items[currentIndex + 1]}
-            currentIndex={currentIndex}
-            totalItems={items.length}
-            onVote={handleVote}
-            onEnd={handleEndSessionEarly}
-            onBack={() => setAppState('dashboard')}
-            onGoBack={currentIndex > 0 ? handleGoBack : undefined}
-          />
-        )}
-
-        {appState === 'voting' && items.length > 0 && taskParadigm === 'Arena-rank' && (
-          <ArenaRankVotingScreen
-            item={items[currentIndex]}
-            nextItem={items[currentIndex + 1]}
-            currentIndex={currentIndex}
-            totalItems={items.length}
-            models={taskModels}
-            onVote={handleRankVote}
-            onEnd={handleEndSessionEarly}
-            onBack={() => setAppState('dashboard')}
-            onGoBack={currentIndex > 0 ? handleGoBack : undefined}
-          />
-        )}
-
-        {appState === 'results' && (
-          <div className="h-full py-10">
-            <ResultsScreen 
-              votes={votes} 
-              items={items}
-              onReset={handleReset} 
-              userName={userName}
-              modelNames={modelNames}
-              models={taskModels}
-              paradigm={taskParadigm}
-              onGoToDashboard={() => setAppState('dashboard')}
-            />
-          </div>
-        )}
-      </div>
-
+    <AppShell
+      currentRoute={currentRoute}
+      onNavigate={navigate}
+      user={user}
+      shouldUseFirebase={shouldUseFirebase}
+      onSignIn={signInWithGoogle}
+      onLogout={logout}
+      onClearLocalSession={discardSession}
+      hasSavedSession={hasSavedSession}
+      focusMode={currentRoute === 'voting'}
+      contextTitle={activeProject?.name}
+    >
+      {renderRoute()}
       <ConfirmModal
         isOpen={confirmConfig.isOpen}
         title={confirmConfig.title}
@@ -572,6 +618,6 @@ export function ModelEvalApp({ initialRoute = 'dashboard' }: ModelEvalAppProps) 
         onConfirm={confirmConfig.onConfirm}
         onCancel={() => setConfirmConfig(prev => ({ ...prev, isOpen: false }))}
       />
-    </div>
+    </AppShell>
   );
 }

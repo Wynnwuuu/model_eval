@@ -51,6 +51,7 @@ import {
 
 interface DatasetRepositoryScreenProps {
   onBack: () => void;
+  mode?: 'repository' | 'generation';
 }
 
 type WizardMode = 'create' | 'append';
@@ -340,7 +341,7 @@ const MediaCell = ({ value, previewType }: { value: any; previewType?: DatasetPr
   return <span className="text-xs text-slate-300 line-clamp-3 max-w-[260px] whitespace-pre-wrap">{String(value)}</span>;
 };
 
-const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBack }) => {
+const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBack, mode = 'repository' }) => {
   const [datasets, setDatasets] = useState<EvalDataset[]>([]);
   const [datasetToDelete, setDatasetToDelete] = useState<string | null>(null);
   const [selectedDatasetId, setSelectedDatasetId] = useState('');
@@ -452,6 +453,10 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
     });
     return () => unsubscribe();
   }, [selectedDataset?.id]);
+
+  const isGenerationMode = mode === 'generation';
+  const runningGenerationJobs = generationJobs.filter(job => job.status === 'running' || job.status === 'queued' || job.status === 'partial');
+  const latestGenerationJob = generationJobs[0];
 
   const openWizard = (mode: WizardMode, target?: EvalDataset) => {
     const normalizedTarget = target ? normalizeDatasetForDisplay(target) : null;
@@ -892,7 +897,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
                     <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between gap-3">
                       <div>
                         <h3 className="font-semibold text-slate-100">模型结果列</h3>
-                        <p className="text-xs text-slate-400 mt-0.5">列名会作为创建评测任务时的模型名称。</p>
+                        <p className="text-xs text-slate-400 mt-0.5">列名会作为创建评测物料时的模型名称。</p>
                       </div>
                       <button onClick={() => addCustomField('output')} className="px-3 py-1.5 rounded-lg bg-amber-500/10 text-amber-300 text-xs border border-amber-500/20 flex items-center gap-1.5">
                         <Plus size={14} /> 添加结果列
@@ -1057,14 +1062,19 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
           </button>
           <div>
             <h1 className="text-3xl font-bold text-slate-100 flex items-center gap-3 tracking-tight">
-              <Database className="text-amber-500" size={30} /> 评测集仓库
+              {isGenerationMode ? <Wand2 className="text-amber-500" size={30} /> : <Database className="text-amber-500" size={30} />}
+              {isGenerationMode ? '生产工作台' : '评测集仓库'}
             </h1>
-            <p className="text-slate-300 mt-1 text-sm">结构化管理 case、输入、模型输出、维度、参考素材与 Dataset Card。</p>
+            <p className="text-slate-300 mt-1 text-sm">
+              {isGenerationMode
+                ? '选择评测集，批量调用生成服务，把产物写回为可预览的模型输出列，并保留 seed、参数和失败记录。'
+                : '结构化管理 case、输入、模型输出、维度、参考素材与 Dataset Card。'}
+            </p>
           </div>
         </div>
         <div className="flex flex-wrap gap-3">
-          <button onClick={() => setGenerationModalOpen(true)} disabled={!selectedDataset} className="flex items-center gap-2 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 px-4 py-2.5 rounded-xl font-medium text-sm border border-amber-500/20 disabled:opacity-40">
-            <Wand2 size={18} /> 批量生产产物
+          <button onClick={() => setGenerationModalOpen(true)} disabled={!selectedDataset} className={`${isGenerationMode ? 'bg-gradient-accent text-black shadow-lg shadow-amber-500/20 hover:opacity-90' : 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/20'} flex items-center gap-2 px-4 py-2.5 rounded-xl font-medium text-sm disabled:opacity-40`}>
+            <Wand2 size={18} /> {isGenerationMode ? '开始批量生产' : '批量生产产物'}
           </button>
           <button onClick={() => selectedDataset && openWizard('append', selectedDataset)} disabled={!selectedDataset} className="flex items-center gap-2 bg-white/5 glass-panel-hover text-slate-300 px-4 py-2.5 rounded-xl font-medium text-sm border border-white/10 disabled:opacity-40">
             <Upload size={18} /> 追加内容
@@ -1074,6 +1084,46 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
           </button>
         </div>
       </div>
+
+      {isGenerationMode && (
+        <div className="mb-5 rounded-2xl border border-amber-500/20 bg-amber-500/[0.06] p-5">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+            <div className="min-w-0">
+              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-300">Generation Pipeline</div>
+              <h2 className="mt-2 text-xl font-semibold text-slate-100">从评测集直接生产模型产物列</h2>
+              <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-300">
+                当前入口只服务于生产：选择左侧评测集，确认 prompt、参考图/音频、首尾帧和控制变量后启动批量生成；成功结果会立即写回为新的输出列，可继续用于评测物料构建。
+              </p>
+            </div>
+            <div className="grid min-w-[280px] grid-cols-3 gap-2 text-center text-xs">
+              <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                <div className="text-slate-400">当前评测集</div>
+                <div className="mt-1 truncate text-sm font-semibold text-slate-100" title={selectedDataset?.name}>{selectedDataset?.name || '未选择'}</div>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                <div className="text-slate-400">输出列</div>
+                <div className="mt-1 text-sm font-semibold text-slate-100">{outputColumns.length}</div>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-black/20 p-3">
+                <div className="text-slate-400">运行批次</div>
+                <div className="mt-1 text-sm font-semibold text-slate-100">{runningGenerationJobs.length}</div>
+              </div>
+            </div>
+            <button onClick={() => setGenerationModalOpen(true)} disabled={!selectedDataset} className="btn-primary shrink-0 disabled:opacity-40">
+              <Wand2 size={18} /> 配置并启动生产
+            </button>
+          </div>
+          {latestGenerationJob && (
+            <div className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-xs text-slate-300">
+              <span className="text-slate-500">最近批次</span>
+              <span className="font-medium text-slate-100">{latestGenerationJob.targetColumn}</span>
+              <span className={`px-2 py-1 rounded-md border ${jobStatusClass(latestGenerationJob.status)}`}>{jobStatusLabel(latestGenerationJob.status)}</span>
+              <span>成功 {latestGenerationJob.succeeded || 0}/{latestGenerationJob.total || 0}</span>
+              {!!latestGenerationJob.failed && <span className="text-red-300">失败 {latestGenerationJob.failed}</span>}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 xl:grid-cols-[280px_minmax(0,1fr)_360px] gap-4">
         <aside className="glass-panel rounded-2xl border border-white/10 p-4 h-fit xl:sticky xl:top-4">
@@ -1113,7 +1163,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
             </div>
           </div>
           <div className="border-t border-white/10 pt-4">
-            <div className="text-xs text-slate-400 mb-2">评测集</div>
+            <div className="text-xs text-slate-400 mb-2">{isGenerationMode ? '可生产评测集' : '评测集'}</div>
             <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
               {filteredDatasets.map(dataset => (
                 <button key={dataset.id} onClick={() => { setSelectedDatasetId(dataset.id); setSelectedRowIndex(0); }} className={`w-full text-left p-3 rounded-xl border transition-colors ${selectedDataset?.id === dataset.id ? 'bg-white/10 border-amber-400/40' : 'bg-white/5 border-white/10 hover:bg-white/[0.08]'}`}>

@@ -1,0 +1,883 @@
+import { AggregatedResult, EvaluationItem, ModelOutput, RankingEntry, VoteRecord, VoteType } from './types';
+import { DimensionValues, getDimensionEntries, getDimensionValuesForItem } from './dimensionUtils';
+import {
+  ArenaRankPromptItem,
+  calculateArenaRankModelStats,
+  getArenaRankModelOutputUrl,
+  getBordaScore,
+  getModelOutputsForItem,
+  isArenaRankVote,
+  resolveEvaluationItemPrompt,
+  sortRanking
+} from './rankingUtils';
+
+export interface ConfidenceInterval {
+  lower: number;
+  upper: number;
+}
+
+export interface InsightModelNames {
+  a: string;
+  b: string;
+}
+
+export interface RawAbVoteRow {
+  itemId: string;
+  vote: VoteType;
+  timestamp?: number;
+  user?: string;
+}
+
+export interface AnalysisEvidence {
+  itemId: string;
+  prompt: string;
+  dimensionValues: DimensionValues;
+  mediaType?: EvaluationItem['type'];
+  humanVotes: Array<{
+    user: string;
+    vote: VoteType;
+    voteLabel: string;
+    timestamp?: number;
+  }>;
+  aiJudgeRationale?: string;
+  representativeOutputs: ModelOutput[];
+  referenceUrls: string[];
+  metrics: Record<string, number | string | null>;
+}
+
+export interface AbCaseInsight extends AnalysisEvidence {
+  mode: 'ab';
+  votes: Record<VoteType, number>;
+  voters: string[];
+  winnerSide: VoteType;
+  winnerLabel: string;
+  agreementRate: number;
+  marginVotes: number;
+  marginRate: number;
+  modelA: ModelOutput;
+  modelB: ModelOutput;
+}
+
+export interface AbDimensionInsight {
+  mode: 'ab';
+  dimensionKey: string;
+  dimensionValue: string;
+  itemCount: number;
+  totalVotes: number;
+  votes: Record<VoteType, number>;
+  winnerSide: VoteType;
+  winnerLabel: string;
+  agreementRate: number;
+  marginRate: number;
+  aShare: number;
+  bShare: number;
+  tieRate: number;
+  nonTieAShare: number;
+  confidenceInterval: ConfidenceInterval;
+  pValue: number | null;
+  smallSample: boolean;
+}
+
+export interface AbInsightBundle {
+  mode: 'ab';
+  models: InsightModelNames;
+  summary: {
+    itemCount: number;
+    totalVotes: number;
+    nonTieVotes: number;
+    voterCount: number;
+    votes: Record<VoteType, number>;
+    aShare: number;
+    bShare: number;
+    tieRate: number;
+    nonTieAShare: number;
+    nonTieBShare: number;
+    confidenceInterval: ConfidenceInterval;
+    pValue: number | null;
+    marginVotes: number;
+    marginRate: number;
+    averageAgreement: number | null;
+    lowConsensusCount: number;
+    krippendorffAlpha: number | null;
+    smallSample: boolean;
+  };
+  cases: AbCaseInsight[];
+  dimensions: AbDimensionInsight[];
+  trend: Array<{ timestamp: number; aShare: number; bShare: number; tieRate: number; totalVotes: number }>;
+}
+
+export interface RankModelInsight {
+  modelId: string;
+  modelName: string;
+  totalScore: number;
+  averageRank: number;
+  firstPlaceCount: number;
+  rankedCount: number;
+  firstPlaceRate: number;
+  confidenceInterval: ConfidenceInterval;
+}
+
+export interface PairwiseComparisonStat {
+  modelAId: string;
+  modelAName: string;
+  modelBId: string;
+  modelBName: string;
+  aWins: number;
+  bWins: number;
+  total: number;
+  aShare: number;
+  confidenceInterval: ConfidenceInterval;
+  pValue: number | null;
+}
+
+export interface RankCaseInsight extends AnalysisEvidence {
+  mode: 'rank';
+  voterCount: number;
+  rankings: RankingEntry[][];
+  consensusRanking: RankModelInsight[];
+  kendallTau: number | null;
+}
+
+export interface RankDimensionInsight {
+  mode: 'rank';
+  dimensionKey: string;
+  dimensionValue: string;
+  itemCount: number;
+  rankingRecords: number;
+  modelStats: RankModelInsight[];
+  leadingModel: string;
+  agreement: number | null;
+  smallSample: boolean;
+}
+
+export interface RankInsightBundle {
+  mode: 'rank';
+  models: RankModelInsight[];
+  summary: {
+    itemCount: number;
+    rankingRecords: number;
+    voterCount: number;
+    bestModel: string;
+    averageKendallTau: number | null;
+    lowConsensusCount: number;
+    smallSample: boolean;
+  };
+  cases: RankCaseInsight[];
+  dimensions: RankDimensionInsight[];
+  pairwise: PairwiseComparisonStat[];
+  trend: Array<{ timestamp: number; leaderScore: number; totalRankings: number }>;
+}
+
+export type InsightBundle = AbInsightBundle | RankInsightBundle;
+
+const DEFAULT_MODELS: InsightModelNames = { a: 'Model A', b: 'Model B' };
+
+export const clamp01 = (value: number) => Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0));
+
+export const safeDivide = (numerator: number, denominator: number) =>
+  denominator > 0 ? numerator / denominator : 0;
+
+export const formatPercent = (value: number | null | undefined, digits = 0) =>
+  value === null || value === undefined || Number.isNaN(value)
+    ? '-'
+    : `${(value * 100).toFixed(digits)}%`;
+
+export const formatNumber = (value: number | null | undefined, digits = 2) =>
+  value === null || value === undefined || Number.isNaN(value) ? '-' : value.toFixed(digits);
+
+export const formatPValue = (value: number | null | undefined) => {
+  if (value === null || value === undefined || Number.isNaN(value)) return '样本不足';
+  if (value < 0.001) return '<0.001';
+  return value.toFixed(3);
+};
+
+export const getSignificanceLabel = (pValue: number | null | undefined) => {
+  if (pValue === null || pValue === undefined || Number.isNaN(pValue)) return '样本不足';
+  if (pValue < 0.01) return '差异显著';
+  if (pValue < 0.05) return '差异显著';
+  if (pValue < 0.1) return '趋势信号';
+  return '未见显著差异';
+};
+
+export const wilsonInterval = (successes: number, total: number, z = 1.96): ConfidenceInterval => {
+  if (total <= 0) return { lower: 0, upper: 0 };
+  const phat = successes / total;
+  const z2 = z * z;
+  const denominator = 1 + z2 / total;
+  const centre = phat + z2 / (2 * total);
+  const margin = z * Math.sqrt((phat * (1 - phat) + z2 / (4 * total)) / total);
+  return {
+    lower: clamp01((centre - margin) / denominator),
+    upper: clamp01((centre + margin) / denominator)
+  };
+};
+
+const logChoose = (n: number, k: number) => {
+  const effectiveK = Math.min(k, n - k);
+  let value = 0;
+  for (let i = 1; i <= effectiveK; i += 1) {
+    value += Math.log(n - effectiveK + i) - Math.log(i);
+  }
+  return value;
+};
+
+export const binomialSignTestTwoSided = (winsA: number, winsB: number) => {
+  const total = winsA + winsB;
+  if (total <= 0) return null;
+  const tail = Math.min(winsA, winsB);
+  let probability = 0;
+  for (let k = 0; k <= tail; k += 1) {
+    probability += Math.exp(logChoose(total, k) - total * Math.log(2));
+  }
+  return Math.min(1, probability * 2);
+};
+
+const getWinnerSide = (votes: Record<VoteType, number>): VoteType => {
+  const maxVotes = Math.max(votes.A, votes.B, votes.Tie);
+  const winners = [
+    votes.A === maxVotes ? 'A' : null,
+    votes.B === maxVotes ? 'B' : null,
+    votes.Tie === maxVotes ? 'Tie' : null
+  ].filter(Boolean);
+  return winners.length === 1 && winners[0] !== 'Tie' ? winners[0] as VoteType : 'Tie';
+};
+
+export const getVoteLabel = (vote: VoteType, models: InsightModelNames) => {
+  if (vote === 'A') return models.a;
+  if (vote === 'B') return models.b;
+  return '平局';
+};
+
+const makeEmptyOutput = (modelId: string, modelName: string): ModelOutput => ({
+  modelId,
+  modelName,
+  url: ''
+});
+
+export const getAbModelOutputs = (
+  item: (Partial<EvaluationItem> & { id: string }) | undefined,
+  models: InsightModelNames
+) => {
+  if (!item) {
+    return {
+      a: makeEmptyOutput('model-a', models.a),
+      b: makeEmptyOutput('model-b', models.b)
+    };
+  }
+
+  const outputs = getModelOutputsForItem(item as EvaluationItem, [
+    { id: 'model-a', name: models.a },
+    { id: 'model-b', name: models.b }
+  ]);
+  const normalize = (value?: string) => String(value || '').trim().toLowerCase();
+  const byA = outputs.find(output => normalize(output.modelName) === normalize(models.a) || normalize(output.modelId) === 'model-a');
+  const byB = outputs.find(output => normalize(output.modelName) === normalize(models.b) || normalize(output.modelId) === 'model-b');
+  const outputA = byA || outputs[0] || makeEmptyOutput('model-a', models.a);
+  const outputB = byB || outputs.find(output => output !== outputA) || outputs[1] || makeEmptyOutput('model-b', models.b);
+
+  return {
+    a: {
+      modelId: outputA.modelId || 'model-a',
+      modelName: outputA.modelName || models.a,
+      url: outputA.url || (item as EvaluationItem).modelA_Url || ''
+    },
+    b: {
+      modelId: outputB.modelId || 'model-b',
+      modelName: outputB.modelName || models.b,
+      url: outputB.url || (item as EvaluationItem).modelB_Url || ''
+    }
+  };
+};
+
+const getTimestamp = (value?: number) => (Number.isFinite(value) && value ? value as number : Date.now());
+
+const buildKrippendorffAlphaNominal = (rows: RawAbVoteRow[]) => {
+  const validRows = rows.filter(row => row.vote);
+  if (validRows.length < 2) return null;
+
+  const perItem = new Map<string, VoteType[]>();
+  validRows.forEach(row => {
+    perItem.set(row.itemId, [...(perItem.get(row.itemId) || []), row.vote]);
+  });
+
+  let observedDisagreements = 0;
+  let observedPairs = 0;
+  perItem.forEach(values => {
+    for (let i = 0; i < values.length; i += 1) {
+      for (let j = i + 1; j < values.length; j += 1) {
+        observedPairs += 1;
+        if (values[i] !== values[j]) observedDisagreements += 1;
+      }
+    }
+  });
+  if (observedPairs === 0) return null;
+
+  const totals: Record<VoteType, number> = { A: 0, B: 0, Tie: 0 };
+  validRows.forEach(row => {
+    totals[row.vote] += 1;
+  });
+  const totalAnnotations = validRows.length;
+  const expectedAgreement = Object.values(totals)
+    .reduce((sum, count) => sum + Math.pow(count / totalAnnotations, 2), 0);
+  const expectedDisagreement = 1 - expectedAgreement;
+  if (expectedDisagreement <= 0) return null;
+
+  return 1 - (observedDisagreements / observedPairs) / expectedDisagreement;
+};
+
+const buildAbTrend = (rows: RawAbVoteRow[]) => {
+  const sortedRows = [...rows]
+    .filter(row => row.vote)
+    .sort((a, b) => getTimestamp(a.timestamp) - getTimestamp(b.timestamp));
+  const counts: Record<VoteType, number> = { A: 0, B: 0, Tie: 0 };
+  return sortedRows.map(row => {
+    counts[row.vote] += 1;
+    const total = counts.A + counts.B + counts.Tie;
+    return {
+      timestamp: getTimestamp(row.timestamp),
+      aShare: safeDivide(counts.A, total),
+      bShare: safeDivide(counts.B, total),
+      tieRate: safeDivide(counts.Tie, total),
+      totalVotes: total
+    };
+  });
+};
+
+const normalizeAggregatedCases = (
+  items: Array<Partial<EvaluationItem> & { id: string }>,
+  votes: VoteRecord[] = [],
+  aggregatedData: AggregatedResult[] = [],
+  rawVoteRows: RawAbVoteRow[] = [],
+  modelNames: InsightModelNames
+) => {
+  const itemMap = new Map(items.map(item => [item.id, item]));
+  const rows: RawAbVoteRow[] = rawVoteRows.length
+    ? rawVoteRows
+    : votes
+        .filter(vote => vote.vote)
+        .map(vote => ({
+          itemId: vote.itemId,
+          vote: vote.vote as VoteType,
+          timestamp: vote.timestamp,
+          user: vote.user
+        }));
+
+  const aggregateMap = new Map<string, AggregatedResult>();
+  aggregatedData.forEach(item => aggregateMap.set(item.itemId, item));
+
+  if (!aggregateMap.size) {
+    const grouped = new Map<string, AggregatedResult>();
+    rows.forEach(row => {
+      const current = grouped.get(row.itemId) || {
+        itemId: row.itemId,
+        prompt: resolveEvaluationItemPrompt(itemMap.get(row.itemId)),
+        dimensionValues: getDimensionValuesForItem(itemMap.get(row.itemId) as any),
+        votes: { A: 0, B: 0, Tie: 0 },
+        voters: []
+      };
+      current.votes[row.vote] += 1;
+      current.voters.push(row.user || 'Anonymous');
+      grouped.set(row.itemId, current);
+    });
+    grouped.forEach((item, itemId) => aggregateMap.set(itemId, item));
+  }
+
+  items.forEach(item => {
+    if (!aggregateMap.has(item.id) && rows.some(row => row.itemId === item.id)) {
+      aggregateMap.set(item.id, {
+        itemId: item.id,
+        prompt: resolveEvaluationItemPrompt(item),
+        dimensionValues: getDimensionValuesForItem(item as any),
+        votes: { A: 0, B: 0, Tie: 0 },
+        voters: []
+      });
+    }
+  });
+
+  const cases = Array.from(aggregateMap.values()).map(aggregate => {
+    const item = itemMap.get(aggregate.itemId);
+    const outputs = getAbModelOutputs(item, modelNames);
+    const itemRows = rows.filter(row => row.itemId === aggregate.itemId);
+    const voters = Array.from(new Set([
+      ...(aggregate.voters || []),
+      ...itemRows.map(row => row.user || 'Anonymous')
+    ].filter(Boolean)));
+    const dimensionValues = {
+      ...(aggregate.dimensionValues || {}),
+      ...getDimensionValuesForItem(item as any)
+    };
+    const total = aggregate.votes.A + aggregate.votes.B + aggregate.votes.Tie;
+    const maxVotes = Math.max(aggregate.votes.A, aggregate.votes.B, aggregate.votes.Tie);
+    const winnerSide = getWinnerSide(aggregate.votes);
+    const marginVotes = Math.abs(aggregate.votes.A - aggregate.votes.B);
+    const representativeOutputs = [outputs.a, outputs.b].filter(output => output.url);
+    const humanVotes = itemRows.map(row => ({
+      user: row.user || 'Anonymous',
+      vote: row.vote,
+      voteLabel: getVoteLabel(row.vote, modelNames),
+      timestamp: row.timestamp
+    }));
+
+    return {
+      mode: 'ab' as const,
+      itemId: aggregate.itemId,
+      prompt: aggregate.prompt || resolveEvaluationItemPrompt(item) || '',
+      dimensionValues,
+      mediaType: (item as EvaluationItem | undefined)?.type,
+      humanVotes,
+      aiJudgeRationale: '',
+      representativeOutputs,
+      referenceUrls: (item as EvaluationItem | undefined)?.referenceUrls || [],
+      metrics: {
+        totalVotes: total,
+        agreementRate: safeDivide(maxVotes, total),
+        marginRate: safeDivide(marginVotes, total)
+      },
+      votes: aggregate.votes,
+      voters,
+      winnerSide,
+      winnerLabel: getVoteLabel(winnerSide, modelNames),
+      agreementRate: safeDivide(maxVotes, total),
+      marginVotes,
+      marginRate: safeDivide(marginVotes, total),
+      modelA: outputs.a,
+      modelB: outputs.b
+    };
+  });
+
+  return { cases, rows };
+};
+
+export const buildAbInsights = ({
+  items,
+  votes = [],
+  aggregatedData = [],
+  rawVoteRows = [],
+  modelNames = DEFAULT_MODELS
+}: {
+  items: Array<Partial<EvaluationItem> & { id: string }>;
+  votes?: VoteRecord[];
+  aggregatedData?: AggregatedResult[];
+  rawVoteRows?: RawAbVoteRow[];
+  modelNames?: InsightModelNames;
+}): AbInsightBundle => {
+  const models = {
+    a: modelNames.a || DEFAULT_MODELS.a,
+    b: modelNames.b || DEFAULT_MODELS.b
+  };
+  const { cases, rows } = normalizeAggregatedCases(items, votes, aggregatedData, rawVoteRows, models);
+  const totals = cases.reduce<Record<VoteType, number>>((acc, item) => {
+    acc.A += item.votes.A;
+    acc.B += item.votes.B;
+    acc.Tie += item.votes.Tie;
+    return acc;
+  }, { A: 0, B: 0, Tie: 0 });
+  const totalVotes = totals.A + totals.B + totals.Tie;
+  const nonTieVotes = totals.A + totals.B;
+  const voterCount = new Set([
+    ...rows.map(row => row.user || 'Anonymous'),
+    ...cases.flatMap(item => item.voters)
+  ]).size;
+  const averageAgreement = cases.length
+    ? cases.reduce((sum, item) => sum + item.agreementRate, 0) / cases.length
+    : null;
+
+  const dimensions = buildAbDimensionInsights(cases, models);
+
+  return {
+    mode: 'ab',
+    models,
+    summary: {
+      itemCount: cases.length,
+      totalVotes,
+      nonTieVotes,
+      voterCount,
+      votes: totals,
+      aShare: safeDivide(totals.A, totalVotes),
+      bShare: safeDivide(totals.B, totalVotes),
+      tieRate: safeDivide(totals.Tie, totalVotes),
+      nonTieAShare: safeDivide(totals.A, nonTieVotes),
+      nonTieBShare: safeDivide(totals.B, nonTieVotes),
+      confidenceInterval: wilsonInterval(totals.A, nonTieVotes),
+      pValue: binomialSignTestTwoSided(totals.A, totals.B),
+      marginVotes: Math.abs(totals.A - totals.B),
+      marginRate: safeDivide(Math.abs(totals.A - totals.B), totalVotes),
+      averageAgreement,
+      lowConsensusCount: cases.filter(item => item.agreementRate < 0.6).length,
+      krippendorffAlpha: buildKrippendorffAlphaNominal(rows),
+      smallSample: cases.length < 5 || totalVotes < 10
+    },
+    cases: cases.sort((a, b) => a.itemId.localeCompare(b.itemId)),
+    dimensions,
+    trend: buildAbTrend(rows)
+  };
+};
+
+const buildAbDimensionInsights = (cases: AbCaseInsight[], models: InsightModelNames): AbDimensionInsight[] => {
+  const grouped = new Map<string, { key: string; value: string; cases: AbCaseInsight[] }>();
+
+  cases.forEach(item => {
+    getDimensionEntries(item.dimensionValues).forEach(([dimensionKey, dimensionValue]) => {
+      const groupKey = `${dimensionKey}::${dimensionValue}`;
+      const group = grouped.get(groupKey) || { key: dimensionKey, value: dimensionValue, cases: [] };
+      group.cases.push(item);
+      grouped.set(groupKey, group);
+    });
+  });
+
+  return Array.from(grouped.values())
+    .map(group => {
+      const votes = group.cases.reduce<Record<VoteType, number>>((acc, item) => {
+        acc.A += item.votes.A;
+        acc.B += item.votes.B;
+        acc.Tie += item.votes.Tie;
+        return acc;
+      }, { A: 0, B: 0, Tie: 0 });
+      const totalVotes = votes.A + votes.B + votes.Tie;
+      const nonTieVotes = votes.A + votes.B;
+      const winnerSide = getWinnerSide(votes);
+      const maxVotes = Math.max(votes.A, votes.B, votes.Tie);
+
+      return {
+        mode: 'ab' as const,
+        dimensionKey: group.key,
+        dimensionValue: group.value,
+        itemCount: new Set(group.cases.map(item => item.itemId)).size,
+        totalVotes,
+        votes,
+        winnerSide,
+        winnerLabel: getVoteLabel(winnerSide, models),
+        agreementRate: safeDivide(maxVotes, totalVotes),
+        marginRate: safeDivide(Math.abs(votes.A - votes.B), totalVotes),
+        aShare: safeDivide(votes.A, totalVotes),
+        bShare: safeDivide(votes.B, totalVotes),
+        tieRate: safeDivide(votes.Tie, totalVotes),
+        nonTieAShare: safeDivide(votes.A, nonTieVotes),
+        confidenceInterval: wilsonInterval(votes.A, nonTieVotes),
+        pValue: binomialSignTestTwoSided(votes.A, votes.B),
+        smallSample: group.cases.length < 5 || totalVotes < 10
+      };
+    })
+    .sort((a, b) => a.dimensionKey.localeCompare(b.dimensionKey) || b.totalVotes - a.totalVotes);
+};
+
+const toRankModelInsights = (votes: VoteRecord[]): RankModelInsight[] => {
+  const stats = calculateArenaRankModelStats(votes);
+  return stats.map(stat => ({
+    ...stat,
+    firstPlaceRate: safeDivide(stat.firstPlaceCount, stat.rankedCount),
+    confidenceInterval: wilsonInterval(stat.firstPlaceCount, stat.rankedCount)
+  }));
+};
+
+const rankingToMap = (ranking: RankingEntry[] = []) => {
+  const map = new Map<string, number>();
+  ranking.forEach(entry => map.set(entry.modelId, entry.rank));
+  return map;
+};
+
+export const kendallTauForRankings = (left: RankingEntry[] = [], right: RankingEntry[] = []) => {
+  const leftMap = rankingToMap(left);
+  const rightMap = rankingToMap(right);
+  const ids = Array.from(leftMap.keys()).filter(id => rightMap.has(id));
+  if (ids.length < 2) return null;
+
+  let concordant = 0;
+  let discordant = 0;
+  for (let i = 0; i < ids.length; i += 1) {
+    for (let j = i + 1; j < ids.length; j += 1) {
+      const leftDiff = (leftMap.get(ids[i]) || 0) - (leftMap.get(ids[j]) || 0);
+      const rightDiff = (rightMap.get(ids[i]) || 0) - (rightMap.get(ids[j]) || 0);
+      const product = leftDiff * rightDiff;
+      if (product > 0) concordant += 1;
+      if (product < 0) discordant += 1;
+    }
+  }
+
+  const comparable = concordant + discordant;
+  return comparable ? (concordant - discordant) / comparable : null;
+};
+
+const averageCaseKendallTau = (rankings: RankingEntry[][]) => {
+  const values: number[] = [];
+  for (let i = 0; i < rankings.length; i += 1) {
+    for (let j = i + 1; j < rankings.length; j += 1) {
+      const tau = kendallTauForRankings(rankings[i], rankings[j]);
+      if (tau !== null) values.push(tau);
+    }
+  }
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+};
+
+const buildPairwiseStats = (votes: VoteRecord[], models: { id: string; name: string }[]) => {
+  const pairs = new Map<string, PairwiseComparisonStat>();
+  const ensurePair = (a: { id: string; name: string }, b: { id: string; name: string }) => {
+    const key = `${a.id}::${b.id}`;
+    const existing = pairs.get(key) || {
+      modelAId: a.id,
+      modelAName: a.name,
+      modelBId: b.id,
+      modelBName: b.name,
+      aWins: 0,
+      bWins: 0,
+      total: 0,
+      aShare: 0,
+      confidenceInterval: { lower: 0, upper: 0 },
+      pValue: null
+    };
+    pairs.set(key, existing);
+    return existing;
+  };
+
+  votes.filter(isArenaRankVote).forEach(vote => {
+    const ranking = sortRanking(vote.ranking);
+    const byId = new Map(ranking.map(entry => [entry.modelId, entry]));
+    for (let i = 0; i < models.length; i += 1) {
+      for (let j = i + 1; j < models.length; j += 1) {
+        const modelA = models[i];
+        const modelB = models[j];
+        const aRank = byId.get(modelA.id)?.rank;
+        const bRank = byId.get(modelB.id)?.rank;
+        if (!aRank || !bRank || aRank === bRank) continue;
+        const pair = ensurePair(modelA, modelB);
+        pair.total += 1;
+        if (aRank < bRank) pair.aWins += 1;
+        else pair.bWins += 1;
+      }
+    }
+  });
+
+  return Array.from(pairs.values()).map(pair => ({
+    ...pair,
+    aShare: safeDivide(pair.aWins, pair.total),
+    confidenceInterval: wilsonInterval(pair.aWins, pair.total),
+    pValue: binomialSignTestTwoSided(pair.aWins, pair.bWins)
+  }));
+};
+
+const buildRankTrend = (votes: VoteRecord[]) => {
+  const sorted = [...votes].filter(isArenaRankVote).sort((a, b) => getTimestamp(a.timestamp) - getTimestamp(b.timestamp));
+  const running: VoteRecord[] = [];
+  return sorted.map(vote => {
+    running.push(vote);
+    const leader = calculateArenaRankModelStats(running)[0];
+    return {
+      timestamp: getTimestamp(vote.timestamp),
+      leaderScore: leader?.totalScore || 0,
+      totalRankings: running.length
+    };
+  });
+};
+
+export const buildRankInsights = ({
+  items,
+  votes = [],
+  models = []
+}: {
+  items: ArenaRankPromptItem[];
+  votes?: VoteRecord[];
+  models?: { id: string; name: string }[];
+}): RankInsightBundle => {
+  const rankVotes = votes.filter(isArenaRankVote);
+  const modelStats = toRankModelInsights(rankVotes);
+  const modelList = models.length
+    ? models
+    : modelStats.map(stat => ({ id: stat.modelId, name: stat.modelName }));
+  const itemMap = new Map(items.map(item => [item.id, item]));
+  const groupedVotes = new Map<string, VoteRecord[]>();
+  rankVotes.forEach(vote => groupedVotes.set(vote.itemId, [...(groupedVotes.get(vote.itemId) || []), vote]));
+
+  const cases: RankCaseInsight[] = Array.from(groupedVotes.entries()).map(([itemId, itemVotes]) => {
+    const item = itemMap.get(itemId);
+    const rankings = itemVotes.map(vote => sortRanking(vote.ranking));
+    const consensusRanking = toRankModelInsights(itemVotes);
+    const representativeOutputs = consensusRanking
+      .map(entry => ({
+        modelId: entry.modelId,
+        modelName: entry.modelName,
+        url: getArenaRankModelOutputUrl(item, entry, modelList)
+      }))
+      .filter(output => output.url);
+    const kendallTau = averageCaseKendallTau(rankings);
+
+    return {
+      mode: 'rank',
+      itemId,
+      prompt: resolveEvaluationItemPrompt(item) || '',
+      dimensionValues: getDimensionValuesForItem(item as any),
+      mediaType: (item as EvaluationItem | undefined)?.type,
+      humanVotes: itemVotes.map(vote => ({
+        user: vote.user || 'Anonymous',
+        vote: 'Tie' as VoteType,
+        voteLabel: sortRanking(vote.ranking).map(entry => `#${entry.rank} ${entry.modelName}`).join(' > '),
+        timestamp: vote.timestamp
+      })),
+      aiJudgeRationale: '',
+      representativeOutputs,
+      referenceUrls: (item as EvaluationItem | undefined)?.referenceUrls || [],
+      metrics: {
+        voterCount: new Set(itemVotes.map(vote => vote.user || 'Anonymous')).size,
+        kendallTau,
+        topModel: consensusRanking[0]?.modelName || ''
+      },
+      voterCount: new Set(itemVotes.map(vote => vote.user || 'Anonymous')).size,
+      rankings,
+      consensusRanking,
+      kendallTau
+    };
+  });
+
+  const dimensions = buildRankDimensionInsights(cases, rankVotes);
+  const validTaus = cases.map(item => item.kendallTau).filter((value): value is number => value !== null);
+
+  return {
+    mode: 'rank',
+    models: modelStats,
+    summary: {
+      itemCount: cases.length,
+      rankingRecords: rankVotes.length,
+      voterCount: new Set(rankVotes.map(vote => vote.user || 'Anonymous')).size,
+      bestModel: modelStats[0]?.modelName || '',
+      averageKendallTau: validTaus.length ? validTaus.reduce((sum, value) => sum + value, 0) / validTaus.length : null,
+      lowConsensusCount: cases.filter(item => item.kendallTau !== null && item.kendallTau < 0.3).length,
+      smallSample: cases.length < 5 || rankVotes.length < 10
+    },
+    cases: cases.sort((a, b) => a.itemId.localeCompare(b.itemId)),
+    dimensions,
+    pairwise: buildPairwiseStats(rankVotes, modelList),
+    trend: buildRankTrend(rankVotes)
+  };
+};
+
+const buildRankDimensionInsights = (cases: RankCaseInsight[], votes: VoteRecord[]): RankDimensionInsight[] => {
+  const grouped = new Map<string, { key: string; value: string; cases: RankCaseInsight[]; votes: VoteRecord[] }>();
+
+  cases.forEach(item => {
+    getDimensionEntries(item.dimensionValues).forEach(([dimensionKey, dimensionValue]) => {
+      const groupKey = `${dimensionKey}::${dimensionValue}`;
+      const group = grouped.get(groupKey) || { key: dimensionKey, value: dimensionValue, cases: [], votes: [] };
+      group.cases.push(item);
+      group.votes.push(...votes.filter(vote => vote.itemId === item.itemId));
+      grouped.set(groupKey, group);
+    });
+  });
+
+  return Array.from(grouped.values())
+    .map(group => {
+      const modelStats = toRankModelInsights(group.votes);
+      const taus = group.cases.map(item => item.kendallTau).filter((value): value is number => value !== null);
+      return {
+        mode: 'rank' as const,
+        dimensionKey: group.key,
+        dimensionValue: group.value,
+        itemCount: group.cases.length,
+        rankingRecords: group.votes.length,
+        modelStats,
+        leadingModel: modelStats[0]?.modelName || '',
+        agreement: taus.length ? taus.reduce((sum, value) => sum + value, 0) / taus.length : null,
+        smallSample: group.cases.length < 5 || group.votes.length < 10
+      };
+    })
+    .sort((a, b) => a.dimensionKey.localeCompare(b.dimensionKey) || b.rankingRecords - a.rankingRecords);
+};
+
+export const csvEscape = (value: any) => `"${String(value ?? '').replace(/"/g, '""')}"`;
+
+export const rowsToCsv = (headers: string[], rows: any[][]) =>
+  [headers.join(','), ...rows.map(row => row.map(csvEscape).join(','))].join('\n');
+
+export const buildInsightSummaryCsv = (bundle: InsightBundle) => {
+  if (bundle.mode === 'rank') {
+    return rowsToCsv(
+      ['Model', 'TotalScore', 'AverageRank', 'FirstPlaceCount', 'RankedCount', 'FirstPlaceRate', 'CI95_Lower', 'CI95_Upper'],
+      bundle.models.map(model => [
+        model.modelName,
+        model.totalScore,
+        model.averageRank.toFixed(4),
+        model.firstPlaceCount,
+        model.rankedCount,
+        model.firstPlaceRate.toFixed(4),
+        model.confidenceInterval.lower.toFixed(4),
+        model.confidenceInterval.upper.toFixed(4)
+      ])
+    );
+  }
+
+  return rowsToCsv(
+    ['Metric', 'Value'],
+    [
+      ['ModelA', bundle.models.a],
+      ['ModelB', bundle.models.b],
+      ['ItemCount', bundle.summary.itemCount],
+      ['TotalVotes', bundle.summary.totalVotes],
+      ['Votes_A', bundle.summary.votes.A],
+      ['Votes_B', bundle.summary.votes.B],
+      ['Votes_Tie', bundle.summary.votes.Tie],
+      ['NonTie_A_Share', bundle.summary.nonTieAShare.toFixed(4)],
+      ['NonTie_B_Share', bundle.summary.nonTieBShare.toFixed(4)],
+      ['Wilson95_Lower', bundle.summary.confidenceInterval.lower.toFixed(4)],
+      ['Wilson95_Upper', bundle.summary.confidenceInterval.upper.toFixed(4)],
+      ['SignTestPValue', bundle.summary.pValue ?? ''],
+      ['AverageAgreement', bundle.summary.averageAgreement ?? ''],
+      ['KrippendorffAlpha', bundle.summary.krippendorffAlpha ?? '']
+    ]
+  );
+};
+
+export const buildInsightDimensionCsv = (bundle: InsightBundle) => {
+  if (bundle.mode === 'rank') {
+    return rowsToCsv(
+      ['Dimension', 'Value', 'ItemCount', 'RankingRecords', 'LeadingModel', 'Agreement', 'SmallSample', 'ModelStats'],
+      bundle.dimensions.map(item => [
+        item.dimensionKey,
+        item.dimensionValue,
+        item.itemCount,
+        item.rankingRecords,
+        item.leadingModel,
+        item.agreement ?? '',
+        item.smallSample ? 'yes' : 'no',
+        item.modelStats.map(stat => `${stat.modelName}: score=${stat.totalScore}, avgRank=${stat.averageRank.toFixed(4)}, first=${stat.firstPlaceCount}`).join(' | ')
+      ])
+    );
+  }
+
+  return rowsToCsv(
+    ['Dimension', 'Value', 'ItemCount', 'TotalVotes', 'Votes_A', 'Votes_B', 'Votes_Tie', 'Winner', 'AgreementRate', 'MarginRate', 'NonTie_A_Share', 'CI95_Lower', 'CI95_Upper', 'PValue', 'SmallSample'],
+    bundle.dimensions.map(item => [
+      item.dimensionKey,
+      item.dimensionValue,
+      item.itemCount,
+      item.totalVotes,
+      item.votes.A,
+      item.votes.B,
+      item.votes.Tie,
+      item.winnerLabel,
+      item.agreementRate.toFixed(4),
+      item.marginRate.toFixed(4),
+      item.nonTieAShare.toFixed(4),
+      item.confidenceInterval.lower.toFixed(4),
+      item.confidenceInterval.upper.toFixed(4),
+      item.pValue ?? '',
+      item.smallSample ? 'yes' : 'no'
+    ])
+  );
+};
+
+export const buildEvidenceJson = (bundle: InsightBundle) =>
+  JSON.stringify({
+    exportedAt: new Date().toISOString(),
+    mode: bundle.mode,
+    summary: bundle.summary,
+    dimensions: bundle.dimensions,
+    pairwise: bundle.mode === 'rank' ? bundle.pairwise : undefined,
+    cases: bundle.cases.map(item => ({
+      itemId: item.itemId,
+      prompt: item.prompt,
+      dimensionValues: item.dimensionValues,
+      humanVotes: item.humanVotes,
+      aiJudgeRationale: item.aiJudgeRationale || null,
+      representativeOutputs: item.representativeOutputs,
+      referenceUrls: item.referenceUrls,
+      metrics: item.metrics
+    }))
+  }, null, 2);

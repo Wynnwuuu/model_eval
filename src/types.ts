@@ -73,11 +73,40 @@ export interface EvaluationItem {
   dimensionValues?: Record<string, string>; // Optional case-level analysis dimensions
   startImageUrl?: string; // New: Specific field for start image
   referenceUrls?: string[]; // Changed from single string to array
-  type: 'image' | 'video' | 'unknown';
+  type: 'text' | 'image' | 'video' | 'audio' | 'markdown' | 'unknown';
   isSwapped?: boolean; // New: If true, UI displays B on left and A on right for blind testing
 }
 
-export type EvalParadigm = 'GSB' | 'MOS' | 'Arena' | 'Arena-rank';
+export type EvalParadigm = 'GSB' | 'MOS' | 'Arena' | 'Arena-rank' | 'Pairwise' | 'RubricScore';
+
+export type EvaluationMethod = 'ab_preference' | 'pairwise' | 'direct_score' | 'rubric_score' | 'rank_order';
+
+export type TiePolicy = 'allow' | 'disallow';
+export type PairwiseMode = 'all_pairs' | 'adjacent_pairs';
+export type DimensionScope = 'primary' | 'secondary' | 'rationale';
+export type DimensionAggregationRole = 'score' | 'preference' | 'rationale' | 'metadata';
+
+export interface ScoreScaleLevel {
+  value: number;
+  label: string;
+  description?: string;
+}
+
+export interface EvaluationConfig {
+  method: EvaluationMethod;
+  blind?: boolean;
+  tiePolicy?: TiePolicy;
+  scale?: {
+    min: number;
+    max: number;
+    labels?: ScoreScaleLevel[];
+  };
+  dimensions?: EvalDimension[];
+  pairwiseMode?: PairwiseMode;
+  requireReason?: boolean;
+  sourceRubricId?: string;
+  rubricName?: string;
+}
 
 export interface ModelOutput {
   modelId: string;
@@ -97,11 +126,61 @@ export interface VoteRecord {
   itemId: string;
   vote?: VoteType;
   ranking?: RankingEntry[];
+  method?: EvaluationMethod;
+  choice?: VoteType | string;
+  scores?: Record<string, number>;
+  rubricResponses?: Record<string, {
+    modelId: string;
+    modelName: string;
+    scores: Record<string, number>;
+    answers?: Record<string, string>;
+    reason?: string;
+  }>;
+  pairContext?: {
+    pairId?: string;
+    originalItemId?: string;
+    modelAId: string;
+    modelAName: string;
+    modelBId: string;
+    modelBName: string;
+  };
+  reason?: string;
   timestamp: number;
   user?: string; // Who voted
 }
 
-export type AppState = 'setup' | 'voting' | 'results' | 'analysis' | 'history';
+export type AppRoute =
+  | 'overview'
+  | 'projects'
+  | 'datasets'
+  | 'generation'
+  | 'templates'
+  | 'tasks'
+  | 'evaluation'
+  | 'insights'
+  | 'history'
+  | 'voting'
+  | 'results';
+
+export type AppState = AppRoute | 'setup' | 'analysis' | 'dashboard' | 'dataset_repo' | 'template_repo' | 'task_builder';
+
+export interface RouteContext {
+  projectId?: string;
+  taskId?: string;
+  materialId?: string;
+  materialStatusFilter?: 'draft' | 'active' | 'completed';
+  datasetId?: string;
+  source?: 'dashboard' | 'task' | 'dataset';
+}
+
+export interface NavItem {
+  id: string;
+  label: string;
+  icon: string;
+  route: AppRoute;
+  badge?: string | number;
+  children?: NavItem[];
+}
 
 export interface VotingStats {
   total: number;
@@ -117,6 +196,7 @@ export interface HistorySession {
   modelNames: { a: string; b: string };
   models?: { id: string; name: string }[];
   paradigm?: EvalParadigm;
+  evaluationConfig?: EvaluationConfig;
   items: EvaluationItem[];
   votes: VoteRecord[];
 }
@@ -320,6 +400,10 @@ export interface EvalDimension {
   type: 'star_rating' | 'radio_select' | 'text_input';
   options?: string[];
   weight?: number;
+  scope?: DimensionScope;
+  required?: boolean;
+  scale?: ScoreScaleLevel[];
+  aggregationRole?: DimensionAggregationRole;
 }
 
 export interface EvalTemplate {
@@ -339,9 +423,10 @@ export interface EvalTask {
   projectId?: string;
   datasetId: string;
   templateId: string;
+  evaluationConfig?: EvaluationConfig;
   models: { id: string; name: string }[];
   dimensionColumns?: string[];
-  outputType: 'text' | 'image' | 'video' | 'markdown';
+  outputType: 'text' | 'image' | 'video' | 'audio' | 'markdown';
   inputType?: 'text' | 'text_image' | 'text_audio' | 'multi_turn' | 'other';
   assignees?: string[];
   progress?: Record<string, number>; // Progress per assignee

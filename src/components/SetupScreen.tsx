@@ -314,7 +314,7 @@ const SetupScreen: React.FC<SetupScreenProps> = ({
         >
           <ArrowRight className="rotate-180" size={16} /> 返回大盘
         </button>
-        <h1 className="text-3xl font-bold text-slate-100 mb-2 tracking-tight">新建评测任务</h1>
+        <h1 className="text-3xl font-bold text-slate-100 mb-2 tracking-tight">参与评测</h1>
         <p className="text-slate-400 max-w-2xl mx-auto">
           单人模式：粘贴数据并开始投票。<br/> 团队模式：收集所有人的 CSV 结果并使用分析大盘。
         </p>

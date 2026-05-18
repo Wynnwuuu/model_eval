@@ -1,10 +1,14 @@
-import React from 'react';
-import { Download, RotateCcw, Trophy, Check } from 'lucide-react';
-import { EvalParadigm, VoteRecord, EvaluationItem, VotingStats } from '../types';
+import React, { useState } from 'react';
+import { BarChart3, Download, RotateCcw, Trophy, Check } from 'lucide-react';
+import { EvalParadigm, EvaluationConfig, VoteRecord, EvaluationItem, VotingStats } from '../types';
 import { calculateArenaRankModelStats, getArenaRankModelOutputUrl, getBordaScore, isArenaRankVote, resolveEvaluationItemPrompt, sortRanking } from '../rankingUtils';
 import ArenaRankVideoPreviewList from './ArenaRankVideoPreviewList';
 import DimensionChips from './DimensionChips';
 import { calculateRankDimensionSummaries, calculateVoteDimensionSummaries, getDimensionColumnsForCsv, getDimensionCsvValues, getDimensionValuesForItem } from '../dimensionUtils';
+import ResultsInsightsScreen from './ResultsInsightsScreen';
+import ScoreInsightsScreen from './ScoreInsightsScreen';
+import { getDefaultEvaluationConfig, getMethodFromParadigm, isPairwiseMethod, isRankMethod, isScoreMethod } from '../evaluationMethods';
+import { buildScoreCaseCsv, buildPairwiseCaseCsv, buildScoreInsights, buildPairwiseInsights } from '../scoringInsights';
 
 interface ResultsScreenProps {
   votes: VoteRecord[];
@@ -14,13 +18,16 @@ interface ResultsScreenProps {
   modelNames: { a: string; b: string };
   models?: { id: string; name: string }[];
   paradigm?: EvalParadigm;
+  evaluationConfig?: EvaluationConfig;
   onGoToDashboard?: () => void;
 }
 
 const escapeCsvField = (value: any) => `"${String(value ?? '').replace(/"/g, '""')}"`;
 
-const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, userName, modelNames, models = [], paradigm = 'Arena', onGoToDashboard }) => {
-  const isArenaRank = paradigm === 'Arena-rank';
+const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, userName, modelNames, models = [], paradigm = 'Arena', evaluationConfig, onGoToDashboard }) => {
+  const [showInsights, setShowInsights] = useState(true);
+  const activeConfig = evaluationConfig || getDefaultEvaluationConfig(getMethodFromParadigm(paradigm as EvalParadigm));
+  const isArenaRank = isRankMethod(activeConfig);
   const rankVotes = votes.filter(isArenaRankVote);
   const rankStats = calculateArenaRankModelStats(rankVotes);
   const arenaRankModelList = models.length > 0
@@ -61,7 +68,100 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
   const voteDimensionSummaries = calculateVoteDimensionSummaries(aggregatedResultItems);
   const rankDimensionSummaries = calculateRankDimensionSummaries(rankVotes, items);
 
+  if (showInsights) {
+    if (isScoreMethod(activeConfig)) {
+      return (
+        <ScoreInsightsScreen
+          mode="score"
+          title={activeConfig.method === 'rubric_score' ? 'Rubric 单次结果洞察' : 'MOS 单次结果洞察'}
+          items={items}
+          votes={votes}
+          models={models.length ? models : [
+            { id: 'model-0', name: modelNames.a },
+            { id: 'model-1', name: modelNames.b }
+          ]}
+          config={activeConfig}
+          onBack={() => setShowInsights(false)}
+          backLabel="查看单次结果明细"
+        />
+      );
+    }
+
+    if (isPairwiseMethod(activeConfig)) {
+      return (
+        <ScoreInsightsScreen
+          mode="pairwise"
+          title="Pairwise 单次结果洞察"
+          items={items}
+          votes={votes}
+          models={models.length ? models : [
+            { id: 'model-0', name: modelNames.a },
+            { id: 'model-1', name: modelNames.b }
+          ]}
+          onBack={() => setShowInsights(false)}
+          backLabel="查看单次结果明细"
+        />
+      );
+    }
+
+    return (
+      <ResultsInsightsScreen
+        mode={isArenaRank ? 'rank' : 'ab'}
+        title={isArenaRank ? 'Arena-rank 单次结果洞察' : '单次评测结果洞察'}
+        items={items}
+        votes={votes}
+        modelNames={modelNames}
+        models={arenaRankModelList}
+        onBack={() => setShowInsights(false)}
+        backLabel="查看单次结果明细"
+      />
+    );
+  }
+
   const downloadCSV = () => {
+    if (isScoreMethod(activeConfig)) {
+      const bundle = buildScoreInsights({
+        items,
+        votes,
+        models: models.length ? models : [
+          { id: 'model-0', name: modelNames.a },
+          { id: 'model-1', name: modelNames.b }
+        ],
+        config: activeConfig
+      });
+      const csvContent = buildScoreCaseCsv(bundle);
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      link.setAttribute('download', `score_results_${userName || 'anon'}_${new Date().toISOString().slice(0,10)}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      return;
+    }
+
+    if (isPairwiseMethod(activeConfig)) {
+      const bundle = buildPairwiseInsights({
+        items,
+        votes,
+        models: models.length ? models : [
+          { id: 'model-0', name: modelNames.a },
+          { id: 'model-1', name: modelNames.b }
+        ]
+      });
+      const csvContent = buildPairwiseCaseCsv(bundle);
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      link.setAttribute('download', `pairwise_results_${userName || 'anon'}_${new Date().toISOString().slice(0,10)}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      return;
+    }
+
     if (isArenaRank) {
       const rankHeaders = Array.from({ length: maxRankCount }, (_, idx) => `rank_${idx + 1}`);
       const rankVideoHeaders = Array.from({ length: maxRankCount }, (_, idx) => `排名${idx + 1}视频链接`);
@@ -216,6 +316,9 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
           <div className="p-6 border-b border-white/10 glass-panel/5 flex justify-between items-center">
             <h3 className="font-semibold text-slate-200">逐 case 排名明细</h3>
             <div className="flex gap-2">
+              <button onClick={() => setShowInsights(true)} className="flex items-center gap-2 px-4 py-2 text-slate-200 hover:text-white glass-panel-hover rounded-lg transition-colors font-medium text-sm">
+                <BarChart3 size={16} /> 结果洞察
+              </button>
               <button onClick={onReset} className="flex items-center gap-2 px-4 py-2 text-slate-200 hover:text-white glass-panel-hover rounded-lg transition-colors font-medium text-sm">
                 <RotateCcw size={16} /> 返回发起任务
               </button>
@@ -369,6 +472,12 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
         <div className="p-6 border-b border-white/10 glass-panel/5 flex justify-between items-center">
           <h3 className="font-semibold text-slate-200">详细明细</h3>
           <div className="flex gap-2">
+             <button
+              onClick={() => setShowInsights(true)}
+              className="flex items-center gap-2 px-4 py-2 text-slate-200 hover:text-slate-200 glass-panel-hover rounded-lg transition-colors font-medium text-sm"
+            >
+              <BarChart3 size={16} /> 结果洞察
+            </button>
              <button
               onClick={onReset}
               className="flex items-center gap-2 px-4 py-2 text-slate-200 hover:text-slate-200 glass-panel-hover rounded-lg transition-colors font-medium text-sm"

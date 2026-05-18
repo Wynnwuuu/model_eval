@@ -1,15 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { Layers, Plus, Search, Filter, Calendar, Users, BarChart2, ArrowRight, Activity, Target, Link as LinkIcon, LogIn, LogOut, X, Edit2, Database, LayoutTemplate, Play, ChevronRight, FolderOpen, Trash2 } from 'lucide-react';
-import { EvalParadigm, EvaluationProject, EvaluationStep, EvaluationItem, EvalTask } from '../types';
+import { EvalParadigm, EvaluationConfig, EvaluationProject, EvaluationStep, EvaluationItem, EvalTask } from '../types';
 import { CreateProjectModal } from './CreateProjectModal';
 import { db, auth, signInWithGoogle, logout } from '../firebase';
 import { collection, onSnapshot, addDoc, query, orderBy, doc, updateDoc, where, getDocs, getDoc, setDoc, deleteDoc } from '../datastore';
 import { getDimensionValuesForItem, getDimensionValuesFromRecord } from '../dimensionUtils';
+import { EmptyState, PageFrame, PageHeader, StatTile, Toolbar } from './ui';
+import { getEvaluationMethodShortLabel, getParadigmFromMethod, normalizeEvaluationConfig } from '../evaluationMethods';
 
 interface DashboardScreenProps {
   initialProject?: EvaluationProject | null;
   onProjectSelect?: (project: EvaluationProject | null) => void;
-  onGoToExecution: (project: EvaluationProject, taskItems?: EvaluationItem[], taskName?: string, modelNames?: { a: string, b: string }, taskId?: string, existingVotes?: any[], paradigm?: EvalParadigm, models?: { id: string; name: string }[]) => void;
+  onGoToExecution: (project: EvaluationProject, taskItems?: EvaluationItem[], taskName?: string, modelNames?: { a: string, b: string }, taskId?: string, existingVotes?: any[], paradigm?: EvalParadigm, models?: { id: string; name: string }[], evaluationConfig?: EvaluationConfig) => void;
   onGoToAnalysis: (project: EvaluationProject) => void;
   onGoToDatasetRepo: () => void;
   onGoToTemplateRepo: () => void;
@@ -268,7 +270,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
   };
 
   const handleDeleteTask = async (taskId: string) => {
-    if (window.confirm('确定要删除这个评测任务吗？删除后不可恢复。')) {
+    if (window.confirm('确定要删除这个评测物料吗？删除后不可恢复。')) {
       try {
         await deleteDoc(doc(db, 'evalTasks', taskId));
       } catch (error) {
@@ -281,7 +283,8 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
   const handleStartTask = async (task: EvalTask) => {
     try {
       const template = templates.find(t => t.id === task.templateId);
-      const paradigm = (template?.paradigm || 'Arena') as EvalParadigm;
+      const evaluationConfig = normalizeEvaluationConfig(task, template);
+      const paradigm = getParadigmFromMethod(evaluationConfig.method);
       const taskModelList = task.models?.length ? task.models : [
         { id: 'model-a', name: 'Model A' },
         { id: 'model-b', name: 'Model B' }
@@ -303,6 +306,11 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
           })).filter(output => output.url);
         }
         return data;
+      }).sort((a: any, b: any) => {
+        const leftOrder = Number(a.itemOrder ?? 0);
+        const rightOrder = Number(b.itemOrder ?? 0);
+        if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+        return String(a.id).localeCompare(String(b.id));
       });
       
       if (items.length === 0 && task.datasetId && task.datasetId !== 'external-csv') {
@@ -405,7 +413,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
         console.error("Failed to fetch existing votes or update progress", e);
       }
       
-      onGoToExecution(selectedProject!, items, task.name, modelNames, task.id, existingVotes, paradigm, taskModelList);
+      onGoToExecution(selectedProject!, items, task.name, modelNames, task.id, existingVotes, paradigm, taskModelList, evaluationConfig);
     } catch (error) {
       console.error("Error fetching task items:", error);
       alert("获取评测数据失败");
@@ -539,6 +547,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
                                   {projectTasks.map(task => {
                                     const ds = datasets.find(d => d.id === task.datasetId);
                                     const tpl = templates.find(t => t.id === task.templateId);
+                                    const taskEvaluation = normalizeEvaluationConfig(task, tpl);
                                     return (
                                       <div key={task.id} className="flex flex-col gap-1.5 text-sm border-b border-white/10 last:border-0 pb-3 last:pb-0">
                                         <div className="flex items-center justify-between">
@@ -561,7 +570,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
                                         </div>
                                         <div className="flex items-center gap-4 text-xs text-slate-300 mt-1">
                                           <div className="flex items-center gap-1.5"><Database size={12} className="text-slate-300"/> {ds?.name || '未知评测集'}</div>
-                                          <div className="flex items-center gap-1.5"><LayoutTemplate size={12} className="text-slate-300"/> {tpl?.name || '未知模板'}</div>
+                                          <div className="flex items-center gap-1.5"><LayoutTemplate size={12} className="text-slate-300"/> {getEvaluationMethodShortLabel(taskEvaluation.method)}</div>
                                           {task.inputType && (
                                             <div className="flex items-center gap-1">
                                               <span className="px-1.5 py-0.5 glass-panel rounded text-[10px] text-slate-300">
@@ -628,7 +637,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
                                   }}
                                   className="glass-panel glass-panel-hover text-slate-300 px-4 py-2 rounded-xl text-sm font-medium transition-colors flex items-center gap-2"
                                 >
-                                  <LayoutTemplate size={14} className="text-yellow-500" /> 评测模板仓库
+                                  <LayoutTemplate size={14} className="text-yellow-500" /> Rubric 库
                                 </button>
                               </div>
                             )}
@@ -638,7 +647,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
                           <div className="mt-5 space-y-4">
                             {projectTasks.length > 0 ? (
                               <div className="glass-panel rounded-xl p-4">
-                                <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wider mb-3">待执行评测任务</h4>
+                                <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wider mb-3">待执行评测物料</h4>
                                 <div className="space-y-3">
                                   {projectTasks.map(task => (
                                     <div key={task.id} className="flex items-center justify-between p-4 glass-panel rounded-xl glass-panel-hover transition-colors">
@@ -851,9 +860,29 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
 
   // Main Dashboard List
   return (
-    <div className="max-w-7xl mx-auto p-6 animate-in fade-in duration-500">
+    <PageFrame>
+      <PageHeader
+        eyebrow="Projects"
+        title="项目"
+        description="管理评测目标、执行流程、评测物料和团队结果入口。"
+        actions={user ? (
+          <>
+            <button onClick={onGoToDatasetRepo} className="btn-secondary"><Database size={16} /> 评测集</button>
+            <button onClick={onGoToTemplateRepo} className="btn-secondary"><LayoutTemplate size={16} /> Rubric 库</button>
+            <button onClick={() => setIsCreateModalOpen(true)} className="btn-primary"><Plus size={18} /> 新建项目</button>
+          </>
+        ) : (
+          <button onClick={signInWithGoogle} className="btn-primary"><LogIn size={18} /> 登录</button>
+        )}
+      />
+      <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-4">
+        <StatTile label="活跃项目" value={projects.filter(p => p.progress !== 100).length} icon={<Activity size={18} />} tone="green" />
+        <StatTile label="已完成" value={projects.filter(p => p.progress === 100).length} icon={<Target size={18} />} tone="blue" />
+        <StatTile label="P0/P1" value={projects.filter(p => p.priority === 'P0' || p.priority === 'P1').length} icon={<BarChart2 size={18} />} tone="amber" />
+        <StatTile label="总项目" value={projects.length} icon={<Layers size={18} />} tone="purple" />
+      </div>
       {/* Hero Section */}
-      <div className="relative mb-12 py-16 px-8 rounded-[2rem] overflow-hidden glass-panel border-white/10">
+      <div className="hidden">
         <div className="absolute -top-40 -right-40 w-96 h-96 bg-amber-500/20 rounded-full blur-[100px] pointer-events-none"></div>
         <div className="absolute -bottom-40 -left-40 w-96 h-96 bg-yellow-500/10 rounded-full blur-[100px] pointer-events-none"></div>
         
@@ -891,7 +920,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
       </div>
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-12">
+      <div className="hidden">
         <div className="glass-panel p-6 rounded-2xl relative overflow-hidden group hover:bg-white/[0.05] transition-colors border-white/10">
           <div className="absolute top-0 right-0 w-32 h-32 bg-amber-500/5 rounded-full blur-3xl group-hover:bg-amber-500/10 transition-colors"></div>
           <div className="text-slate-300 text-sm font-medium mb-3 uppercase tracking-wider">活跃任务</div>
@@ -915,7 +944,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
       </div>
 
       {/* Actions */}
-      <div className="flex flex-col md:flex-row items-center justify-between gap-4 mb-8">
+      <Toolbar>
         <div className="relative w-full md:w-auto">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
           <input 
@@ -926,7 +955,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
             className="w-full md:w-80 pl-12 pr-4 py-3 glass-panel rounded-2xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/50 transition-all"
           />
         </div>
-        <div className="flex flex-wrap gap-3 w-full md:w-auto">
+        <div className="hidden">
           <button className="flex items-center gap-2 glass-panel glass-panel-hover text-slate-300 px-5 py-3 rounded-2xl font-medium text-sm transition-colors">
             <Filter size={16} /> 筛选
           </button>
@@ -955,7 +984,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
             </>
           )}
         </div>
-      </div>
+      </Toolbar>
 
       {/* Project List */}
       <div className="space-y-4">
@@ -1056,7 +1085,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
           onSave={handleSaveStepEdit}
         />
       )}
-    </div>
+    </PageFrame>
   );
 };
 

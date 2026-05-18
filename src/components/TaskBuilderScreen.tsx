@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowLeft, Plus, Save, Trash2, Database, LayoutTemplate, Box, CheckCircle2, Play, Link as LinkIcon, Upload, X, Users, Edit, Eye, Loader2, ClipboardList } from 'lucide-react';
-import { EvalDataset, EvalTemplate, EvalTask, EvalDimension, EvalParadigm, EvaluationItem } from '../types';
+import { EvalDataset, EvalTemplate, EvalTask, EvalDimension, EvalParadigm, EvaluationConfig, EvaluationItem, EvaluationMethod } from '../types';
 import { db, auth } from '../firebase';
 import { collection, onSnapshot, addDoc, query, orderBy, doc, updateDoc, deleteDoc, where, setDoc, getDocs } from '../datastore';
 import { ConfirmModal } from './ConfirmModal';
@@ -21,14 +21,27 @@ import {
   normalizeDatasetRows,
   validateDatasetItems
 } from '../datasetManifest';
+import {
+  DEFAULT_SCORE_LEVELS,
+  EVALUATION_METHOD_OPTIONS,
+  buildDefaultDimensionsForMethod,
+  buildPairwisePairs,
+  getDefaultEvaluationConfig,
+  getEvaluationMethodShortLabel,
+  getMethodMinModelCount,
+  getParadigmFromMethod,
+  normalizeEvaluationConfig,
+  normalizeDimensions
+} from '../evaluationMethods';
 
 interface TaskBuilderScreenProps {
   projectId?: string;
   onBack: () => void;
   initialMode?: 'create' | 'list';
+  initialStatusFilter?: EvalTask['status'];
 }
 
-export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'create' }: TaskBuilderScreenProps) {
+export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'create', initialStatusFilter }: TaskBuilderScreenProps) {
   const [tasks, setTasks] = useState<EvalTask[]>([]);
   const [datasets, setDatasets] = useState<EvalDataset[]>([]);
   const [templates, setTemplates] = useState<EvalTemplate[]>([]);
@@ -63,12 +76,15 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
   const [saveDatasetToPlatform, setSaveDatasetToPlatform] = useState(true);
   const [showPreview, setShowPreview] = useState(false);
   const [inputType, setInputType] = useState<'text' | 'text_image' | 'text_audio' | 'multi_turn' | 'other'>('text');
+  const [evaluationConfig, setEvaluationConfig] = useState<EvaluationConfig>(getDefaultEvaluationConfig('ab_preference'));
+  const [saveConfigAsRubric, setSaveConfigAsRubric] = useState(false);
 
-  // Inline Template Creation State
+  // Inline Rubric Creation State
   const [showCreateTemplateModal, setShowCreateTemplateModal] = useState(false);
   const [newTemplateName, setNewTemplateName] = useState('');
   const [newTemplateParadigm, setNewTemplateParadigm] = useState<EvalParadigm>('GSB');
   const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<EvalTask['status'] | 'all'>(initialStatusFilter || 'all');
   
   // Item Editing State
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
@@ -79,6 +95,10 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
       setNewTask(prev => ({ ...prev, projectId }));
     }
   }, [projectId]);
+
+  useEffect(() => {
+    if (initialStatusFilter) setStatusFilter(initialStatusFilter);
+  }, [initialStatusFilter]);
 
   useEffect(() => {
     // Filter tasks by projectId if provided
@@ -135,21 +155,15 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
 
   const validateSetup = () => {
     if (!newTask.name) return "请填写物料名称";
-    if (!newTask.templateId) return "请选择评测模板";
-    
-    const selectedTemplate = templates.find(t => t.id === newTask.templateId);
-    if (!selectedTemplate) return "选择的评测模板无效";
 
     if (csvData.length > 0 || newTask.datasetId) {
       if (inputColumns.length === 0) return "请至少选择一个输入列";
-      if (selectedTemplate.paradigm === 'Arena-rank' && modelColumns.length < 3) {
-        return "Arena-rank requires at least three model result columns.";
+      const minModels = getMethodMinModelCount(evaluationConfig.method);
+      if (modelColumns.length < minModels) {
+        return `${getEvaluationMethodShortLabel(evaluationConfig.method)} 至少需要 ${minModels} 列模型结果，请补充选择。`;
       }
-      if ((selectedTemplate.paradigm === 'GSB' || selectedTemplate.paradigm === 'Arena') && modelColumns.length < 2) {
-        return "GSB 评测模板需要至少两列模型结果，请补充选择。";
-      }
-      if (selectedTemplate.paradigm === 'MOS' && modelColumns.length < 1) {
-        return "MOS 评测模板需要至少一列模型结果，请补充选择。";
+      if ((evaluationConfig.method === 'direct_score' || evaluationConfig.method === 'rubric_score') && !(evaluationConfig.dimensions || []).some(dim => dim.type === 'star_rating')) {
+        return "评分类评测至少需要一个星级打分维度。";
       }
     } else if (!newTask.datasetId) {
       return "请选择评测集或上传包含结果的CSV文件";
@@ -178,12 +192,75 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
     setModelColumns(prev => prev.filter(col => !columns.includes(col)));
   };
 
-  const applyDatasetDefaults = (dataset: EvalDataset, templateId = newTask.templateId) => {
+  const updateEvaluationMethod = (method: EvaluationMethod) => {
+    const nextDefaults = getDefaultEvaluationConfig(method);
+    setEvaluationConfig(prev => ({
+      ...nextDefaults,
+      sourceRubricId: prev.sourceRubricId,
+      rubricName: prev.rubricName,
+      dimensions: method === 'direct_score' || method === 'rubric_score'
+        ? (prev.dimensions?.length ? normalizeDimensions(prev.dimensions, method) : nextDefaults.dimensions)
+        : nextDefaults.dimensions
+    }));
+    setNewTask(prev => ({ ...prev, templateId: '', outputType: prev.outputType || 'text' }));
+
+    const minModels = getMethodMinModelCount(method);
+    if (modelColumns.length > 0) {
+      setModelColumns(prev => method === 'rank_order' || method === 'pairwise' ? prev : prev.slice(0, Math.max(minModels, 2)));
+    }
+  };
+
+  const applyRubricTemplate = (templateId: string) => {
+    const template = templates.find(t => t.id === templateId);
+    if (!template) {
+      setNewTask(prev => ({ ...prev, templateId: '' }));
+      return;
+    }
+    const nextConfig = normalizeEvaluationConfig({ ...(newTask as EvalTask), templateId } as EvalTask, template);
+    setEvaluationConfig(nextConfig);
+    setNewTask(prev => ({ ...prev, templateId }));
+  };
+
+  const updateEvaluationDimension = (index: number, updates: Partial<EvalDimension>) => {
+    setEvaluationConfig(prev => {
+      const dimensions = [...(prev.dimensions || [])];
+      dimensions[index] = { ...dimensions[index], ...updates };
+      return { ...prev, dimensions: normalizeDimensions(dimensions, prev.method) };
+    });
+  };
+
+  const addEvaluationDimension = () => {
+    setEvaluationConfig(prev => ({
+      ...prev,
+      dimensions: normalizeDimensions([
+        ...(prev.dimensions || []),
+        {
+          id: `dim-${Date.now()}`,
+          name: '新评分维度',
+          description: '',
+          type: 'star_rating',
+          weight: 1,
+          required: true,
+          scope: 'secondary',
+          aggregationRole: 'score',
+          scale: DEFAULT_SCORE_LEVELS
+        }
+      ], prev.method)
+    }));
+  };
+
+  const removeEvaluationDimension = (index: number) => {
+    setEvaluationConfig(prev => ({
+      ...prev,
+      dimensions: (prev.dimensions || []).filter((_, idx) => idx !== index)
+    }));
+  };
+
+  const applyDatasetDefaults = (dataset: EvalDataset) => {
     const headers = dataset.items?.[0]
       ? Object.keys(dataset.items[0]).filter(key => key !== '_originalData')
       : dataset.inputSchema?.map(field => field.key) || [];
     const mappings = getDatasetColumnMappings(dataset, headers);
-    const selectedParadigm = templates.find(t => t.id === templateId)?.paradigm;
     const fallbackDimensions = autoDetectDimensionColumns(headers, mappings.inputColumns);
     const fallbackOutputs = headers.filter(header =>
       !mappings.inputColumns.includes(header) &&
@@ -196,7 +273,9 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
     setCsvHeaders(headers);
     setInputColumns(mappings.inputColumns.length ? mappings.inputColumns.filter(col => headers.includes(col)) : headers.slice(0, 1));
     setDimensionColumns(mappings.dimensionColumns.length ? mappings.dimensionColumns.filter(col => headers.includes(col)) : fallbackDimensions);
-    setModelColumns(selectedParadigm === 'Arena-rank' ? outputColumns.filter(col => headers.includes(col)) : outputColumns.filter(col => headers.includes(col)).slice(0, 2));
+    setModelColumns(evaluationConfig.method === 'rank_order' || evaluationConfig.method === 'pairwise'
+      ? outputColumns.filter(col => headers.includes(col))
+      : outputColumns.filter(col => headers.includes(col)).slice(0, Math.max(getMethodMinModelCount(evaluationConfig.method), 2)));
     const inferredInputType = inferInputTypeFromDataset(dataset);
     setInputType(dataset.inputType && dataset.inputType !== 'text' ? dataset.inputType : inferredInputType);
     setNewTask(prev => ({
@@ -305,24 +384,55 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
         }
       }
 
+      let finalTemplateId = newTask.templateId || '';
+      if (saveConfigAsRubric && (evaluationConfig.method === 'direct_score' || evaluationConfig.method === 'rubric_score')) {
+        const templateId = `tpl-${Date.now()}`;
+        const templateData: EvalTemplate = {
+          id: templateId,
+          name: `${newTask.name} Rubric`,
+          description: `从评测物料「${newTask.name}」保存的评分标准`,
+          paradigm: getParadigmFromMethod(evaluationConfig.method),
+          dimensions: normalizeDimensions(evaluationConfig.dimensions || [], evaluationConfig.method),
+          creatorUid: auth.currentUser.uid,
+          creatorName: auth.currentUser.displayName || auth.currentUser.email || 'Unknown',
+          createdAt: Date.now()
+        };
+        await setDoc(doc(db, 'evalTemplates', templateId), templateData);
+        finalTemplateId = templateId;
+      }
+
       // Update models array based on selected model columns if using CSV or existing dataset
       const taskModels = (csvData.length > 0 || newTask.datasetId) && modelColumns.length > 0 ? modelColumns.map((col, idx) => ({
         id: `model-${idx}`,
         name: col
       })) : newTask.models;
 
+      const pairCount = evaluationConfig.method === 'pairwise'
+        ? buildPairwisePairs(taskModels || [], evaluationConfig.pairwiseMode).length
+        : 1;
+      const sourceItemCount = csvData.length > 0 ? csvData.length : (datasets.find(d => d.id === finalDatasetId)?.items?.length || 0);
+      const finalEvaluationConfig: EvaluationConfig = {
+        ...evaluationConfig,
+        dimensions: normalizeDimensions(evaluationConfig.dimensions || [], evaluationConfig.method),
+        sourceRubricId: finalTemplateId || evaluationConfig.sourceRubricId,
+        rubricName: finalTemplateId ? `${newTask.name} Rubric` : evaluationConfig.rubricName
+      };
+
       const taskData = {
         ...newTask,
+        templateId: finalTemplateId,
         projectId: projectId || newTask.projectId || '',
         datasetId: finalDatasetId || 'external-csv',
         models: taskModels,
+        evaluationConfig: finalEvaluationConfig,
+        paradigm: getParadigmFromMethod(evaluationConfig.method),
         dimensionColumns,
         inputType,
         creatorUid: auth.currentUser.uid,
         creatorName: auth.currentUser.displayName || auth.currentUser.email || 'Anonymous',
         createdAt: Date.now(),
         hasImportedData: csvData.length > 0 || !!newTask.datasetId,
-        totalItems: csvData.length > 0 ? csvData.length : (datasets.find(d => d.id === finalDatasetId)?.items?.length || 0),
+        totalItems: sourceItemCount * pairCount,
         progress: {}
       };
 
@@ -340,7 +450,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
         // Save data to a subcollection
         const itemsRef = collection(db, 'evalTasks', docRef.id, 'items');
         try {
-          for (const row of dataToSave) {
+          for (const [rowIndex, row] of dataToSave.entries()) {
             let startImageUrl: string | undefined;
             let referenceUrls: string[] = [];
             
@@ -365,7 +475,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
               }
             });
 
-            const itemData: any = {
+            const baseItemData: any = {
               prompt: inputColumns.length === 1 ? row[inputColumns[0]] : inputColumns.map(col => `[${col}]: ${row[col]}`).join('\n'),
               inputs: inputColumns.reduce((acc, col) => ({ ...acc, [col]: row[col] }), {}),
               modelA_Url: modelColumns[0] ? row[modelColumns[0]] : '',
@@ -377,13 +487,53 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
               })).filter(output => output.url),
               dimensionValues: getDimensionValuesFromRecord(row, dimensionColumns),
               type: newTask.outputType || 'text',
-              originalData: row
+              originalData: row,
+              originalItemId: row.id || row['用例ID'] || row['ItemID'] || `case-${rowIndex + 1}`,
+              isSwapped: (finalEvaluationConfig.method === 'ab_preference' || finalEvaluationConfig.method === 'pairwise') && finalEvaluationConfig.blind !== false
+                ? Math.random() > 0.5
+                : false
             };
             
-            if (startImageUrl) itemData.startImageUrl = startImageUrl;
-            if (referenceUrls.length > 0) itemData.referenceUrls = referenceUrls;
+            if (startImageUrl) baseItemData.startImageUrl = startImageUrl;
+            if (referenceUrls.length > 0) baseItemData.referenceUrls = referenceUrls;
 
-            await addDoc(itemsRef, itemData);
+            if (finalEvaluationConfig.method === 'pairwise') {
+              const pairs = buildPairwisePairs(taskModels || [], finalEvaluationConfig.pairwiseMode);
+              for (const pair of pairs) {
+                const leftIndex = (taskModels || []).findIndex(model => model.id === pair.modelA.id);
+                const rightIndex = (taskModels || []).findIndex(model => model.id === pair.modelB.id);
+                const pairItemData = {
+                  ...baseItemData,
+                  id: `${baseItemData.originalItemId}__${pair.pairId}`,
+                  modelA_Url: leftIndex >= 0 ? row[modelColumns[leftIndex]] || '' : '',
+                  modelB_Url: rightIndex >= 0 ? row[modelColumns[rightIndex]] || '' : '',
+                  modelOutputs: [
+                    {
+                      modelId: pair.modelA.id,
+                      modelName: pair.modelA.name,
+                      url: leftIndex >= 0 ? row[modelColumns[leftIndex]] || '' : ''
+                    },
+                    {
+                      modelId: pair.modelB.id,
+                      modelName: pair.modelB.name,
+                      url: rightIndex >= 0 ? row[modelColumns[rightIndex]] || '' : ''
+                    }
+                  ].filter(output => output.url),
+                  pairContext: {
+                    pairId: pair.pairId,
+                    originalItemId: baseItemData.originalItemId,
+                    modelAId: pair.modelA.id,
+                    modelAName: pair.modelA.name,
+                    modelBId: pair.modelB.id,
+                    modelBName: pair.modelB.name
+                  },
+                  itemOrder: rowIndex
+                };
+                await addDoc(itemsRef, pairItemData);
+              }
+            } else {
+              await addDoc(itemsRef, { ...baseItemData, itemOrder: rowIndex });
+            }
           }
         } catch (err: any) {
           console.error("Error creating task items:", err);
@@ -403,6 +553,8 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
         status: 'draft',
         externalResultsLink: ''
       });
+      setEvaluationConfig(getDefaultEvaluationConfig('ab_preference'));
+      setSaveConfigAsRubric(false);
       setCsvData([]);
       setCsvHeaders([]);
       setInputColumns([]);
@@ -565,7 +717,6 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
     setCsvData(data);
 
     const detectedMappings = inferDatasetMappings(headers, data);
-    const selectedParadigm = templates.find(t => t.id === newTask.templateId)?.paradigm;
     const detectedInputColumns = detectedMappings.inputColumns.length ? detectedMappings.inputColumns : headers.slice(0, 1);
     const detectedDimensionColumns = detectedMappings.dimensionColumns.length ? detectedMappings.dimensionColumns : autoDetectDimensionColumns(headers, detectedInputColumns);
     const fallbackModelColumns = headers.filter(h =>
@@ -579,7 +730,9 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
 
     setInputColumns(detectedInputColumns);
     setDimensionColumns(detectedDimensionColumns);
-    setModelColumns(selectedParadigm === 'Arena-rank' ? detectedModelColumns : detectedModelColumns.slice(0, 2));
+    setModelColumns(evaluationConfig.method === 'rank_order' || evaluationConfig.method === 'pairwise'
+      ? detectedModelColumns
+      : detectedModelColumns.slice(0, Math.max(getMethodMinModelCount(evaluationConfig.method), 2)));
 
     const tempDataset = {
       id: 'temp',
@@ -631,6 +784,10 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
       defaultDimensions = [{ id: `dim-${Date.now()}`, name: '整体评价', description: '综合评估', type: 'radio_select', options: ['A 更好', 'B 更好', '平局'] }];
     } else if (newTemplateParadigm === 'MOS') {
       defaultDimensions = [{ id: `dim-${Date.now()}`, name: '整体质量', description: '1-5分综合评分', type: 'star_rating' }];
+    } else if (newTemplateParadigm === 'RubricScore') {
+      defaultDimensions = buildDefaultDimensionsForMethod('rubric_score');
+    } else if (newTemplateParadigm === 'Pairwise') {
+      defaultDimensions = [];
     } else if (newTemplateParadigm === 'Arena-rank') {
       defaultDimensions = [{ id: `dim-${Date.now()}`, name: 'Arena-rank ranking', description: 'Rank three or more videos from best to worst.', type: 'radio_select', options: ['Full ranking'] }];
     } else {
@@ -640,7 +797,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
     const newTemplate: EvalTemplate = {
       id: `tpl-${Date.now()}`,
       name: newTemplateName,
-      description: '快速创建的评测模板',
+      description: '快速创建的 Rubric / 评测方式预设',
       paradigm: newTemplateParadigm,
       dimensions: defaultDimensions,
       creatorUid: auth.currentUser.uid,
@@ -651,6 +808,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
     try {
       await setDoc(doc(db, 'evalTemplates', newTemplate.id), newTemplate);
       setNewTask(prev => ({ ...prev, templateId: newTemplate.id }));
+      setEvaluationConfig(normalizeEvaluationConfig(undefined, newTemplate));
       setShowCreateTemplateModal(false);
       setNewTemplateName('');
       setNewTemplateParadigm('GSB');
@@ -758,6 +916,10 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
     return <div className="flex items-center justify-center h-full">加载中...</div>;
   }
 
+  const visibleTasks = statusFilter === 'all'
+    ? tasks
+    : tasks.filter(task => task.status === statusFilter);
+
   return (
     <div className="max-w-6xl mx-auto p-6 animate-in fade-in duration-500">
       <div className="flex items-center justify-between mb-8">
@@ -773,7 +935,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
               <Box className="text-amber-400" size={32} />
               评测物料构建器
             </h1>
-            <p className="text-slate-300 mt-2">将评测集和模板组合，创建评测物料。</p>
+            <p className="text-slate-300 mt-2">将评测集、评测方式、评分标准、模型结果列和评委分配组合为可执行评测物料。</p>
           </div>
         </div>
         {!isCreating && (
@@ -914,30 +1076,105 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                   </div>
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-slate-200 mb-2 flex items-center gap-2">
-                    <LayoutTemplate size={16} className="text-purple-500" /> 选择评测模板
-                  </label>
-                  <select
-                    value={newTask.templateId}
-                    onChange={(e) => {
-                      if (e.target.value === 'CREATE_NEW') {
-                        setShowCreateTemplateModal(true);
-                      } else {
-                        const nextTemplateId = e.target.value;
-                        setNewTask({...newTask, templateId: nextTemplateId});
-                        const ds = datasets.find(d => d.id === newTask.datasetId);
-                        if (ds) applyDatasetDefaults(ds, nextTemplateId);
-                      }
-                    }}
-                    className="w-full px-4 py-2 glass-input rounded-xl focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
-                  >
-                    <option value="">-- 请选择模板 --</option>
-                    {templates.map(tpl => (
-                      <option key={tpl.id} value={tpl.id}>{tpl.name} ({tpl.paradigm})</option>
-                    ))}
-                    <option value="CREATE_NEW" className="font-medium text-amber-400">+ 新建评测模板</option>
-                  </select>
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-200 mb-2 flex items-center gap-2">
+                      <LayoutTemplate size={16} className="text-purple-500" /> 评测方式与评分标准
+                    </label>
+                    <div className="grid grid-cols-1 gap-2">
+                      {EVALUATION_METHOD_OPTIONS.map(option => {
+                        const selected = evaluationConfig.method === option.method;
+                        return (
+                          <button
+                            key={option.method}
+                            type="button"
+                            onClick={() => updateEvaluationMethod(option.method)}
+                            className={`border p-3 text-left transition-colors ${
+                              selected
+                                ? 'border-[var(--accent)] bg-[var(--accent)]/15 text-slate-100'
+                                : 'border-white/10 bg-white/5 text-slate-300 hover:border-[var(--accent)]'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="font-bold">{option.title}</span>
+                              <span className="font-mono text-[11px] text-amber-300">≥{option.minModels} 模型列</span>
+                            </div>
+                            <p className="mt-1 text-xs text-slate-400">{option.description}</p>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-slate-200 mb-2">套用 Rubric 库（可选）</label>
+                    <select
+                      value={newTask.templateId}
+                      onChange={(e) => {
+                        if (e.target.value === 'CREATE_NEW') {
+                          setShowCreateTemplateModal(true);
+                        } else {
+                          applyRubricTemplate(e.target.value);
+                        }
+                      }}
+                      className="w-full px-4 py-2 glass-input rounded-xl focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
+                    >
+                      <option value="">不套用，使用当前配置</option>
+                      {templates.map(tpl => (
+                        <option key={tpl.id} value={tpl.id}>{tpl.name} ({getEvaluationMethodShortLabel(normalizeEvaluationConfig(undefined, tpl).method)})</option>
+                      ))}
+                      <option value="CREATE_NEW" className="font-medium text-amber-400">+ 新建 Rubric</option>
+                    </select>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className="flex items-center gap-2 border border-white/10 bg-white/5 p-3 text-sm text-slate-200">
+                      <input
+                        type="checkbox"
+                        checked={evaluationConfig.blind !== false}
+                        onChange={(e) => setEvaluationConfig(prev => ({ ...prev, blind: e.target.checked }))}
+                        className="rounded text-amber-400 focus:ring-amber-500"
+                      />
+                      盲测展示
+                    </label>
+                    {(evaluationConfig.method === 'ab_preference' || evaluationConfig.method === 'pairwise') && (
+                      <label className="flex items-center gap-2 border border-white/10 bg-white/5 p-3 text-sm text-slate-200">
+                        <input
+                          type="checkbox"
+                          checked={evaluationConfig.tiePolicy !== 'disallow'}
+                          onChange={(e) => setEvaluationConfig(prev => ({ ...prev, tiePolicy: e.target.checked ? 'allow' : 'disallow' }))}
+                          className="rounded text-amber-400 focus:ring-amber-500"
+                        />
+                        允许平局
+                      </label>
+                    )}
+                  </div>
+
+                  {evaluationConfig.method === 'pairwise' && (
+                    <label className="block">
+                      <span className="mb-2 block text-sm font-medium text-slate-200">Pairwise 组合方式</span>
+                      <select
+                        value={evaluationConfig.pairwiseMode || 'all_pairs'}
+                        onChange={(e) => setEvaluationConfig(prev => ({ ...prev, pairwiseMode: e.target.value as any }))}
+                        className="w-full px-4 py-2 glass-input rounded-xl"
+                      >
+                        <option value="all_pairs">全组合对战（推荐，统计最完整）</option>
+                        <option value="adjacent_pairs">相邻模型对战（更省评测量）</option>
+                      </select>
+                    </label>
+                  )}
+
+                  {(evaluationConfig.method === 'direct_score' || evaluationConfig.method === 'rubric_score') && (
+                    <label className="flex items-center gap-2 border border-white/10 bg-white/5 p-3 text-sm text-slate-200">
+                      <input
+                        type="checkbox"
+                        checked={!!evaluationConfig.requireReason}
+                        onChange={(e) => setEvaluationConfig(prev => ({ ...prev, requireReason: e.target.checked }))}
+                        className="rounded text-amber-400 focus:ring-amber-500"
+                      />
+                      评委必须填写理由
+                    </label>
+                  )}
                 </div>
               </div>
 
@@ -1044,10 +1281,122 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                           onChange={(e) => setSaveDatasetToPlatform(e.target.checked)}
                           className="rounded text-amber-400 focus:ring-amber-500"
                         />
-                        <span className="text-sm text-slate-200">将此评测集保存到平台仓库 (仅保存输入列，方便后续复用)</span>
+                        <span className="text-sm text-slate-200">将此评测集保存到平台仓库（保留输入列、模型结果列和评测维度，方便后续复用）</span>
                       </label>
                     </div>
                   )}
+                </div>
+              )}
+
+              {(evaluationConfig.method === 'direct_score' || evaluationConfig.method === 'rubric_score') && (
+                <div className="bg-white/5 p-4 rounded-xl border border-white/10 space-y-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-100">评分维度与 Rubric 定义</h3>
+                      <p className="mt-1 text-xs text-slate-400">
+                        这里定义的每个评分项都会出现在评测执行页，并进入结果洞察的模型榜单、维度统计和导出文件。
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={addEvaluationDimension}
+                      className="flex shrink-0 items-center gap-1 border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm font-medium text-amber-300 hover:bg-amber-500/20"
+                    >
+                      <Plus size={14} /> 添加维度
+                    </button>
+                  </div>
+
+                  <div className="space-y-3">
+                    {(evaluationConfig.dimensions || []).map((dimension, index) => (
+                      <div key={dimension.id} className="border border-white/10 bg-black/20 p-4">
+                        <div className="grid gap-3 lg:grid-cols-[1.2fr_160px_120px_110px_auto] lg:items-end">
+                          <label className="block">
+                            <span className="mb-1 block text-xs text-slate-400">维度名称</span>
+                            <input
+                              value={dimension.name}
+                              onChange={(e) => updateEvaluationDimension(index, { name: e.target.value })}
+                              className="glass-input w-full px-3 py-2 text-sm"
+                              placeholder="例如：Prompt 一致性"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="mb-1 block text-xs text-slate-400">控件类型</span>
+                            <select
+                              value={dimension.type}
+                              onChange={(e) => updateEvaluationDimension(index, {
+                                type: e.target.value as EvalDimension['type'],
+                                aggregationRole: e.target.value === 'text_input' ? 'rationale' : e.target.value === 'star_rating' ? 'score' : 'preference',
+                                scale: e.target.value === 'star_rating' ? DEFAULT_SCORE_LEVELS : undefined
+                              })}
+                              className="glass-input w-full px-3 py-2 text-sm"
+                            >
+                              <option value="star_rating">星级打分</option>
+                              <option value="radio_select">单选</option>
+                              <option value="text_input">理由文本</option>
+                            </select>
+                          </label>
+                          <label className="block">
+                            <span className="mb-1 block text-xs text-slate-400">权重</span>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.05"
+                              value={dimension.weight ?? 1}
+                              onChange={(e) => updateEvaluationDimension(index, { weight: Number(e.target.value) })}
+                              className="glass-input w-full px-3 py-2 text-sm"
+                              disabled={dimension.type !== 'star_rating'}
+                            />
+                          </label>
+                          <label className="flex items-center gap-2 border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200">
+                            <input
+                              type="checkbox"
+                              checked={dimension.required !== false}
+                              onChange={(e) => updateEvaluationDimension(index, { required: e.target.checked })}
+                              className="rounded text-amber-400 focus:ring-amber-500"
+                            />
+                            必填
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => removeEvaluationDimension(index)}
+                            className="flex items-center justify-center gap-1 border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-300 hover:bg-red-500/20"
+                          >
+                            <Trash2 size={14} /> 删除
+                          </button>
+                        </div>
+                        <label className="mt-3 block">
+                          <span className="mb-1 block text-xs text-slate-400">清晰定义 / 评分说明</span>
+                          <textarea
+                            value={dimension.description}
+                            onChange={(e) => updateEvaluationDimension(index, { description: e.target.value })}
+                            className="glass-input min-h-16 w-full px-3 py-2 text-sm"
+                            placeholder="说明该维度衡量什么、1 分和 5 分分别意味着什么、遇到不可判断时如何处理。"
+                          />
+                        </label>
+                        {dimension.type === 'radio_select' && (
+                          <label className="mt-3 block">
+                            <span className="mb-1 block text-xs text-slate-400">选项（逗号分隔）</span>
+                            <input
+                              value={dimension.options?.join(', ') || ''}
+                              onChange={(e) => updateEvaluationDimension(index, { options: e.target.value.split(',').map(part => part.trim()).filter(Boolean) })}
+                              className="glass-input w-full px-3 py-2 text-sm"
+                              placeholder="例如：明显失败, 可接受, 优秀"
+                            />
+                          </label>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  <label className="flex items-center gap-2 border border-white/10 bg-white/5 p-3 text-sm text-slate-200">
+                    <input
+                      type="checkbox"
+                      checked={saveConfigAsRubric}
+                      onChange={(e) => setSaveConfigAsRubric(e.target.checked)}
+                      className="rounded text-amber-400 focus:ring-amber-500"
+                    />
+                    创建物料时将当前评分标准保存到 Rubric 库
+                  </label>
                 </div>
               )}
 
@@ -1061,6 +1410,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                   <option value="text">纯文本 (Text)</option>
                   <option value="image">图像 (Image)</option>
                   <option value="video">视频 (Video)</option>
+                  <option value="audio">音频 (Audio)</option>
                   <option value="markdown">Markdown</option>
                 </select>
               </div>
@@ -1254,16 +1604,28 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
       )}
 
       {!isCreating && tasks.length > 0 && (
-        <div className="mb-6">
-          <h2 className="text-xl font-bold text-slate-100">本项目已创建的评测物料</h2>
-          <p className="text-slate-300 text-sm mt-1">您可以在此管理历史创建的物料，点击“启动”后即可在首页开始评测。</p>
+        <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+          <div>
+            <h2 className="text-xl font-bold text-slate-100">本项目已创建的评测物料</h2>
+            <p className="text-slate-300 text-sm mt-1">在此管理历史创建的可执行评测配置，启动后评委可在“参与评测”入口完成评测。</p>
+          </div>
+          <label className="block min-w-[180px]">
+            <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">物料状态</span>
+            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as EvalTask['status'] | 'all')} className="glass-input w-full px-3 py-2 text-sm">
+              <option value="all">全部状态</option>
+              <option value="draft">草稿</option>
+              <option value="active">进行中</option>
+              <option value="completed">已完成</option>
+            </select>
+          </label>
         </div>
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {tasks.map(task => {
+        {visibleTasks.map(task => {
           const dataset = datasets.find(d => d.id === task.datasetId);
           const template = templates.find(t => t.id === task.templateId);
+          const taskEvaluation = normalizeEvaluationConfig(task, template);
 
           return (
             <div key={task.id} className="bg-white/5 rounded-2xl border border-white/10 shadow-md shadow-black/20 overflow-hidden flex flex-col">
@@ -1290,8 +1652,9 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                   <div className="flex items-start gap-2 text-sm">
                     <LayoutTemplate size={16} className="text-slate-300 mt-0.5" />
                     <div>
-                      <span className="text-slate-300">模板: </span>
-                      <span className="font-medium text-slate-200">{template?.name || '未知模板'}</span>
+                      <span className="text-slate-300">评测方式: </span>
+                      <span className="font-medium text-slate-200">{getEvaluationMethodShortLabel(taskEvaluation.method)}</span>
+                      {taskEvaluation.rubricName && <span className="ml-2 text-xs text-slate-400">Rubric: {taskEvaluation.rubricName}</span>}
                     </div>
                   </div>
                   <div className="flex items-start gap-2 text-sm">
@@ -1391,11 +1754,11 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
           );
         })}
 
-        {tasks.length === 0 && !isCreating && (
+        {visibleTasks.length === 0 && !isCreating && (
           <div className="col-span-full py-12 text-center bg-white/5 rounded-2xl border border-white/10 border-dashed">
             <Box size={48} className="mx-auto text-slate-300 mb-4" />
             <h3 className="text-lg font-medium text-slate-100 mb-2">暂无评测物料</h3>
-            <p className="text-slate-300 mb-6">创建一个新物料，将数据集和评测模板组合起来。</p>
+            <p className="text-slate-300 mb-6">创建一个新物料，将评测集、评测方式和评分标准组合起来。</p>
             <button 
               onClick={() => setIsCreating(true)}
               className="inline-flex items-center gap-2 bg-amber-500 hover:bg-amber-600 text-white px-4 py-2 rounded-xl font-medium transition-colors"
@@ -1409,7 +1772,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white/5 rounded-2xl shadow-xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
             <div className="flex items-center justify-between p-6 border-b border-white/10">
-              <h3 className="text-xl font-bold text-slate-200">新建评测模板</h3>
+              <h3 className="text-xl font-bold text-slate-200">新建 Rubric / 评测预设</h3>
               <button 
                 onClick={() => setShowCreateTemplateModal(false)}
                 className="text-slate-300 hover:text-slate-300 transition-colors"
@@ -1419,13 +1782,13 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
             </div>
             <div className="p-6 space-y-4">
               <div>
-                <label className="block text-sm font-medium text-slate-200 mb-1">模板名称</label>
+                <label className="block text-sm font-medium text-slate-200 mb-1">Rubric 名称</label>
                 <input 
                   type="text" 
                   value={newTemplateName}
                   onChange={(e) => setNewTemplateName(e.target.value)}
                   className="w-full px-4 py-2 glass-input rounded-xl focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
-                  placeholder="例如：文生图 GSB 评测"
+                  placeholder="例如：文生图 Rubric 多维评分"
                 />
               </div>
               <div>
@@ -1435,13 +1798,14 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                   onChange={(e) => setNewTemplateParadigm(e.target.value as EvalParadigm)}
                   className="w-full px-4 py-2 glass-input rounded-xl focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
                 >
-                  <option value="GSB">GSB (Good/Same/Bad) - A/B对比</option>
-                  <option value="MOS">MOS (1-5分) - 单项打分</option>
-                  <option value="Arena">Arena - 盲测排位</option>
-                  <option value="Arena-rank">Arena-rank - 多视频排序</option>
+                  <option value="GSB">A/B 偏好 - 双模型对比</option>
+                  <option value="Pairwise">Pairwise - 多模型两两对战</option>
+                  <option value="MOS">直接评分 / MOS - 单项或多模型打分</option>
+                  <option value="RubricScore">Rubric 多维评分</option>
+                  <option value="Arena-rank">全量排序 / Arena-rank</option>
                 </select>
                 <p className="text-xs text-slate-300 mt-2">
-                  系统会自动为您生成默认的打分维度。如需自定义更多维度，请前往“评测模板仓库”。
+                  系统会自动生成兼容该评测方式的默认评分标准，可在 Rubric 库继续细化定义。
                 </p>
               </div>
             </div>

@@ -53,9 +53,10 @@ export const resolveEvaluationItemPrompt = (item?: Partial<EvaluationItem> & Rec
 };
 
 export const getModelOutputsForItem = (
-  item: EvaluationItem,
+  item?: EvaluationItem,
   models: { id: string; name: string }[] = []
 ): ModelOutput[] => {
+  if (!item) return [];
   if (item.modelOutputs?.length) {
     return item.modelOutputs
       .filter(output => output.url)

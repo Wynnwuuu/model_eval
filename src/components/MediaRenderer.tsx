@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { AlertCircle, FileVideo, Image as ImageIcon, Loader2 } from 'lucide-react';
+import { AlertCircle, FileAudio, FileVideo, Image as ImageIcon, Loader2 } from 'lucide-react';
 import { VIDEO_EXTENSIONS } from '../constants';
 import { normalizeUrl } from '../utils';
 
@@ -22,6 +22,7 @@ interface MediaRendererProps {
 const REFERRER_POLICY_FALLBACKS = ['no-referrer', 'origin', 'unsafe-url'] as const;
 type ReferrerPolicyOption = typeof REFERRER_POLICY_FALLBACKS[number];
 const MEDIA_SOFT_TIMEOUT_MS = 12000;
+const AUDIO_EXTENSIONS = ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'];
 
 const withRetryToken = (url: string, retryToken: number): string => {
   if (!url || retryToken === 0 || url.startsWith('data:') || url.startsWith('blob:')) {
@@ -40,11 +41,12 @@ const withRetryToken = (url: string, retryToken: number): string => {
 const MediaRenderer: React.FC<MediaRendererProps> = ({ url, label, isActive, className = '', onLoadStatusChange, forceType, videoPreload = 'auto' }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
-  const [mediaType, setMediaType] = useState<'image' | 'video'>('image');
+  const [mediaType, setMediaType] = useState<'image' | 'video' | 'audio'>('image');
 
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const onLoadStatusChangeRef = useRef(onLoadStatusChange);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [retryKey, setRetryKey] = useState(0);
   const [retryToken, setRetryToken] = useState(0);
@@ -86,6 +88,7 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({ url, label, isActive, cla
     // Reset based on URL change
     const cleanUrl = finalUrl.trim().split('?')[0].split('#')[0].toLowerCase();
     const isVideoExt = VIDEO_EXTENSIONS.some(ext => cleanUrl.endsWith(`.${ext}`));
+    const isAudioExt = AUDIO_EXTENSIONS.some(ext => cleanUrl.endsWith(`.${ext}`));
 
     // If normalization could not recover a merged URL, fail visibly but do not
     // block the evaluator from continuing.
@@ -102,7 +105,12 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({ url, label, isActive, cla
       return;
     }
 
-    if (forceType === 'video' || forceType === 'image') {
+    if (isAudioExt) {
+      setMediaType('audio');
+      return;
+    }
+
+    if (forceType === 'video' || forceType === 'image' || forceType === 'audio') {
       setMediaType(forceType);
       return;
     }
@@ -185,7 +193,11 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({ url, label, isActive, cla
     setLoading(false);
     setError(true);
     setSoftTimedOut(false);
-    setErrorStatus(mediaType === 'video' ? videoRef.current?.error?.code ?? null : null);
+    setErrorStatus(mediaType === 'video'
+      ? videoRef.current?.error?.code ?? null
+      : mediaType === 'audio'
+        ? audioRef.current?.error?.code ?? null
+        : null);
     onLoadStatusChangeRef.current?.(true); // Treat error as loaded so user can still vote if it fails
   };
 
@@ -298,6 +310,27 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({ url, label, isActive, cla
             onError={handleError}
             onKeyDown={(e) => e.stopPropagation()} // Prevent video shortcuts from interfering with app voting
           />
+        ) : mediaType === 'audio' ? (
+          <div className="flex h-full w-full flex-col items-center justify-center gap-4 p-6">
+            <FileAudio className="h-14 w-14 text-amber-300" />
+            <audio
+              key={`audio-${retryKey}-${retryToken}-${referrerPolicyIdx}-${blobUrl ? 'blob' : 'url'}`}
+              ref={audioRef}
+              src={mediaSrc || undefined}
+              className="w-full max-w-xl"
+              controls
+              autoPlay={isActive}
+              preload={videoPreload}
+              referrerPolicy={referrerPolicy}
+              onLoadedMetadata={handleLoad}
+              onLoadedData={handleLoad}
+              onCanPlay={handleLoad}
+              onCanPlayThrough={handleLoad}
+              onPlaying={handleLoad}
+              onError={handleError}
+              onKeyDown={(e) => e.stopPropagation()}
+            />
+          </div>
         ) : (
           <img
             key={`img-${retryKey}-${retryToken}-${referrerPolicyIdx}`}
@@ -320,7 +353,7 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({ url, label, isActive, cla
 
       {/* Type Indicator (Bottom Right) */}
       <div className="absolute bottom-4 right-4 z-20 bg-black/40 backdrop-blur-sm p-1.5 rounded-lg text-white/70 pointer-events-none">
-        {mediaType === 'video' ? <FileVideo size={16} /> : <ImageIcon size={16} />}
+        {mediaType === 'video' ? <FileVideo size={16} /> : mediaType === 'audio' ? <FileAudio size={16} /> : <ImageIcon size={16} />}
       </div>
     </div>
   );

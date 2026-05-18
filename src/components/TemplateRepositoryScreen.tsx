@@ -4,6 +4,7 @@ import { EvalTemplate, EvalDimension, EvalParadigm } from '../types';
 import { db, auth } from '../firebase';
 import { collection, doc, setDoc, onSnapshot, query, orderBy, deleteDoc } from '../datastore';
 import { ConfirmModal } from './ConfirmModal';
+import { DEFAULT_SCORE_LEVELS, buildDefaultDimensionsForMethod, getEvaluationMethodShortLabel, getMethodFromParadigm, normalizeDimensions } from '../evaluationMethods';
 
 interface TemplateRepositoryScreenProps {
   onBack: () => void;
@@ -41,14 +42,24 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
   const handleAddDimension = () => {
     setDimensions([
       ...dimensions, 
-      { id: `dim-new-${Date.now()}`, name: '新维度', description: '', type: 'star_rating' }
+      {
+        id: `dim-new-${Date.now()}`,
+        name: '新维度',
+        description: '',
+        type: 'star_rating',
+        weight: 1,
+        required: true,
+        scope: 'secondary',
+        aggregationRole: 'score',
+        scale: DEFAULT_SCORE_LEVELS
+      }
     ]);
   };
 
   const handleUpdateDimension = (index: number, updates: Partial<EvalDimension>) => {
     const newDims = [...dimensions];
     newDims[index] = { ...newDims[index], ...updates };
-    setDimensions(newDims);
+    setDimensions(normalizeDimensions(newDims, getMethodFromParadigm(newParadigm)));
   };
 
   const handleRemoveDimension = (index: number) => {
@@ -85,7 +96,7 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
       name: newName,
       description: newDesc,
       paradigm: newParadigm,
-      dimensions: dimensions,
+      dimensions: normalizeDimensions(dimensions, getMethodFromParadigm(newParadigm)),
       creatorUid: auth.currentUser.uid,
       creatorName: auth.currentUser.displayName || auth.currentUser.email || 'Unknown',
       createdAt: editingTemplateId ? (templates.find(t => t.id === editingTemplateId)?.createdAt || Date.now()) : Date.now()
@@ -101,11 +112,11 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
       setNewDesc('');
       setNewParadigm('GSB');
       setDimensions([
-        { id: `dim-new-${Date.now()}`, name: '整体评价', description: '综合评估', type: 'radio_select', options: ['A 更好', 'B 更好', '平局'] }
+        { id: `dim-new-${Date.now()}`, name: '整体评价', description: '综合评估', type: 'radio_select', options: ['A 更好', 'B 更好', '平局'], scope: 'primary', aggregationRole: 'preference', required: true }
       ]);
     } catch (error) {
       console.error("Error saving template:", error);
-      alert("保存模板失败，请重试。");
+      alert("保存 Rubric 失败，请重试。");
     }
   };
 
@@ -116,7 +127,7 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
           <button onClick={() => { setIsCreating(false); setEditingTemplateId(null); }} className="text-slate-300 hover:text-slate-200 transition-colors">
             &larr; 返回列表
           </button>
-          <h1 className="text-2xl font-bold text-slate-200">{editingTemplateId ? '编辑评测模板' : '创建新评测模板'}</h1>
+          <h1 className="text-2xl font-bold text-slate-200">{editingTemplateId ? '编辑 Rubric' : '创建新 Rubric'}</h1>
         </div>
 
         <div className="glass-panel rounded-2xl border border-white/10 p-8 space-y-8 shadow-2xl">
@@ -127,11 +138,11 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
             </h2>
             <div className="grid gap-4">
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1.5">模板名称 *</label>
+                <label className="block text-sm font-medium text-slate-300 mb-1.5">Rubric 名称 *</label>
                 <input 
                   type="text" value={newName} onChange={e => setNewName(e.target.value)}
                   className="w-full px-4 py-2.5 glass-input rounded-xl text-sm text-slate-200 focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500/50 outline-none transition-all placeholder:text-slate-400"
-                  placeholder="例如：视频生成多维度 MOS 评分"
+                  placeholder="例如：视频生成多维度 Rubric 评分"
                 />
               </div>
               <div>
@@ -139,19 +150,32 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
                 <textarea 
                   value={newDesc} onChange={e => setNewDesc(e.target.value)} rows={3}
                   className="w-full px-4 py-2.5 glass-input rounded-xl text-sm text-slate-200 focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500/50 outline-none transition-all placeholder:text-slate-400"
-                  placeholder="描述这个评测模板的适用场景和评分标准..."
+                  placeholder="描述这个 Rubric 的适用产物模态、评测目标、通过/失败边界和不可判断规则..."
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1.5">评测范式 (Paradigm)</label>
+                <label className="block text-sm font-medium text-slate-300 mb-1.5">适用评测方式</label>
                 <select 
-                  value={newParadigm} onChange={e => setNewParadigm(e.target.value as EvalParadigm)}
+                  value={newParadigm}
+                  onChange={e => {
+                    const next = e.target.value as EvalParadigm;
+                    setNewParadigm(next);
+                    const method = getMethodFromParadigm(next);
+                    if (method === 'direct_score' || method === 'rubric_score') {
+                      setDimensions(buildDefaultDimensionsForMethod(method));
+                    } else if (method === 'pairwise' || method === 'ab_preference') {
+                      setDimensions([{ id: `dim-${Date.now()}`, name: '整体偏好', description: '按当前 Rubric 判断哪一侧更好。', type: 'radio_select', options: ['A 更好', 'B 更好', '平局'], scope: 'primary', aggregationRole: 'preference', required: true }]);
+                    } else {
+                      setDimensions([]);
+                    }
+                  }}
                   className="w-full px-4 py-2.5 glass-input rounded-xl text-sm text-slate-200 focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500/50 outline-none transition-all"
                 >
-                  <option value="GSB" className="bg-black/40">GSB (Good/Same/Bad) - 适用于 A/B 对比</option>
-                  <option value="MOS" className="bg-black/40">MOS (Mean Opinion Score) - 适用于单项打分 (1-5分)</option>
-                  <option value="Arena" className="bg-black/40">Arena (竞技场) - 适用于多模型盲测排位</option>
-                  <option value="Arena-rank" className="bg-black/40">Arena-rank - 多视频排序</option>
+                  <option value="GSB" className="bg-black/40">A/B 偏好 - 双模型对比</option>
+                  <option value="Pairwise" className="bg-black/40">Pairwise 对战 - 多模型两两比较</option>
+                  <option value="MOS" className="bg-black/40">直接评分 / MOS - 1-5 分</option>
+                  <option value="RubricScore" className="bg-black/40">Rubric 多维评分</option>
+                  <option value="Arena-rank" className="bg-black/40">全量排序 / Arena-rank</option>
                 </select>
               </div>
             </div>
@@ -186,7 +210,7 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
                     <Trash2 size={18} />
                   </button>
                   
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4 pr-10">
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4 pr-10">
                     <div>
                       <label className="block text-xs text-slate-300 mb-1.5">维度名称</label>
                       <input 
@@ -198,13 +222,41 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
                     <div>
                       <label className="block text-xs text-slate-300 mb-1.5">打分控件类型</label>
                       <select 
-                        value={dim.type} onChange={e => handleUpdateDimension(idx, { type: e.target.value as 'star_rating' | 'radio_select' | 'text_input' })}
+                        value={dim.type} onChange={e => handleUpdateDimension(idx, {
+                          type: e.target.value as 'star_rating' | 'radio_select' | 'text_input',
+                          aggregationRole: e.target.value === 'text_input' ? 'rationale' : e.target.value === 'star_rating' ? 'score' : 'preference',
+                          scale: e.target.value === 'star_rating' ? DEFAULT_SCORE_LEVELS : undefined
+                        })}
                         className="w-full px-3 py-2 glass-input rounded-lg text-sm text-slate-200 focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500/50 outline-none"
                       >
                         <option value="star_rating" className="bg-black/40">星级打分 (1-5)</option>
                         <option value="radio_select" className="bg-black/40">单选按钮 (Radio)</option>
                         <option value="text_input" className="bg-black/40">文本输入 (主观评价)</option>
                       </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-300 mb-1.5">用途</label>
+                      <select
+                        value={dim.scope || 'secondary'}
+                        onChange={e => handleUpdateDimension(idx, { scope: e.target.value as EvalDimension['scope'] })}
+                        className="w-full px-3 py-2 glass-input rounded-lg text-sm text-slate-200 focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500/50 outline-none"
+                      >
+                        <option value="primary" className="bg-black/40">主判断项</option>
+                        <option value="secondary" className="bg-black/40">附加评分项</option>
+                        <option value="rationale" className="bg-black/40">理由记录项</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-300 mb-1.5">权重</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.05"
+                        value={dim.weight ?? 1}
+                        onChange={e => handleUpdateDimension(idx, { weight: Number(e.target.value) })}
+                        disabled={dim.type !== 'star_rating'}
+                        className="w-full px-3 py-2 glass-input rounded-lg text-sm text-slate-200 focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500/50 outline-none disabled:opacity-50"
+                      />
                     </div>
                   </div>
                   
@@ -229,6 +281,15 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
                       />
                     </div>
                   )}
+                  <label className="mt-3 flex items-center gap-2 text-sm text-slate-300">
+                    <input
+                      type="checkbox"
+                      checked={dim.required !== false}
+                      onChange={e => handleUpdateDimension(idx, { required: e.target.checked })}
+                      className="rounded text-amber-400 focus:ring-amber-500"
+                    />
+                    评测执行时必填
+                  </label>
                 </div>
               ))}
             </div>
@@ -243,10 +304,10 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
             </button>
             <button 
               onClick={handleSaveTemplate}
-              disabled={!newName.trim() || dimensions.length === 0}
+              disabled={!newName.trim() || ((getMethodFromParadigm(newParadigm) === 'direct_score' || getMethodFromParadigm(newParadigm) === 'rubric_score') && dimensions.length === 0)}
               className="px-6 py-2.5 rounded-xl font-medium bg-gradient-accent text-black shadow-lg shadow-amber-500/20 hover:opacity-90 transition-all disabled:opacity-50 disabled:cursor-not-allowed text-sm"
             >
-              保存模板
+              保存 Rubric
             </button>
           </div>
         </div>
@@ -265,9 +326,9 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
         </button>
         <div className="ml-32">
           <h1 className="text-3xl font-bold text-slate-100 flex items-center gap-3">
-            <LayoutTemplate className="text-amber-500" /> 评测模板仓库
+            <LayoutTemplate className="text-amber-500" /> Rubric 库
           </h1>
-          <p className="text-slate-300 mt-1 text-sm">管理评测范式和打分维度。定义如何评估模型生成的结果。</p>
+          <p className="text-slate-300 mt-1 text-sm">沉淀可复用的评测方式、评分维度、尺度锚点和不可判断规则。</p>
         </div>
         <button 
           onClick={() => {
@@ -275,12 +336,12 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
             setNewName('');
             setNewDesc('');
             setNewParadigm('GSB');
-            setDimensions([{ id: `dim-new-${Date.now()}`, name: '整体评价', description: '综合评估', type: 'radio_select', options: ['A 更好', 'B 更好', '平局'] }]);
-            setIsCreating(true);
-          }}
+              setDimensions([{ id: `dim-new-${Date.now()}`, name: '整体评价', description: '综合评估', type: 'radio_select', options: ['A 更好', 'B 更好', '平局'], scope: 'primary', aggregationRole: 'preference', required: true }]);
+              setIsCreating(true);
+            }}
           className="flex items-center gap-2 bg-gradient-accent text-black px-6 py-2.5 rounded-xl font-medium text-sm shadow-lg shadow-amber-500/20 transition-all hover:opacity-90"
         >
-          <Plus size={18} /> 新建模板
+          <Plus size={18} /> 新建 Rubric
         </button>
       </div>
 
@@ -290,18 +351,18 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
             <button 
               onClick={() => setTemplateToDelete(template.id)}
               className="absolute top-4 right-4 p-2 text-slate-300 hover:text-red-400 hover:bg-red-400/10 rounded-lg opacity-0 group-hover:opacity-100 transition-all"
-              title="删除评测模板"
+              title="删除 Rubric"
             >
               <Trash2 size={18} />
             </button>
             <div className="flex justify-between items-start mb-3 pr-8">
               <h3 className="font-bold text-lg text-slate-200 line-clamp-1" title={template.name}>{template.name}</h3>
               <span className={`text-xs px-2.5 py-1 rounded-md font-bold shrink-0 border ${
-                template.paradigm === 'GSB' ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' : 
-                template.paradigm === 'MOS' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 
+                template.paradigm === 'GSB' || template.paradigm === 'Pairwise' ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' :
+                template.paradigm === 'MOS' || template.paradigm === 'RubricScore' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' :
                 'bg-amber-500/10 text-amber-400 border-amber-500/20'
               }`}>
-                {template.paradigm}
+                {getEvaluationMethodShortLabel(getMethodFromParadigm(template.paradigm))}
               </span>
             </div>
             <p className="text-sm text-slate-300 line-clamp-2 mb-4 flex-1">
@@ -309,14 +370,14 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
             </p>
             
             <div className="glass-panel rounded-xl p-4 mb-4">
-              <div className="text-xs font-medium text-slate-300 mb-3">包含维度 ({template.dimensions.length}):</div>
+              <div className="text-xs font-medium text-slate-300 mb-3">评分标准 / 维度 ({template.dimensions.length}):</div>
               <ul className="space-y-2">
                 {template.dimensions.slice(0, 3).map(dim => (
                   <li key={dim.id} className="text-sm text-slate-300 flex items-center gap-2">
                     <div className="w-1.5 h-1.5 rounded-full bg-amber-500/50"></div>
                     <span className="truncate">{dim.name}</span>
                     <span className="text-[10px] text-slate-300 ml-auto border border-white/10 px-1.5 py-0.5 rounded bg-white/5">
-                      {dim.type === 'star_rating' ? '星级' : dim.type === 'radio_select' ? '单选' : '文本'}
+                      {dim.type === 'star_rating' ? `星级 · w ${dim.weight ?? 1}` : dim.type === 'radio_select' ? '单选' : '文本'}
                     </span>
                   </li>
                 ))}
@@ -331,7 +392,7 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
                 onClick={() => handleEditTemplate(template)}
                 className="flex-1 flex items-center justify-center gap-2 bg-white/5 glass-panel-hover text-slate-300 py-2.5 rounded-xl text-sm font-medium transition-colors border border-white/10"
               >
-                <Edit2 size={16} /> 编辑模板
+                <Edit2 size={16} /> 编辑 Rubric
               </button>
             </div>
           </div>
@@ -340,8 +401,8 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
 
       <ConfirmModal
         isOpen={!!templateToDelete}
-        title="删除评测模板"
-        message="确定要删除这个评测模板吗？此操作不可恢复，相关的评测物料可能无法正常工作。"
+        title="删除 Rubric"
+        message="确定要删除这个 Rubric 吗？此操作不可恢复，已创建的评测物料仍会保留当时保存的评分配置。"
         onConfirm={confirmDeleteTemplate}
         onCancel={() => setTemplateToDelete(null)}
         confirmText="删除"

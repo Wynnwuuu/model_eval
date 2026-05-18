@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowDown, ArrowLeft, ArrowUp, CheckCircle2, Cloud, GripVertical, Trophy } from 'lucide-react';
+import { ArrowDown, ArrowUp, CheckCircle2, Cloud, GripVertical, Trophy } from 'lucide-react';
 import { EvaluationItem, RankingEntry } from '../types';
 import { getModelOutputsForItem } from '../rankingUtils';
 import MediaRenderer from './MediaRenderer';
@@ -132,11 +132,11 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
   };
 
   return (
-    <div className="h-full flex flex-col">
-      <div className="h-14 bg-white/5 border-b border-white/10 flex items-center justify-between px-6 shrink-0">
+    <div className="ark-operation-screen h-full flex flex-col">
+      <div className="ark-operation-header h-14 flex items-center justify-between px-6 shrink-0">
         <div className="flex items-center gap-4">
-          <h2 className="font-bold text-slate-200 text-lg">Arena-rank</h2>
-          <span className="px-2 py-1 bg-white/10 text-slate-200 rounded-md text-xs font-mono">
+          <h2 className="text-lg font-black uppercase tracking-wide text-slate-100">Arena-rank</h2>
+          <span className="border border-white/15 bg-white/10 px-2 py-1 font-mono text-xs text-slate-200">
             {currentIndex + 1} / {totalItems}
           </span>
           <div className={`flex items-center gap-1 text-xs font-medium transition-all duration-500 ${justSaved ? 'text-emerald-400 opacity-100' : 'text-slate-200 opacity-50'}`}>
@@ -146,40 +146,40 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
         </div>
 
         <div className="flex items-center gap-4">
-          <div className="hidden lg:flex items-center gap-2 text-xs text-slate-300">
+          <div className="hidden items-center gap-2 text-xs text-slate-300 lg:flex">
             <GripVertical size={14} />
             <span>拖拽或使用上下箭头排序，第一名放最上方</span>
           </div>
           {onGoBack && (
-            <button onClick={onGoBack} className="text-slate-200 hover:text-white text-sm font-medium transition-colors border-l border-white/10 pl-4">
+            <button onClick={onGoBack} className="border-l border-white/10 pl-4 text-sm font-medium text-slate-200 transition-colors hover:text-white">
               上一题
             </button>
           )}
           {onBack && (
-            <button onClick={onBack} className="text-slate-200 hover:text-white text-sm font-medium transition-colors border-l border-white/10 pl-4">
+            <button onClick={onBack} className="border-l border-white/10 pl-4 text-sm font-medium text-slate-200 transition-colors hover:text-white">
               返回大盘
             </button>
           )}
-          <button onClick={onEnd} className="text-slate-200 hover:text-white text-sm font-medium transition-colors border-l border-white/10 pl-4">
+          <button onClick={onEnd} className="border-l border-white/10 pl-4 text-sm font-medium text-slate-200 transition-colors hover:text-white">
             提前结束
           </button>
         </div>
       </div>
 
-      <div className="w-full h-1 bg-white/10 shrink-0">
-        <div className="h-full bg-amber-500 transition-all duration-300 ease-out" style={{ width: `${progress}%` }} />
+      <div className="h-1 w-full shrink-0 bg-white/10">
+        <div className="ark-progress h-full transition-all duration-300 ease-out" style={{ width: `${progress}%` }} />
       </div>
 
       {(item.inputs || item.prompt || hasDimensions) && (
-        <div className="bg-white/5 border-b border-white/10 px-6 py-3 shrink-0 relative shadow-md shadow-black/20 z-10">
+        <div className="ark-prompt-strip relative z-10 shrink-0 px-6 py-3">
           <DimensionChips values={dimensionValues} className="mb-2" />
-          <div className={`text-slate-200 text-sm leading-relaxed transition-all duration-300 whitespace-pre-wrap ${showFullPrompt ? '' : 'line-clamp-2 pr-8'}`}>
+          <div className={`text-sm leading-relaxed transition-all duration-300 whitespace-pre-wrap ${showFullPrompt ? '' : 'line-clamp-2 pr-8'}`}>
             {visibleInputs.length > 0 ? (
               <div className="flex flex-col gap-2">
                 {visibleInputs.map(([key, value]) => (
-                  <div key={key} className="flex flex-col sm:flex-row gap-1 sm:gap-3">
-                    <span className="font-semibold text-slate-100 select-none uppercase text-xs tracking-wider bg-white/10 px-1.5 py-0.5 rounded shrink-0 self-start mt-0.5">{key}</span>
-                    <span className="text-slate-200 break-words">{String(value)}</span>
+                  <div key={key} className="flex flex-col gap-1 sm:flex-row sm:gap-3">
+                    <span className="shrink-0 self-start bg-black px-1.5 py-0.5 text-xs font-black uppercase tracking-wider text-white">{key}</span>
+                    <span className="break-words">{String(value)}</span>
                   </div>
                 ))}
               </div>
@@ -190,7 +190,8 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
           {((item.prompt && item.prompt.length > 150) || visibleInputs.length > 1) && (
             <button
               onClick={() => setShowFullPrompt(!showFullPrompt)}
-              className="absolute right-4 top-3 text-slate-200 hover:text-amber-400 p-1 bg-white/5 rounded-full shadow-md shadow-black/20 border border-white/10"
+              className="absolute right-4 top-3 border border-black/20 bg-white/55 p-1 text-black shadow-md transition-colors hover:bg-[var(--accent)]"
+              aria-label={showFullPrompt ? '收起输入信息' : '展开输入信息'}
             >
               {showFullPrompt ? <ArrowUp size={16} /> : <ArrowDown size={16} />}
             </button>
@@ -198,16 +199,16 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
         </div>
       )}
 
-      <div className="flex-1 min-h-0 bg-white/5 p-4 md:p-6 overflow-auto">
+      <div className="flex-1 min-h-0 overflow-auto bg-black/25 p-4 md:p-6">
         {orderedOutputs.length < 3 ? (
-          <div className="h-full flex flex-col items-center justify-center text-center text-slate-300">
-            <Trophy size={40} className="text-amber-400 mb-4" />
-            <h3 className="text-lg font-semibold text-slate-100 mb-2">Arena-rank 至少需要 3 个候选视频</h3>
-            <p className="text-sm max-w-md">请在创建任务时选择 3 列或更多模型结果列；2 个候选请继续使用原 Arena。</p>
+          <div className="flex h-full flex-col items-center justify-center text-center text-slate-300">
+            <Trophy size={40} className="mb-4 text-[var(--accent)]" />
+            <h3 className="mb-2 text-lg font-semibold text-slate-100">Arena-rank 至少需要 3 个候选产物</h3>
+            <p className="max-w-md text-sm">请在创建任务时选择 3 列或更多模型结果列；2 个候选请继续使用普通 Arena。</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_360px] gap-6 min-h-[640px] xl:min-h-full">
-            <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3 gap-4 content-start min-w-0">
+          <div className="grid min-h-[640px] grid-cols-1 gap-6 xl:min-h-full xl:grid-cols-[minmax(0,1fr)_360px]">
+            <div className="grid min-w-0 grid-cols-1 content-start gap-4 md:grid-cols-2 2xl:grid-cols-3">
               {orderedOutputs.map((output, index) => (
                 <div
                   key={output.modelId}
@@ -215,36 +216,38 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
                   onDragStart={() => setDraggedId(output.modelId)}
                   onDragOver={(event) => event.preventDefault()}
                   onDrop={() => handleDrop(output.modelId)}
-                  className={`min-h-[360px] min-w-0 flex flex-col bg-white/5 border rounded-xl overflow-hidden transition-colors ${
-                    draggedId === output.modelId ? 'border-amber-400/70 opacity-70' : 'border-white/10 hover:border-amber-400/50'
+                  className={`ark-rank-card flex min-h-[360px] min-w-0 flex-col overflow-hidden transition-colors ${
+                    draggedId === output.modelId ? 'opacity-70' : 'hover:border-[var(--accent)]'
                   }`}
                 >
-                  <div className="flex items-center justify-between px-3 py-2 border-b border-white/10 bg-black/20">
-                    <div className="flex items-center gap-2 text-sm font-semibold text-slate-200">
-                      <GripVertical size={16} className="text-slate-400" />
+                  <div className="ark-rank-head flex items-center justify-between px-3 py-2">
+                    <div className="flex items-center gap-2 text-sm font-black">
+                      <GripVertical size={16} />
                       <span>Rank {index + 1}</span>
-                      <span className="text-xs text-slate-400">Option {index + 1}</span>
+                      <span className="font-mono text-xs opacity-65">Option {index + 1}</span>
                     </div>
                     <div className="flex items-center gap-1">
                       <button
                         onClick={() => moveOutput(output.modelId, -1)}
                         disabled={index === 0}
-                        className="p-1.5 rounded-md text-slate-300 hover:text-white hover:bg-white/10 disabled:opacity-30 disabled:hover:bg-transparent"
+                        className="p-1.5 text-black/70 hover:bg-black hover:text-white disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-black/70"
                         title="上移"
+                        aria-label={`将 Option ${index + 1} 上移`}
                       >
                         <ArrowUp size={15} />
                       </button>
                       <button
                         onClick={() => moveOutput(output.modelId, 1)}
                         disabled={index === orderedOutputs.length - 1}
-                        className="p-1.5 rounded-md text-slate-300 hover:text-white hover:bg-white/10 disabled:opacity-30 disabled:hover:bg-transparent"
+                        className="p-1.5 text-black/70 hover:bg-black hover:text-white disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-black/70"
                         title="下移"
+                        aria-label={`将 Option ${index + 1} 下移`}
                       >
                         <ArrowDown size={15} />
                       </button>
                     </div>
                   </div>
-                  <div className="flex-1 min-h-[280px] overflow-hidden bg-black/40 p-1">
+                  <div className="min-h-[280px] flex-1 overflow-hidden bg-black/55 p-1">
                     <MediaRenderer
                       url={output.url}
                       label={`Option ${index + 1}`}
@@ -257,12 +260,12 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
               ))}
             </div>
 
-            <aside className="bg-black/20 border border-white/10 rounded-xl p-4 h-fit sticky top-4">
-              <h3 className="text-sm font-semibold text-slate-100 mb-3">当前排名</h3>
-              <div className="space-y-2 mb-4">
+            <aside className="ark-panel h-fit p-4 xl:sticky xl:top-4">
+              <h3 className="mb-3 text-sm font-black uppercase tracking-wide text-slate-100">当前排名</h3>
+              <div className="mb-4 space-y-2">
                 {orderedOutputs.map((output, index) => (
-                  <div key={output.modelId} className="flex items-center gap-3 rounded-lg bg-white/5 px-3 py-2 border border-white/10">
-                    <span className="w-7 h-7 rounded-full bg-amber-500/20 text-amber-300 flex items-center justify-center text-xs font-bold">
+                  <div key={output.modelId} className="flex items-center gap-3 border border-white/10 bg-white/5 px-3 py-2">
+                    <span className="flex h-7 w-7 items-center justify-center rounded-full bg-[var(--accent)]/20 text-xs font-bold text-[var(--accent)]">
                       {index + 1}
                     </span>
                     <span className="text-sm text-slate-200">Option {index + 1}</span>
@@ -272,10 +275,10 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
               <button
                 onClick={submitRanking}
                 disabled={!allMediaLoaded}
-                className={`w-full py-3 rounded-xl font-bold flex items-center justify-center gap-2 transition-colors ${
+                className={`flex w-full items-center justify-center gap-2 py-3 font-black transition-colors ${
                   allMediaLoaded
-                    ? 'bg-amber-500 hover:bg-amber-600 text-black'
-                    : 'bg-white/10 text-slate-400 cursor-not-allowed'
+                    ? 'btn-primary'
+                    : 'cursor-not-allowed border border-white/10 bg-white/10 text-slate-400'
                 }`}
               >
                 <Trophy size={18} />

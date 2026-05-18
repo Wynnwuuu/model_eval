@@ -43,7 +43,7 @@ export function Dashboard({ projects, onSelectProject }: DashboardProps) {
             <BarChart2 className="w-6 h-6" />
           </div>
           <div>
-            <p className="text-sm text-slate-400 font-medium">总评测任务</p>
+            <p className="text-sm text-slate-400 font-medium">总评测物料</p>
             <p className="text-2xl font-bold text-slate-100">{projects.length}</p>
           </div>
         </div>
@@ -76,7 +76,7 @@ export function Dashboard({ projects, onSelectProject }: DashboardProps) {
           <input
             type="text"
             className="block w-full pl-10 pr-3 py-2 border border-white/10 rounded-lg leading-5 bg-white/5 placeholder-gray-400 focus:outline-none focus:glass-panel focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm transition-colors"
-            placeholder="搜索评测任务、发起人..."
+            placeholder="搜索评测物料、发起人..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
           />
@@ -101,7 +101,7 @@ export function Dashboard({ projects, onSelectProject }: DashboardProps) {
           <table className="min-w-full divide-y divide-white/10">
             <thead className="bg-white/5">
               <tr>
-                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">评测任务</th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">评测物料</th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">分类/类型</th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">发起人/支持</th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-slate-400 uppercase tracking-wider">周期</th>
@@ -162,7 +162,7 @@ export function Dashboard({ projects, onSelectProject }: DashboardProps) {
           </table>
           {filteredProjects.length === 0 && (
             <div className="text-center py-12 text-slate-400">
-              没有找到匹配的评测任务
+              没有找到匹配的评测物料
             </div>
           )}
         </div>
