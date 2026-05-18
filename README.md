@@ -1,7 +1,12 @@
 # Eval Studio
 
 **线上环境（生产部署）：** [https://evalstudiocopygit-125148-927e8.web.app/](https://evalstudiocopygit-125148-927e8.web.app/)
+**本测试环境**
+PR 自动预览：
+https://evalstudiocopygit-125148-927e8--pr-1-066v89he.web.app
 
+手动稳定预览：
+https://evalstudiocopygit-125148-927e8--eval-method-rubric-ins-swxqwuoq.web.app
 ---
 
 评测工作台（界面品牌为 **EvalTrack**）。业务数据通过 `src/datastore.ts` 统一接入：
