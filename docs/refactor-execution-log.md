@@ -41,6 +41,8 @@
 - 项目大盘中的“开始评测”也复用 `loadTaskEvaluation`，点击进入评测和 URL 直达评测走同一套任务加载逻辑。
 - 新增 `src/features/tasks/loadTaskItems.ts`，任务详情弹层和评测执行入口共享同一套 case 加载逻辑。
 - 新增 `src/features/tasks/api.ts` 作为 task feature 的统一导出入口，并提供 `subscribeTasks`；`TaskBuilderScreen` 的任务列表订阅改为走 feature API。
+- 新增 `src/features/datasets/api.ts` 和 `src/features/templates/api.ts`，评测集和 Rubric 模板列表订阅开始从页面组件收口到 feature API。
+- `TemplateRepositoryScreen`、`DatasetRepositoryScreen`、`TaskBuilderScreen`、`DashboardScreen` 的评测集/模板读路径已接入对应 feature API。
 
 当前可验证 URL：
 

@@ -2,13 +2,15 @@ import React, { useState, useEffect } from 'react';
 import { ArrowLeft, Plus, Save, Trash2, Database, LayoutTemplate, Box, CheckCircle2, Play, Link as LinkIcon, Upload, X, Users, Edit, Eye, Loader2, ClipboardList } from 'lucide-react';
 import { EvalDataset, EvalTemplate, EvalTask, EvalDimension, EvalParadigm, EvaluationConfig, EvaluationItem, EvaluationMethod } from '../types';
 import { db, auth } from '../firebase';
-import { collection, onSnapshot, addDoc, query, orderBy, doc, updateDoc, deleteDoc, setDoc } from '../datastore';
+import { collection, onSnapshot, addDoc, query, doc, updateDoc, deleteDoc, setDoc } from '../datastore';
 import { ConfirmModal } from './ConfirmModal';
 import Papa from 'papaparse';
 import MediaRenderer from './MediaRenderer';
 import DimensionChips from './DimensionChips';
 import { getDimensionValuesForItem, getDimensionValuesFromRecord, isLikelyDimensionColumn } from '../dimensionUtils';
 import { loadTaskItems, subscribeTasks } from '../features/tasks/api';
+import { subscribeDatasets } from '../features/datasets/api';
+import { subscribeTemplates } from '../features/templates/api';
 import {
   STANDARD_DATASET_FIELDS,
   appendDatasetVersion,
@@ -108,22 +110,17 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
       setError("加载评测物料失败");
     });
 
-    const datasetsQuery = query(collection(db, 'evalDatasets'), orderBy('createdAt', 'desc'));
-    const unsubscribeDatasets = onSnapshot(datasetsQuery, (snapshot) => {
-      const fetchedDatasets: EvalDataset[] = [];
-      snapshot.forEach((docSnap) => {
-        fetchedDatasets.push({ id: docSnap.id, ...docSnap.data() } as EvalDataset);
-      });
-      setDatasets(fetchedDatasets);
+    const unsubscribeDatasets = subscribeDatasets(setDatasets, (error) => {
+      console.error("Error fetching datasets:", error);
+      setError("加载评测集失败");
     });
 
-    const templatesQuery = query(collection(db, 'evalTemplates'), orderBy('createdAt', 'desc'));
-    const unsubscribeTemplates = onSnapshot(templatesQuery, (snapshot) => {
-      const fetchedTemplates: EvalTemplate[] = [];
-      snapshot.forEach((docSnap) => {
-        fetchedTemplates.push({ id: docSnap.id, ...docSnap.data() } as EvalTemplate);
-      });
+    const unsubscribeTemplates = subscribeTemplates((fetchedTemplates) => {
       setTemplates(fetchedTemplates);
+      setLoading(false);
+    }, (error) => {
+      console.error("Error fetching templates:", error);
+      setError("加载 Rubric 模板失败");
       setLoading(false);
     });
 

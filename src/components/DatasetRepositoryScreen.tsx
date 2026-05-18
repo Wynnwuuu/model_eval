@@ -26,11 +26,12 @@ import {
 import Papa from 'papaparse';
 import { DatasetColumnMappings, DatasetFieldRole, DatasetGenerationJob, DatasetModality, DatasetPreviewType, DatasetSchemaField, EvalDataset } from '../types';
 import { db, auth } from '../firebase';
-import { collection, doc, setDoc, onSnapshot, query, orderBy, deleteDoc, where } from '../datastore';
+import { collection, doc, setDoc, onSnapshot, query, deleteDoc, where } from '../datastore';
 import { ConfirmModal } from './ConfirmModal';
 import MediaRenderer from './MediaRenderer';
 import DatasetGenerationModal from './DatasetGenerationModal';
 import { normalizeUrl } from '../utils';
+import { subscribeDatasets } from '../features/datasets/api';
 import {
   DATASET_MODALITIES,
   STANDARD_DATASET_FIELDS,
@@ -386,14 +387,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    const q = query(collection(db, 'evalDatasets'), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const loadedDatasets: EvalDataset[] = [];
-      snapshot.forEach((docSnap) => {
-        loadedDatasets.push({ id: docSnap.id, ...docSnap.data() } as EvalDataset);
-      });
-      setDatasets(loadedDatasets);
-    }, (error) => {
+    const unsubscribe = subscribeDatasets(setDatasets, (error) => {
       console.error('Error fetching datasets:', error);
     });
 

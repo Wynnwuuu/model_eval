@@ -2,9 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { LayoutTemplate, Plus, Settings, ArrowRight, Trash2, Edit2, FileText, CheckCircle2 } from 'lucide-react';
 import { EvalTemplate, EvalDimension, EvalParadigm } from '../types';
 import { db, auth } from '../firebase';
-import { collection, doc, setDoc, onSnapshot, query, orderBy, deleteDoc } from '../datastore';
+import { doc, setDoc, deleteDoc } from '../datastore';
 import { ConfirmModal } from './ConfirmModal';
 import { DEFAULT_SCORE_LEVELS, buildDefaultDimensionsForMethod, getEvaluationMethodShortLabel, getMethodFromParadigm, normalizeDimensions } from '../evaluationMethods';
+import { subscribeTemplates } from '../features/templates/api';
 
 interface TemplateRepositoryScreenProps {
   onBack: () => void;
@@ -25,14 +26,7 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
   ]);
 
   useEffect(() => {
-    const q = query(collection(db, 'evalTemplates'), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const loadedTemplates: EvalTemplate[] = [];
-      snapshot.forEach((doc) => {
-        loadedTemplates.push({ id: doc.id, ...doc.data() } as EvalTemplate);
-      });
-      setTemplates(loadedTemplates);
-    }, (error) => {
+    const unsubscribe = subscribeTemplates(setTemplates, (error) => {
       console.error("Error fetching templates:", error);
     });
 

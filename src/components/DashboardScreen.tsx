@@ -7,6 +7,8 @@ import { collection, onSnapshot, addDoc, query, orderBy, doc, updateDoc, where, 
 import { EmptyState, PageFrame, PageHeader, StatTile, Toolbar } from './ui';
 import { getEvaluationMethodShortLabel, normalizeEvaluationConfig } from '../evaluationMethods';
 import { loadTaskEvaluation } from '../features/tasks/api';
+import { subscribeDatasets } from '../features/datasets/api';
+import { subscribeTemplates } from '../features/templates/api';
 
 interface DashboardScreenProps {
   initialProject?: EvaluationProject | null;
@@ -57,17 +59,8 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
       setProjectTasks(tasks);
     });
     
-    const unsubscribeDatasets = onSnapshot(collection(db, 'evalDatasets'), (snapshot) => {
-      const ds: any[] = [];
-      snapshot.forEach(doc => ds.push({ id: doc.id, ...doc.data() }));
-      setDatasets(ds);
-    });
-    
-    const unsubscribeTemplates = onSnapshot(collection(db, 'evalTemplates'), (snapshot) => {
-      const ts: any[] = [];
-      snapshot.forEach(doc => ts.push({ id: doc.id, ...doc.data() }));
-      setTemplates(ts);
-    });
+    const unsubscribeDatasets = subscribeDatasets(setDatasets);
+    const unsubscribeTemplates = subscribeTemplates(setTemplates);
 
     return () => {
       unsubscribeTasks();
