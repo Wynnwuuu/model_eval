@@ -16,7 +16,6 @@ import {
   appendDatasetVersion,
   buildDatasetCard,
   buildDatasetSchema,
-  getDatasetColumnMappings,
   inferDatasetMappings,
   inferDatasetModality,
   inferInputTypeFromDataset,
@@ -33,6 +32,7 @@ import {
   getEvaluationMethodShortLabel,
   getMethodMinModelCount,
   getParadigmFromMethod,
+  isPreviewMethod,
   normalizeEvaluationConfig,
   normalizeDimensions
 } from '../evaluationMethods';
@@ -88,6 +88,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
   const [newTemplateName, setNewTemplateName] = useState('');
   const [newTemplateParadigm, setNewTemplateParadigm] = useState<EvalParadigm>('GSB');
   const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
+  const isBenchmarkPreview = isPreviewMethod(evaluationConfig);
   const [statusFilter, setStatusFilter] = useState<EvalTask['status'] | 'all'>(initialStatusFilter || 'all');
   
   // Item Editing State
@@ -148,7 +149,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
       if (inputColumns.length === 0) return "请至少选择一个输入列";
       const minModels = getMethodMinModelCount(evaluationConfig.method);
       if (modelColumns.length < minModels) {
-        return `${getEvaluationMethodShortLabel(evaluationConfig.method)} 至少需要 ${minModels} 列模型结果，请补充选择。`;
+        return `${getEvaluationMethodShortLabel(evaluationConfig.method)} 至少需要 ${minModels} 列${isBenchmarkPreview ? '输出预览' : '模型结果'}，请补充选择。`;
       }
       if ((evaluationConfig.method === 'direct_score' || evaluationConfig.method === 'rubric_score') && !(evaluationConfig.dimensions || []).some(dim => dim.type === 'star_rating')) {
         return "评分类评测至少需要一个星级打分维度。";
@@ -194,7 +195,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
 
     const minModels = getMethodMinModelCount(method);
     if (modelColumns.length > 0) {
-      setModelColumns(prev => method === 'rank_order' || method === 'pairwise' ? prev : prev.slice(0, Math.max(minModels, 2)));
+      setModelColumns(prev => method === 'rank_order' || method === 'pairwise' || method === 'benchmark_preview' ? prev : prev.slice(0, Math.max(minModels, 2)));
     }
   };
 
@@ -248,22 +249,11 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
     const headers = dataset.items?.[0]
       ? Object.keys(dataset.items[0]).filter(key => key !== '_originalData')
       : dataset.inputSchema?.map(field => field.key) || [];
-    const mappings = getDatasetColumnMappings(dataset, headers);
-    const fallbackDimensions = autoDetectDimensionColumns(headers, mappings.inputColumns);
-    const fallbackOutputs = headers.filter(header =>
-      !mappings.inputColumns.includes(header) &&
-      !fallbackDimensions.includes(header) &&
-      !header.toLowerCase().includes('id') &&
-      header !== '_originalData'
-    );
-    const outputColumns = mappings.outputColumns.length ? mappings.outputColumns : fallbackOutputs;
 
     setCsvHeaders(headers);
-    setInputColumns(mappings.inputColumns.length ? mappings.inputColumns.filter(col => headers.includes(col)) : headers.slice(0, 1));
-    setDimensionColumns(mappings.dimensionColumns.length ? mappings.dimensionColumns.filter(col => headers.includes(col)) : fallbackDimensions);
-    setModelColumns(evaluationConfig.method === 'rank_order' || evaluationConfig.method === 'pairwise'
-      ? outputColumns.filter(col => headers.includes(col))
-      : outputColumns.filter(col => headers.includes(col)).slice(0, Math.max(getMethodMinModelCount(evaluationConfig.method), 2)));
+    setInputColumns([]);
+    setDimensionColumns([]);
+    setModelColumns([]);
     const inferredInputType = inferInputTypeFromDataset(dataset);
     setInputType(dataset.inputType && dataset.inputType !== 'text' ? dataset.inputType : inferredInputType);
     setNewTask(prev => ({
@@ -713,11 +703,9 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
     );
     const detectedModelColumns = detectedMappings.outputColumns.length ? detectedMappings.outputColumns : fallbackModelColumns;
 
-    setInputColumns(detectedInputColumns);
-    setDimensionColumns(detectedDimensionColumns);
-    setModelColumns(evaluationConfig.method === 'rank_order' || evaluationConfig.method === 'pairwise'
-      ? detectedModelColumns
-      : detectedModelColumns.slice(0, Math.max(getMethodMinModelCount(evaluationConfig.method), 2)));
+    setInputColumns([]);
+    setDimensionColumns([]);
+    setModelColumns([]);
 
     const tempDataset = {
       id: 'temp',
@@ -896,6 +884,8 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
   const visibleTasks = statusFilter === 'all'
     ? tasks
     : tasks.filter(task => task.status === statusFilter);
+  const availableOutputHeaders = csvHeaders.filter(h => !inputColumns.includes(h) && !dimensionColumns.includes(h));
+  const availableDimensionHeaders = csvHeaders.filter(h => !inputColumns.includes(h) && !modelColumns.includes(h));
 
   return (
     <div className="max-w-6xl mx-auto p-6 animate-in fade-in duration-500">
@@ -912,7 +902,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
               <Box className="text-amber-400" size={32} />
               评测物料构建器
             </h1>
-            <p className="text-slate-300 mt-2">将评测集、评测方式、评分标准、模型结果列和评委分配组合为可执行评测物料。</p>
+            <p className="text-slate-300 mt-2">将评测集、评测方式、评分标准、模型结果列或输出预览列和评委分配组合为可执行物料。</p>
           </div>
         </div>
         {!isCreating && (
@@ -1074,7 +1064,9 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                           >
                             <div className="flex items-center justify-between gap-3">
                               <span className="font-bold">{option.title}</span>
-                              <span className="font-mono text-[11px] text-amber-300">≥{option.minModels} 模型列</span>
+                              <span className="font-mono text-[11px] text-amber-300">
+                                ≥{option.minModels} {isPreviewMethod(option.method) ? '输出列' : '模型列'}
+                              </span>
                             </div>
                             <p className="mt-1 text-xs text-slate-400">{option.description}</p>
                           </button>
@@ -1083,49 +1075,53 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                     </div>
                   </div>
 
-                  <div>
-                    <label className="block text-sm font-medium text-slate-200 mb-2">套用 Rubric 库（可选）</label>
-                    <select
-                      value={newTask.templateId}
-                      onChange={(e) => {
-                        if (e.target.value === 'CREATE_NEW') {
-                          setShowCreateTemplateModal(true);
-                        } else {
-                          applyRubricTemplate(e.target.value);
-                        }
-                      }}
-                      className="w-full px-4 py-2 glass-input rounded-xl focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
-                    >
-                      <option value="">不套用，使用当前配置</option>
-                      {templates.map(tpl => (
-                        <option key={tpl.id} value={tpl.id}>{tpl.name} ({getEvaluationMethodShortLabel(normalizeEvaluationConfig(undefined, tpl).method)})</option>
-                      ))}
-                      <option value="CREATE_NEW" className="font-medium text-amber-400">+ 新建 Rubric</option>
-                    </select>
-                  </div>
+                  {!isBenchmarkPreview && (
+                    <div>
+                      <label className="block text-sm font-medium text-slate-200 mb-2">套用 Rubric 库（可选）</label>
+                      <select
+                        value={newTask.templateId}
+                        onChange={(e) => {
+                          if (e.target.value === 'CREATE_NEW') {
+                            setShowCreateTemplateModal(true);
+                          } else {
+                            applyRubricTemplate(e.target.value);
+                          }
+                        }}
+                        className="w-full px-4 py-2 glass-input rounded-xl focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
+                      >
+                        <option value="">不套用，使用当前配置</option>
+                        {templates.map(tpl => (
+                          <option key={tpl.id} value={tpl.id}>{tpl.name} ({getEvaluationMethodShortLabel(normalizeEvaluationConfig(undefined, tpl).method)})</option>
+                        ))}
+                        <option value="CREATE_NEW" className="font-medium text-amber-400">+ 新建 Rubric</option>
+                      </select>
+                    </div>
+                  )}
 
-                  <div className="grid grid-cols-2 gap-3">
-                    <label className="flex items-center gap-2 border border-white/10 bg-white/5 p-3 text-sm text-slate-200">
-                      <input
-                        type="checkbox"
-                        checked={evaluationConfig.blind !== false}
-                        onChange={(e) => setEvaluationConfig(prev => ({ ...prev, blind: e.target.checked }))}
-                        className="rounded text-amber-400 focus:ring-amber-500"
-                      />
-                      盲测展示
-                    </label>
-                    {(evaluationConfig.method === 'ab_preference' || evaluationConfig.method === 'pairwise') && (
+                  {!isBenchmarkPreview && (
+                    <div className="grid grid-cols-2 gap-3">
                       <label className="flex items-center gap-2 border border-white/10 bg-white/5 p-3 text-sm text-slate-200">
                         <input
                           type="checkbox"
-                          checked={evaluationConfig.tiePolicy !== 'disallow'}
-                          onChange={(e) => setEvaluationConfig(prev => ({ ...prev, tiePolicy: e.target.checked ? 'allow' : 'disallow' }))}
+                          checked={evaluationConfig.blind !== false}
+                          onChange={(e) => setEvaluationConfig(prev => ({ ...prev, blind: e.target.checked }))}
                           className="rounded text-amber-400 focus:ring-amber-500"
                         />
-                        允许平局
+                        盲测展示
                       </label>
-                    )}
-                  </div>
+                      {(evaluationConfig.method === 'ab_preference' || evaluationConfig.method === 'pairwise') && (
+                        <label className="flex items-center gap-2 border border-white/10 bg-white/5 p-3 text-sm text-slate-200">
+                          <input
+                            type="checkbox"
+                            checked={evaluationConfig.tiePolicy !== 'disallow'}
+                            onChange={(e) => setEvaluationConfig(prev => ({ ...prev, tiePolicy: e.target.checked ? 'allow' : 'disallow' }))}
+                            className="rounded text-amber-400 focus:ring-amber-500"
+                          />
+                          允许平局
+                        </label>
+                      )}
+                    </div>
+                  )}
 
                   {evaluationConfig.method === 'pairwise' && (
                     <label className="block">
@@ -1181,7 +1177,13 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div>
-                      <label className="block text-sm font-medium text-slate-200 mb-1">输入列 (可多选，如提示词、图片、音频等)</label>
+                      <div className="mb-1 flex items-center justify-between gap-2">
+                        <label className="block text-sm font-medium text-slate-200">输入列 (可多选，如提示词、图片、音频等)</label>
+                        <div className="flex shrink-0 gap-1">
+                          <button type="button" onClick={() => updateInputColumns(csvHeaders)} className="px-2 py-0.5 text-xs text-amber-300 hover:bg-white/10">全选</button>
+                          <button type="button" onClick={() => updateInputColumns([])} className="px-2 py-0.5 text-xs text-slate-400 hover:bg-white/10">全不选</button>
+                        </div>
+                      </div>
                       <div className="flex flex-wrap gap-2">
                         {csvHeaders.map(h => (
                           <label key={h} className="inline-flex items-center gap-1.5 bg-white/5 px-2 py-1 border border-white/10 rounded-md text-sm cursor-pointer glass-panel-hover">
@@ -1203,9 +1205,15 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                       </div>
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-slate-200 mb-1">模型结果列 (可多选)</label>
+                      <div className="mb-1 flex items-center justify-between gap-2">
+                        <label className="block text-sm font-medium text-slate-200">{isBenchmarkPreview ? '输出预览列' : '模型结果列'} (可多选)</label>
+                        <div className="flex shrink-0 gap-1">
+                          <button type="button" onClick={() => updateModelColumns(availableOutputHeaders)} className="px-2 py-0.5 text-xs text-amber-300 hover:bg-white/10">全选</button>
+                          <button type="button" onClick={() => updateModelColumns([])} className="px-2 py-0.5 text-xs text-slate-400 hover:bg-white/10">全不选</button>
+                        </div>
+                      </div>
                       <div className="flex flex-wrap gap-2">
-                        {csvHeaders.filter(h => !inputColumns.includes(h) && !dimensionColumns.includes(h)).map(h => (
+                        {availableOutputHeaders.map(h => (
                           <label key={h} className="inline-flex items-center gap-1.5 bg-white/5 px-2 py-1 border border-white/10 rounded-md text-sm cursor-pointer glass-panel-hover">
                             <input 
                               type="checkbox" 
@@ -1225,9 +1233,15 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                       </div>
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-slate-200 mb-1">评测维度列 (可选)</label>
+                      <div className="mb-1 flex items-center justify-between gap-2">
+                        <label className="block text-sm font-medium text-slate-200">评测维度列 (可选)</label>
+                        <div className="flex shrink-0 gap-1">
+                          <button type="button" onClick={() => updateDimensionColumns(availableDimensionHeaders)} className="px-2 py-0.5 text-xs text-amber-300 hover:bg-white/10">全选</button>
+                          <button type="button" onClick={() => updateDimensionColumns([])} className="px-2 py-0.5 text-xs text-slate-400 hover:bg-white/10">全不选</button>
+                        </div>
+                      </div>
                       <div className="flex flex-wrap gap-2">
-                        {csvHeaders.filter(h => !inputColumns.includes(h) && !modelColumns.includes(h)).map(h => (
+                        {availableDimensionHeaders.map(h => (
                           <label key={h} className="inline-flex items-center gap-1.5 bg-white/5 px-2 py-1 border border-white/10 rounded-md text-sm cursor-pointer glass-panel-hover">
                             <input
                               type="checkbox"
@@ -1258,7 +1272,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                           onChange={(e) => setSaveDatasetToPlatform(e.target.checked)}
                           className="rounded text-amber-400 focus:ring-amber-500"
                         />
-                        <span className="text-sm text-slate-200">将此评测集保存到平台仓库（保留输入列、模型结果列和评测维度，方便后续复用）</span>
+                        <span className="text-sm text-slate-200">将此评测集保存到平台仓库（保留输入列、{isBenchmarkPreview ? '输出预览列' : '模型结果列'}和评测维度，方便后续复用）</span>
                       </label>
                     </div>
                   )}
@@ -1517,7 +1531,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
             <div className="space-y-6 animate-in fade-in duration-300">
               <div className="glass-panel rounded-xl p-6">
                 <h3 className="text-lg font-bold text-slate-200 mb-4 flex items-center gap-2">
-                  <LayoutTemplate size={20} className="text-indigo-500" /> 评测物料预览 (第一条数据)
+                  <LayoutTemplate size={20} className="text-indigo-500" /> {isBenchmarkPreview ? 'Benchmark 预览物料' : '评测物料预览'} (第一条数据)
                 </h3>
                 
                 <div className="glass-panel rounded-2xl overflow-hidden shadow-md shadow-black/20 flex flex-col" style={{ minHeight: '400px' }}>
@@ -1544,14 +1558,14 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                           ) : (
                             <MediaRenderer 
                               url={csvData[0][col]} 
-                              label={`模型 ${idx + 1} (${col})`} 
+                              label={`${isBenchmarkPreview ? '输出' : '模型'} ${idx + 1} (${col})`} 
                               isActive={true} 
                               forceType={newTask.outputType}
                             />
                           )}
                         </div>
                         <div className="p-3 bg-white/5 text-center text-sm font-medium text-slate-300 border-t border-white/10">
-                          模型 {idx + 1} ({col})
+                          {isBenchmarkPreview ? '输出' : '模型'} {idx + 1} ({col})
                         </div>
                       </div>
                     ))}
@@ -1637,7 +1651,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                   <div className="flex items-start gap-2 text-sm">
                     <Box size={16} className="text-slate-300 mt-0.5" />
                     <div className="flex-1">
-                      <span className="text-slate-300">模型: </span>
+                      <span className="text-slate-300">{isPreviewMethod(taskEvaluation) ? '输出列: ' : '模型: '}</span>
                       <div className="flex flex-wrap gap-1 mt-1">
                         {task.models.map((m, idx) => (
                           <span key={idx} className="px-2 py-0.5 bg-white/10 text-slate-200 rounded text-xs border border-white/10">

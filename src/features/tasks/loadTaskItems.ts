@@ -5,7 +5,7 @@ import { EvalTask, EvaluationItem } from '../../types';
 import { getApiAuthHeaders } from '../apiAuthHeaders';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
-const USE_API_BACKEND = import.meta.env.VITE_USE_API_BACKEND === 'true' && Boolean(API_BASE_URL);
+const USE_API_BACKEND = import.meta.env.VITE_USE_API_BACKEND === 'true';
 
 const snapshotExists = (snapshot: any) => {
   if (!snapshot) return false;

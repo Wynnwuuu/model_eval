@@ -1,102 +1,133 @@
-# Eval Studio
+# ManuEval
 
-**线上环境（生产部署）：** [https://evalstudiocopygit-125148-927e8.web.app/](https://evalstudiocopygit-125148-927e8.web.app/)
-**本测试环境**
-PR 自动预览：
-https://evalstudiocopygit-125148-927e8--pr-1-066v89he.web.app
+ManuEval 是一个面向模型与生成内容评测的协作平台。当前工程形态是标准 React 前端 + Express HTTP API + PostgreSQL 数据库，支持项目管理、数据集仓库、评测模板、评测任务、评测执行、结果洞察、生产数据管理，以及仅用于快速查看数据的 Benchmark 预览模式。
 
-手动稳定预览：
-https://evalstudiocopygit-125148-927e8--eval-method-rubric-ins-swxqwuoq.web.app
----
-
-评测工作台（界面品牌为 **EvalTrack**）。标准协作数据路径为：
+标准数据路径：
 
 ```text
-前端 -> HTTP API -> PostgreSQL
+React frontend -> HTTP API -> PostgreSQL
 ```
 
-- **完整本地开发**：执行 `npm run dev:full`，会启动 PostgreSQL、执行迁移、启动 API 和 Vite。
-- **单机 demo/offline**：直接执行 `npm run dev` 时，未开启 HTTP API 的 feature fallback 会使用 `localPlatform`，数据保存在浏览器 `localStorage`（键名 `evaltrack_local_platform_v1`）。
-- **线上登录**：可选使用 cloud authentication 作为登录身份来源；业务数据不使用 local platform 持久化。
+生产部署形态：
 
-## 功能概览
+```text
+single Docker image -> Express serves /api/* and Vite dist
+```
 
-- 项目工作台、评测集仓库、模板仓库、任务编排与执行、结果与分析。
-- 支持 GSB / MOS / Arena / Arena-rank 等评测范式。
-- Arena-rank：逐 case prompt、排名视频预览、CSV 导出视频链接等。
-- Analysis：平台任务结果汇总、外部 CSV 上传、分析结果导出。
-- 浏览器内仍会使用少量 **`localStorage`**（例如评测进行中的会话 `modeleval_session`、历史 `modeleval_history`），与业务主库分离。
+## 核心能力
 
-## 环境要求
+- 项目、数据集、模板、任务、结果洞察的独立路由和可分享 URL。
+- A/B 偏好、Pairwise、MOS、Rubric、Arena-rank 等评测方式。
+- Benchmark 数据预览：上传 CSV，选择输入列和输出预览列，逐条查看文本、图片、视频、音频并记录评论。
+- PostgreSQL 作为业务主存储，前端通过 HTTP API 访问，不再依赖 Firestore。
+- 本地 Docker PostgreSQL、API smoke test、迁移脚本和一键开发脚本。
+- dev 环境 CI/CD：main push 后自动测试、构建镜像、迁移数据库并部署 ACK dev。
 
-- Node.js 20 LTS，或较新的 Node.js 18
-- npm
-- 推荐浏览器：Chrome / Edge
+## 本地开发
 
-## 快速启动（开发）
+推荐完整本地模式：
 
 ```bash
 npm install
+npm run dev:full
+```
+
+该脚本会启动 PostgreSQL、执行迁移、启动 API 和 Vite。
+
+也可以分步运行：
+
+```bash
+npm run db:up
+npm run db:migrate
+npm run api:dev
 npm run dev
 ```
 
-浏览器打开：`http://localhost:3000/`（端口以终端输出为准；仓库脚本里常用 `3000`）。
+默认地址：
 
-### Windows 可选入口
+- 前端：`http://localhost:3000`
+- API：`http://localhost:8787`
+- PostgreSQL：`localhost:5432`
 
-- 双击根目录 **`start-local.cmd`**，或执行 `npm run local:start`（见 `scripts/start-local.ps1`）。
-- 停止与自检：`npm run local:stop`、`npm run local:check`；或双击 **`stop-local.cmd`**。
+## 环境变量
 
-更细的 Windows 本机说明见 [docs/local-backend.md](docs/local-backend.md)。
+复制 `.env.example` 为 `.env.local`，按需配置。
 
-## 生产构建与校验
+常用变量：
+
+| 变量 | 说明 |
+| --- | --- |
+| `DATABASE_URL` | API 连接 PostgreSQL 的连接串 |
+| `API_PORT` | API 监听端口，默认 `8787` |
+| `CORS_ORIGIN` | 本地跨域来源，默认可设为 `http://localhost:3000` |
+| `VITE_USE_API_BACKEND` | `true` 时前端使用 HTTP API |
+| `VITE_API_BASE_URL` | 本地开发通常为 `http://localhost:8787`；生产单容器部署可留空走同源 `/api` |
+| `GEMINI_API_KEY` | 可选，生成相关能力需要时配置 |
+
+## 数据库
+
+本地 PostgreSQL：
+
+```bash
+npm run db:up
+npm run db:migrate
+```
+
+进入 psql：
+
+```bash
+npm run db:psql
+```
+
+迁移脚本位于 `server/db/migrations`，执行状态由 `schema_migrations` 表记录。
+
+## 验证
 
 ```bash
 npm run lint
 npm run build
+npm run server:build
+npm run test:api:smoke
 ```
 
-生产包需要配置 API 地址：
+Docker 构建：
 
-```env
-VITE_USE_API_BACKEND=true
-VITE_API_BASE_URL=https://<api-domain>
+```bash
+docker build -t manueval:local .
 ```
 
-如需 Google 登录，再配置 cloud auth 相关变量和 `VITE_USE_AUTH_PROVIDER=true`。构建完成后可由 static hosting、OSS/CDN 或其他静态托管渠道发布。
+## Dev CI/CD
 
-GitHub Actions 自动部署、Secrets/Variables 清单见 [docs/local-platform-deploy.md](docs/local-platform-deploy.md)。
+当前只启用 dev 自动部署，staging/prod 暂不部署。
 
-## 环境变量
+main push 后执行：
 
-复制 **`.env.example`** 为 **`.env.local`**（不要提交到 Git），按需填写：
+```text
+test -> build Docker image -> deploy dev -> migration job -> rollout status
+```
 
-| 变量 | 作用 |
-|------|------|
-| `VITE_USE_API_BACKEND` | `true` 时业务数据走 HTTP API -> PostgreSQL。 |
-| `VITE_API_BASE_URL` | HTTP API 地址。 |
-| `DATABASE_URL` | 后端连接 PostgreSQL 的连接串。 |
-| `VITE_AUTH_*` | 可选 cloud auth Web 应用配置。 |
-| `VITE_USE_AUTH_PROVIDER` | `true` 时使用 cloud auth；不设时使用内置本地测试用户。 |
-| `GEMINI_API_KEY` | 若使用 Gemini 相关能力时在构建或运行环境中注入（见 `.env.example` 说明）。 |
-| `APP_URL` | 部署站点自身 URL（OAuth、回调等场景，见 `.env.example`）。 |
+相关工作流：
 
-默认 local platform 工程 ID 与 CLI 默认项目见 **`.local-platformrc`**（当前 `default` 为 `evalstudiocopygit-125148`）。
+- `.github/workflows/eval-studio-test.yml`
+- `.github/workflows/eval-studio-build.yml`
+- `.github/workflows/eval-studio-deploy.yml`
+- `.github/workflows/eval-studio-cicd.yml`
 
-## 登录与权限
+部署文档见：
 
-- 可选使用 **cloud authentication**：生产环境需启用 **Google** 等登录方式，并把线上域名加入 Authorized domains。
-- 业务权限由后端 API 和 PostgreSQL 表控制，项目成员角色包括 `owner`、`editor`、`viewer`。
+- [docs/dev-cicd-deployment.md](docs/dev-cicd-deployment.md)
 
-## 常见问题
+## 重要文档
 
-- **`localhost` 无法连接**：先执行 `npm run dev` 或 Windows 下的 `start-local.cmd`。
-- **开发数据「换浏览器就没了」**：开发模式主数据在 **`localStorage`**，换浏览器或清除站点数据会重置。
-- **线上多人要看到同一批项目**：前端需配置同一个 `VITE_API_BASE_URL`，后端连接同一个 PostgreSQL 数据库。
-- **非项目成员不能修改项目**：后端会基于 `project_members` 校验角色权限。
-- **页面内视频慢、新标签可开**：评测/结果页已对媒体加载做兜底；部分预览使用较轻的预加载策略。
+- [docs/react-standardization-refactor-plan.md](docs/react-standardization-refactor-plan.md) — React 标准化重构规划。
+- [docs/refactor-execution-log.md](docs/refactor-execution-log.md) — 分阶段执行记录。
+- [docs/postgres-local.md](docs/postgres-local.md) — 本地 PostgreSQL 说明。
+- [docs/deployment-postgres.md](docs/deployment-postgres.md) — PostgreSQL 线上部署说明。
+- [docs/benchmark-data-preview-plan.md](docs/benchmark-data-preview-plan.md) — Benchmark 数据预览功能规划。
+- [docs/dev-cicd-deployment.md](docs/dev-cicd-deployment.md) — dev CI/CD 部署说明。
 
-## 相关文档
+## 远端仓库
 
-- [docs/local-backend.md](docs/local-backend.md) — Windows 本机启动与维护。
-- [docs/local-platform-deploy.md](docs/local-platform-deploy.md) — CI 部署与 GitHub Secrets。
+```text
+https://github.com/world-sim-dev/ManuEval.git
+```

@@ -4,7 +4,7 @@ import { EvalTemplate } from '../../types';
 import { getApiAuthHeaders } from '../apiAuthHeaders';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
-const USE_API_BACKEND = import.meta.env.VITE_USE_API_BACKEND === 'true' && Boolean(API_BASE_URL);
+const USE_API_BACKEND = import.meta.env.VITE_USE_API_BACKEND === 'true';
 const HTTP_REFRESH_INTERVAL_MS = 5000;
 
 const templateReloaders = new Set<() => void>();

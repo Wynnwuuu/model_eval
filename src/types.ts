@@ -77,9 +77,9 @@ export interface EvaluationItem {
   isSwapped?: boolean; // New: If true, UI displays B on left and A on right for blind testing
 }
 
-export type EvalParadigm = 'GSB' | 'MOS' | 'Arena' | 'Arena-rank' | 'Pairwise' | 'RubricScore';
+export type EvalParadigm = 'GSB' | 'MOS' | 'Arena' | 'Arena-rank' | 'Pairwise' | 'RubricScore' | 'BenchmarkPreview';
 
-export type EvaluationMethod = 'ab_preference' | 'pairwise' | 'direct_score' | 'rubric_score' | 'rank_order';
+export type EvaluationMethod = 'ab_preference' | 'pairwise' | 'direct_score' | 'rubric_score' | 'rank_order' | 'benchmark_preview';
 
 export type TiePolicy = 'allow' | 'disallow';
 export type PairwiseMode = 'all_pairs' | 'adjacent_pairs';

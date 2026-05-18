@@ -7,7 +7,7 @@ import DimensionChips from './DimensionChips';
 import { calculateRankDimensionSummaries, calculateVoteDimensionSummaries, getDimensionColumnsForCsv, getDimensionCsvValues, getDimensionValuesForItem } from '../dimensionUtils';
 import ResultsInsightsScreen from './ResultsInsightsScreen';
 import ScoreInsightsScreen from './ScoreInsightsScreen';
-import { getDefaultEvaluationConfig, getMethodFromParadigm, isPairwiseMethod, isRankMethod, isScoreMethod } from '../evaluationMethods';
+import { getDefaultEvaluationConfig, getMethodFromParadigm, isPairwiseMethod, isPreviewMethod, isRankMethod, isScoreMethod } from '../evaluationMethods';
 import { buildScoreCaseCsv, buildPairwiseCaseCsv, buildScoreInsights, buildPairwiseInsights } from '../scoringInsights';
 
 interface ResultsScreenProps {
@@ -28,6 +28,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
   const [showInsights, setShowInsights] = useState(true);
   const activeConfig = evaluationConfig || getDefaultEvaluationConfig(getMethodFromParadigm(paradigm as EvalParadigm));
   const isArenaRank = isRankMethod(activeConfig);
+  const isBenchmarkPreview = isPreviewMethod(activeConfig);
   const rankVotes = votes.filter(isArenaRankVote);
   const rankStats = calculateArenaRankModelStats(rankVotes);
   const arenaRankModelList = models.length > 0
@@ -67,6 +68,130 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
   });
   const voteDimensionSummaries = calculateVoteDimensionSummaries(aggregatedResultItems);
   const rankDimensionSummaries = calculateRankDimensionSummaries(rankVotes, items);
+
+  const downloadPreviewCSV = () => {
+    const inputHeaders: string[] = Array.from(new Set(items.flatMap(item => Object.keys(item.inputs || {}))));
+    const outputHeaders = models.length > 0
+      ? models.map(model => model.name)
+      : Array.from(new Set(items.flatMap(item => item.modelOutputs?.map(output => output.modelName) || [])));
+    const headers = ['ItemID', 'Status', 'Comment', 'Timestamp', 'User', ...dimensionColumns.map(col => col.header), ...inputHeaders, ...outputHeaders];
+    const rows = votes.map(vote => {
+      const item = items.find(candidate => candidate.id === vote.itemId);
+      const dimensionValues = getDimensionValuesForItem(item);
+      const outputByName = new Map((item?.modelOutputs || []).map(output => [output.modelName, output.url]));
+      return [
+        vote.itemId,
+        vote.choice || 'previewed',
+        vote.reason || '',
+        new Date(vote.timestamp).toISOString(),
+        vote.user || userName || 'Anonymous',
+        ...getDimensionCsvValues(dimensionValues, dimensionColumns.map(col => col.key)),
+        ...inputHeaders.map(header => item?.inputs?.[header] || ''),
+        ...outputHeaders.map((header, index) => outputByName.get(header) || (index === 0 ? item?.modelA_Url : index === 1 ? item?.modelB_Url : '') || '')
+      ].map(escapeCsvField).join(',');
+    });
+
+    const csvContent = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `benchmark_preview_${userName || 'anon'}_${new Date().toISOString().slice(0,10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  if (isBenchmarkPreview) {
+    const previewedCount = votes.filter(vote => vote.choice !== 'skipped').length;
+    const skippedCount = votes.filter(vote => vote.choice === 'skipped').length;
+    const commentedCount = votes.filter(vote => vote.reason?.trim()).length;
+
+    return (
+      <div className="mx-auto max-w-6xl p-6 animate-in zoom-in-95 duration-500">
+        <div className="mb-8 text-center">
+          <div className="mb-4 inline-flex h-16 w-16 items-center justify-center rounded-full bg-amber-500/10 text-amber-300 ring-8 ring-amber-500/5">
+            <Check size={32} />
+          </div>
+          <h1 className="mb-2 text-4xl font-bold text-slate-200">Benchmark 预览完成</h1>
+          <p className="text-slate-300">{userName || 'Reviewer'} 的数据预览记录</p>
+        </div>
+
+        <div className="mb-8 grid grid-cols-1 gap-4 md:grid-cols-4">
+          <div className="border border-white/10 bg-white/5 p-5">
+            <div className="text-xs uppercase tracking-[0.14em] text-slate-500">总 Case</div>
+            <div className="mt-2 text-3xl font-bold text-slate-100">{items.length}</div>
+          </div>
+          <div className="border border-white/10 bg-white/5 p-5">
+            <div className="text-xs uppercase tracking-[0.14em] text-slate-500">已预览</div>
+            <div className="mt-2 text-3xl font-bold text-amber-300">{previewedCount}</div>
+          </div>
+          <div className="border border-white/10 bg-white/5 p-5">
+            <div className="text-xs uppercase tracking-[0.14em] text-slate-500">已跳过</div>
+            <div className="mt-2 text-3xl font-bold text-slate-100">{skippedCount}</div>
+          </div>
+          <div className="border border-white/10 bg-white/5 p-5">
+            <div className="text-xs uppercase tracking-[0.14em] text-slate-500">有评论</div>
+            <div className="mt-2 text-3xl font-bold text-slate-100">{commentedCount}</div>
+          </div>
+        </div>
+
+        <div className="overflow-hidden border border-white/10 bg-white/5">
+          <div className="flex flex-col gap-3 border-b border-white/10 bg-black/20 p-5 md:flex-row md:items-center md:justify-between">
+            <h3 className="font-semibold text-slate-200">逐 case 预览明细</h3>
+            <div className="flex flex-wrap gap-2">
+              <button onClick={onReset} className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-white/10">
+                <RotateCcw size={16} /> 返回发起任务
+              </button>
+              {onGoToDashboard && (
+                <button onClick={onGoToDashboard} className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-white/10">
+                  返回大盘
+                </button>
+              )}
+              <button onClick={downloadPreviewCSV} className="flex items-center gap-2 bg-black/40 px-5 py-2 text-sm font-medium text-white hover:bg-white/10">
+                <Download size={16} /> 下载 CSV
+              </button>
+            </div>
+          </div>
+          <div className="max-h-[520px] overflow-x-auto">
+            <table className="w-full min-w-[760px] border-collapse text-left">
+              <thead className="sticky top-0 bg-white/5">
+                <tr>
+                  <th className="border-b border-white/10 p-4 text-xs font-semibold uppercase text-slate-300">ID</th>
+                  <th className="border-b border-white/10 p-4 text-xs font-semibold uppercase text-slate-300">状态</th>
+                  <th className="border-b border-white/10 p-4 text-xs font-semibold uppercase text-slate-300">输入摘要</th>
+                  <th className="border-b border-white/10 p-4 text-xs font-semibold uppercase text-slate-300">评论</th>
+                  <th className="border-b border-white/10 p-4 text-right text-xs font-semibold uppercase text-slate-300">时间</th>
+                </tr>
+              </thead>
+              <tbody>
+                {votes.map((vote, index) => {
+                  const item = items.find(candidate => candidate.id === vote.itemId);
+                  return (
+                    <tr key={`${vote.itemId}-${index}`} className="border-b border-white/10 hover:bg-white/5">
+                      <td className="p-4 font-mono text-sm text-slate-200">{vote.itemId}</td>
+                      <td className="p-4">
+                        <span className={`inline-flex px-2.5 py-1 text-xs font-medium ${vote.choice === 'skipped' ? 'bg-white/10 text-slate-300' : 'bg-amber-500/15 text-amber-300'}`}>
+                          {vote.choice === 'skipped' ? '已跳过' : '已预览'}
+                        </span>
+                      </td>
+                      <td className="max-w-sm p-4 text-sm text-slate-300">
+                        <div className="line-clamp-3 whitespace-pre-wrap break-words">{resolveEvaluationItemPrompt(item) || '-'}</div>
+                      </td>
+                      <td className="max-w-md p-4 text-sm text-slate-200">
+                        <div className="whitespace-pre-wrap break-words">{vote.reason || '-'}</div>
+                      </td>
+                      <td className="p-4 text-right text-sm text-slate-300">{new Date(vote.timestamp).toLocaleTimeString()}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (showInsights) {
     if (isScoreMethod(activeConfig)) {

@@ -4,6 +4,7 @@ dist-server
 .git
 .github
 .env
-.env.local
-*.log
-coverage
+.env.*
+npm-debug.log
+Dockerfile
+docker-compose.yml

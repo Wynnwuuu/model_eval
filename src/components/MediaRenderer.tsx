@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { AlertCircle, FileAudio, FileVideo, Image as ImageIcon, Loader2 } from 'lucide-react';
 import { VIDEO_EXTENSIONS } from '../constants';
-import { normalizeUrl } from '../utils';
+import { resolveMediaPlaybackUrl } from '../mediaProxy';
 
 interface MediaRendererProps {
   url: string;
@@ -9,7 +9,7 @@ interface MediaRendererProps {
   isActive: boolean;
   className?: string;
   onLoadStatusChange?: (isLoaded: boolean) => void;
-  forceType?: 'image' | 'video' | string;
+  forceType?: 'image' | 'video' | 'audio' | string;
   videoPreload?: 'none' | 'metadata' | 'auto';
 }
 
@@ -54,7 +54,7 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({ url, label, isActive, cla
   const [softTimedOut, setSoftTimedOut] = useState(false);
   const [errorStatus, setErrorStatus] = useState<number | null>(null);
   const referrerPolicy: ReferrerPolicyOption = REFERRER_POLICY_FALLBACKS[referrerPolicyIdx];
-  const finalUrl = normalizeUrl(url);
+  const finalUrl = resolveMediaPlaybackUrl(url);
   const mediaSrc = blobUrl || withRetryToken(finalUrl, retryToken);
 
   useEffect(() => {
@@ -100,6 +100,11 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({ url, label, isActive, cla
       return;
     }
 
+    if (forceType === 'video' || forceType === 'image' || forceType === 'audio') {
+      setMediaType(forceType);
+      return;
+    }
+
     if (isVideoExt) {
       setMediaType('video');
       return;
@@ -107,11 +112,6 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({ url, label, isActive, cla
 
     if (isAudioExt) {
       setMediaType('audio');
-      return;
-    }
-
-    if (forceType === 'video' || forceType === 'image' || forceType === 'audio') {
-      setMediaType(forceType);
       return;
     }
 

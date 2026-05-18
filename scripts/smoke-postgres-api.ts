@@ -60,6 +60,7 @@ const main = async () => {
     dataset: `dataset-${RUN_ID}`,
     template: `template-${RUN_ID}`,
     task: `task-${RUN_ID}`,
+    benchmarkTask: `benchmark-task-${RUN_ID}`,
     job: `job-${RUN_ID}`,
   };
 
@@ -67,6 +68,7 @@ const main = async () => {
     await Promise.allSettled([
       sendJson(`/api/generation/jobs/${ids.job}`, 'DELETE'),
       sendJson(`/api/tasks/${ids.task}`, 'DELETE'),
+      sendJson(`/api/tasks/${ids.benchmarkTask}`, 'DELETE'),
       sendJson(`/api/datasets/${ids.dataset}`, 'DELETE'),
       sendJson(`/api/templates/${ids.template}`, 'DELETE'),
       sendJson(`/api/projects/${ids.project}`, 'DELETE'),
@@ -201,7 +203,7 @@ const main = async () => {
         name: `Smoke Task ${RUN_ID}`,
         projectId: project.project.id,
         datasetId: ids.dataset,
-        templateId: ids.template,
+        templateId: '',
         evaluationConfig: { method: 'ab_preference' },
         models: [{ id: 'model-a', name: 'Model A' }, { id: 'model-b', name: 'Model B' }],
         dimensionColumns: [],
@@ -233,6 +235,51 @@ const main = async () => {
     });
     const votes = await request<{ userVotes: Array<{ user: string; votes: any[] }> }>(`/api/tasks/${ids.task}/votes`);
     assert(votes.userVotes[0]?.votes.length === 1, 'votes were not persisted');
+
+    await sendJson<{ task: any }>('/api/tasks', 'POST', {
+      task: {
+        id: ids.benchmarkTask,
+        name: `Benchmark Preview Smoke ${RUN_ID}`,
+        projectId: project.project.id,
+        datasetId: ids.dataset,
+        templateId: ids.template,
+        evaluationConfig: { method: 'benchmark_preview' },
+        paradigm: 'BenchmarkPreview',
+        models: [{ id: 'model-0', name: 'output_text' }],
+        dimensionColumns: [],
+        outputType: 'text',
+        inputType: 'text',
+        assignees: ['smoke@example.com'],
+        progress: {},
+        totalItems: 1,
+        status: 'active',
+        hasImportedData: true,
+        creatorUid: 'smoke-user',
+        creatorName: 'Smoke User',
+        createdAt: Date.now(),
+      },
+      items: [
+        {
+          id: `${RUN_ID}-preview-item-1`,
+          prompt: 'preview prompt',
+          inputs: { prompt: 'preview prompt' },
+          modelA_Url: 'preview output',
+          modelB_Url: '',
+          modelOutputs: [{ modelId: 'model-0', modelName: 'output_text', url: 'preview output' }],
+          type: 'text',
+          itemOrder: 0,
+        },
+      ],
+    });
+
+    await sendJson(`/api/tasks/${ids.benchmarkTask}/votes/smoke%40example.com`, 'PUT', {
+      progress: 1,
+      votes: [
+        { itemId: `${RUN_ID}-preview-item-1`, method: 'benchmark_preview', choice: 'previewed', reason: 'looks ok', timestamp: Date.now(), user: 'smoke@example.com' },
+      ],
+    });
+    const benchmarkVotes = await request<{ userVotes: Array<{ user: string; votes: any[] }> }>(`/api/tasks/${ids.benchmarkTask}/votes`);
+    assert(benchmarkVotes.userVotes[0]?.votes[0]?.method === 'benchmark_preview', 'benchmark preview votes were not persisted');
 
     await sendJson(`/api/generation/jobs/${ids.job}`, 'PUT', {
       job: {

@@ -1,0 +1,29 @@
+name: Eval Studio Dev CI/CD
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    uses: ./.github/workflows/eval-studio-test.yml
+
+  build:
+    needs: test
+    uses: ./.github/workflows/eval-studio-build.yml
+    with:
+      tag: ${{ github.sha }}
+    secrets: inherit
+
+  deploy_dev:
+    needs: build
+    uses: ./.github/workflows/eval-studio-deploy.yml
+    with:
+      env: dev
+      tag: ${{ github.sha }}
+    secrets: inherit

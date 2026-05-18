@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eval-studio-deployment
+spec:
+  replicas: 1
+  minReadySeconds: 20
+  selector:
+    matchLabels:
+      app: eval-studio
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: eval-studio
+    spec:
+      nodeSelector:
+        pool-type: server
+      containers:
+        - name: main
+          image: REGISTRY/NAMESPACE/IMAGE:TAG
+          ports:
+            - containerPort: 8787
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: API_PORT
+              value: "8787"
+            - name: STATIC_DIST_PATH
+              value: /app/dist
+            - name: CORS_ORIGIN
+              value: "*"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: eval-studio-secrets
+                  key: DATABASE_URL
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8787
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 8787
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"

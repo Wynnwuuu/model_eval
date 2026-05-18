@@ -1,16 +1,28 @@
-name: PostgreSQL API CI
+name: Eval Studio Test
 
 on:
+  workflow_call:
+  workflow_dispatch:
+  pull_request:
   push:
     branches:
       - main
-      - refactor/init
-  pull_request:
-  workflow_dispatch:
+    paths:
+      - "src/**"
+      - "server/**"
+      - "scripts/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig*.json"
+      - "vite.config.ts"
+      - "Dockerfile"
+      - ".github/workflows/eval-studio-test.yml"
+
+permissions:
+  contents: read
 
 jobs:
-  api:
-    name: Build and smoke test API
+  test:
     runs-on: ubuntu-latest
 
     services:
@@ -33,6 +45,8 @@ jobs:
       API_PORT: 8787
       CORS_ORIGIN: http://localhost:3000
       API_BASE_URL: http://localhost:8787
+      VITE_USE_API_BACKEND: "true"
+      VITE_API_BASE_URL: http://localhost:8787
 
     steps:
       - uses: actions/checkout@v4

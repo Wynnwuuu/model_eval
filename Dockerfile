@@ -6,6 +6,12 @@ COPY package*.json ./
 RUN npm ci
 
 COPY . .
+ARG VITE_USE_API_BACKEND=true
+ARG VITE_API_BASE_URL=
+ENV VITE_USE_API_BACKEND=$VITE_USE_API_BACKEND
+ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
+RUN npm run lint
+RUN npm run build
 RUN npm run server:build
 
 FROM node:22-alpine AS runtime
@@ -13,10 +19,12 @@ FROM node:22-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV API_PORT=8787
+ENV STATIC_DIST_PATH=/app/dist
 
 COPY package*.json ./
 RUN npm ci --omit=dev
 
+COPY --from=build /app/dist ./dist
 COPY --from=build /app/dist-server ./dist-server
 
 EXPOSE 8787

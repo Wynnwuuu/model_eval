@@ -1,5 +1,5 @@
 {
-  "name": "Remix: 评测任务管理平台",
-  "description": "基于 HTTP API 和 PostgreSQL 的评测任务管理平台，用于追踪和管理公司内部各类模型及生成效果评测任务的进度、人员和结果。支持协作数据管理和角色权限控制。",
+  "name": "ManuEval",
+  "description": "基于 React、HTTP API 和 PostgreSQL 的协作式评测与 Benchmark 数据预览平台，用于管理评测项目、数据集、模板、任务执行、评论预览、结果洞察和 dev 自动部署。",
   "requestFramePermissions": []
 }

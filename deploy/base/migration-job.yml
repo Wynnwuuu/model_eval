@@ -1,0 +1,34 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: eval-studio-migrate
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app: eval-studio
+        job: migrate
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        pool-type: server
+      containers:
+        - name: migrate
+          image: REGISTRY/NAMESPACE/IMAGE:TAG
+          command: ["node", "dist-server/server/db/migrate.js"]
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: eval-studio-secrets
+                  key: DATABASE_URL
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"

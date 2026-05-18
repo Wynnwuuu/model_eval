@@ -1,0 +1,123 @@
+name: Eval Studio Deploy
+
+on:
+  workflow_call:
+    inputs:
+      env:
+        required: true
+        type: string
+      tag:
+        required: true
+        type: string
+    secrets:
+      ALIYUN_ACCESS_KEY_ID:
+        required: true
+      ALIYUN_ACCESS_KEY_SECRET:
+        required: true
+      FEISHU_WEBHOOK_URL:
+        required: false
+  workflow_dispatch:
+    inputs:
+      env:
+        description: "Only dev is enabled for now."
+        required: true
+        type: choice
+        default: dev
+        options:
+          - dev
+      tag:
+        type: string
+        required: true
+        description: "Image tag to deploy."
+
+env:
+  TARGET_ENV: ${{ inputs.env }}
+  REGION_ID: ${{ vars.ALIYUN_REGION_ID || 'cn-hongkong' }}
+  ACK_CLUSTER_ID: ${{ vars.ACK_CLUSTER_ID_DEV }}
+  ACK_NAMESPACE: ${{ vars.ACK_NAMESPACE_DEV || 'default' }}
+  ACK_DEPLOYMENT_NAME: eval-studio-deployment
+  ACK_MIGRATION_JOB_NAME: eval-studio-migrate
+  ACR_EE_REGISTRY: ${{ vars.ACR_EE_REGISTRY || 'sandai-registry.cn-hongkong.cr.aliyuncs.com' }}
+  ACR_EE_NAMESPACE: ${{ vars.ACR_EE_NAMESPACE || 'vidmuse' }}
+  ACR_EE_IMAGE: ${{ vars.EVAL_STUDIO_IMAGE || 'eval-studio' }}
+  ACR_EE_TAG: ${{ inputs.tag }}
+  FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Guard dev only
+        run: |
+          if [ "${{ inputs.env }}" != "dev" ]; then
+            echo "Only dev deployment is enabled."
+            exit 1
+          fi
+
+      - name: Show Info
+        run: |
+          echo "Deploy Env: ${{ env.TARGET_ENV }}" >> $GITHUB_STEP_SUMMARY
+          echo "Deploy Tag: ${{ env.ACR_EE_TAG }}" >> $GITHUB_STEP_SUMMARY
+          echo "Deploy Namespace: ${{ env.ACK_NAMESPACE }}" >> $GITHUB_STEP_SUMMARY
+
+      - uses: actions/checkout@v4
+
+      - name: Set K8s context
+        uses: aliyun/ack-set-context@v1
+        with:
+          access-key-id: "${{ secrets.ALIYUN_ACCESS_KEY_ID }}"
+          access-key-secret: "${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}"
+          cluster-id: "${{ env.ACK_CLUSTER_ID }}"
+
+      - name: Set up Kustomize
+        run: |
+          KUSTOMIZE_VERSION="v5.4.3"
+          curl -fsSLo kustomize.tar.gz "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          tar -xzf kustomize.tar.gz
+          chmod +x kustomize
+          ./kustomize version
+
+      - name: Deploy dev
+        run: |
+          cd ./deploy/overlays/dev
+          ../../../kustomize edit set image REGISTRY/NAMESPACE/IMAGE:TAG=$ACR_EE_REGISTRY/$ACR_EE_NAMESPACE/$ACR_EE_IMAGE:$ACR_EE_TAG
+          ../../../kustomize build > /tmp/eval-studio-dev.yml
+
+          kubectl delete job/$ACK_MIGRATION_JOB_NAME -n $ACK_NAMESPACE --ignore-not-found
+          kubectl apply -n $ACK_NAMESPACE -f /tmp/eval-studio-dev.yml
+
+          kubectl wait --for=condition=complete job/$ACK_MIGRATION_JOB_NAME -n $ACK_NAMESPACE --timeout=180s
+          kubectl logs job/$ACK_MIGRATION_JOB_NAME -n $ACK_NAMESPACE
+
+          kubectl rollout status deployment/$ACK_DEPLOYMENT_NAME -n $ACK_NAMESPACE --timeout=300s
+          kubectl get services -o wide -n $ACK_NAMESPACE
+          kubectl get pods -n $ACK_NAMESPACE -l app=eval-studio
+
+      - name: OnSuccess
+        if: ${{ env.FEISHU_WEBHOOK_URL != '' }}
+        run: |
+          curl --request POST \
+            --url "$FEISHU_WEBHOOK_URL" \
+            --header 'content-type: application/json' \
+            --data '{
+              "msg_type": "text",
+              "content": {
+                "text": "Eval Studio dev 部署成功：${{ env.ACR_EE_TAG }}\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              }
+            }'
+
+      - name: OnFailure
+        if: ${{ failure() && env.FEISHU_WEBHOOK_URL != '' }}
+        run: |
+          curl --request POST \
+            --url "$FEISHU_WEBHOOK_URL" \
+            --header 'content-type: application/json' \
+            --data '{
+              "msg_type": "text",
+              "content": {
+                "text": "Eval Studio dev 部署失败：${{ env.ACR_EE_TAG }}\n${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              }
+            }'

@@ -49,6 +49,13 @@ export const EVALUATION_METHOD_OPTIONS: Array<{
     shortLabel: 'Arena-rank',
     description: '三个及以上候选产物拖拽排序，使用 Borda 与名次统计。',
     minModels: 3
+  },
+  {
+    method: 'benchmark_preview',
+    title: 'Benchmark 数据预览',
+    shortLabel: 'Preview',
+    description: '不做选择和打分，仅逐条查看输入/输出并记录评论。',
+    minModels: 1
   }
 ];
 
@@ -66,6 +73,7 @@ export const getMethodFromParadigm = (paradigm?: EvalParadigm): EvaluationMethod
   if (paradigm === 'MOS') return 'direct_score';
   if (paradigm === 'Pairwise') return 'pairwise';
   if (paradigm === 'RubricScore') return 'rubric_score';
+  if (paradigm === 'BenchmarkPreview') return 'benchmark_preview';
   return 'ab_preference';
 };
 
@@ -74,6 +82,7 @@ export const getParadigmFromMethod = (method?: EvaluationMethod): EvalParadigm =
   if (method === 'direct_score') return 'MOS';
   if (method === 'pairwise') return 'Pairwise';
   if (method === 'rubric_score') return 'RubricScore';
+  if (method === 'benchmark_preview') return 'BenchmarkPreview';
   return 'Arena';
 };
 
@@ -194,6 +203,9 @@ export const isScoreMethod = (configOrMethod?: EvaluationConfig | EvaluationMeth
 
 export const isPairwiseMethod = (configOrMethod?: EvaluationConfig | EvaluationMethod) =>
   (typeof configOrMethod === 'string' ? configOrMethod : configOrMethod?.method) === 'pairwise';
+
+export const isPreviewMethod = (configOrMethod?: EvaluationConfig | EvaluationMethod) =>
+  (typeof configOrMethod === 'string' ? configOrMethod : configOrMethod?.method) === 'benchmark_preview';
 
 export const isPreferenceMethod = (configOrMethod?: EvaluationConfig | EvaluationMethod) => {
   const method = typeof configOrMethod === 'string' ? configOrMethod : configOrMethod?.method;

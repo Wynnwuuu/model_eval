@@ -62,7 +62,6 @@ export const validateTemplatePayload = (template: Record<string, any>) => {
 export const validateTaskPayload = (task: Record<string, any>) => {
   requireNonEmptyString(task.name, 'task.name');
   requireNonEmptyString(task.datasetId, 'task.datasetId');
-  requireNonEmptyString(task.templateId, 'task.templateId');
   requireArray(task.models, 'task.models');
 };
 

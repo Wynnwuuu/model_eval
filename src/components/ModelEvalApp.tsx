@@ -5,6 +5,7 @@ import VotingScreen from './VotingScreen';
 import ArenaRankVotingScreen from './ArenaRankVotingScreen';
 import ScoreEvaluationScreen from './ScoreEvaluationScreen';
 import ResultsScreen from './ResultsScreen';
+import BenchmarkPreviewScreen from './BenchmarkPreviewScreen';
 import { ConfirmModal } from './ConfirmModal';
 import AppShell from './AppShell';
 import OverviewPage from '../pages/overview/OverviewPage';
@@ -16,7 +17,7 @@ import InsightDashboardPage from '../pages/insights/InsightDashboardPage';
 import HistoryPage from '../pages/history/HistoryPage';
 import { AppRoute, EvalParadigm, EvaluationConfig, EvaluationItem, HistorySession, RankingEntry, RouteContext, VoteRecord, VoteType, EvaluationProject } from '../types';
 import { auth, signInWithGoogle, logout, shouldUseCloudAuth } from '../auth';
-import { getDefaultEvaluationConfig, getMethodFromParadigm, getParadigmFromMethod, isRankMethod, isScoreMethod } from '../evaluationMethods';
+import { getDefaultEvaluationConfig, getMethodFromParadigm, getParadigmFromMethod, isPreviewMethod, isRankMethod, isScoreMethod } from '../evaluationMethods';
 import { saveTaskUserVotes, loadTaskEvaluation } from '../features/tasks/api';
 
 const STORAGE_KEY = 'modeleval_session';
@@ -369,6 +370,21 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     await commitVoteRecord(votePayload);
   };
 
+  const handlePreviewComment = async (comment: string) => {
+    await commitVoteRecord({
+      method: 'benchmark_preview',
+      choice: 'previewed',
+      reason: comment.trim()
+    });
+  };
+
+  const handlePreviewSkip = async () => {
+    await commitVoteRecord({
+      method: 'benchmark_preview',
+      choice: 'skipped'
+    });
+  };
+
   const handleGoBack = async () => {
     if (currentIndex > 0) {
       const updatedVotes = votes.slice(0, -1);
@@ -638,6 +654,23 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
             onDeleteSession={deleteSession}
           />
         </div>
+      );
+    }
+
+    if (currentRoute === 'voting' && items.length > 0 && isPreviewMethod(taskEvaluationConfig)) {
+      return (
+        <BenchmarkPreviewScreen
+          item={items[currentIndex]}
+          currentIndex={currentIndex}
+          totalItems={items.length}
+          models={taskModels}
+          outputType={items[currentIndex]?.type}
+          onComment={handlePreviewComment}
+          onSkip={handlePreviewSkip}
+          onEnd={handleEndSessionEarly}
+          onBack={() => navigate('overview')}
+          onGoBack={currentIndex > 0 ? handleGoBack : undefined}
+        />
       );
     }
 
