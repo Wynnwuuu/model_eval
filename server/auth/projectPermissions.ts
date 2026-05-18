@@ -38,3 +38,26 @@ export const ensureProjectRole = async (
     throw forbidden('You do not have permission to modify this project');
   }
 };
+
+export const ensureTaskProjectRole = async (
+  user: RequestUser,
+  taskId: string,
+  allowedRoles: ProjectRole[]
+) => {
+  const taskResult = await dbPool.query<{ id: string; project_id: string | null }>(
+    `
+      SELECT id, project_id
+      FROM eval_tasks
+      WHERE id = $1 AND deleted_at IS NULL
+    `,
+    [taskId]
+  );
+  const task = taskResult.rows[0];
+  if (!task) {
+    throw notFound('Task');
+  }
+  if (!task.project_id) {
+    return;
+  }
+  await ensureProjectRole(user, task.project_id, allowedRoles);
+};

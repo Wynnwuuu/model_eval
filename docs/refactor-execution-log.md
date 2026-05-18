@@ -135,6 +135,7 @@ npm run build
 - 新增 `docs/deployment-postgres.md`，记录阿里云 RDS PostgreSQL/DMS、后端 API、前端静态部署、验证和回滚方案。
 - 新增 `docs/firestore-fallback-strategy.md`，明确 PostgreSQL 模式与 Firestore/localStorage fallback 的边界。
 - 新增后端生产构建脚本、API Dockerfile 和 `.github/workflows/postgres-api-ci.yml`，CI 会跑 lint、前端 build、server build、迁移和 API smoke test。
+- 项目权限继续深化：新增项目成员管理 API，并对任务创建/更新/删除、任务 item 更新、投票保存增加项目角色校验。
 
 当前数据路径仍是：
 

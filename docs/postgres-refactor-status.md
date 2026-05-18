@@ -13,8 +13,10 @@
   - 后端自动写入 `users`、`organizations`、`organization_members`。
   - 新建项目自动写入 `project_members.owner`。
   - 项目更新需要 `owner/editor`，项目删除需要 `owner`。
+  - 项目成员管理 API 支持列表、添加/更新、移除成员。
+  - 任务创建/更新/删除、任务 item 更新、投票保存已按任务所属项目校验权限。
   - 前端 HTTP API 和 smoke test 已带用户身份头。
-  - smoke test 已覆盖非项目成员更新项目返回 `403 FORBIDDEN`。
+  - smoke test 已覆盖非项目成员 `403 FORBIDDEN`、添加 editor、editor 更新项目。
 - 数据迁移工具第一版：
   - 新增 `npm run migrate:postgres`。
   - 支持 localStorage/localPlatform JSON 和 Firestore 同构 JSON。
@@ -30,7 +32,7 @@
 
 ## 进行中
 
-- 权限模型深化：当前完成项目级写权限基础版；后续需要补项目成员管理接口/UI，以及数据集、模板、任务、投票、生产任务的项目归属权限收敛。
+- 权限模型深化：当前完成项目级写权限和成员管理 API；后续需要补成员管理 UI，以及数据集、模板、生产任务的组织/项目归属权限收敛。
 - API 参数校验和错误规范：已完成第一版轻量校验；后续可按接口补更细的字段枚举、长度限制和业务约束。
 
 ## 未完成
@@ -41,5 +43,5 @@
 ## 当前建议顺序
 
 1. 镜像推送与目标云服务发布。
-2. 权限模型深化：成员管理、更多数据域鉴权。
+2. 权限模型深化：成员管理 UI、更多数据域鉴权。
 3. Firestore fallback 代码清理。

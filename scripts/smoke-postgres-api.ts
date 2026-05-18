@@ -116,6 +116,28 @@ const main = async () => {
     });
     assert(forbidden.error?.code === 'FORBIDDEN', 'non-member project update was not rejected');
 
+    const editor = await sendJson<{ member: any }>(`/api/projects/${ids.project}/members/smoke-editor`, 'PUT', {
+      member: {
+        email: 'smoke-editor@example.com',
+        displayName: 'Smoke Editor',
+        role: 'editor',
+      },
+    });
+    assert(editor.member.role === 'editor', 'project editor was not created');
+
+    const members = await request<{ members: any[] }>(`/api/projects/${ids.project}/members`);
+    assert(members.members.some(member => member.userId === editor.member.userId), 'project members were not listed');
+
+    await request<{ project: any }>(`/api/projects/${ids.project}`, {
+      method: 'PATCH',
+      headers: {
+        'X-User-Id': editor.member.userId,
+        'X-User-Email': 'smoke-editor@example.com',
+        'X-User-Name': 'Smoke Editor',
+      },
+      body: JSON.stringify({ patch: { analysis: 'updated by editor' } }),
+    });
+
     await sendJson(`/api/datasets/${ids.dataset}`, 'PUT', {
       dataset: {
         id: ids.dataset,

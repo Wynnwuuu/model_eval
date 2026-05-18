@@ -14,6 +14,7 @@ import {
 } from './taskRepository.ts';
 import { notFound, sendError } from '../http/errors.ts';
 import { optionalArray, optionalNumber, requireArray, requireBodyObject, validateTaskPayload } from '../http/validation.ts';
+import { ensureProjectRole, ensureTaskProjectRole } from '../auth/projectPermissions.ts';
 
 export const taskRoutes = Router();
 
@@ -64,6 +65,7 @@ taskRoutes.get('/:taskId/votes/:userName', async (req, res) => {
 
 taskRoutes.put('/:taskId/votes/:userName', async (req, res) => {
   try {
+    await ensureTaskProjectRole(req.user, req.params.taskId, ['owner', 'editor', 'viewer']);
     const votePayload = requireArray(req.body?.votes, 'votes');
     const progress = optionalNumber(req.body?.progress, 'progress', votePayload.length);
     const savedVotes = await saveTaskUserVotes(
@@ -82,6 +84,9 @@ taskRoutes.post('/', async (req, res) => {
   try {
     const payload = requireBodyObject(req.body, 'task');
     validateTaskPayload(payload);
+    if (typeof payload.projectId === 'string' && payload.projectId) {
+      await ensureProjectRole(req.user, payload.projectId, ['owner', 'editor']);
+    }
     const items = optionalArray(req.body.items, 'items');
     const task = await createTask(payload as any, items as any);
     res.status(201).json({ task });
@@ -93,6 +98,7 @@ taskRoutes.post('/', async (req, res) => {
 taskRoutes.patch('/:taskId', async (req, res) => {
   try {
     const patch = requireBodyObject(req.body, 'patch');
+    await ensureTaskProjectRole(req.user, req.params.taskId, ['owner', 'editor']);
     const task = await updateTask(req.params.taskId, patch);
     if (!task) {
       throw notFound('Task');
@@ -106,6 +112,7 @@ taskRoutes.patch('/:taskId', async (req, res) => {
 taskRoutes.patch('/:taskId/items/:itemId', async (req, res) => {
   try {
     const patch = requireBodyObject(req.body, 'patch');
+    await ensureTaskProjectRole(req.user, req.params.taskId, ['owner', 'editor']);
     const item = await updateTaskItem(req.params.taskId, req.params.itemId, patch);
     if (!item) {
       throw notFound('Task item');
@@ -118,6 +125,7 @@ taskRoutes.patch('/:taskId/items/:itemId', async (req, res) => {
 
 taskRoutes.delete('/:taskId', async (req, res) => {
   try {
+    await ensureTaskProjectRole(req.user, req.params.taskId, ['owner']);
     const deleted = await deleteTask(req.params.taskId);
     if (!deleted) {
       throw notFound('Task');
