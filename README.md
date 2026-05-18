@@ -34,6 +34,8 @@ npm run dev:full
 
 该脚本会启动 PostgreSQL、执行迁移、启动 API 和 Vite。
 
+如果本机已经存在 `eval-studio-postgres` 容器，`dev:full` 会直接复用或启动该容器，避免重复创建导致容器名冲突。
+
 也可以分步运行：
 
 ```bash

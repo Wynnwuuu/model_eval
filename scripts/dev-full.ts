@@ -1,5 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 
+const POSTGRES_CONTAINER_NAME = 'eval-studio-postgres';
+
 const run = (command: string, args: string[]) => {
   const result = spawnSync(command, args, {
     stdio: 'inherit',
@@ -10,8 +12,34 @@ const run = (command: string, args: string[]) => {
   }
 };
 
+const read = (command: string, args: string[]) => spawnSync(command, args, {
+  encoding: 'utf8',
+  shell: false,
+});
+
+const ensurePostgres = () => {
+  const inspect = read('docker', ['inspect', POSTGRES_CONTAINER_NAME]);
+
+  if (inspect.status === 0) {
+    const running = read('docker', ['inspect', '-f', '{{.State.Running}}', POSTGRES_CONTAINER_NAME]);
+    const isRunning = running.status === 0 && running.stdout.trim() === 'true';
+
+    if (isRunning) {
+      console.log(`[dev:full] Reusing running PostgreSQL container ${POSTGRES_CONTAINER_NAME}.`);
+      return;
+    }
+
+    console.log(`[dev:full] Starting existing PostgreSQL container ${POSTGRES_CONTAINER_NAME}...`);
+    run('docker', ['start', POSTGRES_CONTAINER_NAME]);
+    return;
+  }
+
+  console.log('[dev:full] Creating PostgreSQL container...');
+  run('npm', ['run', 'db:up']);
+};
+
 console.log('[dev:full] Starting PostgreSQL...');
-run('npm', ['run', 'db:up']);
+ensurePostgres();
 
 console.log('[dev:full] Applying database migrations...');
 run('npm', ['run', 'db:migrate']);

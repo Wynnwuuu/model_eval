@@ -26,6 +26,8 @@ npm run dev:full
 npm run db:up -> npm run db:migrate -> npm run api:dev + npm run dev
 ```
 
+`dev:full` 会优先复用本机已经存在的 `eval-studio-postgres` 容器；如果该容器已停止，会先执行 `docker start eval-studio-postgres`。只有容器不存在时才会执行 `npm run db:up` 创建新容器。
+
 默认地址：
 
 ```text
@@ -76,6 +78,39 @@ npm run test:api:smoke
 ## 启动数据库
 
 ```bash
+npm run db:up
+```
+
+如果提示容器名冲突：
+
+```text
+Conflict. The container name "/eval-studio-postgres" is already in use
+```
+
+通常表示本地已有同名 PostgreSQL 容器。先查看状态：
+
+```bash
+docker ps -a --filter name=eval-studio-postgres
+```
+
+如果容器健康运行，可直接执行迁移和启动服务：
+
+```bash
+npm run db:migrate
+npm run api:dev
+npm run dev
+```
+
+如果容器已停止，启动它：
+
+```bash
+docker start eval-studio-postgres
+```
+
+如需重建容器但保留数据卷：
+
+```bash
+docker rm -f eval-studio-postgres
 npm run db:up
 ```
 
