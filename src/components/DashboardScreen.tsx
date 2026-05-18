@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Layers, Plus, Search, Filter, Calendar, Users, BarChart2, ArrowRight, Activity, Target, Link as LinkIcon, LogIn, LogOut, X, Edit2, Database, LayoutTemplate, Play, ChevronRight, FolderOpen, Trash2 } from 'lucide-react';
 import { EvalParadigm, EvaluationConfig, EvaluationProject, EvaluationStep, EvaluationItem, EvalTask } from '../types';
 import { CreateProjectModal } from './CreateProjectModal';
@@ -41,15 +41,11 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
   const [templates, setTemplates] = useState<any[]>([]);
   const [isEditingLink, setIsEditingLink] = useState(false);
   const [tempLink, setTempLink] = useState('');
-  const onProjectSelectRef = useRef(onProjectSelect);
 
-  useEffect(() => {
-    onProjectSelectRef.current = onProjectSelect;
-  }, [onProjectSelect]);
-
-  useEffect(() => {
-    onProjectSelectRef.current?.(selectedProject);
-  }, [selectedProject]);
+  const selectProject = (project: EvaluationProject | null) => {
+    setSelectedProject(project);
+    onProjectSelect?.(project);
+  };
 
   useEffect(() => {
     if (!selectedProject?.id) {
@@ -250,7 +246,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
       try {
         await deleteProject(projectId);
         if (selectedProject?.id === projectId) {
-          setSelectedProject(null);
+          selectProject(null);
         }
       } catch (error) {
         console.error("Error deleting project:", error);
@@ -304,7 +300,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
     return (
       <div className="max-w-7xl mx-auto p-6 animate-in fade-in duration-300">
         <button 
-          onClick={() => setSelectedProject(null)}
+          onClick={() => selectProject(null)}
           className="text-slate-300 hover:text-slate-200 mb-6 flex items-center gap-2 text-sm font-medium transition-colors"
         >
           ← 返回大盘
@@ -893,7 +889,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
           filteredProjects.map(project => (
             <div 
               key={project.id} 
-              onClick={() => setSelectedProject(project)}
+              onClick={() => selectProject(project)}
               className="glass-panel p-6 rounded-2xl hover:bg-white/[0.05] transition-all cursor-pointer group border-white/10 hover:border-white/10"
             >
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
