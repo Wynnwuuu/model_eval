@@ -11,8 +11,7 @@ import {
   GenerationModelConfig,
   GenerationSeedMode
 } from '../types';
-import { db, auth } from '../firebase';
-import { collection, doc, setDoc } from '../datastore';
+import { auth } from '../firebase';
 import {
   appendDatasetVersion,
   buildDatasetCard,
@@ -29,6 +28,8 @@ import {
   runGenerationBatch
 } from '../generationService';
 import { normalizeUrl } from '../utils';
+import { saveDataset } from '../features/datasets/api';
+import { saveGenerationJob, saveGenerationJobItem } from '../features/generation/api';
 
 interface DatasetGenerationModalProps {
   dataset: EvalDataset;
@@ -324,15 +325,15 @@ const DatasetGenerationModal: React.FC<DatasetGenerationModalProps> = ({ dataset
       updatedAt: Date.now()
     };
     datasetSnapshotRef.current = updatedDataset;
-    await setDoc(doc(db, 'evalDatasets', dataset.id), updatedDataset);
+    await saveDataset(updatedDataset);
   };
 
   const persistJob = async (job: DatasetGenerationJob) => {
-    await setDoc(doc(db, 'evalGenerationJobs', job.id), job);
+    await saveGenerationJob(job);
   };
 
   const persistJobItem = async (item: DatasetGenerationJobItem) => {
-    await setDoc(doc(collection(db, 'evalGenerationJobs', item.jobId, 'items'), safeDocId(item.caseId)), item);
+    await saveGenerationJobItem({ ...item, id: safeDocId(item.caseId) });
   };
 
   const applyItemUpdate = async (item: DatasetGenerationJobItem) => {
@@ -484,7 +485,7 @@ const DatasetGenerationModal: React.FC<DatasetGenerationModalProps> = ({ dataset
     };
 
     datasetSnapshotRef.current = initializedDataset;
-    await setDoc(doc(db, 'evalDatasets', dataset.id), initializedDataset);
+    await saveDataset(initializedDataset);
     await persistJob(job);
 
     const payload: GenerationBatchPayload = {

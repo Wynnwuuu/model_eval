@@ -2,6 +2,7 @@ import express from 'express';
 
 import { datasetRoutes } from './datasets/datasetRoutes.ts';
 import { checkDatabaseHealth } from './db/client.ts';
+import { generationRoutes } from './generation/generationRoutes.ts';
 import { projectRoutes } from './projects/projectRoutes.ts';
 import { taskRoutes } from './tasks/taskRoutes.ts';
 import { templateRoutes } from './templates/templateRoutes.ts';
@@ -49,6 +50,7 @@ export const createApp = () => {
   app.use('/api/datasets', datasetRoutes);
   app.use('/api/templates', templateRoutes);
   app.use('/api/tasks', taskRoutes);
+  app.use('/api/generation', generationRoutes);
 
   return app;
 };

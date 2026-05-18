@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Activity, BarChart3, ClipboardCheck, Database, FileText, PlayCircle, Wand2 } from 'lucide-react';
 import { DatasetGenerationJob, EvalDataset, EvalTask } from '../types';
-import { collection, onSnapshot, orderBy, query } from '../datastore';
-import { db, handleFirestoreError } from '../firebase';
+import { handleFirestoreError } from '../firebase';
 import { DataTableShell, EmptyState, PageFrame, PageHeader, SectionPanel, StatTile, StatusBadge, Toolbar } from './ui';
+import { subscribeDatasets } from '../features/datasets/api';
+import { subscribeGenerationJobs } from '../features/generation/api';
+import { subscribeTasks } from '../features/tasks/api';
 
 interface OverviewScreenProps {
   onGoToProjects: () => void;
@@ -82,16 +84,12 @@ const OverviewScreen: React.FC<OverviewScreenProps> = ({
     setLoading(true);
     const unsubscribers: Array<() => void> = [];
     try {
-      unsubscribers.push(onSnapshot(query(collection(db, 'evalTasks'), orderBy('createdAt', 'desc')), snapshot => {
-        setTasks(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as EvalTask)));
+      unsubscribers.push(subscribeTasks({}, tasks => {
+        setTasks(tasks);
         setLoading(false);
       }));
-      unsubscribers.push(onSnapshot(query(collection(db, 'evalDatasets'), orderBy('createdAt', 'desc')), snapshot => {
-        setDatasets(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as EvalDataset)));
-      }));
-      unsubscribers.push(onSnapshot(query(collection(db, 'evalGenerationJobs'), orderBy('createdAt', 'desc')), snapshot => {
-        setJobs(snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() } as DatasetGenerationJob)));
-      }));
+      unsubscribers.push(subscribeDatasets(setDatasets));
+      unsubscribers.push(subscribeGenerationJobs({}, setJobs));
     } catch (err) {
       handleFirestoreError(err, 'list', 'overview');
       setLoading(false);

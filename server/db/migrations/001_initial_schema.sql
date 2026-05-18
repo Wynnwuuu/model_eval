@@ -271,6 +271,13 @@ CREATE TABLE IF NOT EXISTS generation_job_items (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+ALTER TABLE generation_job_items
+DROP CONSTRAINT IF EXISTS generation_job_items_dataset_item_id_fkey;
+
+ALTER TABLE generation_job_items
+ADD CONSTRAINT generation_job_items_dataset_item_id_fkey
+FOREIGN KEY (dataset_item_id) REFERENCES dataset_items(id) ON DELETE SET NULL;
+
 CREATE TABLE IF NOT EXISTS audit_logs (
   id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
   organization_id TEXT REFERENCES organizations(id),

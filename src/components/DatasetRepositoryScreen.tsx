@@ -25,13 +25,13 @@ import {
 } from 'lucide-react';
 import Papa from 'papaparse';
 import { DatasetColumnMappings, DatasetFieldRole, DatasetGenerationJob, DatasetModality, DatasetPreviewType, DatasetSchemaField, EvalDataset } from '../types';
-import { db, auth } from '../firebase';
-import { collection, doc, setDoc, onSnapshot, query, where } from '../datastore';
+import { auth } from '../firebase';
 import { ConfirmModal } from './ConfirmModal';
 import MediaRenderer from './MediaRenderer';
 import DatasetGenerationModal from './DatasetGenerationModal';
 import { normalizeUrl } from '../utils';
 import { deleteDataset, saveDataset, subscribeDatasets } from '../features/datasets/api';
+import { subscribeGenerationJobs } from '../features/generation/api';
 import {
   DATASET_MODALITIES,
   STANDARD_DATASET_FIELDS,
@@ -441,12 +441,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
       setGenerationJobs([]);
       return;
     }
-    const jobsQuery = query(collection(db, 'evalGenerationJobs'), where('datasetId', '==', selectedDataset.id));
-    const unsubscribe = onSnapshot(jobsQuery, (snapshot) => {
-      const jobs: DatasetGenerationJob[] = [];
-      snapshot.forEach((docSnap) => {
-        jobs.push({ id: docSnap.id, ...docSnap.data() } as DatasetGenerationJob);
-      });
+    const unsubscribe = subscribeGenerationJobs({ datasetId: selectedDataset.id }, (jobs) => {
       setGenerationJobs(jobs.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
     }, (error) => {
       console.error('Error fetching generation jobs:', error);

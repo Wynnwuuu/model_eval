@@ -118,6 +118,9 @@ npm run build
 - `/tasks/:taskId/evaluate` 的任务配置和 items 加载已支持从 HTTP/PostgreSQL 读取；投票进度仍暂未迁移。
 - 新增 `/api/tasks/:taskId/votes` 和 `/api/tasks/:taskId/votes/:userName`，评测投票落到 `evaluation_votes`，用户进度写回 `eval_tasks.progress_json`。
 - `ModelEvalApp` 的评测保存/回退保存已优先走 task feature API；结果洞察页导入平台结果时可从 HTTP/PostgreSQL 读取 task items 和 votes。
+- 新增 `/api/generation/jobs` 和 `/api/generation/jobs/:jobId/items`，生产任务落到 `generation_jobs` 和 `generation_job_items`。
+- 新增 `features/generation/api.ts`，`DatasetGenerationModal`、数据集仓库和总览页的生产任务读写已收口到 generation feature API。
+- `DatasetGenerationModal` 中生产结果回写评测集已改走 `features/datasets/api.ts`，开启 HTTP 后会写入 PostgreSQL。
 
 当前数据路径仍是：
 
