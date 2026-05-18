@@ -3,7 +3,7 @@ import { Layers, Plus, Search, Filter, Calendar, Users, BarChart2, ArrowRight, A
 import { EvalParadigm, EvaluationConfig, EvaluationProject, EvaluationStep, EvaluationItem, EvalTask } from '../types';
 import { CreateProjectModal } from './CreateProjectModal';
 import { db, auth, signInWithGoogle, logout } from '../firebase';
-import { collection, onSnapshot, addDoc, query, doc, updateDoc, where, deleteDoc } from '../datastore';
+import { collection, onSnapshot, query, doc, where, deleteDoc } from '../datastore';
 import { EmptyState, PageFrame, PageHeader, StatTile, Toolbar } from './ui';
 import { getEvaluationMethodShortLabel, normalizeEvaluationConfig } from '../evaluationMethods';
 import { loadTaskEvaluation } from '../features/tasks/api';
@@ -111,7 +111,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
         // Only the project initiator may write; otherwise updateDoc fails and this listener would retry forever.
         if (needsMigration && canAutoWriteProject) {
           const cleanMigratedSteps = JSON.parse(JSON.stringify(migratedSteps));
-          updateDoc(doc(db, 'projects', data.id), { steps: cleanMigratedSteps }).catch(console.error);
+          updateProject(data.id, { steps: cleanMigratedSteps }).catch(console.error);
           data.steps = migratedSteps;
         }
 
@@ -123,7 +123,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
           data.steps[0].status === 'pending'
         ) {
           data.steps[0].status = 'in-progress';
-          updateDoc(doc(db, 'projects', data.id), { steps: data.steps }).catch(console.error);
+          updateProject(data.id, { steps: data.steps }).catch(console.error);
         }
 
         fetchedProjects.push(data);

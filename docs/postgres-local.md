@@ -22,10 +22,31 @@ curl http://localhost:8787/api/health
 curl http://localhost:8787/api/db/health
 ```
 
+项目数据链路已支持切换到本地后端：
+
+```env
+VITE_USE_API_BACKEND=true
+VITE_API_BASE_URL=http://localhost:8787
+```
+
+开启后，项目列表、新建项目、更新项目、删除项目会走：
+
+```text
+前端 -> features/projects/api.ts -> /api/projects -> PostgreSQL
+```
+
+其他数据域仍沿用当前的 localStorage 或 Firestore 路径。
+
 ## 启动数据库
 
 ```bash
 npm run db:up
+```
+
+如果已有本地 volume，需要执行增量迁移：
+
+```bash
+npm run db:migrate
 ```
 
 默认连接信息：
@@ -66,6 +87,7 @@ npm run db:down
 ## 重要说明
 
 - 初始 schema 位于 `server/db/migrations/001_initial_schema.sql`。
+- 增量迁移也放在 `server/db/migrations/`，本地执行 `npm run db:migrate` 会按文件名顺序重放这些 SQL。
 - Docker 官方 PostgreSQL 镜像只会在数据卷首次创建时执行 `/docker-entrypoint-initdb.d` 下的初始化 SQL。
 - 如果修改了初始化 SQL 并希望重新初始化本地数据库，需要删除 volume：
 

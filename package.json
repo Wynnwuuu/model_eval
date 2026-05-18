@@ -11,6 +11,7 @@
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
     "db:logs": "docker compose logs -f postgres",
+    "db:migrate": "docker compose exec postgres sh -c 'for file in /migrations/*.sql; do psql -U eval_studio -d eval_studio -f \"$file\"; done'",
     "db:psql": "docker compose exec postgres psql -U eval_studio -d eval_studio",
     "api:dev": "tsx server/index.ts",
     "build": "vite build",

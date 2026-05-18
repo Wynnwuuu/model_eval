@@ -12,6 +12,7 @@ services:
     volumes:
       - eval-studio-postgres-data:/var/lib/postgresql/data
       - ./server/db/migrations/001_initial_schema.sql:/docker-entrypoint-initdb.d/001_initial_schema.sql:ro
+      - ./server/db/migrations:/migrations:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-eval_studio} -d ${POSTGRES_DB:-eval_studio}"]
       interval: 5s

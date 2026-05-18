@@ -101,16 +101,21 @@ npm run build
 
 - 新增 `docker-compose.yml`，提供 `postgres:16-alpine` 本地数据库服务。
 - 新增 `server/db/migrations/001_initial_schema.sql`，作为第一版初始化 schema。
+- 新增 `db:migrate`，用于对已经存在的本地 PostgreSQL volume 执行增量迁移。
 - 新增 `docs/postgres-local.md`，记录启动、连接、验证和重置方式。
 - `.env.example` 增加 PostgreSQL 本地开发环境变量。
 - `package.json` 增加 `db:up`、`db:down`、`db:logs`、`db:psql` 脚本。
 - 新增最小本地后端入口 `server/index.ts`，提供 `/api/health` 和 `/api/db/health`。
 - 新增 PostgreSQL 连接池 `server/db/client.ts`，后续项目/数据集/模板 API 会从这里接入数据库。
+- 新增 `/api/projects` 后端接口，支持项目列表、详情、新建、更新和删除。
+- `features/projects/api.ts` 支持通过 `VITE_USE_API_BACKEND=true` 和 `VITE_API_BASE_URL` 切换到 HTTP/PostgreSQL 链路。
+- `DashboardScreen` 中旧项目 steps 自动迁移写入已改走 project feature API，避免切换后仍绕回 Firestore。
 
 当前数据路径仍是：
 
 ```text
-前端 -> features/*/api.ts -> datastore.ts -> localStorage 或 Firestore
+大部分数据域：前端 -> features/*/api.ts -> datastore.ts -> localStorage 或 Firestore
+项目数据域：前端 -> features/projects/api.ts -> /api/projects -> PostgreSQL（开启 VITE_USE_API_BACKEND 后）
 ```
 
 目标数据路径是：
@@ -123,6 +128,7 @@ npm run build
 
 ```bash
 npm run db:up
+npm run db:migrate
 npm run db:psql
 npm run api:dev
 npm run lint

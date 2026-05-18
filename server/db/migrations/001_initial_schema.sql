@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS projects (
   result_summary TEXT,
   analysis TEXT,
   link TEXT,
+  dataset_ids_json JSONB NOT NULL DEFAULT '[]'::jsonb,
   support_json JSONB NOT NULL DEFAULT '[]'::jsonb,
   dimensions_json JSONB NOT NULL DEFAULT '[]'::jsonb,
   generated_data_status TEXT,
