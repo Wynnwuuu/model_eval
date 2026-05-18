@@ -43,6 +43,7 @@
 - 新增 `src/features/tasks/api.ts` 作为 task feature 的统一导出入口，并提供 `subscribeTasks`；`TaskBuilderScreen` 的任务列表订阅改为走 feature API。
 - 新增 `src/features/datasets/api.ts` 和 `src/features/templates/api.ts`，评测集和 Rubric 模板列表订阅开始从页面组件收口到 feature API。
 - `TemplateRepositoryScreen`、`DatasetRepositoryScreen`、`TaskBuilderScreen`、`DashboardScreen` 的评测集/模板读路径已接入对应 feature API。
+- 新增 `src/features/projects/api.ts`，项目列表订阅开始收口到 feature API；项目旧 steps 自动迁移逻辑暂保留在 `DashboardScreen`，避免数据副作用与读取抽象同时迁移。
 
 当前可验证 URL：
 
