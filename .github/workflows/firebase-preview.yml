@@ -1,0 +1,144 @@
+name: Deploy Firebase Preview
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+  workflow_dispatch:
+    inputs:
+      channel_id:
+        description: "Firebase Hosting preview channel id, for example eval-method-rubric-insights"
+        required: false
+        default: "eval-studio-preview"
+      expires:
+        description: "Preview channel lifetime. Firebase supports up to 30d."
+        required: false
+        default: "30d"
+
+concurrency:
+  group: firebase-preview-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    name: Build and deploy preview
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    env:
+      VITE_USE_FIREBASE: "true"
+      VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
+      VITE_FIREBASE_AUTH_DOMAIN: ${{ vars.VITE_FIREBASE_AUTH_DOMAIN }}
+      VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}
+      VITE_FIREBASE_STORAGE_BUCKET: ${{ vars.VITE_FIREBASE_STORAGE_BUCKET }}
+      VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+      VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Validate preview deploy config
+        env:
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          missing=0
+          for name in \
+            VITE_FIREBASE_API_KEY \
+            VITE_FIREBASE_AUTH_DOMAIN \
+            VITE_FIREBASE_PROJECT_ID \
+            VITE_FIREBASE_STORAGE_BUCKET \
+            VITE_FIREBASE_MESSAGING_SENDER_ID \
+            VITE_FIREBASE_APP_ID; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is not configured"
+              missing=1
+            fi
+          done
+          if [ -z "$FIREBASE_SERVICE_ACCOUNT_JSON" ]; then
+            echo "::error::FIREBASE_SERVICE_ACCOUNT_JSON is not configured"
+            missing=1
+          fi
+          exit "$missing"
+
+      - name: Prepare Firebase credentials
+        env:
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/firebase-service-account.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/firebase-service-account.json" >> "$GITHUB_ENV"
+
+      - name: Resolve preview channel
+        id: channel
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            channel_id="pr-${{ github.event.pull_request.number }}"
+            expires="30d"
+          else
+            channel_id="${{ inputs.channel_id }}"
+            expires="${{ inputs.expires }}"
+          fi
+
+          channel_id="$(printf '%s' "$channel_id" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-+/-/g' | cut -c1-63)"
+          if [ -z "$channel_id" ]; then
+            channel_id="manual-${{ github.run_number }}"
+          fi
+
+          echo "channel_id=$channel_id" >> "$GITHUB_OUTPUT"
+          echo "expires=$expires" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy Firebase Hosting preview
+        id: deploy
+        run: |
+          set +e
+          npx firebase-tools@latest hosting:channel:deploy "${{ steps.channel.outputs.channel_id }}" \
+            --project "${{ vars.VITE_FIREBASE_PROJECT_ID }}" \
+            --expires "${{ steps.channel.outputs.expires }}" \
+            --non-interactive 2>&1 | tee "$RUNNER_TEMP/firebase-preview.log"
+          status=${PIPESTATUS[0]}
+          set -e
+
+          preview_url="$(grep -Eo 'https://[^[:space:]]+\.(web\.app|firebaseapp\.com)' "$RUNNER_TEMP/firebase-preview.log" | head -n 1 || true)"
+          echo "preview_url=$preview_url" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Firebase Preview Deployment"
+            echo ""
+            echo "- Channel: \`${{ steps.channel.outputs.channel_id }}\`"
+            echo "- Expires: \`${{ steps.channel.outputs.expires }}\`"
+            if [ -n "$preview_url" ]; then
+              echo "- Preview URL: $preview_url"
+            else
+              echo "- Preview URL: check the Firebase deploy log above."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit "$status"
+
+      - name: Comment preview URL on PR
+        if: github.event_name == 'pull_request' && steps.deploy.outputs.preview_url != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            --body "Firebase preview channel deployed: ${{ steps.deploy.outputs.preview_url }}"
