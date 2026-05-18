@@ -32,9 +32,9 @@ on:
 
 env:
   TARGET_ENV: ${{ inputs.env }}
-  REGION_ID: ${{ vars.ALIYUN_REGION_ID || 'cn-hongkong' }}
-  ACK_CLUSTER_ID: ${{ vars.ACK_CLUSTER_ID_DEV }}
-  ACK_NAMESPACE: ${{ vars.ACK_NAMESPACE_DEV || 'default' }}
+  REGION_ID: cn-hongkong
+  ACK_CLUSTER_ID: c8537cc4bdbe246968912d1aaefa38832
+  ACK_NAMESPACE: default
   ACK_DEPLOYMENT_NAME: eval-studio-deployment
   ACK_MIGRATION_JOB_NAME: eval-studio-migrate
   ACR_EE_REGISTRY: ${{ vars.ACR_EE_REGISTRY || 'sandai-registry.cn-hongkong.cr.aliyuncs.com' }}
@@ -61,6 +61,7 @@ jobs:
         run: |
           echo "Deploy Env: ${{ env.TARGET_ENV }}" >> $GITHUB_STEP_SUMMARY
           echo "Deploy Tag: ${{ env.ACR_EE_TAG }}" >> $GITHUB_STEP_SUMMARY
+          echo "Deploy Cluster ID: ${{ env.ACK_CLUSTER_ID }}" >> $GITHUB_STEP_SUMMARY
           echo "Deploy Namespace: ${{ env.ACK_NAMESPACE }}" >> $GITHUB_STEP_SUMMARY
 
       - uses: actions/checkout@v4

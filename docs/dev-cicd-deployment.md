@@ -61,18 +61,18 @@
 
 ## GitHub Variables
 
-必须配置：
+dev 部署已按 `vidmuse-admin` 的方式在 workflow 内固定 ACK 集群和命名空间：
 
-| Variable | 示例 | 说明 |
-| --- | --- | --- |
-| `ACK_CLUSTER_ID_DEV` | `c8537...` | dev ACK 集群 ID |
+| 配置 | 当前值 |
+| --- | --- |
+| ACK 集群 ID | `c8537cc4bdbe246968912d1aaefa38832` |
+| ACK 命名空间 | `default` |
+| Region | `cn-hongkong` |
 
-建议配置：
+可选配置：
 
 | Variable | 默认值 | 说明 |
 | --- | --- | --- |
-| `ACK_NAMESPACE_DEV` | `default` | dev 命名空间 |
-| `ALIYUN_REGION_ID` | `cn-hongkong` | ACR region |
 | `ACR_EE_REGISTRY` | `sandai-registry.cn-hongkong.cr.aliyuncs.com` | ACR registry |
 | `ACR_EE_INSTANCE_ID` | `cri-ygtpwto064tjuv5o` | ACR 企业版实例 ID |
 | `ACR_EE_NAMESPACE` | `vidmuse` | ACR namespace |
@@ -89,7 +89,7 @@ kubectl create secret generic eval-studio-secrets \
   --from-literal=DATABASE_URL='postgresql://USER:PASSWORD@HOST:5432/DB_NAME'
 ```
 
-如命名空间不是 `default`，替换 `-n` 参数，并同步设置 `ACK_NAMESPACE_DEV`。
+当前 dev 部署命名空间固定为 `default`。如后续要切换命名空间，需要同步修改 workflow 内的 `ACK_NAMESPACE`。
 
 ## Kubernetes 资源
 
