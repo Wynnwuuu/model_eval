@@ -1,6 +1,7 @@
 import { collection, doc, onSnapshot, orderBy, query, setDoc, where } from '../../datastore';
 import { db } from '../../firebase';
 import { DatasetGenerationJob, DatasetGenerationJobItem } from '../../types';
+import { getApiAuthHeaders } from '../apiAuthHeaders';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 const USE_API_BACKEND = import.meta.env.VITE_USE_API_BACKEND === 'true' && Boolean(API_BASE_URL);
@@ -13,6 +14,7 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: {
       'Content-Type': 'application/json',
+      ...getApiAuthHeaders(),
       ...(init?.headers || {}),
     },
   });

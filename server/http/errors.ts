@@ -19,6 +19,9 @@ export const badRequest = (message: string, details?: unknown) =>
 export const notFound = (resource: string) =>
   new ApiError(404, 'NOT_FOUND', `${resource} not found`);
 
+export const forbidden = (message = 'Forbidden') =>
+  new ApiError(403, 'FORBIDDEN', message);
+
 export const sendError = (res: Response, error: unknown, fallbackMessage = 'Internal server error') => {
   if (error instanceof ApiError) {
     res.status(error.statusCode).json({

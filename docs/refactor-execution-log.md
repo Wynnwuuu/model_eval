@@ -126,6 +126,10 @@ npm run build
 - `db:migrate` 改为 TypeScript 迁移执行器，使用 `schema_migrations` 记录已执行 SQL，避免每次重放全部迁移。
 - 新增 `docs/postgres-refactor-status.md` 记录 PostgreSQL 重构完成状态、进行中事项和剩余任务。
 - API 写接口加入第一版参数校验，并统一错误响应结构为 `{ error: { code, message, details? } }`。
+- 新增请求用户上下文中间件，HTTP API 通过 `X-User-Id`、`X-User-Email`、`X-User-Name`、`X-Organization-Id` 写入 `users`、`organizations`、`organization_members`。
+- 新建项目会同步写入 `project_members.owner`；项目更新要求 `owner/editor`，项目删除要求 `owner`。
+- 前端 HTTP/PostgreSQL 模式的 projects、datasets、templates、tasks、generation 请求已统一携带当前用户身份头。
+- API smoke test 增加权限负例：非项目成员更新项目会返回 `403 FORBIDDEN`。
 
 当前数据路径仍是：
 
@@ -149,4 +153,5 @@ npm run db:psql
 npm run api:dev
 npm run lint
 npm run build
+npm run test:api:smoke
 ```

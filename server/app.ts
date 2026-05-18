@@ -1,6 +1,7 @@
 import express from 'express';
 
 import { datasetRoutes } from './datasets/datasetRoutes.ts';
+import { attachRequestUser } from './auth/context.ts';
 import { checkDatabaseHealth } from './db/client.ts';
 import { generationRoutes } from './generation/generationRoutes.ts';
 import { badRequest, sendError } from './http/errors.ts';
@@ -14,7 +15,7 @@ export const createApp = () => {
   app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', process.env.CORS_ORIGIN || '*');
     res.header('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-User-Id, X-User-Email, X-User-Name, X-Organization-Id');
     if (req.method === 'OPTIONS') {
       res.status(204).end();
       return;
@@ -42,6 +43,8 @@ export const createApp = () => {
       sendError(res, error, 'Unknown database error');
     }
   });
+
+  app.use(attachRequestUser);
 
   app.use('/api/projects', projectRoutes);
   app.use('/api/datasets', datasetRoutes);

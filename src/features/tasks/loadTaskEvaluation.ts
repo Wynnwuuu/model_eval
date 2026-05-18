@@ -2,6 +2,7 @@ import { doc, getDoc, setDoc } from '../../datastore';
 import { auth, db } from '../../firebase';
 import { getParadigmFromMethod, normalizeEvaluationConfig } from '../../evaluationMethods';
 import { EvalTask, EvalTemplate, EvaluationItem, EvaluationProject, VoteRecord } from '../../types';
+import { getApiAuthHeaders } from '../apiAuthHeaders';
 import { loadTaskItems } from './loadTaskItems';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
@@ -30,19 +31,19 @@ export async function loadTaskEvaluation(taskId: string): Promise<LoadedTaskEval
   let project: EvaluationProject | undefined;
 
   if (USE_API_BACKEND) {
-    const taskResponse = await fetch(`${API_BASE_URL}/api/tasks/${taskId}`);
+    const taskResponse = await fetch(`${API_BASE_URL}/api/tasks/${taskId}`, { headers: getApiAuthHeaders() });
     if (!taskResponse.ok) throw new Error('未找到这份评测物料。');
     task = ((await taskResponse.json()) as { task: EvalTask }).task;
 
     if (task.templateId) {
-      const templateResponse = await fetch(`${API_BASE_URL}/api/templates/${task.templateId}`);
+      const templateResponse = await fetch(`${API_BASE_URL}/api/templates/${task.templateId}`, { headers: getApiAuthHeaders() });
       if (templateResponse.ok) {
         template = ((await templateResponse.json()) as { template: EvalTemplate }).template;
       }
     }
 
     if (task.projectId) {
-      const projectResponse = await fetch(`${API_BASE_URL}/api/projects/${task.projectId}`);
+      const projectResponse = await fetch(`${API_BASE_URL}/api/projects/${task.projectId}`, { headers: getApiAuthHeaders() });
       if (projectResponse.ok) {
         project = ((await projectResponse.json()) as { project: EvaluationProject }).project;
       }
@@ -88,7 +89,7 @@ export async function loadTaskEvaluation(taskId: string): Promise<LoadedTaskEval
   let votes: VoteRecord[] = [];
   try {
     if (USE_API_BACKEND) {
-      const voteResponse = await fetch(`${API_BASE_URL}/api/tasks/${task.id}/votes/${encodeURIComponent(userName)}`);
+      const voteResponse = await fetch(`${API_BASE_URL}/api/tasks/${task.id}/votes/${encodeURIComponent(userName)}`, { headers: getApiAuthHeaders() });
       if (voteResponse.ok) {
         votes = ((await voteResponse.json()) as { votes: VoteRecord[] }).votes;
       }

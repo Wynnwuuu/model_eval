@@ -9,6 +9,7 @@ import {
 } from './projectRepository.ts';
 import { notFound, sendError } from '../http/errors.ts';
 import { requireBodyObject, validateProjectPayload } from '../http/validation.ts';
+import { ensureProjectRole } from '../auth/projectPermissions.ts';
 
 export const projectRoutes = Router();
 
@@ -36,7 +37,7 @@ projectRoutes.post('/', async (req, res) => {
   try {
     const payload = requireBodyObject(req.body, 'project');
     validateProjectPayload(payload);
-    const project = await createProject(payload, req.body.user || {});
+    const project = await createProject(payload, req.user);
     res.status(201).json({ project });
   } catch (error) {
     sendError(res, error, 'Failed to create project');
@@ -46,6 +47,7 @@ projectRoutes.post('/', async (req, res) => {
 projectRoutes.patch('/:projectId', async (req, res) => {
   try {
     const patch = requireBodyObject(req.body, 'patch');
+    await ensureProjectRole(req.user, req.params.projectId, ['owner', 'editor']);
     const project = await updateProject(req.params.projectId, patch);
     if (!project) {
       throw notFound('Project');
@@ -58,6 +60,7 @@ projectRoutes.patch('/:projectId', async (req, res) => {
 
 projectRoutes.delete('/:projectId', async (req, res) => {
   try {
+    await ensureProjectRole(req.user, req.params.projectId, ['owner']);
     const deleted = await deleteProject(req.params.projectId);
     if (!deleted) {
       throw notFound('Project');

@@ -2,12 +2,19 @@ type JsonValue = Record<string, any> | Array<any> | string | number | boolean | 
 
 const API_BASE_URL = (process.env.API_BASE_URL || process.env.VITE_API_BASE_URL || 'http://localhost:8787').replace(/\/+$/, '');
 const RUN_ID = `smoke-${Date.now()}`;
+const AUTH_HEADERS = {
+  'X-User-Id': 'smoke-user',
+  'X-User-Email': 'smoke@example.com',
+  'X-User-Name': 'Smoke User',
+  'X-Organization-Id': 'default',
+};
 
 const request = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
+      ...AUTH_HEADERS,
       ...(init.headers || {}),
     },
   });
@@ -25,6 +32,23 @@ const sendJson = <T>(path: string, method: string, body?: JsonValue) =>
     method,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+
+const expectJsonFailure = async (path: string, status: number, init: RequestInit = {}) => {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...AUTH_HEADERS,
+      ...(init.headers || {}),
+    },
+  });
+  const text = await response.text();
+  const body = text ? JSON.parse(text) : null;
+  if (response.status !== status) {
+    throw new Error(`${init.method || 'GET'} ${path} expected ${status}, got ${response.status}: ${text}`);
+  }
+  return body;
+};
 
 const assert = (condition: unknown, message: string) => {
   if (!condition) throw new Error(message);
@@ -80,6 +104,17 @@ const main = async () => {
       user: { uid: 'smoke-user', displayName: 'Smoke User', email: 'smoke@example.com' },
     });
     assert(project.project.id, 'project was not created');
+
+    const forbidden = await expectJsonFailure(`/api/projects/${ids.project}`, 403, {
+      method: 'PATCH',
+      headers: {
+        'X-User-Id': 'smoke-intruder',
+        'X-User-Email': 'smoke-intruder@example.com',
+        'X-User-Name': 'Smoke Intruder',
+      },
+      body: JSON.stringify({ patch: { analysis: 'should be rejected' } }),
+    });
+    assert(forbidden.error?.code === 'FORBIDDEN', 'non-member project update was not rejected');
 
     await sendJson(`/api/datasets/${ids.dataset}`, 'PUT', {
       dataset: {

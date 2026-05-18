@@ -1,6 +1,7 @@
 import { addDoc, collection, deleteDoc, doc, onSnapshot, query, updateDoc, where } from '../../datastore';
 import { db } from '../../firebase';
 import { EvalTask, EvaluationItem, VoteRecord } from '../../types';
+import { getApiAuthHeaders } from '../apiAuthHeaders';
 import { loadTaskEvaluation } from './loadTaskEvaluation';
 import { loadTaskItems } from './loadTaskItems';
 
@@ -17,6 +18,7 @@ export async function requestTaskJson<T>(path: string, init?: RequestInit): Prom
     ...init,
     headers: {
       'Content-Type': 'application/json',
+      ...getApiAuthHeaders(),
       ...(init?.headers || {}),
     },
   });

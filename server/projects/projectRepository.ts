@@ -2,13 +2,8 @@ import { randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 
 import type { EvaluationProject, EvaluationStep } from '../../src/types.ts';
+import type { RequestUser } from '../auth/context.ts';
 import { dbPool } from '../db/client.ts';
-
-type ProjectUser = {
-  uid?: string;
-  displayName?: string | null;
-  email?: string | null;
-};
 
 type ProjectRow = {
   id: string;
@@ -166,13 +161,13 @@ export const getProject = async (projectId: string): Promise<EvaluationProject |
 
 export const createProject = async (
   project: Partial<EvaluationProject>,
-  user: ProjectUser = {}
+  user: RequestUser
 ): Promise<EvaluationProject> => {
-  const id = randomUUID();
+  const id = project.id || randomUUID();
   const now = new Date();
   const initiatorName = user.displayName || user.email || 'Anonymous';
   const sourceJson = {
-    initiatorUid: user.uid,
+    initiatorUid: user.id,
     initiatorName,
   };
 
@@ -203,7 +198,7 @@ export const createProject = async (
           updated_at
         )
         VALUES (
-          $1, 'default', $2, $3, $4, $5, $6, $7, $8,
+          $1, $18, $2, $3, $4, $5, $6, $7, $8,
           $9, $10, $11, $12::jsonb, $13::jsonb, $14::jsonb,
           $15, $16::jsonb, $17, $17
         )
@@ -226,9 +221,20 @@ export const createProject = async (
         project.generatedDataStatus || '未开始',
         JSON.stringify(sourceJson),
         now,
+        user.organizationId,
       ]
     );
     await insertSteps(client, id, project.steps || []);
+    await client.query(
+      `
+        INSERT INTO project_members (project_id, user_id, role)
+        VALUES ($1, $2, 'owner')
+        ON CONFLICT (project_id, user_id) DO UPDATE SET
+          role = EXCLUDED.role,
+          updated_at = now()
+      `,
+      [id, user.id]
+    );
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK');

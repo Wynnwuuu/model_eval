@@ -2,6 +2,7 @@ import { collection, doc, getDoc, getDocs, updateDoc } from '../../datastore';
 import { db } from '../../firebase';
 import { getDimensionValuesForItem, getDimensionValuesFromRecord } from '../../dimensionUtils';
 import { EvalTask, EvaluationItem } from '../../types';
+import { getApiAuthHeaders } from '../apiAuthHeaders';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 const USE_API_BACKEND = import.meta.env.VITE_USE_API_BACKEND === 'true' && Boolean(API_BASE_URL);
@@ -17,7 +18,7 @@ interface LoadTaskItemsOptions {
 
 export async function loadTaskItems(task: EvalTask, options: LoadTaskItemsOptions = {}) {
   if (USE_API_BACKEND) {
-    const response = await fetch(`${API_BASE_URL}/api/tasks/${task.id}/items`);
+    const response = await fetch(`${API_BASE_URL}/api/tasks/${task.id}/items`, { headers: getApiAuthHeaders() });
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({}));
       throw new Error(errorBody.error?.message || errorBody.error || `加载任务用例失败: ${response.status}`);
