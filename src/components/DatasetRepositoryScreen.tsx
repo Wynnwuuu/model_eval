@@ -140,6 +140,23 @@ const fieldSample = (field: Pick<DatasetSchemaField, 'sourceKey' | 'key'>, rows:
   return sample ? String(sample[sourceKey] ?? sample[field.key] ?? '') : '';
 };
 
+const sanitizeFirestoreValue = (value: any): any => {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (Array.isArray(value)) {
+    return value.map(item => item === undefined ? null : sanitizeFirestoreValue(item));
+  }
+  if (typeof value === 'object') {
+    const next: Record<string, any> = {};
+    Object.entries(value).forEach(([key, item]) => {
+      const sanitized = sanitizeFirestoreValue(item);
+      if (sanitized !== undefined) next[key] = sanitized;
+    });
+    return next;
+  }
+  return value;
+};
+
 const ensureUniqueFieldKey = (baseValue: string, existingKeys: string[]) => {
   const base = (baseValue || '自定义字段').trim();
   if (!existingKeys.includes(base)) return base;
@@ -673,7 +690,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
     };
 
     try {
-      await setDoc(doc(db, 'evalDatasets', datasetBase.id), datasetBase);
+      await setDoc(doc(db, 'evalDatasets', datasetBase.id), sanitizeFirestoreValue(datasetBase));
       setSelectedDatasetId(datasetBase.id);
       setSelectedRowIndex(0);
       closeWizard();

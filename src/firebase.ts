@@ -1,7 +1,7 @@
 
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { initializeFirestore } from 'firebase/firestore';
 import { localDb, localUser } from './localPlatform';
 
 const firebaseConfig = {
@@ -34,7 +34,9 @@ let db, auth, googleProvider;
 
 if (shouldUseFirebase) {
   const app = initializeApp(firebaseConfig);
-  db = getFirestore(app);
+  db = initializeFirestore(app, {
+    ignoreUndefinedProperties: true
+  });
   auth = getAuth(app);
   googleProvider = new GoogleAuthProvider();
 } else {
