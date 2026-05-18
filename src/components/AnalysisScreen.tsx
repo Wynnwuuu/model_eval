@@ -3,7 +3,7 @@ import { Upload, FileText, BarChart3, Users, AlertCircle, PlusCircle, Download, 
 import { AggregatedResult, EvalParadigm, EvaluationConfig, EvalTask, EvalTemplate, EvaluationItem, EvaluationProject, ModelOutput, RankingEntry, VoteRecord, VoteType } from '../types';
 import { ArenaRankPromptItem, calculateArenaRankCaseSummaries, calculateArenaRankModelStats, getArenaRankModelOutputUrl, getBordaScore, getModelOutputsForItem, isArenaRankVote, resolveEvaluationItemPrompt, sortRanking } from '../rankingUtils';
 import { VIDEO_EXTENSIONS } from '../constants';
-import { db, handlePersistenceError } from '../firebase';
+import { db, handlePersistenceError } from '../auth';
 import { collection, getDocs, query, orderBy } from '../datastore';
 import ArenaRankVideoPreviewList from './ArenaRankVideoPreviewList';
 import MediaRenderer from './MediaRenderer';

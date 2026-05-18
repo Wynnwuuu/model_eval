@@ -1,5 +1,5 @@
 import { doc, getDoc, setDoc } from '../../datastore';
-import { auth, db } from '../../firebase';
+import { auth, db } from '../../auth';
 import { getParadigmFromMethod, normalizeEvaluationConfig } from '../../evaluationMethods';
 import { EvalTask, EvalTemplate, EvaluationItem, EvaluationProject, VoteRecord } from '../../types';
 import { getApiAuthHeaders } from '../apiAuthHeaders';

@@ -59,4 +59,4 @@ shell:startup
 - `localhost:3000 refused to connect`：服务没启动，运行 `start-local.cmd`。
 - 端口被别的程序占用：运行 `npm.cmd run local:check` 看 PID 和命令行；如果是本项目旧进程，运行 `npm.cmd run local:stop` 后再启动。
 - 页面能打开但数据为空：本地数据保存在当前浏览器的 `localStorage`，换浏览器或清缓存会看起来像新环境。
-- 需要 Gemini API 的功能：复制 `.env.example` 为 `.env.local`，并填入 `GEMINI_API_KEY`；普通本地评测、数据集、模板、Arena-rank 流程不依赖线上 Firebase。
+- 需要 Gemini API 的功能：复制 `.env.example` 为 `.env.local`，并填入 `GEMINI_API_KEY`；普通本地评测、数据集、模板、Arena-rank 流程不依赖线上 local platform。

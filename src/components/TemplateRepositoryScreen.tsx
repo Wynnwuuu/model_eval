@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { LayoutTemplate, Plus, Settings, ArrowRight, Trash2, Edit2, FileText, CheckCircle2 } from 'lucide-react';
 import { EvalTemplate, EvalDimension, EvalParadigm } from '../types';
-import { auth } from '../firebase';
+import { auth } from '../auth';
 import { ConfirmModal } from './ConfirmModal';
 import { DEFAULT_SCORE_LEVELS, buildDefaultDimensionsForMethod, getEvaluationMethodShortLabel, getMethodFromParadigm, normalizeDimensions } from '../evaluationMethods';
 import { deleteTemplate, saveTemplate, subscribeTemplates } from '../features/templates/api';

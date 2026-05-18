@@ -14,7 +14,7 @@ interface MediaRendererProps {
 }
 
 // Some CDNs reject the request based on the Referer header (hotlink protection).
-// On Firebase Hosting (or any non-localhost deploy) the page origin gets sent as
+// On hosted deployments the page origin gets sent as
 // Referer with the default "origin" policy and the CDN returns 403. We try a
 // sequence of referrer policies and only show an error if all of them fail.
 // Order matters: most "anti-leech" rules allow empty referer (direct link
@@ -180,7 +180,7 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({ url, label, isActive, cla
   const handleError = () => {
     // Try the next referrer policy before giving up. This handles CDN hotlink
     // protection differences between local dev (often allowed) and deployed
-    // origins (e.g. Firebase Hosting domains not in the CDN whitelist).
+    // origins that are not in the CDN whitelist.
     if (referrerPolicyIdx < REFERRER_POLICY_FALLBACKS.length - 1) {
       setReferrerPolicyIdx(prev => prev + 1);
       setLoading(true);

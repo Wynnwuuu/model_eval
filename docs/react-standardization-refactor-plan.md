@@ -6,14 +6,14 @@
 
 - 页面路由由 `ModelEvalApp` 内部 `currentRoute` 状态驱动，URL 无法表达具体页面、项目、数据集、任务。
 - 组件直接访问 `datastore.ts` 暴露的 legacy document store 风格 API，数据请求、权限、缓存、错误处理分散在页面组件中。
-- 开发环境依赖 `localStorage`，线上依赖 Firebase Authentication plus PostgreSQL API；协作能力可用，但与标准企业级关系型数据、审计、备份、权限治理存在距离。
+- 开发环境依赖 `localStorage`，线上依赖 PostgreSQL API；协作能力可用，但与标准企业级关系型数据、审计、备份、权限治理存在距离。
 - 多个业务实体已经成型，但缺少稳定的后端 API、数据库迁移、领域分层、测试体系和持续迭代流程。
 
 本次重构目标：
 
 1. 将项目改造成标准 React 项目：每个核心页面拥有可直接访问、可分享、可回放的 URL 路由。
 2. 将业务模块拆分为稳定边界：项目、数据集、模板、任务、执行、洞察、生产分别拥有独立页面、数据服务和类型模型。
-3. 将线上数据层从 Firebase Auth and PostgreSQL 迁移到更标准的后端 API + 关系型数据库方案。阿里云 DMS 建议作为数据库治理、权限审批、SQL 审核和变更管理平台；真实业务数据库建议使用阿里云 RDS MySQL 或 PostgreSQL。
+3. 将线上数据层从 PostgreSQL API 迁移到更标准的后端 API + 关系型数据库方案。阿里云 DMS 建议作为数据库治理、权限审批、SQL 审核和变更管理平台；真实业务数据库建议使用阿里云 RDS MySQL 或 PostgreSQL。
 4. 建立可持续迭代的工程化体系：目录规范、API 契约、数据库迁移、权限模型、测试、CI/CD、观测、发布治理。
 
 ## 2. 现状判断
@@ -24,16 +24,16 @@
 | --- | --- | --- |
 | 前端框架 | Vite + React 19 + TypeScript + Tailwind CSS | 基础可用，但页面/业务/数据层混在组件内 |
 | 路由 | `ModelEvalApp` 内部状态 `currentRoute` | URL 不可分享，刷新丢页面上下文，深链能力弱 |
-| 数据访问 | `src/datastore.ts` 在 Firebase 与 `localPlatform` 间切换 | UI 依赖 legacy document store 调用形态，未来迁移成本高 |
+| 数据访问 | `src/datastore.ts` 在 local platform 与 `localPlatform` 间切换 | UI 依赖 legacy document store 调用形态，未来迁移成本高 |
 | 本地数据 | `localStorage` | 适合单机调试，不适合多人协作和长期数据管理 |
-| 线上数据 | Firebase Auth plus PostgreSQL API | 已支持基础协作，但不利于关系型查询、审计、SQL 治理 |
-| 部署 | Firebase Hosting + GitHub Actions | 静态前端部署可保留或替换，后端需要新增部署链路 |
+| 线上数据 | PostgreSQL API | 已支持基础协作，但不利于关系型查询、审计、SQL 治理 |
+| 部署 | static hosting + GitHub Actions | 静态前端部署可保留或替换，后端需要新增部署链路 |
 
 ### 2.2 当前主要业务实体
 
 | 实体 | 当前集合/位置 | 说明 |
 | --- | --- | --- |
-| 用户 | `users` | 本地模式内置 `local-user`；线上来自 Firebase Auth |
+| 用户 | `users` | 本地模式内置 `local-user`；线上来自 cloud auth |
 | 项目 | `projects` | 包含项目目标、优先级、协作人、步骤、结果摘要 |
 | 评测集 | `evalDatasets` | 包含 schema、items、版本信息、验证摘要 |
 | Rubric 模板 | `evalTemplates` | 包含范式、维度、打分配置 |
@@ -255,7 +255,7 @@ const { data, isLoading, error } = useProject(projectId);
 const createProject = useCreateProject();
 ```
 
-这样后端从 Firebase 换成 RDS 时，页面不需要知道数据库变化。
+这样后端从 local platform 换成 RDS 时，页面不需要知道数据库变化。
 
 ## 5. 后端与数据库方案
 
@@ -410,7 +410,7 @@ server/
    - 投票用户数、投票 case 数一致。
 6. 前端接入新 API 的只读模式，进行页面对账。
 7. 短冻结窗口内执行最终导出和导入。
-8. 切换生产环境 API 地址，保留 Firebase 只读备份一段时间。
+8. 切换生产环境 API 地址，保留 local platform 只读备份一段时间。
 
 ### 6.3 迁移期间兼容策略
 
@@ -583,7 +583,7 @@ server/
 
 ### 阶段 5：线上切换，3-5 天
 
-目标：生产环境从 Firebase 主库切到 RDS 主库。
+目标：生产环境从 local platform 主库切到 RDS 主库。
 
 任务：
 
@@ -597,7 +597,7 @@ server/
 
 - 线上创建项目、导入数据集、创建任务、投票、查看洞察全链路可用。
 - 新数据只写入 RDS。
-- Firebase 保留只读备份，不再作为主写入路径。
+- local platform 保留只读备份，不再作为主写入路径。
 
 ### 阶段 6：长期工程治理，持续推进
 
@@ -655,7 +655,7 @@ server/
 | PR 3 | 新增 `features/*/api.ts` 和 hooks，用 adapter 包住现有 datastore | 不接真实后端 |
 | PR 4 | 新建 `server/`、migration、基础项目/数据集 API | 不迁移生产 |
 | PR 5 | 前端项目/数据集页面切到新 API | 不切任务执行 |
-| PR 6 | 任务、投票、洞察 API 与前端切换 | 不删除 Firebase 代码 |
+| PR 6 | 任务、投票、洞察 API 与前端切换 | 不删除 local platform 代码 |
 | PR 7 | 迁移脚本、staging 对账、生产切换配置 | 不做大 UI 改版 |
 
 ## 12. 参考

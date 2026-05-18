@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Layers, Plus, Search, Filter, Calendar, Users, BarChart2, ArrowRight, Activity, Target, Link as LinkIcon, LogIn, LogOut, X, Edit2, Database, LayoutTemplate, Play, ChevronRight, FolderOpen, Trash2 } from 'lucide-react';
 import { EvalParadigm, EvaluationConfig, EvaluationProject, EvaluationStep, EvaluationItem, EvalTask } from '../types';
 import { CreateProjectModal } from './CreateProjectModal';
-import { auth, signInWithGoogle, logout } from '../firebase';
+import { auth, signInWithGoogle, logout } from '../auth';
 import { EmptyState, PageFrame, PageHeader, StatTile, Toolbar } from './ui';
 import { getEvaluationMethodShortLabel, normalizeEvaluationConfig } from '../evaluationMethods';
 import { deleteTask, loadTaskEvaluation, subscribeTasks } from '../features/tasks/api';
@@ -988,7 +988,7 @@ const EditStepModal: React.FC<EditStepModalProps> = ({ step, onClose, onSave }) 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      // In a real app, upload to Firebase Storage here.
+      // In a real app, upload to object storage here.
       // For now, just save the name and a fake URL.
       setMaterialFile({ name: file.name, url: URL.createObjectURL(file) });
     }

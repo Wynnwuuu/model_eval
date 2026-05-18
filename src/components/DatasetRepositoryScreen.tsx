@@ -25,7 +25,7 @@ import {
 } from 'lucide-react';
 import Papa from 'papaparse';
 import { DatasetColumnMappings, DatasetFieldRole, DatasetGenerationJob, DatasetModality, DatasetPreviewType, DatasetSchemaField, EvalDataset } from '../types';
-import { auth } from '../firebase';
+import { auth } from '../auth';
 import { ConfirmModal } from './ConfirmModal';
 import MediaRenderer from './MediaRenderer';
 import DatasetGenerationModal from './DatasetGenerationModal';

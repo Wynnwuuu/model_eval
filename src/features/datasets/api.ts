@@ -1,5 +1,5 @@
 import { addDoc, collection, deleteDoc, doc, onSnapshot, orderBy, query, setDoc } from '../../datastore';
-import { db } from '../../firebase';
+import { db } from '../../auth';
 import { EvalDataset } from '../../types';
 import { getApiAuthHeaders } from '../apiAuthHeaders';
 

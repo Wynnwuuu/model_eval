@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowLeft, Plus, Save, Trash2, Database, LayoutTemplate, Box, CheckCircle2, Play, Link as LinkIcon, Upload, X, Users, Edit, Eye, Loader2, ClipboardList } from 'lucide-react';
 import { EvalDataset, EvalTemplate, EvalTask, EvalDimension, EvalParadigm, EvaluationConfig, EvaluationItem, EvaluationMethod } from '../types';
-import { db, auth } from '../firebase';
+import { db, auth } from '../auth';
 import { collection, onSnapshot, query } from '../datastore';
 import { ConfirmModal } from './ConfirmModal';
 import Papa from 'papaparse';

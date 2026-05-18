@@ -7,7 +7,7 @@
 本阶段目标：
 
 - 让核心页面具备独立 URL，可直接访问、刷新和分享。
-- 暂不改业务数据层，仍沿用现有 Firebase/localPlatform 数据访问。
+- 暂不改业务数据层，仍沿用现有 local platform/localPlatform 数据访问。
 - 对动态资源先完成 URL 参数传递，后续阶段再继续拆分为真正的详情页。
 
 已完成：

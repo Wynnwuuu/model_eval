@@ -79,7 +79,7 @@ VITE_API_BASE_URL=https://<api-domain>
 npm run build
 ```
 
-部署 `dist/` 到静态站点服务、OSS/CDN、Firebase Hosting 或其他前端托管服务。
+部署 `dist/` 到静态站点服务、OSS/CDN、static hosting 或其他前端托管服务。
 
 ## 发布顺序
 

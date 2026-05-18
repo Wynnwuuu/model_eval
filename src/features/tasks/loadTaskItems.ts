@@ -1,5 +1,5 @@
 import { collection, doc, getDoc, getDocs, updateDoc } from '../../datastore';
-import { db } from '../../firebase';
+import { db } from '../../auth';
 import { getDimensionValuesForItem, getDimensionValuesFromRecord } from '../../dimensionUtils';
 import { EvalTask, EvaluationItem } from '../../types';
 import { getApiAuthHeaders } from '../apiAuthHeaders';

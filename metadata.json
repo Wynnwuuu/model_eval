@@ -1,5 +1,5 @@
 {
   "name": "Remix: 评测任务管理平台",
-  "description": "基于 Firebase 驱动的评测任务管理平台，用于追踪和管理公司内部各类模型及生成效果评测任务的进度、人员和结果。支持实时数据同步和细粒度安全访问控制。",
+  "description": "基于 HTTP API 和 PostgreSQL 的评测任务管理平台，用于追踪和管理公司内部各类模型及生成效果评测任务的进度、人员和结果。支持协作数据管理和角色权限控制。",
   "requestFramePermissions": []
 }

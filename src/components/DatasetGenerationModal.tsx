@@ -11,7 +11,7 @@ import {
   GenerationModelConfig,
   GenerationSeedMode
 } from '../types';
-import { auth } from '../firebase';
+import { auth } from '../auth';
 import {
   appendDatasetVersion,
   buildDatasetCard,

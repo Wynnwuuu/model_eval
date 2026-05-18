@@ -1,5 +1,5 @@
 import { collection, doc, onSnapshot, orderBy, query, setDoc, where } from '../../datastore';
-import { db } from '../../firebase';
+import { db } from '../../auth';
 import { DatasetGenerationJob, DatasetGenerationJobItem } from '../../types';
 import { getApiAuthHeaders } from '../apiAuthHeaders';
 

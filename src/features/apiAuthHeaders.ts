@@ -1,4 +1,4 @@
-import { auth } from '../firebase';
+import { auth } from '../auth';
 
 export const getApiAuthHeaders = () => {
   const user = auth.currentUser;

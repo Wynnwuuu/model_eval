@@ -56,7 +56,7 @@ class LocalDocumentSnapshot {
     private readonly payload: any | undefined
   ) {}
 
-  /** Aligns with Firebase `DocumentSnapshot.exists` (property). */
+  /** Aligns with document snapshot `exists` property used by the local adapter. */
   get exists(): boolean {
     return this.payload !== undefined;
   }

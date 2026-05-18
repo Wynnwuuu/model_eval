@@ -15,7 +15,7 @@ import TaskListPage from '../pages/tasks/TaskListPage';
 import InsightDashboardPage from '../pages/insights/InsightDashboardPage';
 import HistoryPage from '../pages/history/HistoryPage';
 import { AppRoute, EvalParadigm, EvaluationConfig, EvaluationItem, HistorySession, RankingEntry, RouteContext, VoteRecord, VoteType, EvaluationProject } from '../types';
-import { auth, signInWithGoogle, logout, shouldUseCloudAuth } from '../firebase';
+import { auth, signInWithGoogle, logout, shouldUseCloudAuth } from '../auth';
 import { getDefaultEvaluationConfig, getMethodFromParadigm, getParadigmFromMethod, isRankMethod, isScoreMethod } from '../evaluationMethods';
 import { saveTaskUserVotes, loadTaskEvaluation } from '../features/tasks/api';
 
@@ -304,7 +304,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
       if (savedVotes) return;
 
       const { doc, updateDoc, FieldPath, setDoc } = await import('../datastore');
-      const { db } = await import('../firebase');
+      const { db } = await import('../auth');
       const taskRef = doc(db, 'evalTasks', activeTaskId);
       try {
         await updateDoc(taskRef, new FieldPath('progress', userName), nextProgress);
@@ -381,7 +381,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
           if (savedVotes) return;
 
           const { doc, updateDoc, FieldPath, setDoc } = await import('../datastore');
-          const { db } = await import('../firebase');
+          const { db } = await import('../auth');
           const taskRef = doc(db, 'evalTasks', activeTaskId);
           try {
             await updateDoc(taskRef, new FieldPath('progress', userName), currentIndex - 1);
