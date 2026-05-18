@@ -88,6 +88,10 @@ export async function loadTaskEvaluation(taskId: string): Promise<LoadedTaskEval
   let votes: VoteRecord[] = [];
   try {
     if (USE_API_BACKEND) {
+      const voteResponse = await fetch(`${API_BASE_URL}/api/tasks/${task.id}/votes/${encodeURIComponent(userName)}`);
+      if (voteResponse.ok) {
+        votes = ((await voteResponse.json()) as { votes: VoteRecord[] }).votes;
+      }
       return {
         task,
         project,

@@ -1,6 +1,6 @@
 import { addDoc, collection, deleteDoc, doc, onSnapshot, query, updateDoc, where } from '../../datastore';
 import { db } from '../../firebase';
-import { EvalTask, EvaluationItem } from '../../types';
+import { EvalTask, EvaluationItem, VoteRecord } from '../../types';
 import { loadTaskEvaluation } from './loadTaskEvaluation';
 import { loadTaskItems } from './loadTaskItems';
 
@@ -42,6 +42,38 @@ export async function loadTask(taskId: string) {
 export async function loadHttpTaskItems(taskId: string) {
   const response = await requestTaskJson<{ items: EvaluationItem[] }>(`/api/tasks/${taskId}/items`);
   return response.items;
+}
+
+export async function loadTaskUserVotes(taskId: string, userName: string) {
+  if (!USE_TASK_API_BACKEND) return [];
+  const response = await requestTaskJson<{ votes: VoteRecord[] }>(
+    `/api/tasks/${taskId}/votes/${encodeURIComponent(userName)}`
+  );
+  return response.votes;
+}
+
+export async function loadTaskVotes(taskId: string) {
+  if (!USE_TASK_API_BACKEND) return [];
+  const response = await requestTaskJson<{ userVotes: Array<{ user: string; votes: VoteRecord[] }> }>(
+    `/api/tasks/${taskId}/votes`
+  );
+  return response.userVotes;
+}
+
+export async function saveTaskUserVotes(taskId: string, userName: string, votes: VoteRecord[], progress: number) {
+  if (USE_TASK_API_BACKEND) {
+    const response = await requestTaskJson<{ votes: VoteRecord[] }>(
+      `/api/tasks/${taskId}/votes/${encodeURIComponent(userName)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ votes, progress }),
+      }
+    );
+    notifyTaskReloaders();
+    return response.votes;
+  }
+
+  return null;
 }
 
 export function subscribeTasks(

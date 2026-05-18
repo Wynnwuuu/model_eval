@@ -116,6 +116,8 @@ npm run build
 - 新增 `/api/tasks` 后端接口，支持评测物料列表、详情、创建、更新、删除，以及物料 items 读取和编辑。
 - `features/tasks/api.ts` 支持同一个 HTTP/PostgreSQL 开关；`TaskBuilderScreen` 的任务创建、删除、状态更新、名称/负责人更新、item 编辑已收口到 task feature API。
 - `/tasks/:taskId/evaluate` 的任务配置和 items 加载已支持从 HTTP/PostgreSQL 读取；投票进度仍暂未迁移。
+- 新增 `/api/tasks/:taskId/votes` 和 `/api/tasks/:taskId/votes/:userName`，评测投票落到 `evaluation_votes`，用户进度写回 `eval_tasks.progress_json`。
+- `ModelEvalApp` 的评测保存/回退保存已优先走 task feature API；结果洞察页导入平台结果时可从 HTTP/PostgreSQL 读取 task items 和 votes。
 
 当前数据路径仍是：
 

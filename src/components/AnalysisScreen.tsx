@@ -13,6 +13,7 @@ import ScoreInsightsScreen from './ScoreInsightsScreen';
 import { calculateRankDimensionSummaries, calculateVoteDimensionSummaries, getDimensionColumnsForCsv, getDimensionCsvValues, getDimensionValuesForItem, getDimensionValuesFromRecord } from '../dimensionUtils';
 import Papa from 'papaparse';
 import { getParadigmFromMethod, isPairwiseMethod, isScoreMethod, normalizeEvaluationConfig } from '../evaluationMethods';
+import { loadTaskItems, loadTaskVotes, USE_TASK_API_BACKEND } from '../features/tasks/api';
 
 interface AnalysisScreenProps {
   onBack: () => void;
@@ -530,19 +531,19 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
 
     const selectedEvaluationConfig = getMaterialEvaluationConfig(selectedTask);
     const selectedParadigm = getParadigmFromMethod(selectedEvaluationConfig.method);
-    const votesRef = collection(db, 'evalTasks', materialId, 'userVotes');
-    const snapshot = await getDocs(votesRef);
+    const userVoteGroups = USE_TASK_API_BACKEND ? await loadTaskVotes(materialId) : null;
     const taskModelNames = getTaskModelNames(selectedTask);
     const taskModelList = selectedTask.models?.length ? selectedTask.models : [
       { id: 'model-a', name: taskModelNames.a },
       { id: 'model-b', name: taskModelNames.b }
     ];
-    const itemsSnapshot = await getDocs(collection(db, 'evalTasks', materialId, 'items'));
-    const importedAnalysisItems = itemsSnapshot.docs.map(docSnap => {
-      const item = {
+    const sourceItems = USE_TASK_API_BACKEND
+      ? await loadTaskItems(selectedTask)
+      : (await getDocs(collection(db, 'evalTasks', materialId, 'items'))).docs.map(docSnap => ({
         id: docSnap.id,
         ...docSnap.data()
-      } as EvaluationItem;
+      } as EvaluationItem));
+    const importedAnalysisItems = sourceItems.map(item => {
       const modelOutputs = getModelOutputsForItem(item, taskModelList);
       return {
         ...item,
@@ -557,10 +558,14 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
       const importedRankVotes: VoteRecord[] = [];
       const voters = new Set<string>();
 
-      snapshot.forEach(docSnap => {
-        const userData = docSnap.data();
-        const userVotes = userData.votes || [];
-        const user = docSnap.id;
+      const voteGroups = userVoteGroups || [];
+      if (!USE_TASK_API_BACKEND) {
+        const votesRef = collection(db, 'evalTasks', materialId, 'userVotes');
+        const snapshot = await getDocs(votesRef);
+        snapshot.forEach(docSnap => voteGroups.push({ user: docSnap.id, votes: docSnap.data().votes || [] }));
+      }
+
+      voteGroups.forEach(({ user, votes: userVotes }) => {
 
         userVotes.forEach((v: VoteRecord) => {
           if (!v.itemId || !isArenaRankVote(v)) return;
@@ -589,10 +594,14 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
       const importedMethodVotes: VoteRecord[] = [];
       const voters = new Set<string>();
 
-      snapshot.forEach(docSnap => {
-        const userData = docSnap.data();
-        const userVotes = userData.votes || [];
-        const user = docSnap.id;
+      const voteGroups = userVoteGroups || [];
+      if (!USE_TASK_API_BACKEND) {
+        const votesRef = collection(db, 'evalTasks', materialId, 'userVotes');
+        const snapshot = await getDocs(votesRef);
+        snapshot.forEach(docSnap => voteGroups.push({ user: docSnap.id, votes: docSnap.data().votes || [] }));
+      }
+
+      voteGroups.forEach(({ user, votes: userVotes }) => {
 
         userVotes.forEach((v: VoteRecord) => {
           if (!v.itemId) return;
@@ -624,10 +633,14 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     const itemById = new Map(importedAnalysisItems.map(item => [item.id, item]));
     const voters = new Set<string>();
 
-    snapshot.forEach(docSnap => {
-      const userData = docSnap.data();
-      const userVotes = userData.votes || [];
-      const user = docSnap.id;
+    const voteGroups = userVoteGroups || [];
+    if (!USE_TASK_API_BACKEND) {
+      const votesRef = collection(db, 'evalTasks', materialId, 'userVotes');
+      const snapshot = await getDocs(votesRef);
+      snapshot.forEach(docSnap => voteGroups.push({ user: docSnap.id, votes: docSnap.data().votes || [] }));
+    }
+
+    voteGroups.forEach(({ user, votes: userVotes }) => {
 
       userVotes.forEach((v: any) => {
         const itemId = v.itemId;

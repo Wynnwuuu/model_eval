@@ -40,6 +40,20 @@ type TaskItemRow = {
   dimension_values_json: Record<string, any>;
 };
 
+type VoteRow = {
+  task_id: string;
+  task_item_id: string;
+  user_id: string;
+  method: VoteRecord['method'] | null;
+  choice: string | null;
+  ranking_json: VoteRecord['ranking'] | null;
+  scores_json: VoteRecord['scores'] | null;
+  rubric_responses_json: VoteRecord['rubricResponses'] | null;
+  pair_context_json: VoteRecord['pairContext'] | null;
+  reason: string | null;
+  submitted_at: Date;
+};
+
 const toTimestamp = (date: Date | string | number | null | undefined) => {
   if (!date) return Date.now();
   return date instanceof Date ? date.getTime() : new Date(date).getTime();
@@ -372,6 +386,139 @@ export const updateTaskItem = async (
     ...payload,
     dimensionValues,
   } as EvaluationItem;
+};
+
+const mapVote = (row: VoteRow): VoteRecord => ({
+  itemId: row.task_item_id,
+  method: row.method || undefined,
+  vote: row.choice === 'A' || row.choice === 'B' || row.choice === 'Tie' ? row.choice : undefined,
+  choice: row.choice || undefined,
+  ranking: row.ranking_json || undefined,
+  scores: row.scores_json || undefined,
+  rubricResponses: row.rubric_responses_json || undefined,
+  pairContext: row.pair_context_json || undefined,
+  reason: row.reason || undefined,
+  timestamp: toTimestamp(row.submitted_at),
+  user: row.user_id,
+});
+
+export const listTaskVotes = async (taskId: string): Promise<Array<{ user: string; votes: VoteRecord[] }>> => {
+  const result = await dbPool.query<VoteRow>(
+    `
+      SELECT *
+      FROM evaluation_votes
+      WHERE task_id = $1
+      ORDER BY user_id, submitted_at, id
+    `,
+    [taskId]
+  );
+
+  const grouped = new Map<string, VoteRecord[]>();
+  result.rows.forEach(row => {
+    const votes = grouped.get(row.user_id) || [];
+    votes.push(mapVote(row));
+    grouped.set(row.user_id, votes);
+  });
+  return Array.from(grouped.entries()).map(([user, votes]) => ({ user, votes }));
+};
+
+export const getTaskUserVotes = async (taskId: string, userName: string): Promise<VoteRecord[]> => {
+  const result = await dbPool.query<VoteRow>(
+    `
+      SELECT *
+      FROM evaluation_votes
+      WHERE task_id = $1 AND user_id = $2
+      ORDER BY submitted_at, id
+    `,
+    [taskId, userName]
+  );
+  return result.rows.map(mapVote);
+};
+
+const ensureVoteUser = async (client: any, userName: string) => {
+  const email = userName.includes('@') ? userName : `${userName.replace(/[^a-zA-Z0-9._-]/g, '_')}@local.eval`;
+  await client.query(
+    `
+      INSERT INTO users (id, email, display_name)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (id) DO UPDATE SET
+        email = EXCLUDED.email,
+        display_name = EXCLUDED.display_name,
+        updated_at = now()
+    `,
+    [userName, email, userName]
+  );
+};
+
+export const saveTaskUserVotes = async (
+  taskId: string,
+  userName: string,
+  votes: VoteRecord[],
+  progress: number
+): Promise<VoteRecord[]> => {
+  const client = await dbPool.connect();
+  try {
+    await client.query('BEGIN');
+    await ensureVoteUser(client, userName);
+    await client.query('DELETE FROM evaluation_votes WHERE task_id = $1 AND user_id = $2', [taskId, userName]);
+
+    for (const [index, vote] of votes.entries()) {
+      await client.query(
+        `
+          INSERT INTO evaluation_votes (
+            id,
+            task_id,
+            task_item_id,
+            user_id,
+            method,
+            choice,
+            ranking_json,
+            scores_json,
+            rubric_responses_json,
+            pair_context_json,
+            reason,
+            submitted_at
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10::jsonb, $11, to_timestamp($12 / 1000.0))
+        `,
+        [
+          `${taskId}:${userName}:${vote.itemId}:${index}`,
+          taskId,
+          vote.itemId,
+          userName,
+          vote.method || null,
+          vote.choice || vote.vote || null,
+          JSON.stringify(vote.ranking || []),
+          JSON.stringify(vote.scores || {}),
+          JSON.stringify(vote.rubricResponses || {}),
+          JSON.stringify(vote.pairContext || {}),
+          vote.reason || null,
+          vote.timestamp || Date.now(),
+        ]
+      );
+    }
+
+    const progressResult = await client.query<{ progress_json: Record<string, number> | null }>(
+      'SELECT progress_json FROM eval_tasks WHERE id = $1 AND deleted_at IS NULL',
+      [taskId]
+    );
+    const nextProgress = {
+      ...(progressResult.rows[0]?.progress_json || {}),
+      [userName]: progress,
+    };
+    await client.query(
+      'UPDATE eval_tasks SET progress_json = $2::jsonb, updated_at = now() WHERE id = $1 AND deleted_at IS NULL',
+      [taskId, JSON.stringify(nextProgress)]
+    );
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  return getTaskUserVotes(taskId, userName);
 };
 
 export const deleteTask = async (taskId: string): Promise<boolean> => {

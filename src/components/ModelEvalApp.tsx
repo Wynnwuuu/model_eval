@@ -17,7 +17,7 @@ import HistoryPage from '../pages/history/HistoryPage';
 import { AppRoute, EvalParadigm, EvaluationConfig, EvaluationItem, HistorySession, RankingEntry, RouteContext, VoteRecord, VoteType, EvaluationProject } from '../types';
 import { auth, signInWithGoogle, logout, shouldUseFirebase } from '../firebase';
 import { getDefaultEvaluationConfig, getMethodFromParadigm, getParadigmFromMethod, isRankMethod, isScoreMethod } from '../evaluationMethods';
-import { loadTaskEvaluation } from '../features/tasks/api';
+import { saveTaskUserVotes, loadTaskEvaluation } from '../features/tasks/api';
 
 const STORAGE_KEY = 'modeleval_session';
 const HISTORY_KEY = 'modeleval_history';
@@ -300,6 +300,9 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     if (!activeTaskId || !userName) return;
 
     try {
+      const savedVotes = await saveTaskUserVotes(activeTaskId, userName, updatedVotes, nextProgress);
+      if (savedVotes) return;
+
       const { doc, updateDoc, FieldPath, setDoc } = await import('../datastore');
       const { db } = await import('../firebase');
       const taskRef = doc(db, 'evalTasks', activeTaskId);
@@ -374,6 +377,9 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
 
       if (activeTaskId && userName) {
         try {
+          const savedVotes = await saveTaskUserVotes(activeTaskId, userName, updatedVotes, currentIndex - 1);
+          if (savedVotes) return;
+
           const { doc, updateDoc, FieldPath, setDoc } = await import('../datastore');
           const { db } = await import('../firebase');
           const taskRef = doc(db, 'evalTasks', activeTaskId);

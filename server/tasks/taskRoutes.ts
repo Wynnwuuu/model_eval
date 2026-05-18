@@ -4,8 +4,11 @@ import {
   createTask,
   deleteTask,
   getTask,
+  getTaskUserVotes,
   listTaskItems,
+  listTaskVotes,
   listTasks,
+  saveTaskUserVotes,
   updateTask,
   updateTaskItem,
 } from './taskRepository.ts';
@@ -41,6 +44,39 @@ taskRoutes.get('/:taskId/items', async (req, res) => {
     res.json({ items: await listTaskItems(req.params.taskId) });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to list task items';
+    res.status(500).json({ error: message });
+  }
+});
+
+taskRoutes.get('/:taskId/votes', async (req, res) => {
+  try {
+    res.json({ userVotes: await listTaskVotes(req.params.taskId) });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to list task votes';
+    res.status(500).json({ error: message });
+  }
+});
+
+taskRoutes.get('/:taskId/votes/:userName', async (req, res) => {
+  try {
+    res.json({ votes: await getTaskUserVotes(req.params.taskId, decodeURIComponent(req.params.userName)) });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to load user votes';
+    res.status(500).json({ error: message });
+  }
+});
+
+taskRoutes.put('/:taskId/votes/:userName', async (req, res) => {
+  try {
+    const votes = await saveTaskUserVotes(
+      req.params.taskId,
+      decodeURIComponent(req.params.userName),
+      req.body.votes || [],
+      Number(req.body.progress || 0)
+    );
+    res.json({ votes });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to save user votes';
     res.status(500).json({ error: message });
   }
 });
