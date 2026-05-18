@@ -14,10 +14,10 @@ import TemplateListPage from '../pages/templates/TemplateListPage';
 import TaskListPage from '../pages/tasks/TaskListPage';
 import InsightDashboardPage from '../pages/insights/InsightDashboardPage';
 import HistoryPage from '../pages/history/HistoryPage';
-import { AppRoute, EvalParadigm, EvaluationConfig, EvaluationItem, HistorySession, RankingEntry, RouteContext, VoteRecord, VoteType, EvaluationProject, EvalTask, EvalTemplate } from '../types';
+import { AppRoute, EvalParadigm, EvaluationConfig, EvaluationItem, HistorySession, RankingEntry, RouteContext, VoteRecord, VoteType, EvaluationProject } from '../types';
 import { auth, signInWithGoogle, logout, shouldUseFirebase } from '../firebase';
-import { getDefaultEvaluationConfig, getMethodFromParadigm, getParadigmFromMethod, isRankMethod, isScoreMethod, normalizeEvaluationConfig } from '../evaluationMethods';
-import { getDimensionValuesForItem, getDimensionValuesFromRecord } from '../dimensionUtils';
+import { getDefaultEvaluationConfig, getMethodFromParadigm, getParadigmFromMethod, isRankMethod, isScoreMethod } from '../evaluationMethods';
+import { loadTaskEvaluation } from '../features/tasks/loadTaskEvaluation';
 
 const STORAGE_KEY = 'modeleval_session';
 const HISTORY_KEY = 'modeleval_history';
@@ -150,174 +150,28 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
 
     let cancelled = false;
 
-    const snapshotExists = (snapshot: any) => {
-      if (!snapshot) return false;
-      return typeof snapshot.exists === 'function' ? snapshot.exists() : !!snapshot.exists;
-    };
-
     const hydrateTaskFromRoute = async () => {
       setRouteTaskLoading(true);
       setRouteTaskError(null);
 
       try {
-        const { collection, doc, getDoc, getDocs, setDoc, updateDoc } = await import('../datastore');
-        const { db } = await import('../firebase');
-
-        const taskSnapshot = await getDoc(doc(db, 'evalTasks', taskId));
-        if (!snapshotExists(taskSnapshot)) {
-          throw new Error('未找到这份评测物料。');
-        }
-
-        const task = { id: taskSnapshot.id, ...taskSnapshot.data() } as EvalTask;
-        const templateSnapshot = task.templateId
-          ? await getDoc(doc(db, 'evalTemplates', task.templateId))
-          : null;
-        const template = templateSnapshot && snapshotExists(templateSnapshot)
-          ? ({ id: templateSnapshot.id, ...templateSnapshot.data() } as EvalTemplate)
-          : undefined;
-
-        if (task.projectId && !activeProject) {
-          try {
-            const projectSnapshot = await getDoc(doc(db, 'projects', task.projectId));
-            if (!cancelled && snapshotExists(projectSnapshot)) {
-              setActiveProject({ id: projectSnapshot.id, ...projectSnapshot.data() } as EvaluationProject);
-            }
-          } catch (projectError) {
-            console.error('Failed to load project for task route', projectError);
-          }
-        }
-
-        const evaluationConfig = normalizeEvaluationConfig(task, template);
-        const paradigm = getParadigmFromMethod(evaluationConfig.method);
-        const taskModelList = task.models?.length ? task.models : [
-          { id: 'model-a', name: 'Model A' },
-          { id: 'model-b', name: 'Model B' }
-        ];
-
-        const itemsSnapshot = await getDocs(collection(db, 'evalTasks', task.id, 'items'));
-        let loadedItems = itemsSnapshot.docs.map((docSnap: any) => {
-          const data = { id: docSnap.id, ...docSnap.data() } as EvaluationItem;
-          data.dimensionValues = getDimensionValuesForItem(data as any, task.dimensionColumns || []);
-          if (!data.modelOutputs?.length) {
-            const originalData = (data as any).originalData || {};
-            data.modelOutputs = taskModelList.map((model, idx) => ({
-              modelId: model.id || `model-${idx}`,
-              modelName: model.name || `Model ${idx + 1}`,
-              url: idx === 0
-                ? data.modelA_Url
-                : idx === 1
-                  ? data.modelB_Url
-                  : originalData[model.name] || originalData[model.id] || ''
-            })).filter(output => output.url);
-          }
-          return data;
-        }).sort((a: any, b: any) => {
-          const leftOrder = Number(a.itemOrder ?? 0);
-          const rightOrder = Number(b.itemOrder ?? 0);
-          if (leftOrder !== rightOrder) return leftOrder - rightOrder;
-          return String(a.id).localeCompare(String(b.id));
-        });
-
-        if (loadedItems.length === 0 && task.datasetId && task.datasetId !== 'external-csv') {
-          const datasetSnapshot = await getDoc(doc(db, 'evalDatasets', task.datasetId));
-          if (snapshotExists(datasetSnapshot)) {
-            const datasetData = datasetSnapshot.data() as any;
-            if (datasetData.items?.length) {
-              loadedItems = datasetData.items.map((row: any, idx: number) => {
-                const keys = Object.keys(row);
-                const fallbackModelKeys = keys.filter(key => !key.toLowerCase().includes('id')).slice(-(taskModelList.length || 2));
-                const modelKeys = taskModelList.map((model, modelIdx) => (
-                  row[model.name] !== undefined ? model.name :
-                  row[model.id] !== undefined ? model.id :
-                  fallbackModelKeys[modelIdx]
-                )).filter(Boolean);
-                const modelAKey = modelKeys[0] || keys[keys.length - 2];
-                const modelBKey = modelKeys[1] || keys[keys.length - 1];
-                const inputs = { ...row };
-                modelKeys.forEach(key => delete inputs[key]);
-                (task.dimensionColumns || []).forEach(key => delete inputs[key]);
-
-                let startImageUrl: string | undefined;
-                const referenceUrls: string[] = [];
-                Object.keys(inputs).forEach(col => {
-                  const val = inputs[col];
-                  if (typeof val !== 'string') return;
-                  const urls = val.match(/https?:\/\/[^\s"'\t|,;>]+/g);
-                  if (!urls) return;
-                  const lowerCol = col.toLowerCase();
-                  urls.forEach(u => {
-                    if (lowerCol.includes('start') || lowerCol.includes('首帧') || lowerCol.includes('first')) {
-                      if (!startImageUrl) startImageUrl = u;
-                      else referenceUrls.push(u);
-                    } else if (lowerCol.includes('ref') || lowerCol.includes('参考')) {
-                      referenceUrls.push(u);
-                    } else {
-                      if (!startImageUrl) startImageUrl = u;
-                      else referenceUrls.push(u);
-                    }
-                  });
-                });
-
-                return {
-                  id: `ds-item-${idx}`,
-                  modelA_Url: row[modelAKey] || '',
-                  modelB_Url: row[modelBKey] || '',
-                  modelOutputs: taskModelList.map((model, modelIdx) => ({
-                    modelId: model.id || `model-${modelIdx}`,
-                    modelName: model.name || `Model ${modelIdx + 1}`,
-                    url: row[modelKeys[modelIdx]] || ''
-                  })).filter(output => output.url),
-                  inputs,
-                  dimensionValues: getDimensionValuesFromRecord(row, task.dimensionColumns || []),
-                  prompt: inputs['prompt'] || inputs['提示词'] || Object.values(inputs)[0] || '',
-                  type: task.outputType || 'text',
-                  startImageUrl,
-                  referenceUrls: referenceUrls.length > 0 ? referenceUrls : undefined
-                } as EvaluationItem;
-              });
-            }
-          }
-        }
-
-        if (loadedItems.length === 0) {
-          throw new Error('这份评测物料没有可执行的 case 数据。');
-        }
-
-        if (task.totalItems !== loadedItems.length) {
-          updateDoc(doc(db, 'evalTasks', task.id), { totalItems: loadedItems.length }).catch(error => {
-            console.error('Failed to update totalItems', error);
-          });
-        }
-
-        const hydratedUserName = auth.currentUser?.email || auth.currentUser?.displayName || localStorage.getItem('eval_username') || 'Anonymous';
-        let existingVotes: VoteRecord[] = [];
-        try {
-          const voteSnapshot = await getDoc(doc(db, 'evalTasks', task.id, 'userVotes', hydratedUserName));
-          if (snapshotExists(voteSnapshot)) {
-            existingVotes = voteSnapshot.data().votes || [];
-          }
-          if (task.progress?.[hydratedUserName] === undefined) {
-            await setDoc(doc(db, 'evalTasks', task.id), { progress: { [hydratedUserName]: existingVotes.length } }, { merge: true });
-          }
-        } catch (voteError) {
-          console.error('Failed to hydrate task votes', voteError);
-        }
+        const loaded = await loadTaskEvaluation(taskId);
 
         if (cancelled) return;
 
-        setItems(loadedItems);
-        setVotes(existingVotes);
-        setCurrentIndex(Math.min(existingVotes.length, Math.max(loadedItems.length - 1, 0)));
-        setUserName(hydratedUserName);
-        setModelNames({
-          a: taskModelList[0]?.name || 'Model A',
-          b: taskModelList[1]?.name || 'Model B'
-        });
-        setTaskModels(taskModelList);
-        setTaskParadigm(paradigm);
-        setTaskEvaluationConfig(evaluationConfig);
-        setActiveTaskId(task.id);
-        setSessionId(`session-${task.id}-${Date.now()}`);
+        if (loaded.project && !activeProject) {
+          setActiveProject(loaded.project);
+        }
+        setItems(loaded.items);
+        setVotes(loaded.votes);
+        setCurrentIndex(Math.min(loaded.votes.length, Math.max(loaded.items.length - 1, 0)));
+        setUserName(loaded.userName);
+        setModelNames(loaded.modelNames);
+        setTaskModels(loaded.models);
+        setTaskParadigm(loaded.paradigm);
+        setTaskEvaluationConfig(loaded.evaluationConfig);
+        setActiveTaskId(loaded.task.id);
+        setSessionId(`session-${loaded.task.id}-${Date.now()}`);
       } catch (error: any) {
         if (!cancelled) {
           console.error('Failed to load task from route', error);

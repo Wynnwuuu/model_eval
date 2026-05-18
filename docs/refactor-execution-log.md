@@ -24,6 +24,21 @@
 - `/projects/:projectId/tasks`、`/projects/:projectId/insights`、`/tasks/:taskId/evaluate`、`/tasks/:taskId/results` 等路径已建立。
 - 建立 `src/pages/*` 页面壳，`ModelEvalApp` 开始通过 page 层渲染核心模块，后续再逐步把业务逻辑从 screen 组件迁入 page/feature 结构。
 
+## 阶段 2：数据访问层抽象
+
+状态：已起步。
+
+本阶段目标：
+
+- 页面组件不再直接承载复杂的数据加载拼装逻辑。
+- 先从评测任务读取链路开始抽取，后续再扩展到项目、数据集、模板和洞察。
+
+已完成：
+
+- 新增 `src/features/tasks/loadTaskEvaluation.ts`。
+- 将 `/tasks/:taskId/evaluate` 和 `/tasks/:taskId/results` 所需的任务、模板、case、用户进度加载逻辑从 `ModelEvalApp` 抽到 feature 层。
+- `ModelEvalApp` 只负责路由状态和评测执行状态写入，不再直接拼装任务评测数据。
+
 当前可验证 URL：
 
 | URL | 预期 |
