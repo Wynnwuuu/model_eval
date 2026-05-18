@@ -110,8 +110,13 @@ jobs:
 
             echo "::group::Migration pods"
             kubectl get pods -n $ACK_NAMESPACE -l job-name=$ACK_MIGRATION_JOB_NAME -o wide || true
+            kubectl get pods -n $ACK_NAMESPACE -l job-name=$ACK_MIGRATION_JOB_NAME -o jsonpath='{range .items[*]}pod/{.metadata.name} phase={.status.phase} reason={.status.reason} exitCode={.status.containerStatuses[0].state.terminated.exitCode} terminatedReason={.status.containerStatuses[0].state.terminated.reason} waitingReason={.status.containerStatuses[0].state.waiting.reason}{"\n"}{end}' || true
             kubectl describe pods -n $ACK_NAMESPACE -l job-name=$ACK_MIGRATION_JOB_NAME || true
             kubectl logs job/$ACK_MIGRATION_JOB_NAME -n $ACK_NAMESPACE --all-containers=true --tail=200 || true
+            for pod in $(kubectl get pods -n $ACK_NAMESPACE -l job-name=$ACK_MIGRATION_JOB_NAME -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' || true); do
+              echo "--- logs pod/$pod"
+              kubectl logs pod/$pod -n $ACK_NAMESPACE --all-containers=true --tail=200 || true
+            done
             echo "::endgroup::"
 
             echo "::group::Application deployment"

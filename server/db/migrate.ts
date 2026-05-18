@@ -2,11 +2,31 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { serverConfig } from '../config.ts';
 import { dbPool } from './client.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const migrationsDir = path.join(__dirname, 'migrations');
+
+const describeDatabaseTarget = () => {
+  try {
+    const url = new URL(serverConfig.databaseUrl);
+    const database = url.pathname.replace(/^\//, '') || '(default)';
+    const sslMode = url.searchParams.get('sslmode');
+    return [
+      `host=${url.hostname}`,
+      `port=${url.port || '(default)'}`,
+      `database=${database}`,
+      sslMode ? `sslmode=${sslMode}` : null,
+      `connectTimeoutMs=${serverConfig.databaseConnectionTimeoutMs}`,
+    ]
+      .filter(Boolean)
+      .join(' ');
+  } catch {
+    return `connectTimeoutMs=${serverConfig.databaseConnectionTimeoutMs}`;
+  }
+};
 
 const ensureMigrationTable = async () => {
   await dbPool.query(`
@@ -53,6 +73,7 @@ const runMigration = async (filename: string) => {
 };
 
 const main = async () => {
+  console.log(`[db:migrate] starting ${describeDatabaseTarget()}`);
   await ensureMigrationTable();
   const applied = await loadAppliedMigrations();
   const migrationFiles = (await readdir(migrationsDir))

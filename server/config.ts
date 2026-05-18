@@ -10,4 +10,5 @@ const parsePort = (value: string | undefined, fallback: number): number => {
 export const serverConfig = {
   apiPort: parsePort(process.env.API_PORT, 8787),
   databaseUrl: process.env.DATABASE_URL || DEFAULT_DATABASE_URL,
+  databaseConnectionTimeoutMs: parsePort(process.env.DATABASE_CONNECTION_TIMEOUT_MS, 15000),
 };
