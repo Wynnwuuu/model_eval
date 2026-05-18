@@ -243,3 +243,14 @@ export const saveGenerationJobItem = async (item: DatasetGenerationJobItem): Pro
   );
   return item;
 };
+
+export const deleteGenerationJob = async (jobId: string): Promise<boolean> => {
+  const result = await dbPool.query(
+    `
+      DELETE FROM generation_jobs
+      WHERE id = $1
+    `,
+    [jobId]
+  );
+  return (result.rowCount || 0) > 0;
+};

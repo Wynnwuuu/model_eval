@@ -17,6 +17,25 @@
 当前本地后端已提供数据库连通性检查：
 
 ```bash
+npm run dev:full
+```
+
+这会按顺序执行：
+
+```text
+npm run db:up -> npm run db:migrate -> npm run api:dev + npm run dev
+```
+
+默认地址：
+
+```text
+API: http://localhost:8787
+Web: http://localhost:3000
+```
+
+也可以单独启动 API 后做连通性检查：
+
+```bash
 npm run api:dev
 curl http://localhost:8787/api/health
 curl http://localhost:8787/api/db/health
@@ -36,6 +55,23 @@ VITE_API_BASE_URL=http://localhost:8787
 ```
 
 当前仍有少量账号/用户列表等辅助数据沿用当前的 localStorage 或 Firestore 路径。
+
+## Smoke Test
+
+启动 API 后运行：
+
+```bash
+npm run test:api:smoke
+```
+
+该脚本会通过 HTTP API 创建并清理一组临时数据，覆盖：
+
+- project
+- dataset / dataset items
+- template / dimensions
+- task / task items
+- votes / progress
+- generation job / generation job items
 
 ## 启动数据库
 

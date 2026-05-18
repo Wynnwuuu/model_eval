@@ -14,6 +14,8 @@
     "db:migrate": "docker compose exec postgres sh -c 'for file in /migrations/*.sql; do psql -U eval_studio -d eval_studio -f \"$file\"; done'",
     "db:psql": "docker compose exec postgres psql -U eval_studio -d eval_studio",
     "api:dev": "tsx server/index.ts",
+    "dev:full": "tsx scripts/dev-full.ts",
+    "test:api:smoke": "tsx scripts/smoke-postgres-api.ts",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
