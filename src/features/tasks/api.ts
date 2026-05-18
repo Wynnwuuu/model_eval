@@ -23,7 +23,7 @@ export async function requestTaskJson<T>(path: string, init?: RequestInit): Prom
 
   if (!response.ok) {
     const errorBody = await response.json().catch(() => ({}));
-    throw new Error(errorBody.error || `Request failed: ${response.status}`);
+    throw new Error(errorBody.error?.message || errorBody.error || `Request failed: ${response.status}`);
   }
 
   if (response.status === 204) return undefined as T;

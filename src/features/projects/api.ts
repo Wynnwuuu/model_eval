@@ -19,7 +19,7 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const errorBody = await response.json().catch(() => ({}));
-    throw new Error(errorBody.error || `Request failed: ${response.status}`);
+    throw new Error(errorBody.error?.message || errorBody.error || `Request failed: ${response.status}`);
   }
 
   if (response.status === 204) {

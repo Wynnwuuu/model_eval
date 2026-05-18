@@ -20,7 +20,7 @@ export async function loadTaskItems(task: EvalTask, options: LoadTaskItemsOption
     const response = await fetch(`${API_BASE_URL}/api/tasks/${task.id}/items`);
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({}));
-      throw new Error(errorBody.error || `加载任务用例失败: ${response.status}`);
+      throw new Error(errorBody.error?.message || errorBody.error || `加载任务用例失败: ${response.status}`);
     }
     const data = await response.json() as { items: EvaluationItem[] };
     return data.items.map(item => ({

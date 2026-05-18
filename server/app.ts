@@ -3,6 +3,7 @@ import express from 'express';
 import { datasetRoutes } from './datasets/datasetRoutes.ts';
 import { checkDatabaseHealth } from './db/client.ts';
 import { generationRoutes } from './generation/generationRoutes.ts';
+import { badRequest, sendError } from './http/errors.ts';
 import { projectRoutes } from './projects/projectRoutes.ts';
 import { taskRoutes } from './tasks/taskRoutes.ts';
 import { templateRoutes } from './templates/templateRoutes.ts';
@@ -38,11 +39,7 @@ export const createApp = () => {
         database,
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown database error';
-      res.status(503).json({
-        ok: false,
-        error: message,
-      });
+      sendError(res, error, 'Unknown database error');
     }
   });
 
@@ -51,6 +48,14 @@ export const createApp = () => {
   app.use('/api/templates', templateRoutes);
   app.use('/api/tasks', taskRoutes);
   app.use('/api/generation', generationRoutes);
+
+  app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    if (error instanceof SyntaxError) {
+      sendError(res, badRequest('Malformed JSON request body'));
+      return;
+    }
+    sendError(res, error);
+  });
 
   return app;
 };

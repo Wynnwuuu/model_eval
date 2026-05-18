@@ -12,6 +12,8 @@ import {
   updateTask,
   updateTaskItem,
 } from './taskRepository.ts';
+import { notFound, sendError } from '../http/errors.ts';
+import { optionalArray, optionalNumber, requireArray, requireBodyObject, validateTaskPayload } from '../http/validation.ts';
 
 export const taskRoutes = Router();
 
@@ -20,8 +22,7 @@ taskRoutes.get('/', async (req, res) => {
     const projectId = typeof req.query.projectId === 'string' ? req.query.projectId : undefined;
     res.json({ tasks: await listTasks({ projectId }) });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to list tasks';
-    res.status(500).json({ error: message });
+    sendError(res, error, 'Failed to list tasks');
   }
 });
 
@@ -29,13 +30,11 @@ taskRoutes.get('/:taskId', async (req, res) => {
   try {
     const task = await getTask(req.params.taskId);
     if (!task) {
-      res.status(404).json({ error: 'Task not found' });
-      return;
+      throw notFound('Task');
     }
     res.json({ task });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to load task';
-    res.status(500).json({ error: message });
+    sendError(res, error, 'Failed to load task');
   }
 });
 
@@ -43,8 +42,7 @@ taskRoutes.get('/:taskId/items', async (req, res) => {
   try {
     res.json({ items: await listTaskItems(req.params.taskId) });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to list task items';
-    res.status(500).json({ error: message });
+    sendError(res, error, 'Failed to list task items');
   }
 });
 
@@ -52,8 +50,7 @@ taskRoutes.get('/:taskId/votes', async (req, res) => {
   try {
     res.json({ userVotes: await listTaskVotes(req.params.taskId) });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to list task votes';
-    res.status(500).json({ error: message });
+    sendError(res, error, 'Failed to list task votes');
   }
 });
 
@@ -61,61 +58,61 @@ taskRoutes.get('/:taskId/votes/:userName', async (req, res) => {
   try {
     res.json({ votes: await getTaskUserVotes(req.params.taskId, decodeURIComponent(req.params.userName)) });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to load user votes';
-    res.status(500).json({ error: message });
+    sendError(res, error, 'Failed to load user votes');
   }
 });
 
 taskRoutes.put('/:taskId/votes/:userName', async (req, res) => {
   try {
-    const votes = await saveTaskUserVotes(
+    const votePayload = requireArray(req.body?.votes, 'votes');
+    const progress = optionalNumber(req.body?.progress, 'progress', votePayload.length);
+    const savedVotes = await saveTaskUserVotes(
       req.params.taskId,
       decodeURIComponent(req.params.userName),
-      req.body.votes || [],
-      Number(req.body.progress || 0)
+      votePayload as any,
+      progress
     );
-    res.json({ votes });
+    res.json({ votes: savedVotes });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to save user votes';
-    res.status(500).json({ error: message });
+    sendError(res, error, 'Failed to save user votes');
   }
 });
 
 taskRoutes.post('/', async (req, res) => {
   try {
-    const task = await createTask(req.body.task, req.body.items || []);
+    const payload = requireBodyObject(req.body, 'task');
+    validateTaskPayload(payload);
+    const items = optionalArray(req.body.items, 'items');
+    const task = await createTask(payload as any, items as any);
     res.status(201).json({ task });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to create task';
-    res.status(500).json({ error: message });
+    sendError(res, error, 'Failed to create task');
   }
 });
 
 taskRoutes.patch('/:taskId', async (req, res) => {
   try {
-    const task = await updateTask(req.params.taskId, req.body.patch || {});
+    const patch = requireBodyObject(req.body, 'patch');
+    const task = await updateTask(req.params.taskId, patch);
     if (!task) {
-      res.status(404).json({ error: 'Task not found' });
-      return;
+      throw notFound('Task');
     }
     res.json({ task });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to update task';
-    res.status(500).json({ error: message });
+    sendError(res, error, 'Failed to update task');
   }
 });
 
 taskRoutes.patch('/:taskId/items/:itemId', async (req, res) => {
   try {
-    const item = await updateTaskItem(req.params.taskId, req.params.itemId, req.body.patch || {});
+    const patch = requireBodyObject(req.body, 'patch');
+    const item = await updateTaskItem(req.params.taskId, req.params.itemId, patch);
     if (!item) {
-      res.status(404).json({ error: 'Task item not found' });
-      return;
+      throw notFound('Task item');
     }
     res.json({ item });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to update task item';
-    res.status(500).json({ error: message });
+    sendError(res, error, 'Failed to update task item');
   }
 });
 
@@ -123,12 +120,10 @@ taskRoutes.delete('/:taskId', async (req, res) => {
   try {
     const deleted = await deleteTask(req.params.taskId);
     if (!deleted) {
-      res.status(404).json({ error: 'Task not found' });
-      return;
+      throw notFound('Task');
     }
     res.status(204).end();
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to delete task';
-    res.status(500).json({ error: message });
+    sendError(res, error, 'Failed to delete task');
   }
 });

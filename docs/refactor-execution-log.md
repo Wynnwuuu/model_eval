@@ -124,6 +124,8 @@ npm run build
 - 新增 `npm run dev:full`，一键启动 PostgreSQL、执行迁移、启动 API 和 Vite 前端。
 - 新增 `npm run test:api:smoke`，通过 HTTP API 验证项目、评测集、模板、任务、投票、生产任务的 PostgreSQL 链路。
 - `db:migrate` 改为 TypeScript 迁移执行器，使用 `schema_migrations` 记录已执行 SQL，避免每次重放全部迁移。
+- 新增 `docs/postgres-refactor-status.md` 记录 PostgreSQL 重构完成状态、进行中事项和剩余任务。
+- API 写接口加入第一版参数校验，并统一错误响应结构为 `{ error: { code, message, details? } }`。
 
 当前数据路径仍是：
 

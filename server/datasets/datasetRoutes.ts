@@ -1,6 +1,8 @@
 import { Router } from 'express';
 
 import { deleteDataset, getDataset, listDatasets, saveDataset } from './datasetRepository.ts';
+import { notFound, sendError } from '../http/errors.ts';
+import { requireBodyObject, validateDatasetPayload } from '../http/validation.ts';
 
 export const datasetRoutes = Router();
 
@@ -8,8 +10,7 @@ datasetRoutes.get('/', async (_req, res) => {
   try {
     res.json({ datasets: await listDatasets() });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to list datasets';
-    res.status(500).json({ error: message });
+    sendError(res, error, 'Failed to list datasets');
   }
 });
 
@@ -17,33 +18,33 @@ datasetRoutes.get('/:datasetId', async (req, res) => {
   try {
     const dataset = await getDataset(req.params.datasetId);
     if (!dataset) {
-      res.status(404).json({ error: 'Dataset not found' });
-      return;
+      throw notFound('Dataset');
     }
     res.json({ dataset });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to load dataset';
-    res.status(500).json({ error: message });
+    sendError(res, error, 'Failed to load dataset');
   }
 });
 
 datasetRoutes.post('/', async (req, res) => {
   try {
-    const dataset = await saveDataset(req.body.dataset);
+    const payload = requireBodyObject(req.body, 'dataset');
+    validateDatasetPayload(payload);
+    const dataset = await saveDataset(payload as any);
     res.status(201).json({ dataset });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to save dataset';
-    res.status(500).json({ error: message });
+    sendError(res, error, 'Failed to save dataset');
   }
 });
 
 datasetRoutes.put('/:datasetId', async (req, res) => {
   try {
-    const dataset = await saveDataset({ ...req.body.dataset, id: req.params.datasetId });
+    const payload = requireBodyObject(req.body, 'dataset');
+    validateDatasetPayload(payload);
+    const dataset = await saveDataset({ ...payload, id: req.params.datasetId } as any);
     res.json({ dataset });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to save dataset';
-    res.status(500).json({ error: message });
+    sendError(res, error, 'Failed to save dataset');
   }
 });
 
@@ -51,12 +52,10 @@ datasetRoutes.delete('/:datasetId', async (req, res) => {
   try {
     const deleted = await deleteDataset(req.params.datasetId);
     if (!deleted) {
-      res.status(404).json({ error: 'Dataset not found' });
-      return;
+      throw notFound('Dataset');
     }
     res.status(204).end();
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to delete dataset';
-    res.status(500).json({ error: message });
+    sendError(res, error, 'Failed to delete dataset');
   }
 });
