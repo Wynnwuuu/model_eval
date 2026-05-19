@@ -132,6 +132,10 @@ export const auth = {
 };
 
 export const signInWithFeishu = async () => {
+  const currentPath = `${window.location.pathname}${window.location.search}`;
+  if (currentPath && currentPath !== '/login' && currentPath !== '/feishu-callback') {
+    sessionStorage.setItem('redirectAfterLogin', currentPath);
+  }
   const payload = await requestAuthJson<{ authorizationUrl: string }>('/api/auth/feishu/login-url');
   window.location.href = payload.authorizationUrl;
 };

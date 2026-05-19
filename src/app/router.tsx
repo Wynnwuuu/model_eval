@@ -116,6 +116,7 @@ export default function AppRouter() {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
+  const isFeishuCallback = location.pathname === '/feishu-callback' || searchParams.has('code');
   const routeState = useMemo(
     () => {
       const next = routeFromPath(location.pathname, searchParams);
@@ -127,19 +128,19 @@ export default function AppRouter() {
     [location.pathname, searchParams],
   );
 
-  if (location.pathname === '/login') {
-    return <LoginScreen />;
-  }
+  useEffect(() => {
+    if (!isFeishuCallback && routeState.redirectTo && routeState.redirectTo !== `${location.pathname}${location.search}`) {
+      navigate(routeState.redirectTo, { replace: true });
+    }
+  }, [isFeishuCallback, location.pathname, location.search, navigate, routeState.redirectTo]);
 
-  if (location.pathname === '/feishu-callback') {
+  if (isFeishuCallback) {
     return <FeishuCallbackScreen />;
   }
 
-  useEffect(() => {
-    if (routeState.redirectTo && routeState.redirectTo !== `${location.pathname}${location.search}`) {
-      navigate(routeState.redirectTo, { replace: true });
-    }
-  }, [location.pathname, location.search, navigate, routeState.redirectTo]);
+  if (location.pathname === '/login') {
+    return <LoginScreen />;
+  }
 
   return (
     <ModelEvalApp
