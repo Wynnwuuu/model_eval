@@ -1,5 +1,5 @@
 import { doc, getDoc, setDoc } from '../../datastore';
-import { auth, db } from '../../auth';
+import { db, getCurrentUserDisplayName } from '../../auth';
 import { getParadigmFromMethod, normalizeEvaluationConfig } from '../../evaluationMethods';
 import { EvalTask, EvalTemplate, EvaluationItem, EvaluationProject, VoteRecord } from '../../types';
 import { getApiAuthHeaders } from '../apiAuthHeaders';
@@ -85,7 +85,7 @@ export async function loadTaskEvaluation(taskId: string): Promise<LoadedTaskEval
     throw new Error('这份评测物料没有可执行的 case 数据。');
   }
 
-  const userName = auth.currentUser?.email || auth.currentUser?.displayName || localStorage.getItem('eval_username') || 'Anonymous';
+  const userName = getCurrentUserDisplayName();
   let votes: VoteRecord[] = [];
   try {
     if (USE_API_BACKEND) {

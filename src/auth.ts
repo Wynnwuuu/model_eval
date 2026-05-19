@@ -89,6 +89,11 @@ const storeSession = (accessToken: string, user: ApiUser) => {
 
 export const getAuthToken = () => localStorage.getItem(TOKEN_KEY);
 
+export const getCurrentUserDisplayName = () => {
+  const user = auth.currentUser;
+  return user?.displayName || user?.email || localStorage.getItem('eval_username') || 'Anonymous';
+};
+
 export const refreshCurrentUser = async () => {
   if (!shouldUseCloudAuth) {
     notify(localUser);

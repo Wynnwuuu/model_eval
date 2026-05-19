@@ -16,7 +16,7 @@ import TaskListPage from '../pages/tasks/TaskListPage';
 import InsightDashboardPage from '../pages/insights/InsightDashboardPage';
 import HistoryPage from '../pages/history/HistoryPage';
 import { AppRoute, EvalParadigm, EvaluationConfig, EvaluationItem, HistorySession, RankingEntry, RouteContext, VoteRecord, VoteType, EvaluationProject } from '../types';
-import { auth, signInWithGoogle, logout, shouldUseCloudAuth } from '../auth';
+import { auth, getCurrentUserDisplayName, signInWithGoogle, logout, shouldUseCloudAuth } from '../auth';
 import { getDefaultEvaluationConfig, getMethodFromParadigm, getParadigmFromMethod, isPreviewMethod, isRankMethod, isScoreMethod } from '../evaluationMethods';
 import { saveTaskUserVotes, loadTaskEvaluation } from '../features/tasks/api';
 
@@ -86,7 +86,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     const unsubscribe = auth.onAuthStateChanged(user => {
       setUser(user);
       if (user) {
-        setUserName(user.email);
+        setUserName(user.displayName || user.email);
       }
     });
     return () => unsubscribe();
@@ -556,7 +556,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
               setActiveProject(project);
               setRouteContext({ projectId: project.id, taskId, source: 'dashboard' });
               if (taskItems && taskItems.length > 0) {
-                const nextUserName = auth.currentUser?.email || auth.currentUser?.displayName || localStorage.getItem('eval_username') || 'Anonymous';
+                const nextUserName = getCurrentUserDisplayName();
                 handleStart(taskItems, nextUserName, modelNames, taskId, existingVotes, paradigm, models, evaluationConfig);
               } else {
                 navigate('evaluation', { projectId: project.id, source: 'dashboard' });
