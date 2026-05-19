@@ -53,13 +53,11 @@ export const createApp = () => {
   app.use('/api/media-proxy', mediaProxyRoutes);
   app.use('/api/auth', authRoutes);
 
-  app.use(attachRequestUser);
-
-  app.use('/api/projects', projectRoutes);
-  app.use('/api/datasets', datasetRoutes);
-  app.use('/api/templates', templateRoutes);
-  app.use('/api/tasks', taskRoutes);
-  app.use('/api/generation', generationRoutes);
+  app.use('/api/projects', attachRequestUser, projectRoutes);
+  app.use('/api/datasets', attachRequestUser, datasetRoutes);
+  app.use('/api/templates', attachRequestUser, templateRoutes);
+  app.use('/api/tasks', attachRequestUser, taskRoutes);
+  app.use('/api/generation', attachRequestUser, generationRoutes);
 
   if (fs.existsSync(staticDistPath)) {
     app.use(express.static(staticDistPath));
