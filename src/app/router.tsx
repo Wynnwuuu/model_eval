@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { FeishuCallbackScreen } from '../components/FeishuCallbackScreen';
+import { LoginScreen } from '../components/LoginScreen';
 import { ModelEvalApp } from '../components/ModelEvalApp';
 import { AppRoute, RouteContext } from '../types';
 
@@ -124,6 +126,14 @@ export default function AppRouter() {
     },
     [location.pathname, searchParams],
   );
+
+  if (location.pathname === '/login') {
+    return <LoginScreen />;
+  }
+
+  if (location.pathname === '/feishu-callback') {
+    return <FeishuCallbackScreen />;
+  }
 
   useEffect(() => {
     if (routeState.redirectTo && routeState.redirectTo !== `${location.pathname}${location.search}`) {

@@ -490,10 +490,10 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
       return (
         <div className="flex min-h-[calc(100vh-64px)] items-center justify-center px-4">
           <div className="w-full max-w-md rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-panel)] p-8 text-center">
-            <div className="mx-auto mb-5 flex h-12 w-12 items-center justify-center rounded-lg bg-[var(--accent)] text-black font-bold">ES</div>
-            <h1 className="text-2xl font-semibold text-white">登录 Eval Studio</h1>
+            <div className="mx-auto mb-5 flex h-12 w-12 items-center justify-center rounded-lg bg-[var(--accent)] text-black font-bold">ME</div>
+            <h1 className="text-2xl font-semibold text-white">登录 ManuEval</h1>
             <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">进入评测一体化平台，管理评测集、评测物料、参与评测、结果洞察和生产流程。</p>
-            <button onClick={signInWithGoogle} className="btn-primary mt-6 w-full">使用 Google 登录</button>
+            <button onClick={signInWithGoogle} className="btn-primary mt-6 w-full">使用飞书登录</button>
           </div>
         </div>
       );

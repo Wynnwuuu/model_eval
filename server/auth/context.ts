@@ -1,6 +1,9 @@
 import type { NextFunction, Request, Response } from 'express';
 
+import { serverConfig } from '../config.ts';
 import { dbPool } from '../db/client.ts';
+import { ApiError } from '../http/errors.ts';
+import { verifyAuthToken } from './jwt.ts';
 
 export type RequestUser = {
   id: string;
@@ -23,6 +26,22 @@ const readHeader = (req: Request, name: string) => {
 };
 
 const resolveRequestUser = (req: Request): RequestUser => {
+  const authorization = req.header('authorization') || '';
+  const bearerToken = authorization.startsWith('Bearer ') ? authorization.slice('Bearer '.length).trim() : '';
+  if (bearerToken) {
+    const payload = verifyAuthToken(bearerToken);
+    return {
+      id: payload.userId,
+      email: payload.email,
+      displayName: payload.displayName,
+      organizationId: payload.organizationId || 'default',
+    };
+  }
+
+  if (serverConfig.authMode === 'feishu') {
+    throw new ApiError(401, 'AUTH_REQUIRED', 'Authorization token required');
+  }
+
   const id = readHeader(req, 'x-user-id') || 'local-dev-user';
   const email = readHeader(req, 'x-user-email') || `${id}@local.eval`;
   const displayName = readHeader(req, 'x-user-name') || email;

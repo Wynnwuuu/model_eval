@@ -119,6 +119,8 @@ test -> build Docker image -> deploy dev -> migration job -> rollout status
 
 - [docs/dev-cicd-deployment.md](docs/dev-cicd-deployment.md)
 
+dev 部署默认启用飞书登录。需要在 GitHub Actions Secrets 配置飞书 App ID、App Secret、回调地址和 JWT 签名密钥，并在飞书开放平台放通同一个 `/feishu-callback` 回调地址。
+
 ## 重要文档
 
 - [docs/react-standardization-refactor-plan.md](docs/react-standardization-refactor-plan.md) — React 标准化重构规划。

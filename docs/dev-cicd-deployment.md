@@ -58,7 +58,39 @@
 | Secret | 说明 |
 | --- | --- |
 | `EVAL_STUDIO_DATABASE_URL_DEV` | dev PostgreSQL / PolarDB PostgreSQL 连接串 |
+| `EVAL_STUDIO_JWT_SECRET_DEV` | dev 登录 JWT 签名密钥，建议使用长随机字符串 |
+| `EVAL_STUDIO_FEISHU_APP_ID_DEV` | 飞书应用 App ID |
+| `EVAL_STUDIO_FEISHU_APP_SECRET_DEV` | 飞书应用 App Secret |
+| `EVAL_STUDIO_FEISHU_REDIRECT_URI_DEV` | 飞书 OAuth 回调地址，例如 `https://<dev-domain>/feishu-callback` |
 | `FEISHU_WEBHOOK_URL` | 飞书通知 webhook |
+
+## 飞书登录配置
+
+dev 镜像构建时会固定启用飞书认证：
+
+```text
+VITE_AUTH_MODE=feishu
+```
+
+API Pod 运行时会使用：
+
+```text
+AUTH_MODE=feishu
+FEISHU_APP_ID
+FEISHU_APP_SECRET
+FEISHU_REDIRECT_URI
+JWT_SECRET
+```
+
+这些值由 GitHub Actions Secret 注入，不需要手动进入 ACK 配置 Kubernetes Secret。
+
+飞书开放平台里需要把回调地址配置为 `EVAL_STUDIO_FEISHU_REDIRECT_URI_DEV` 的值，例如：
+
+```text
+https://<dev-domain>/feishu-callback
+```
+
+如果 dev 暂时还没有外部访问域名，需要先接入 Ingress/网关后再配置飞书回调。飞书 OAuth 回调必须是浏览器可以访问到的前端地址。
 
 ## GitHub Variables
 

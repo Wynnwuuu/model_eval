@@ -1,6 +1,13 @@
 import { auth } from '../auth';
 
 export const getApiAuthHeaders = () => {
+  const token = localStorage.getItem('token');
+  if (token) {
+    return {
+      Authorization: `Bearer ${token}`,
+    };
+  }
+
   const user = auth.currentUser;
   const userId = user?.uid || 'local-dev-user';
   const email = user?.email || `${userId}@local.eval`;

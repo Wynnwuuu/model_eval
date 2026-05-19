@@ -35,6 +35,16 @@ spec:
               value: "*"
             - name: DATABASE_URL
               value: "__DATABASE_URL__"
+            - name: AUTH_MODE
+              value: "feishu"
+            - name: JWT_SECRET
+              value: "__JWT_SECRET__"
+            - name: FEISHU_APP_ID
+              value: "__FEISHU_APP_ID__"
+            - name: FEISHU_APP_SECRET
+              value: "__FEISHU_APP_SECRET__"
+            - name: FEISHU_REDIRECT_URI
+              value: "__FEISHU_REDIRECT_URI__"
           readinessProbe:
             httpGet:
               path: /api/health

@@ -64,6 +64,7 @@ jobs:
           build-args: |
             VITE_USE_API_BACKEND=true
             VITE_API_BASE_URL=${{ vars.EVAL_STUDIO_PUBLIC_API_BASE_URL || '' }}
+            VITE_AUTH_MODE=feishu
           tags: ${{ env.ACR_EE_REGISTRY }}/${{ env.ACR_EE_NAMESPACE }}/${{ env.ACR_EE_IMAGE }}:${{ env.ACR_EE_TAG }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

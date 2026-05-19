@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import express from 'express';
 
+import { authRoutes } from './auth/authRoutes.ts';
 import { datasetRoutes } from './datasets/datasetRoutes.ts';
 import { attachRequestUser } from './auth/context.ts';
 import { checkDatabaseHealth } from './db/client.ts';
@@ -50,6 +51,7 @@ export const createApp = () => {
   });
 
   app.use('/api/media-proxy', mediaProxyRoutes);
+  app.use('/api/auth', authRoutes);
 
   app.use(attachRequestUser);
 

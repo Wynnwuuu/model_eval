@@ -16,6 +16,14 @@ on:
         required: true
       EVAL_STUDIO_DATABASE_URL_DEV:
         required: true
+      EVAL_STUDIO_JWT_SECRET_DEV:
+        required: true
+      EVAL_STUDIO_FEISHU_APP_ID_DEV:
+        required: true
+      EVAL_STUDIO_FEISHU_APP_SECRET_DEV:
+        required: true
+      EVAL_STUDIO_FEISHU_REDIRECT_URI_DEV:
+        required: true
       FEISHU_WEBHOOK_URL:
         required: false
   workflow_dispatch:
@@ -44,6 +52,10 @@ env:
   ACR_EE_IMAGE: ${{ vars.EVAL_STUDIO_IMAGE || 'eval-studio' }}
   ACR_EE_TAG: ${{ inputs.tag }}
   DATABASE_URL: ${{ secrets.EVAL_STUDIO_DATABASE_URL_DEV }}
+  JWT_SECRET: ${{ secrets.EVAL_STUDIO_JWT_SECRET_DEV }}
+  FEISHU_APP_ID: ${{ secrets.EVAL_STUDIO_FEISHU_APP_ID_DEV }}
+  FEISHU_APP_SECRET: ${{ secrets.EVAL_STUDIO_FEISHU_APP_SECRET_DEV }}
+  FEISHU_REDIRECT_URI: ${{ secrets.EVAL_STUDIO_FEISHU_REDIRECT_URI_DEV }}
   FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
 
 permissions:
@@ -73,6 +85,14 @@ jobs:
             echo "EVAL_STUDIO_DATABASE_URL_DEV is empty. Configure it in GitHub Actions Secrets."
             exit 1
           fi
+          if [ -z "$JWT_SECRET" ]; then
+            echo "EVAL_STUDIO_JWT_SECRET_DEV is empty. Configure it in GitHub Actions Secrets."
+            exit 1
+          fi
+          if [ -z "$FEISHU_APP_ID" ] || [ -z "$FEISHU_APP_SECRET" ] || [ -z "$FEISHU_REDIRECT_URI" ]; then
+            echo "Feishu OAuth secrets are incomplete. Configure EVAL_STUDIO_FEISHU_APP_ID_DEV, EVAL_STUDIO_FEISHU_APP_SECRET_DEV, and EVAL_STUDIO_FEISHU_REDIRECT_URI_DEV."
+            exit 1
+          fi
 
       - uses: actions/checkout@v4
 
@@ -96,11 +116,11 @@ jobs:
           cd ./deploy/overlays/dev
           ../../../kustomize edit set image REGISTRY/NAMESPACE/IMAGE:TAG=$ACR_EE_REGISTRY/$ACR_EE_NAMESPACE/$ACR_EE_IMAGE:$ACR_EE_TAG
           ../../../kustomize build > /tmp/eval-studio-dev.yml
-          node -e 'const fs = require("fs"); const file = "/tmp/eval-studio-dev.yml"; const value = process.env.DATABASE_URL; let yaml = fs.readFileSync(file, "utf8"); yaml = yaml.replaceAll("value: __DATABASE_URL__", `value: ${JSON.stringify(value)}`); fs.writeFileSync(file, yaml);'
+          node -e 'const fs = require("fs"); const file = "/tmp/eval-studio-dev.yml"; const replacements = { __DATABASE_URL__: process.env.DATABASE_URL, __JWT_SECRET__: process.env.JWT_SECRET, __FEISHU_APP_ID__: process.env.FEISHU_APP_ID, __FEISHU_APP_SECRET__: process.env.FEISHU_APP_SECRET, __FEISHU_REDIRECT_URI__: process.env.FEISHU_REDIRECT_URI }; let yaml = fs.readFileSync(file, "utf8"); for (const [key, value] of Object.entries(replacements)) yaml = yaml.replaceAll(`value: ${key}`, `value: ${JSON.stringify(value)}`); fs.writeFileSync(file, yaml);'
 
           dump_diagnostics() {
             echo "::group::Rendered manifest"
-            node -e 'const fs = require("fs"); const secret = process.env.DATABASE_URL || ""; let yaml = fs.readFileSync("/tmp/eval-studio-dev.yml", "utf8"); if (secret) yaml = yaml.split(secret).join("***DATABASE_URL***"); process.stdout.write(yaml);'
+            node -e 'const fs = require("fs"); const secrets = [process.env.DATABASE_URL, process.env.JWT_SECRET, process.env.FEISHU_APP_SECRET].filter(Boolean); let yaml = fs.readFileSync("/tmp/eval-studio-dev.yml", "utf8"); for (const secret of secrets) yaml = yaml.split(secret).join("***SECRET***"); process.stdout.write(yaml);'
             echo "::endgroup::"
 
             echo "::group::Migration job"
