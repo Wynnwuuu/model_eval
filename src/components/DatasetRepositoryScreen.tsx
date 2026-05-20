@@ -12,6 +12,7 @@ import {
   Info,
   Layers,
   Music,
+  Pencil,
   Plus,
   Save,
   Search,
@@ -177,6 +178,58 @@ const deriveMappingsFromSchemaFields = (fields: DatasetSchemaField[]): DatasetCo
     referenceColumns: Array.from(new Set(mappings.referenceColumns))
   };
 };
+
+const getDatasetColumnKeys = (dataset?: EvalDataset) => {
+  if (!dataset) return [];
+  const schemaKeys = dataset.inputSchema?.map(field => field.key).filter(Boolean) || [];
+  const sourceKeys = dataset.inputSchema?.map(field => field.sourceKey).filter(Boolean) || [];
+  const rowKeys = (dataset.items || []).flatMap(row => Object.keys(row).filter(key => key !== '_originalData'));
+  return Array.from(new Set([...schemaKeys, ...sourceKeys, ...rowKeys]));
+};
+
+const applyRenameMapToMappings = (mappings: DatasetColumnMappings, renameMap: Map<string, string>): DatasetColumnMappings => {
+  const renameValue = (value?: string) => value ? renameMap.get(value) || value : value;
+  const renameList = (values: string[] = []) => Array.from(new Set(values.map(value => renameValue(value)).filter(Boolean) as string[]));
+  const standard = Object.fromEntries(
+    Object.entries(mappings.standard || {}).map(([canonicalKey, sourceKey]) => [canonicalKey, renameValue(sourceKey) || sourceKey])
+  );
+
+  return {
+    ...mappings,
+    caseId: renameValue(mappings.caseId),
+    inputColumns: renameList(mappings.inputColumns),
+    outputColumns: renameList(mappings.outputColumns),
+    dimensionColumns: renameList(mappings.dimensionColumns),
+    referenceColumns: renameList(mappings.referenceColumns),
+    standard
+  };
+};
+
+const applyRenameMapToRows = (rows: Record<string, any>[], renameMap: Map<string, string>) =>
+  rows.map(row => {
+    const next: Record<string, any> = {};
+    Object.entries(row).forEach(([key, value]) => {
+      if (key === '_originalData') {
+        next[key] = value;
+        return;
+      }
+      next[renameMap.get(key) || key] = value;
+    });
+    return next;
+  });
+
+const applyRenameMapToSchema = (fields: DatasetSchemaField[], renameMap: Map<string, string>) =>
+  fields.map(field => {
+    const nextKey = renameMap.get(field.key) || field.key;
+    const nextSourceKey = field.sourceKey ? renameMap.get(field.sourceKey) || field.sourceKey : field.sourceKey;
+    const nextLabel = nextKey !== field.key || field.label === field.key ? nextKey : field.label;
+    return {
+      ...field,
+      key: nextKey,
+      label: nextLabel,
+      sourceKey: nextSourceKey
+    };
+  });
 
 const createSchemaFieldsFromMappings = (
   headers: string[],
@@ -354,6 +407,10 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
   const [dimensionFilter, setDimensionFilter] = useState('');
   const [generationModalOpen, setGenerationModalOpen] = useState(false);
   const [generationJobs, setGenerationJobs] = useState<DatasetGenerationJob[]>([]);
+  const [columnRenameOpen, setColumnRenameOpen] = useState(false);
+  const [columnRenameDrafts, setColumnRenameDrafts] = useState<Record<string, string>>({});
+  const [columnRenameError, setColumnRenameError] = useState('');
+  const [isSavingColumnNames, setIsSavingColumnNames] = useState(false);
 
   const [wizardOpen, setWizardOpen] = useState(false);
   const [wizardMode, setWizardMode] = useState<WizardMode>('create');
@@ -425,6 +482,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
   const selectedRow = selectedRows[Math.min(selectedRowIndex, Math.max(selectedRows.length - 1, 0))];
   const outputColumns = selectedMappings.outputColumns;
   const referenceColumns = selectedMappings.referenceColumns;
+  const selectedColumnKeys = useMemo(() => getDatasetColumnKeys(selectedDataset), [selectedDataset]);
   const promptKeys = [
     selectedMappings.standard.full_prompt,
     selectedMappings.standard.zh_prompt,
@@ -453,6 +511,112 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
   const isGenerationMode = mode === 'generation';
   const runningGenerationJobs = generationJobs.filter(job => job.status === 'running' || job.status === 'queued' || job.status === 'partial');
   const latestGenerationJob = generationJobs[0];
+
+  const openColumnRenameEditor = () => {
+    if (!selectedDataset) return;
+    const drafts = Object.fromEntries(getDatasetColumnKeys(selectedDataset).map(column => [column, column]));
+    setColumnRenameDrafts(drafts);
+    setColumnRenameError('');
+    setColumnRenameOpen(true);
+  };
+
+  const closeColumnRenameEditor = () => {
+    setColumnRenameOpen(false);
+    setColumnRenameError('');
+    setIsSavingColumnNames(false);
+  };
+
+  const handleSaveColumnNames = async () => {
+    if (!selectedDataset || isSavingColumnNames) return;
+    const columns = getDatasetColumnKeys(selectedDataset);
+    const trimmedDrafts = Object.fromEntries(columns.map(column => [column, (columnRenameDrafts[column] ?? column).trim()]));
+    const emptyColumn = columns.find(column => !trimmedDrafts[column]);
+    if (emptyColumn) {
+      setColumnRenameError(`列「${emptyColumn}」的新名称不能为空。`);
+      return;
+    }
+    const reservedColumn = columns.find(column => trimmedDrafts[column] === '_originalData');
+    if (reservedColumn) {
+      setColumnRenameError('列名不能使用系统保留字段 _originalData。');
+      return;
+    }
+    const normalizedNames = columns.map(column => trimmedDrafts[column]);
+    const duplicateName = normalizedNames.find((name, index) => normalizedNames.indexOf(name) !== index);
+    if (duplicateName) {
+      setColumnRenameError(`列名「${duplicateName}」重复，请为每一列设置唯一名称。`);
+      return;
+    }
+
+    const renameEntries = columns
+      .map(column => [column, trimmedDrafts[column]] as const)
+      .filter(([oldName, newName]) => oldName !== newName);
+    if (!renameEntries.length) {
+      closeColumnRenameEditor();
+      return;
+    }
+
+    const renameMap = new Map<string, string>(renameEntries);
+    const userName = auth.currentUser?.displayName || auth.currentUser?.email || 'Unknown';
+    const now = Date.now();
+    const nextItems = applyRenameMapToRows(selectedDataset.items || [], renameMap);
+    const baseMappings = getDatasetColumnMappings(selectedDataset);
+    const nextMappings = applyRenameMapToMappings(baseMappings, renameMap);
+    const nextSchema = applyRenameMapToSchema(selectedDataset.inputSchema || [], renameMap);
+    const nextInputType = inferInputTypeFromDataset({ ...selectedDataset, items: nextItems, inputSchema: nextSchema, columnMappings: nextMappings } as EvalDataset);
+    const nextModality = inferDatasetModality(nextItems, nextMappings, selectedDataset.modality || 'other', nextSchema);
+    const changeSummary = `重命名列：${renameEntries.map(([oldName, newName]) => `${oldName} -> ${newName}`).join('；')}`;
+    const versionMeta = appendDatasetVersion(
+      selectedDataset,
+      userName,
+      changeSummary,
+      selectedDataset.items?.length || 0,
+      nextItems.length
+    );
+
+    const nextDataset: EvalDataset = {
+      ...selectedDataset,
+      items: nextItems,
+      inputSchema: nextSchema,
+      inputType: nextInputType,
+      modality: nextModality,
+      columnMappings: nextMappings,
+      datasetCard: buildDatasetCard(
+        {
+          ...selectedDataset,
+          items: nextItems,
+          inputSchema: nextSchema,
+          columnMappings: nextMappings,
+          modality: nextModality
+        } as EvalDataset,
+        nextMappings,
+        {
+          applicableTasks: selectedDataset.datasetCard?.applicableTasks || [],
+          applicableStages: selectedDataset.datasetCard?.applicableStages || [],
+          source: selectedDataset.datasetCard?.source || '',
+          rubricBinding: selectedDataset.datasetCard?.rubricBinding || '',
+          coverageGaps: selectedDataset.datasetCard?.coverageGaps || [],
+          latestChange: changeSummary,
+          modality: nextModality
+        }
+      ),
+      validationSummary: validateDatasetItems(nextItems, nextMappings),
+      ...versionMeta,
+      updatedAt: now
+    };
+
+    try {
+      setIsSavingColumnNames(true);
+      const savedDataset = await saveDataset(nextDataset);
+      setDatasets(prev => prev.map(dataset => dataset.id === savedDataset.id ? savedDataset : dataset));
+      setSelectedDatasetId(savedDataset.id);
+      setSelectedRowIndex(0);
+      closeColumnRenameEditor();
+    } catch (error: any) {
+      console.error('Error renaming dataset columns:', error);
+      setColumnRenameError(`保存列名失败：${error.message || error}`);
+      setIsSavingColumnNames(false);
+    }
+  };
 
   const openWizard = (mode: WizardMode, target?: EvalDataset) => {
     const normalizedTarget = target ? normalizeDatasetForDisplay(target) : null;
@@ -1049,6 +1213,102 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
     );
   };
 
+  const renderColumnRenameModal = () => {
+    if (!columnRenameOpen || !selectedDataset) return null;
+    const schemaByColumn = new Map<string, DatasetSchemaField>();
+    (selectedDataset.inputSchema || []).forEach(field => {
+      schemaByColumn.set(field.key, field);
+      if (field.sourceKey) schemaByColumn.set(field.sourceKey, field);
+    });
+
+    return (
+      <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="glass-panel border border-white/10 rounded-2xl w-full max-w-4xl max-h-[88vh] overflow-hidden shadow-2xl flex flex-col">
+          <div className="px-6 py-4 border-b border-white/10 flex items-center justify-between shrink-0">
+            <div>
+              <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
+                <Pencil size={18} className="text-amber-400" /> 编辑列名
+              </h2>
+              <p className="text-xs text-slate-400 mt-1">
+                修改后会同步更新数据列、字段映射、Dataset Card、版本记录，并影响后续创建评测物料时看到的列名。
+              </p>
+            </div>
+            <button onClick={closeColumnRenameEditor} className="p-2 rounded-lg text-slate-300 hover:text-white hover:bg-white/10" aria-label="关闭编辑列名窗口">
+              <X size={18} />
+            </button>
+          </div>
+
+          <div className="overflow-y-auto p-6 flex-1">
+            {columnRenameError && (
+              <div className="mb-4 rounded-xl border border-red-400/30 bg-red-500/10 text-red-200 px-4 py-3 text-sm flex items-start gap-2">
+                <AlertTriangle size={16} className="mt-0.5 shrink-0" /> {columnRenameError}
+              </div>
+            )}
+            <div className="rounded-xl border border-white/10 overflow-hidden">
+              <div className="hidden md:grid md:grid-cols-[minmax(160px,1fr)_minmax(220px,1.4fr)_120px_120px] gap-3 px-4 py-3 bg-black/20 text-xs uppercase tracking-wide text-slate-400">
+                <div>当前列名</div>
+                <div>新列名</div>
+                <div>字段角色</div>
+                <div>预览类型</div>
+              </div>
+              <div className="divide-y divide-white/10">
+                {selectedColumnKeys.map(column => {
+                  const field = schemaByColumn.get(column);
+                  const previewLabel = PREVIEW_OPTIONS.find(option => option.key === field?.previewType)?.label || field?.previewType || '-';
+                  return (
+                    <div key={column} className="grid grid-cols-1 md:grid-cols-[minmax(160px,1fr)_minmax(220px,1.4fr)_120px_120px] gap-3 px-4 py-3 items-center bg-white/[0.03]">
+                      <div>
+                        <div className="md:hidden text-[11px] text-slate-500 mb-1">当前列名</div>
+                        <div className="text-sm text-slate-300 break-all">{column}</div>
+                      </div>
+                      <div>
+                        <div className="md:hidden text-[11px] text-slate-500 mb-1">新列名</div>
+                        <input
+                          value={columnRenameDrafts[column] ?? column}
+                          onChange={e => {
+                            setColumnRenameDrafts(prev => ({ ...prev, [column]: e.target.value }));
+                            setColumnRenameError('');
+                          }}
+                          className="w-full px-3 py-2 glass-input rounded-lg text-sm text-slate-100"
+                          placeholder="输入新列名"
+                        />
+                      </div>
+                      <div>
+                        <div className="md:hidden text-[11px] text-slate-500 mb-1">字段角色</div>
+                        <div className="text-xs text-slate-400">{roleLabel(field?.role)}</div>
+                      </div>
+                      <div>
+                        <div className="md:hidden text-[11px] text-slate-500 mb-1">预览类型</div>
+                        <div className="text-xs text-slate-400">{previewLabel}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            {selectedColumnKeys.length === 0 && (
+              <div className="py-12 text-center text-slate-400">当前评测集还没有可重命名的列。</div>
+            )}
+          </div>
+
+          <div className="px-6 py-4 border-t border-white/10 flex flex-col gap-3 md:flex-row md:justify-between md:items-center shrink-0">
+            <div className="text-xs text-slate-500">重命名不会删除原始追溯数据；CSV 下载和物料创建会使用新列名。</div>
+            <div className="flex gap-3 justify-end">
+              <button onClick={closeColumnRenameEditor} className="px-4 py-2 rounded-xl glass-panel-hover text-slate-300 text-sm">取消</button>
+              <button
+                onClick={handleSaveColumnNames}
+                disabled={isSavingColumnNames || selectedColumnKeys.length === 0}
+                className="px-5 py-2 rounded-xl bg-amber-500 text-black font-medium text-sm flex items-center gap-2 disabled:opacity-50"
+              >
+                <Save size={16} /> {isSavingColumnNames ? '保存中...' : '保存列名'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="max-w-[1800px] mx-auto px-4 md:px-6 py-6 animate-in fade-in duration-500">
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-6">
@@ -1074,6 +1334,9 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
           </button>
           <button onClick={() => selectedDataset && openWizard('append', selectedDataset)} disabled={!selectedDataset} className="flex items-center gap-2 bg-white/5 glass-panel-hover text-slate-300 px-4 py-2.5 rounded-xl font-medium text-sm border border-white/10 disabled:opacity-40">
             <Upload size={18} /> 追加内容
+          </button>
+          <button onClick={openColumnRenameEditor} disabled={!selectedDataset} className="flex items-center gap-2 bg-white/5 glass-panel-hover text-slate-300 px-4 py-2.5 rounded-xl font-medium text-sm border border-white/10 disabled:opacity-40">
+            <Pencil size={18} /> 编辑列名
           </button>
           <button onClick={() => openWizard('create')} className="flex items-center gap-2 bg-gradient-accent text-black px-5 py-2.5 rounded-xl font-medium text-sm shadow-lg shadow-amber-500/20 transition-all hover:opacity-90">
             <Plus size={18} /> 新建/导入评测集
@@ -1195,6 +1458,9 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
                   </button>
                   <button onClick={() => downloadCsv(selectedDataset.items.length ? `${selectedDataset.name}_data.csv` : `template_${selectedDataset.id}.csv`, selectedDataset.items.length ? selectedDataset.items : selectedDataset.inputSchema.map(field => field.key))} className="px-3 py-2 rounded-xl bg-white/5 glass-panel-hover text-slate-300 text-sm flex items-center gap-2 border border-white/10">
                     <Download size={16} /> {selectedDataset.items.length ? '下载数据' : '下载模板'}
+                  </button>
+                  <button onClick={openColumnRenameEditor} className="px-3 py-2 rounded-xl bg-white/5 glass-panel-hover text-slate-300 text-sm flex items-center gap-2 border border-white/10">
+                    <Pencil size={16} /> 编辑列名
                   </button>
                   <button onClick={() => openWizard('append', selectedDataset)} className="px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-sm flex items-center gap-2 border border-amber-500/20">
                     <Upload size={16} /> 追加
@@ -1365,6 +1631,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
       </div>
 
       {renderWizard()}
+      {renderColumnRenameModal()}
       {generationModalOpen && selectedDataset && (
         <DatasetGenerationModal
           dataset={selectedDataset}
