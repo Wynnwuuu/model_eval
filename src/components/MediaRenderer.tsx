@@ -21,8 +21,9 @@ interface MediaRendererProps {
 // scenario), so `no-referrer` is tried first.
 const REFERRER_POLICY_FALLBACKS = ['no-referrer', 'origin', 'unsafe-url'] as const;
 type ReferrerPolicyOption = typeof REFERRER_POLICY_FALLBACKS[number];
-const MEDIA_SOFT_TIMEOUT_MS = 12000;
+const MEDIA_SOFT_TIMEOUT_MS = 7000;
 const AUDIO_EXTENSIONS = ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'];
+const IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'avif', 'svg'];
 
 const withRetryToken = (url: string, retryToken: number): string => {
   if (!url || retryToken === 0 || url.startsWith('data:') || url.startsWith('blob:')) {
@@ -36,6 +37,49 @@ const withRetryToken = (url: string, retryToken: number): string => {
   } catch {
     return `${url}${url.includes('?') ? '&' : '?'}evaltrack_retry=${retryToken}`;
   }
+};
+
+const inferMediaTypeFromUrl = (url: string): 'image' | 'video' | 'audio' => {
+  const cleanUrl = url.trim().split('?')[0].split('#')[0].toLowerCase();
+  const lowerUrl = url.toLowerCase();
+  const decodedUrl = (() => {
+    try {
+      return decodeURIComponent(url).toLowerCase();
+    } catch {
+      return lowerUrl;
+    }
+  })();
+  const typeHaystack = `${lowerUrl} ${decodedUrl}`;
+  const endsWithAny = (extensions: string[]) => extensions.some(ext => cleanUrl.endsWith(`.${ext}`));
+
+  if (
+    endsWithAny(VIDEO_EXTENSIONS) ||
+    VIDEO_EXTENSIONS.some(ext => decodedUrl.split('?')[0].split('#')[0].endsWith(`.${ext}`)) ||
+    /\/videos?\//i.test(typeHaystack) ||
+    /(?:^|[?&])(type|mediaType|outputType)=video(?:&|$)/i.test(typeHaystack)
+  ) {
+    return 'video';
+  }
+
+  if (
+    endsWithAny(AUDIO_EXTENSIONS) ||
+    AUDIO_EXTENSIONS.some(ext => decodedUrl.split('?')[0].split('#')[0].endsWith(`.${ext}`)) ||
+    /\/audios?\//i.test(typeHaystack) ||
+    /(?:^|[?&])(type|mediaType|outputType)=audio(?:&|$)/i.test(typeHaystack)
+  ) {
+    return 'audio';
+  }
+
+  if (
+    endsWithAny(IMAGE_EXTENSIONS) ||
+    IMAGE_EXTENSIONS.some(ext => decodedUrl.split('?')[0].split('#')[0].endsWith(`.${ext}`)) ||
+    /\/images?\//i.test(typeHaystack) ||
+    /(?:^|[?&])(type|mediaType|outputType)=image(?:&|$)/i.test(typeHaystack)
+  ) {
+    return 'image';
+  }
+
+  return 'image';
 };
 
 const MediaRenderer: React.FC<MediaRendererProps> = ({ url, label, isActive, className = '', onLoadStatusChange, forceType, videoPreload = 'auto' }) => {
@@ -86,10 +130,6 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({ url, label, isActive, cla
     onLoadStatusChangeRef.current?.(false);
     
     // Reset based on URL change
-    const cleanUrl = finalUrl.trim().split('?')[0].split('#')[0].toLowerCase();
-    const isVideoExt = VIDEO_EXTENSIONS.some(ext => cleanUrl.endsWith(`.${ext}`));
-    const isAudioExt = AUDIO_EXTENSIONS.some(ext => cleanUrl.endsWith(`.${ext}`));
-
     // If normalization could not recover a merged URL, fail visibly but do not
     // block the evaluator from continuing.
     const httpCount = (finalUrl.match(/https?:\/\//g) || []).length;
@@ -105,18 +145,8 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({ url, label, isActive, cla
       return;
     }
 
-    if (isVideoExt) {
-      setMediaType('video');
-      return;
-    }
-
-    if (isAudioExt) {
-      setMediaType('audio');
-      return;
-    }
-
-    setMediaType('image');
-  }, [url, forceType]);
+    setMediaType(inferMediaTypeFromUrl(finalUrl));
+  }, [finalUrl, forceType]);
 
   // Cleanup blob URL when url changes or component unmounts
   useEffect(() => {

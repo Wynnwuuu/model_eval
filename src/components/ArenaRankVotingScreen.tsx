@@ -3,7 +3,7 @@ import { ArrowDown, ArrowUp, CheckCircle2, Cloud, GripVertical, Trophy } from 'l
 import { EvaluationItem, RankingEntry } from '../types';
 import { getModelOutputsForItem } from '../rankingUtils';
 import MediaRenderer from './MediaRenderer';
-import { normalizeUrl } from '../utils';
+import { resolveMediaPlaybackUrl } from '../mediaProxy';
 import { VIDEO_EXTENSIONS } from '../constants';
 import DimensionChips from './DimensionChips';
 import { getDimensionValuesForItem, hasDimensionValues } from '../dimensionUtils';
@@ -20,6 +20,8 @@ interface ArenaRankVotingScreenProps {
   onGoBack?: () => void;
 }
 
+const RANK_MEDIA_WAIT_FALLBACK_MS = 10000;
+
 const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
   item,
   nextItem,
@@ -33,6 +35,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
 }) => {
   const [showFullPrompt, setShowFullPrompt] = useState(false);
   const [loaded, setLoaded] = useState<Record<string, boolean>>({});
+  const [mediaWaitTimedOut, setMediaWaitTimedOut] = useState(false);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [justSaved, setJustSaved] = useState(false);
 
@@ -47,6 +50,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
 
     setOrderedIds(shuffled);
     setLoaded({});
+    setMediaWaitTimedOut(false);
     setDraggedId(null);
     setShowFullPrompt(false);
     setJustSaved(true);
@@ -58,7 +62,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
     if (!nextItem) return;
 
     getModelOutputsForItem(nextItem, models).forEach(output => {
-      const normalizedUrl = normalizeUrl(output.url);
+      const normalizedUrl = resolveMediaPlaybackUrl(output.url);
       if (!normalizedUrl) return;
 
       const cleanUrl = normalizedUrl.split('?')[0].split('#')[0].toLowerCase();
@@ -88,7 +92,21 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
 
   const progress = (currentIndex / totalItems) * 100;
   const allMediaLoaded = orderedOutputs.length >= 3 && orderedOutputs.every(output => loaded[output.modelId]);
+  const canSubmit = allMediaLoaded || mediaWaitTimedOut;
   const visibleInputs = item.inputs ? Object.entries(item.inputs) : [];
+
+  useEffect(() => {
+    if (orderedOutputs.length < 3 || allMediaLoaded) {
+      setMediaWaitTimedOut(false);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setMediaWaitTimedOut(true);
+    }, RANK_MEDIA_WAIT_FALLBACK_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [item.id, orderedOutputs.length, allMediaLoaded]);
 
   const moveOutput = (modelId: string, direction: -1 | 1) => {
     setOrderedIds(prev => {
@@ -274,16 +292,21 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
               </div>
               <button
                 onClick={submitRanking}
-                disabled={!allMediaLoaded}
+                disabled={!canSubmit}
                 className={`flex w-full items-center justify-center gap-2 py-3 font-black transition-colors ${
-                  allMediaLoaded
+                  canSubmit
                     ? 'btn-primary'
                     : 'cursor-not-allowed border border-white/10 bg-white/10 text-slate-400'
                 }`}
               >
                 <Trophy size={18} />
-                {allMediaLoaded ? '提交排名' : '媒体加载中...'}
+                {canSubmit ? '提交排名' : '媒体加载中...'}
               </button>
+              {mediaWaitTimedOut && !allMediaLoaded && (
+                <div className="mt-3 border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-amber-100">
+                  部分媒体响应较慢，已允许提交；媒体加载完成后会继续显示。
+                </div>
+              )}
             </aside>
           </div>
         )}

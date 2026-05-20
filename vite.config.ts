@@ -32,6 +32,18 @@ export default defineConfig(({mode}) => {
             });
           },
         },
+        '/media-dev-proxy': {
+          target: 'https://vidmuse-dev.sandcdn.com',
+          changeOrigin: true,
+          secure: true,
+          rewrite: (proxyPath) => proxyPath.replace(/^\/media-dev-proxy/, ''),
+          configure: (proxy) => {
+            proxy.on('proxyReq', (proxyReq) => {
+              proxyReq.removeHeader('referer');
+              proxyReq.removeHeader('origin');
+            });
+          },
+        },
       },
     },
   };

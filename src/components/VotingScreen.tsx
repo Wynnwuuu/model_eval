@@ -3,7 +3,7 @@ import { CheckCircle2, ChevronDown, ChevronUp, Cloud, Equal, Expand, ThumbsUp, A
 import { EvaluationItem, VoteType } from '../types';
 import MediaRenderer from './MediaRenderer';
 import { KEYBOARD_SHORTCUTS, VIDEO_EXTENSIONS } from '../constants';
-import { normalizeUrl } from '../utils';
+import { resolveMediaPlaybackUrl } from '../mediaProxy';
 import DimensionChips from './DimensionChips';
 import { getDimensionValuesForItem, hasDimensionValues } from '../dimensionUtils';
 
@@ -26,6 +26,7 @@ const extractUrls = (value: unknown): string[] => {
 
 const isStartImageKey = (key: string) => /start|first|首帧|首图|起始/i.test(key);
 const isReferenceKey = (key: string) => /ref|reference|参考|參考/i.test(key);
+const VOTE_MEDIA_WAIT_FALLBACK_MS = 8000;
 
 const VotingScreen: React.FC<VotingScreenProps> = ({
   item,
@@ -45,7 +46,9 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
 
   const [leftLoaded, setLeftLoaded] = useState(false);
   const [rightLoaded, setRightLoaded] = useState(false);
+  const [mediaWaitTimedOut, setMediaWaitTimedOut] = useState(false);
   const allMediaLoaded = leftLoaded && rightLoaded;
+  const canVote = allMediaLoaded || mediaWaitTimedOut;
 
   const effectiveStartImageUrl = item.startImageUrl || (() => {
     if (!item.inputs) return undefined;
@@ -119,12 +122,12 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
       }
     }
 
-    if (!showReference && allMediaLoaded) {
+    if (!showReference && canVote) {
       if (KEYBOARD_SHORTCUTS.A.includes(key)) onVote(leftData.voteVal);
       else if (KEYBOARD_SHORTCUTS.B.includes(key)) onVote(rightData.voteVal);
       else if (allowTie && KEYBOARD_SHORTCUTS.TIE.includes(key)) onVote('Tie');
     }
-  }, [onVote, showReference, effectiveReferenceUrls, leftData.voteVal, rightData.voteVal, allMediaLoaded, allowTie]);
+  }, [onVote, showReference, effectiveReferenceUrls, leftData.voteVal, rightData.voteVal, canVote, allowTie]);
 
   useEffect(() => {
     window.addEventListener('keydown', handleKeyPress);
@@ -136,7 +139,7 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
 
     const preloadMedia = (url: string) => {
       if (!url) return;
-      const normalizedUrl = normalizeUrl(url);
+      const normalizedUrl = resolveMediaPlaybackUrl(url);
       if (!normalizedUrl) return;
 
       const cleanUrl = normalizedUrl.split('?')[0].split('#')[0].toLowerCase();
@@ -179,11 +182,25 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
     setCurrentRefIndex(0);
     setLeftLoaded(false);
     setRightLoaded(false);
+    setMediaWaitTimedOut(false);
 
     setJustSaved(true);
     const timer = setTimeout(() => setJustSaved(false), 2000);
     return () => clearTimeout(timer);
   }, [item.id]);
+
+  useEffect(() => {
+    if (allMediaLoaded) {
+      setMediaWaitTimedOut(false);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setMediaWaitTimedOut(true);
+    }, VOTE_MEDIA_WAIT_FALLBACK_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [item.id, allMediaLoaded]);
 
   return (
     <div className="ark-operation-screen h-full flex flex-col">
@@ -281,13 +298,13 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
               </div>
               <button
                 onClick={() => onVote(leftData.voteVal)}
-                disabled={!allMediaLoaded}
+                disabled={!canVote}
                 className={`ark-vote-action shrink-0 p-4 font-black flex items-center justify-center gap-2 transition-all ${
-                  allMediaLoaded ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'
+                  canVote ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'
                 }`}
               >
                 <ThumbsUp className="h-5 w-5" />
-                {allMediaLoaded ? '投给选项 1（左侧）' : '加载中...'}
+                {canVote ? '投给选项 1（左侧）' : '等待媒体...'}
               </button>
             </div>
 
@@ -353,9 +370,9 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
                 <>
                   <button
                     onClick={() => onVote('Tie')}
-                    disabled={!allMediaLoaded}
+                    disabled={!canVote}
                     className={`flex h-12 w-12 items-center justify-center rounded-full border-2 shadow-md shadow-black/20 transition-all ${
-                      allMediaLoaded
+                      canVote
                         ? 'glass-panel-hover cursor-pointer border-white/15 bg-white/5 text-slate-200 hover:border-[var(--accent)] hover:text-white'
                         : 'cursor-not-allowed border-white/10 bg-white/5 text-slate-500'
                     }`}
@@ -380,16 +397,21 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
               </div>
               <button
                 onClick={() => onVote(rightData.voteVal)}
-                disabled={!allMediaLoaded}
+                disabled={!canVote}
                 className={`ark-vote-action shrink-0 p-4 font-black flex items-center justify-center gap-2 transition-all ${
-                  allMediaLoaded ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'
+                  canVote ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'
                 }`}
               >
                 <ThumbsUp className="h-5 w-5" />
-                {allMediaLoaded ? '投给选项 2（右侧）' : '加载中...'}
+                {canVote ? '投给选项 2（右侧）' : '等待媒体...'}
               </button>
             </div>
           </div>
+          {mediaWaitTimedOut && !allMediaLoaded && (
+            <div className="mx-4 mb-4 border border-amber-400/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-100 md:mx-6">
+              部分媒体响应较慢，已解除投票等待。建议确认画面后投票；媒体加载完成后会继续显示。
+            </div>
+          )}
         </div>
       </div>
 
