@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, CheckCircle2, ChevronDown, ChevronUp, Cloud, Save, Star } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowLeft, CheckCircle2, ChevronDown, ChevronUp, Cloud, Save, SkipForward, Star } from 'lucide-react';
 import { EvalDimension, EvaluationConfig, EvaluationItem, VoteRecord } from '../types';
 import { getModelOutputsForItem, resolveEvaluationItemPrompt } from '../rankingUtils';
 import { getDimensionValuesForItem, hasDimensionValues } from '../dimensionUtils';
@@ -17,6 +17,7 @@ interface ScoreEvaluationScreenProps {
   onEnd: () => void;
   onBack?: () => void;
   onGoBack?: () => void;
+  onSkip?: () => void;
 }
 
 type ResponseDraft = {
@@ -68,7 +69,8 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
   onVote,
   onEnd,
   onBack,
-  onGoBack
+  onGoBack,
+  onSkip
 }) => {
   const [showFullPrompt, setShowFullPrompt] = useState(false);
   const [loaded, setLoaded] = useState<Record<string, boolean>>({});
@@ -79,6 +81,12 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
   const scoreDimensions = dimensions.filter(isScoreDimension);
   const otherDimensions = dimensions.filter(dimension => !isScoreDimension(dimension));
   const outputs = useMemo(() => getModelOutputsForItem(item, models), [item, models]);
+  const mediaCycleKey = useMemo(
+    () => [currentIndex, item.id, item.type, ...outputs.map(output => `${output.modelId}:${output.url}`)].join('|'),
+    [currentIndex, item.id, item.type, outputs]
+  );
+  const mediaCycleKeyRef = useRef(mediaCycleKey);
+  mediaCycleKeyRef.current = mediaCycleKey;
   const dimensionValues = getDimensionValuesForItem(item as any);
   const hasCaseDimensions = hasDimensionValues(dimensionValues);
   const prompt = resolveEvaluationItemPrompt(item);
@@ -97,7 +105,12 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
     setDraft(nextDraft);
     const timer = setTimeout(() => setJustSaved(false), 2000);
     return () => clearTimeout(timer);
-  }, [item.id, outputs]);
+  }, [mediaCycleKey, outputs]);
+
+  const handleLoadStatusChange = useCallback((modelId: string, isLoaded: boolean) => {
+    if (mediaCycleKeyRef.current !== mediaCycleKey) return;
+    setLoaded(prev => ({ ...prev, [modelId]: isLoaded }));
+  }, [mediaCycleKey]);
 
   const updateScore = (modelId: string, dimensionId: string, value: number) => {
     setDraft(prev => ({
@@ -190,6 +203,11 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
               上一题
             </button>
           )}
+          {onSkip && (
+            <button onClick={onSkip} className="border-l border-white/10 pl-4 text-sm font-medium text-amber-200 transition-colors hover:text-amber-100">
+              <span className="inline-flex items-center gap-1.5"><SkipForward size={15} /> 跳过本题</span>
+            </button>
+          )}
           {onBack && (
             <button onClick={onBack} className="border-l border-white/10 pl-4 text-sm font-medium text-slate-200 transition-colors hover:text-white">
               返回大盘
@@ -229,7 +247,7 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
           {outputs.map((output, index) => {
             const current = draft[output.modelId] || { scores: {}, answers: {}, reason: '' };
             return (
-              <section key={output.modelId} className="ark-rank-card flex min-h-[560px] min-w-0 flex-col overflow-hidden">
+              <section key={`${mediaCycleKey}-${output.modelId}-${output.url}`} className="ark-rank-card flex min-h-[560px] min-w-0 flex-col overflow-hidden">
                 <div className="ark-rank-head flex items-center justify-between px-3 py-2">
                   <div className="text-sm font-black">
                     候选 {index + 1}
@@ -243,11 +261,12 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
                     </div>
                   ) : (
                     <MediaRenderer
+                      key={`${mediaCycleKey}-${output.modelId}-${output.url}-media`}
                       url={output.url}
                       label={`候选 ${index + 1}`}
                       isActive={true}
                       forceType={item.type}
-                      onLoadStatusChange={(isLoaded) => setLoaded(prev => ({ ...prev, [output.modelId]: isLoaded }))}
+                      onLoadStatusChange={(isLoaded) => handleLoadStatusChange(output.modelId, isLoaded)}
                     />
                   )}
                 </div>

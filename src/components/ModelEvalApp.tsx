@@ -370,6 +370,14 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     await commitVoteRecord(votePayload);
   };
 
+  const handleSkipItem = async () => {
+    const currentItem = items[currentIndex] as any;
+    await commitVoteRecord({
+      choice: 'skipped',
+      pairContext: currentItem?.pairContext
+    });
+  };
+
   const handlePreviewComment = async (comment: string) => {
     await commitVoteRecord({
       method: 'benchmark_preview',
@@ -683,6 +691,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
           models={taskModels}
           config={taskEvaluationConfig}
           onVote={handleScoreVote}
+          onSkip={handleSkipItem}
           onEnd={handleEndSessionEarly}
           onBack={() => navigate('overview')}
           onGoBack={currentIndex > 0 ? handleGoBack : undefined}
@@ -699,6 +708,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
           currentIndex={currentIndex}
           totalItems={items.length}
           onVote={handleVote}
+          onSkip={handleSkipItem}
           onEnd={handleEndSessionEarly}
           onBack={() => navigate('overview')}
           onGoBack={currentIndex > 0 ? handleGoBack : undefined}
@@ -715,6 +725,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
           totalItems={items.length}
           models={taskModels}
           onVote={handleRankVote}
+          onSkip={handleSkipItem}
           onEnd={handleEndSessionEarly}
           onBack={() => navigate('overview')}
           onGoBack={currentIndex > 0 ? handleGoBack : undefined}

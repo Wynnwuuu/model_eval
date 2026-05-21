@@ -22,6 +22,7 @@ interface ScoreInsightsScreenProps {
   votes: VoteRecord[];
   models: { id: string; name: string }[];
   config?: EvaluationConfig;
+  skippedCount?: number;
   onBack?: () => void;
   backLabel?: string;
 }
@@ -70,6 +71,7 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
   votes,
   models,
   config,
+  skippedCount = 0,
   onBack,
   backLabel = '返回明细'
 }) => {
@@ -108,6 +110,12 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
         </div>
 
         {controls}
+
+        {skippedCount > 0 && (
+          <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+            已跳过 {skippedCount} 题；本页统计和导出仅使用有效评审记录。
+          </div>
+        )}
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
           <StatCard title="样本量" value={scoreBundle.summary.itemCount} subtitle={`${scoreBundle.summary.responseCount} 条模型评分`} icon={<FileText size={18} />} />
@@ -237,6 +245,12 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
         </div>
 
         {controls}
+
+        {skippedCount > 0 && (
+          <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+            已跳过 {skippedCount} 题；本页统计和导出仅使用有效评审记录。
+          </div>
+        )}
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
           <StatCard title="对战 case" value={pairwiseBundle.summary.itemCount} subtitle="模型对 × 原始 case" icon={<Grid3X3 size={18} />} />
