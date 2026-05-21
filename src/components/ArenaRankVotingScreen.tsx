@@ -1,5 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowDown, ArrowUp, CheckCircle2, Cloud, GripVertical, Trophy } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowDown, ArrowUp, CheckCircle2, Cloud, GripVertical, SkipForward, Trophy } from 'lucide-react';
 import { EvaluationItem, RankingEntry } from '../types';
 import { getModelOutputsForItem } from '../rankingUtils';
 import MediaRenderer from './MediaRenderer';
@@ -18,6 +18,7 @@ interface ArenaRankVotingScreenProps {
   onEnd: () => void;
   onBack?: () => void;
   onGoBack?: () => void;
+  onSkip?: () => void;
 }
 
 const RANK_MEDIA_WAIT_FALLBACK_MS = 10000;
@@ -31,7 +32,8 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
   onVote,
   onEnd,
   onBack,
-  onGoBack
+  onGoBack,
+  onSkip
 }) => {
   const [showFullPrompt, setShowFullPrompt] = useState(false);
   const [loaded, setLoaded] = useState<Record<string, boolean>>({});
@@ -40,6 +42,12 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
   const [justSaved, setJustSaved] = useState(false);
 
   const sourceOutputs = useMemo(() => getModelOutputsForItem(item, models), [item, models]);
+  const mediaCycleKey = useMemo(
+    () => [currentIndex, item.id, item.type, ...sourceOutputs.map(output => `${output.modelId}:${output.url}`)].join('|'),
+    [currentIndex, item.id, item.type, sourceOutputs]
+  );
+  const mediaCycleKeyRef = useRef(mediaCycleKey);
+  mediaCycleKeyRef.current = mediaCycleKey;
   const [orderedIds, setOrderedIds] = useState<string[]>([]);
 
   useEffect(() => {
@@ -56,10 +64,11 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
     setJustSaved(true);
     const timer = setTimeout(() => setJustSaved(false), 2000);
     return () => clearTimeout(timer);
-  }, [item.id, sourceOutputs]);
+  }, [mediaCycleKey, sourceOutputs]);
 
   useEffect(() => {
     if (!nextItem) return;
+    const preloadElements: Array<HTMLImageElement | HTMLVideoElement> = [];
 
     getModelOutputsForItem(nextItem, models).forEach(output => {
       const normalizedUrl = resolveMediaPlaybackUrl(output.url);
@@ -74,13 +83,26 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
         video.playsInline = true;
         video.setAttribute('referrerpolicy', 'no-referrer');
         video.src = normalizedUrl;
+        preloadElements.push(video);
       } else {
         const img = new Image();
         img.referrerPolicy = 'no-referrer';
         img.decoding = 'async';
         img.src = normalizedUrl;
+        preloadElements.push(img);
       }
     });
+
+    return () => {
+      preloadElements.forEach(element => {
+        if (element instanceof HTMLVideoElement) {
+          element.removeAttribute('src');
+          element.load();
+        } else {
+          element.src = '';
+        }
+      });
+    };
   }, [nextItem, models]);
 
   const outputsById = new Map(sourceOutputs.map(output => [output.modelId, output]));
@@ -106,7 +128,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
     }, RANK_MEDIA_WAIT_FALLBACK_MS);
 
     return () => window.clearTimeout(timer);
-  }, [item.id, orderedOutputs.length, allMediaLoaded]);
+  }, [mediaCycleKey, orderedOutputs.length, allMediaLoaded]);
 
   const moveOutput = (modelId: string, direction: -1 | 1) => {
     setOrderedIds(prev => {
@@ -121,11 +143,12 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
   };
 
   const handleLoadStatusChange = useCallback((modelId: string, isLoaded: boolean) => {
+    if (mediaCycleKeyRef.current !== mediaCycleKey) return;
     setLoaded(prev => {
       if (prev[modelId] === isLoaded) return prev;
       return { ...prev, [modelId]: isLoaded };
     });
-  }, []);
+  }, [mediaCycleKey]);
 
   const handleDrop = (targetId: string) => {
     if (!draggedId || draggedId === targetId) return;
@@ -171,6 +194,11 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
           {onGoBack && (
             <button onClick={onGoBack} className="border-l border-white/10 pl-4 text-sm font-medium text-slate-200 transition-colors hover:text-white">
               上一题
+            </button>
+          )}
+          {onSkip && (
+            <button onClick={onSkip} className="border-l border-white/10 pl-4 text-sm font-medium text-amber-200 transition-colors hover:text-amber-100">
+              <span className="inline-flex items-center gap-1.5"><SkipForward size={15} /> 跳过本题</span>
             </button>
           )}
           {onBack && (
@@ -229,7 +257,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
             <div className="grid min-w-0 grid-cols-1 content-start gap-4 md:grid-cols-2 2xl:grid-cols-3">
               {orderedOutputs.map((output, index) => (
                 <div
-                  key={output.modelId}
+                  key={`${mediaCycleKey}-${output.modelId}-${output.url}`}
                   draggable
                   onDragStart={() => setDraggedId(output.modelId)}
                   onDragOver={(event) => event.preventDefault()}
@@ -267,6 +295,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
                   </div>
                   <div className="min-h-[280px] flex-1 overflow-hidden bg-black/55 p-1">
                     <MediaRenderer
+                      key={`${mediaCycleKey}-${output.modelId}-${output.url}-media`}
                       url={output.url}
                       label={`Option ${index + 1}`}
                       isActive={true}

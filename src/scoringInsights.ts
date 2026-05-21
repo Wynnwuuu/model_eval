@@ -2,6 +2,7 @@ import { EvalDimension, EvaluationConfig, EvaluationItem, ModelOutput, VoteRecor
 import { getDimensionValuesForItem } from './dimensionUtils';
 import { getModelOutputsForItem, resolveEvaluationItemPrompt } from './rankingUtils';
 import { normalizeDimensions, scoreDimensionWeightTotal } from './evaluationMethods';
+import { getEffectiveVotes } from './voteUtils';
 
 const escapeCsv = (value: any) => `"${String(value ?? '').replace(/"/g, '""')}"`;
 
@@ -158,10 +159,11 @@ export const buildScoreInsights = ({
   models: { id: string; name: string }[];
   config: EvaluationConfig;
 }): ScoreInsightBundle => {
+  const effectiveVotes = getEffectiveVotes(votes);
   const scoreDimensions = getScoreDimensions(config);
   const rationaleDimensions = getRationaleDimensions(config);
   const itemMap = new Map(items.map(item => [item.id, item]));
-  const voters = new Set(votes.map(vote => vote.user || 'Anonymous'));
+  const voters = new Set(effectiveVotes.map(vote => vote.user || 'Anonymous'));
   const modelScores = new Map<string, number[]>();
   const modelDimensionScores = new Map<string, Map<string, number[]>>();
   const caseMap = new Map<string, ScoreCaseSummary>();
@@ -171,7 +173,7 @@ export const buildScoreInsights = ({
     modelDimensionScores.set(model.id, new Map(scoreDimensions.map(dimension => [dimension.id, []])));
   });
 
-  votes.forEach(vote => {
+  effectiveVotes.forEach(vote => {
     const item = itemMap.get(vote.itemId);
     const responses = vote.rubricResponses || {};
     const outputs = getModelOutputsForItem(item as EvaluationItem | undefined, models);
@@ -302,11 +304,12 @@ export const buildPairwiseInsights = ({
   votes: VoteRecord[];
   models: { id: string; name: string }[];
 }): PairwiseInsightBundle => {
+  const effectiveVotes = getEffectiveVotes(votes);
   const itemMap = new Map(items.map(item => [item.id, item]));
   const modelStats = new Map<string, PairwiseModelSummary>();
   const matchups = new Map<string, PairwiseMatchupSummary>();
   const cases = new Map<string, PairwiseInsightBundle['cases'][number]>();
-  const voters = new Set(votes.map(vote => vote.user || 'Anonymous'));
+  const voters = new Set(effectiveVotes.map(vote => vote.user || 'Anonymous'));
 
   models.forEach(model => {
     modelStats.set(model.id, {
@@ -321,7 +324,7 @@ export const buildPairwiseInsights = ({
     });
   });
 
-  votes.forEach(vote => {
+  effectiveVotes.forEach(vote => {
     const pair = vote.pairContext;
     if (!pair || !vote.vote) return;
     const key = pairKey(pair.modelAId, pair.modelBId);
@@ -417,7 +420,7 @@ export const buildPairwiseInsights = ({
     summary: {
       itemCount: cases.size,
       voterCount: voters.size,
-      comparisonCount: votes.filter(vote => vote.pairContext && vote.vote).length,
+      comparisonCount: effectiveVotes.filter(vote => vote.pairContext && vote.vote).length,
       topModelName: modelsSorted[0]?.modelName || '-',
       topWinRate: modelsSorted[0]?.nonTieWinRate || 0
     },

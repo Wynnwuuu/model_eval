@@ -2,6 +2,7 @@ import React from 'react';
 import { Download, Trash2, Calendar, User, ArrowLeft, BarChart3 } from 'lucide-react';
 import { HistorySession, VotingStats } from '../types';
 import { calculateArenaRankModelStats, getArenaRankModelOutputUrl, getBordaScore, isArenaRankVote, resolveEvaluationItemPrompt, sortRanking } from '../rankingUtils';
+import { getEffectiveVotes, getSkippedVoteCount, isSkippedVote } from '../voteUtils';
 
 interface HistoryScreenProps {
   history: HistorySession[];
@@ -14,7 +15,7 @@ interface HistoryScreenProps {
 const HistoryScreen: React.FC<HistoryScreenProps> = ({ history, onBack, onClearHistory, onDeleteSession, onGoToDashboard }) => {
   
   const calculateStats = (votes: any[]): VotingStats => {
-    return votes.reduce(
+    return getEffectiveVotes(votes).reduce(
       (acc, curr) => {
         acc.total++;
         if (curr.vote === 'A') acc.aCount++;
@@ -28,7 +29,7 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ history, onBack, onClearH
 
   const downloadCSV = (session: HistorySession) => {
     if (session.paradigm === 'Arena-rank') {
-      const rankVotes = session.votes.filter(isArenaRankVote);
+      const rankVotes = getEffectiveVotes(session.votes).filter(isArenaRankVote);
       const modelList = session.models?.length
         ? session.models
         : calculateArenaRankModelStats(rankVotes).map(stat => ({ id: stat.modelId, name: stat.modelName }));
@@ -36,8 +37,8 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ history, onBack, onClearH
       const rankHeaders = Array.from({ length: maxRankCount }, (_, idx) => `rank_${idx + 1}`);
       const rankVideoHeaders = Array.from({ length: maxRankCount }, (_, idx) => `排名${idx + 1}视频链接`);
       const modelHeaders = modelList.flatMap(model => [`${model.name}_rank`, `${model.name}_score`]);
-      const headers = ['ItemID', 'Prompt', 'Timestamp', 'User', ...rankHeaders, ...rankVideoHeaders, ...modelHeaders, 'ranking_json'];
-      const rows = rankVotes.map(v => {
+      const headers = ['ItemID', 'Prompt', 'Status', 'Timestamp', 'User', ...rankHeaders, ...rankVideoHeaders, ...modelHeaders, 'ranking_json'];
+      const rows = session.votes.filter(v => isArenaRankVote(v) || isSkippedVote(v)).map(v => {
         const item = session.items.find(candidate => candidate.id === v.itemId);
         const ranking = sortRanking(v.ranking);
         const rankValues = rankHeaders.map((_, idx) => {
@@ -55,6 +56,7 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ history, onBack, onClearH
         return [
           v.itemId,
           resolveEvaluationItemPrompt(item),
+          isSkippedVote(v) ? 'skipped' : 'ranked',
           new Date(v.timestamp).toISOString(),
           session.userName || 'Anonymous',
           ...rankValues,
@@ -76,14 +78,15 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ history, onBack, onClearH
       return;
     }
 
-    const headers = ['ItemID', 'ModelA_URL', 'ModelB_URL', 'Winner', 'Timestamp', 'User', 'ModelA_Name', 'ModelB_Name', 'References'];
+    const headers = ['ItemID', 'Status', 'ModelA_URL', 'ModelB_URL', 'Winner', 'Timestamp', 'User', 'ModelA_Name', 'ModelB_Name', 'References'];
     const rows = session.votes.map(v => {
       const item = session.items.find(i => i.id === v.itemId);
       return [
         v.itemId,
+        isSkippedVote(v) ? 'skipped' : 'voted',
         item?.modelA_Url || '',
         item?.modelB_Url || '',
-        v.vote,
+        isSkippedVote(v) ? '' : v.vote,
         new Date(v.timestamp).toISOString(),
         session.userName || 'Anonymous',
         session.modelNames.a,
@@ -148,8 +151,9 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ history, onBack, onClearH
         <div className="space-y-4">
           {history.sort((a, b) => b.timestamp - a.timestamp).map((session) => {
             const isRankSession = session.paradigm === 'Arena-rank';
-            const rankStats = calculateArenaRankModelStats(session.votes.filter(isArenaRankVote));
+            const rankStats = calculateArenaRankModelStats(getEffectiveVotes(session.votes).filter(isArenaRankVote));
             const stats = calculateStats(session.votes);
+            const skippedCount = getSkippedVoteCount(session.votes);
             const aPercent = stats.total ? Math.round((stats.aCount / stats.total) * 100) : 0;
             const bPercent = stats.total ? Math.round((stats.bCount / stats.total) * 100) : 0;
             const tiePercent = stats.total ? 100 - aPercent - bPercent : 0;
@@ -181,7 +185,7 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ history, onBack, onClearH
                       )}
                     </div>
                     <div className="text-sm text-slate-400 mt-1">
-                      已评测 {session.items.length} 项
+                      已评测 {session.items.length} 项{skippedCount > 0 ? `，跳过 ${skippedCount} 项` : ''}
                     </div>
                   </div>
 

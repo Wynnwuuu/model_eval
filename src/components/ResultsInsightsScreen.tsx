@@ -48,6 +48,7 @@ interface ResultsInsightsScreenProps {
   rawVoteRows?: RawAbVoteRow[];
   modelNames?: InsightModelNames;
   models?: { id: string; name: string }[];
+  skippedCount?: number;
   onBack?: () => void;
   backLabel?: string;
 }
@@ -609,6 +610,7 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
   rawVoteRows = [],
   modelNames,
   models = [],
+  skippedCount = 0,
   onBack,
   backLabel = '返回结果明细'
 }) => {
@@ -665,6 +667,12 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
       {controls && (
         <div className="mb-6">
           {controls}
+        </div>
+      )}
+
+      {skippedCount > 0 && (
+        <div className="mb-6 rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+          已跳过 {skippedCount} 题；本页统计和导出仅使用有效评审记录。
         </div>
       )}
 

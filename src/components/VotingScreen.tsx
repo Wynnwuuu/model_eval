@@ -1,5 +1,5 @@
-import React, { useEffect, useCallback, useState } from 'react';
-import { CheckCircle2, ChevronDown, ChevronUp, Cloud, Equal, Expand, ThumbsUp, ArrowLeft, ArrowRight, Shuffle } from 'lucide-react';
+import React, { useEffect, useCallback, useRef, useState } from 'react';
+import { CheckCircle2, ChevronDown, ChevronUp, Cloud, Equal, Expand, ThumbsUp, ArrowLeft, ArrowRight, Shuffle, SkipForward } from 'lucide-react';
 import { EvaluationItem, VoteType } from '../types';
 import MediaRenderer from './MediaRenderer';
 import { KEYBOARD_SHORTCUTS, VIDEO_EXTENSIONS } from '../constants';
@@ -16,6 +16,7 @@ interface VotingScreenProps {
   onEnd: () => void;
   onBack?: () => void;
   onGoBack?: () => void;
+  onSkip?: () => void;
   allowTie?: boolean;
 }
 
@@ -37,6 +38,7 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
   onEnd,
   onBack,
   onGoBack,
+  onSkip,
   allowTie = true
 }) => {
   const [showFullPrompt, setShowFullPrompt] = useState(false);
@@ -99,6 +101,19 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
   const rightData = isSwapped
     ? { url: item.modelA_Url, voteVal: 'A' as VoteType }
     : { url: item.modelB_Url, voteVal: 'B' as VoteType };
+  const mediaCycleKey = [currentIndex, item.id, item.type, leftData.url, rightData.url].join('|');
+  const mediaCycleKeyRef = useRef(mediaCycleKey);
+  mediaCycleKeyRef.current = mediaCycleKey;
+
+  const handleLeftLoadStatus = useCallback((isLoaded: boolean) => {
+    if (mediaCycleKeyRef.current !== mediaCycleKey) return;
+    setLeftLoaded(isLoaded);
+  }, [mediaCycleKey]);
+
+  const handleRightLoadStatus = useCallback((isLoaded: boolean) => {
+    if (mediaCycleKeyRef.current !== mediaCycleKey) return;
+    setRightLoaded(isLoaded);
+  }, [mediaCycleKey]);
 
   const handleKeyPress = useCallback((event: KeyboardEvent) => {
     if (event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLInputElement) return;
@@ -136,6 +151,7 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
 
   useEffect(() => {
     if (!nextItem) return;
+    const preloadElements: Array<HTMLImageElement | HTMLVideoElement> = [];
 
     const preloadMedia = (url: string) => {
       if (!url) return;
@@ -151,11 +167,13 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
         video.playsInline = true;
         video.setAttribute('referrerpolicy', 'no-referrer');
         video.src = normalizedUrl;
+        preloadElements.push(video);
       } else {
         const img = new Image();
         img.referrerPolicy = 'no-referrer';
         img.decoding = 'async';
         img.src = normalizedUrl;
+        preloadElements.push(img);
       }
     };
 
@@ -174,9 +192,21 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
     if (nextEffectiveRefs && nextEffectiveRefs.length > 0) {
       nextEffectiveRefs.forEach(preloadMedia);
     }
+
+    return () => {
+      preloadElements.forEach(element => {
+        if (element instanceof HTMLVideoElement) {
+          element.removeAttribute('src');
+          element.load();
+        } else {
+          element.src = '';
+        }
+      });
+    };
   }, [nextItem]);
 
   useEffect(() => {
+    mediaCycleKeyRef.current = mediaCycleKey;
     setShowFullPrompt(false);
     setShowReference(false);
     setCurrentRefIndex(0);
@@ -187,7 +217,7 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
     setJustSaved(true);
     const timer = setTimeout(() => setJustSaved(false), 2000);
     return () => clearTimeout(timer);
-  }, [item.id]);
+  }, [mediaCycleKey]);
 
   useEffect(() => {
     if (allMediaLoaded) {
@@ -200,7 +230,7 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
     }, VOTE_MEDIA_WAIT_FALLBACK_MS);
 
     return () => window.clearTimeout(timer);
-  }, [item.id, allMediaLoaded]);
+  }, [mediaCycleKey, allMediaLoaded]);
 
   return (
     <div className="ark-operation-screen h-full flex flex-col">
@@ -226,6 +256,11 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
           {onGoBack && (
             <button onClick={onGoBack} className="border-l border-white/10 pl-4 text-sm font-medium text-slate-200 transition-colors hover:text-white">
               上一题
+            </button>
+          )}
+          {onSkip && (
+            <button onClick={onSkip} className="border-l border-white/10 pl-4 text-sm font-medium text-amber-200 transition-colors hover:text-amber-100">
+              <span className="inline-flex items-center gap-1.5"><SkipForward size={15} /> 跳过本题</span>
             </button>
           )}
           {onBack && (
@@ -289,10 +324,11 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
             <div className="ark-vote-card flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden transition-colors hover:border-[var(--accent-cold)]">
               <div className="relative min-h-0 flex-1 overflow-hidden bg-black/55 p-1">
                 <MediaRenderer
+                  key={`left-${mediaCycleKey}`}
                   url={leftData.url}
                   label="选项 1"
                   isActive={true}
-                  onLoadStatusChange={setLeftLoaded}
+                  onLoadStatusChange={handleLeftLoadStatus}
                   forceType={item.type}
                 />
               </div>
@@ -388,10 +424,11 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
             <div className="ark-vote-card flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden transition-colors hover:border-[var(--accent)]">
               <div className="relative min-h-0 flex-1 overflow-hidden bg-black/55 p-1">
                 <MediaRenderer
+                  key={`right-${mediaCycleKey}`}
                   url={rightData.url}
                   label="选项 2"
                   isActive={true}
-                  onLoadStatusChange={setRightLoaded}
+                  onLoadStatusChange={handleRightLoadStatus}
                   forceType={item.type}
                 />
               </div>

@@ -9,6 +9,7 @@ import ResultsInsightsScreen from './ResultsInsightsScreen';
 import ScoreInsightsScreen from './ScoreInsightsScreen';
 import { getDefaultEvaluationConfig, getMethodFromParadigm, isPairwiseMethod, isPreviewMethod, isRankMethod, isScoreMethod } from '../evaluationMethods';
 import { buildScoreCaseCsv, buildPairwiseCaseCsv, buildScoreInsights, buildPairwiseInsights } from '../scoringInsights';
+import { getEffectiveVotes, getSkippedVoteCount, isSkippedVote } from '../voteUtils';
 
 interface ResultsScreenProps {
   votes: VoteRecord[];
@@ -29,7 +30,9 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
   const activeConfig = evaluationConfig || getDefaultEvaluationConfig(getMethodFromParadigm(paradigm as EvalParadigm));
   const isArenaRank = isRankMethod(activeConfig);
   const isBenchmarkPreview = isPreviewMethod(activeConfig);
-  const rankVotes = votes.filter(isArenaRankVote);
+  const effectiveVotes = getEffectiveVotes(votes);
+  const skippedCount = getSkippedVoteCount(votes);
+  const rankVotes = effectiveVotes.filter(isArenaRankVote);
   const rankStats = calculateArenaRankModelStats(rankVotes);
   const arenaRankModelList = models.length > 0
     ? models
@@ -38,7 +41,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
   const dimensionColumns = getDimensionColumnsForCsv(items);
 
   // Calculate Stats
-  const stats: VotingStats = votes.reduce(
+  const stats: VotingStats = effectiveVotes.reduce(
     (acc, curr) => {
       acc.total++;
       if (curr.vote === 'A') acc.aCount++;
@@ -53,7 +56,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
   const bPercent = stats.total ? Math.round((stats.bCount / stats.total) * 100) : 0;
   const tiePercent = stats.total ? 100 - aPercent - bPercent : 0;
   const aggregatedResultItems = items.map(item => {
-    const itemVotes = votes.filter(v => v.itemId === item.id && v.vote);
+    const itemVotes = effectiveVotes.filter(v => v.itemId === item.id && v.vote);
     return {
       itemId: item.id,
       prompt: resolveEvaluationItemPrompt(item),
@@ -200,12 +203,13 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
           mode="score"
           title={activeConfig.method === 'rubric_score' ? 'Rubric 单次结果洞察' : 'MOS 单次结果洞察'}
           items={items}
-          votes={votes}
+          votes={effectiveVotes}
           models={models.length ? models : [
             { id: 'model-0', name: modelNames.a },
             { id: 'model-1', name: modelNames.b }
           ]}
           config={activeConfig}
+          skippedCount={skippedCount}
           onBack={() => setShowInsights(false)}
           backLabel="查看单次结果明细"
         />
@@ -218,11 +222,12 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
           mode="pairwise"
           title="Pairwise 单次结果洞察"
           items={items}
-          votes={votes}
+          votes={effectiveVotes}
           models={models.length ? models : [
             { id: 'model-0', name: modelNames.a },
             { id: 'model-1', name: modelNames.b }
           ]}
+          skippedCount={skippedCount}
           onBack={() => setShowInsights(false)}
           backLabel="查看单次结果明细"
         />
@@ -234,9 +239,10 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
         mode={isArenaRank ? 'rank' : 'ab'}
         title={isArenaRank ? 'Arena-rank 单次结果洞察' : '单次评测结果洞察'}
         items={items}
-        votes={votes}
+        votes={effectiveVotes}
         modelNames={modelNames}
         models={arenaRankModelList}
+        skippedCount={skippedCount}
         onBack={() => setShowInsights(false)}
         backLabel="查看单次结果明细"
       />
@@ -247,7 +253,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
     if (isScoreMethod(activeConfig)) {
       const bundle = buildScoreInsights({
         items,
-        votes,
+        votes: effectiveVotes,
         models: models.length ? models : [
           { id: 'model-0', name: modelNames.a },
           { id: 'model-1', name: modelNames.b }
@@ -269,7 +275,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
     if (isPairwiseMethod(activeConfig)) {
       const bundle = buildPairwiseInsights({
         items,
-        votes,
+        votes: effectiveVotes,
         models: models.length ? models : [
           { id: 'model-0', name: modelNames.a },
           { id: 'model-1', name: modelNames.b }
@@ -291,8 +297,8 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
       const rankHeaders = Array.from({ length: maxRankCount }, (_, idx) => `rank_${idx + 1}`);
       const rankVideoHeaders = Array.from({ length: maxRankCount }, (_, idx) => `排名${idx + 1}视频链接`);
       const modelHeaders = arenaRankModelList.flatMap(model => [`${model.name}_rank`, `${model.name}_score`]);
-      const headers = ['ItemID', 'Prompt', ...dimensionColumns.map(col => col.header), 'Timestamp', 'User', ...rankHeaders, ...rankVideoHeaders, ...modelHeaders, 'ranking_json'];
-      const rows = rankVotes.map(v => {
+      const headers = ['ItemID', 'Prompt', ...dimensionColumns.map(col => col.header), 'Status', 'Timestamp', 'User', ...rankHeaders, ...rankVideoHeaders, ...modelHeaders, 'ranking_json'];
+      const rows = votes.filter(v => isArenaRankVote(v) || isSkippedVote(v)).map(v => {
         const item = items.find(candidate => candidate.id === v.itemId);
         const ranking = sortRanking(v.ranking);
         const dimensionValues = getDimensionValuesForItem(item);
@@ -315,6 +321,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
           v.itemId,
           resolveEvaluationItemPrompt(item),
           ...getDimensionCsvValues(dimensionValues, dimensionColumns.map(col => col.key)),
+          isSkippedVote(v) ? 'skipped' : 'ranked',
           new Date(v.timestamp).toISOString(),
           userName || v.user || 'Anonymous',
           ...rankValues,
@@ -337,7 +344,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
     }
 
     // Standard cols: ItemID, Prompt, dimensions, model urls, winner, timestamp, user, model names, references
-    const headers = ['ItemID', 'Prompt', ...dimensionColumns.map(col => col.header), 'ModelA_URL', 'ModelB_URL', 'Winner', 'Timestamp', 'User', 'ModelA_Name', 'ModelB_Name', 'References'];
+    const headers = ['ItemID', 'Prompt', ...dimensionColumns.map(col => col.header), 'Status', 'ModelA_URL', 'ModelB_URL', 'Winner', 'Timestamp', 'User', 'ModelA_Name', 'ModelB_Name', 'References'];
     const rows = votes.map(v => {
       const item = items.find(i => i.id === v.itemId);
       const dimensionValues = getDimensionValuesForItem(item);
@@ -345,9 +352,10 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
         v.itemId,
         resolveEvaluationItemPrompt(item),
         ...getDimensionCsvValues(dimensionValues, dimensionColumns.map(col => col.key)),
+        isSkippedVote(v) ? 'skipped' : 'voted',
         item?.modelA_Url || '',
         item?.modelB_Url || '',
-        v.vote,
+        isSkippedVote(v) ? '' : v.vote,
         new Date(v.timestamp).toISOString(),
         userName || 'Anonymous',
         modelNames.a,
@@ -377,6 +385,12 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
           <h1 className="text-4xl font-bold text-slate-200 mb-2">Arena-rank 完成</h1>
           <p className="text-slate-300">{userName || 'Evaluator'} 的多视频排名结果</p>
         </div>
+
+        {skippedCount > 0 && (
+          <div className="mb-6 rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-center text-sm text-amber-100">
+            已跳过 {skippedCount} 题；排名统计仅基于 {rankVotes.length} 条有效排名记录。
+          </div>
+        )}
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
           {rankStats.slice(0, 3).map((stat, index) => (
@@ -514,6 +528,12 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
         <p className="text-slate-200">干得好，{userName || '评测者'}！以下是模型的表现。</p>
       </div>
 
+      {skippedCount > 0 && (
+        <div className="mb-6 rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-center text-sm text-amber-100">
+          已跳过 {skippedCount} 题；统计仅基于 {effectiveVotes.length} 条有效评审记录。
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
         {/* Stat Cards */}
         <div className={`p-6 rounded-2xl border-2 ${stats.aCount >= stats.bCount ? 'bg-blue-500/10 border-blue-200' : 'glass-panel/5 border-white/10'} shadow-md shadow-black/20`}>
@@ -636,7 +656,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
               </tr>
             </thead>
             <tbody>
-              {votes.map((v, i) => {
+              {effectiveVotes.map((v, i) => {
                 const item = items.find(candidate => candidate.id === v.itemId);
                 return (
                   <tr key={i} className="border-b border-white/10 glass-panel-hover">
