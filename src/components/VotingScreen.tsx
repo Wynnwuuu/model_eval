@@ -3,7 +3,7 @@ import { CheckCircle2, ChevronDown, ChevronUp, Cloud, Equal, Expand, ThumbsUp, A
 import { EvaluationItem, VoteType } from '../types';
 import MediaRenderer from './MediaRenderer';
 import { KEYBOARD_SHORTCUTS, VIDEO_EXTENSIONS } from '../constants';
-import { resolveMediaPlaybackUrl } from '../mediaProxy';
+import { resolveMediaPlaybackCandidates } from '../mediaProxy';
 import DimensionChips from './DimensionChips';
 import { getDimensionValuesForItem, hasDimensionValues } from '../dimensionUtils';
 
@@ -155,7 +155,7 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
 
     const preloadMedia = (url: string) => {
       if (!url) return;
-      const normalizedUrl = resolveMediaPlaybackUrl(url);
+      const normalizedUrl = resolveMediaPlaybackCandidates(url)[0]?.url || '';
       if (!normalizedUrl) return;
 
       const cleanUrl = normalizedUrl.split('?')[0].split('#')[0].toLowerCase();
@@ -177,8 +177,7 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
       }
     };
 
-    if (nextItem.modelA_Url) preloadMedia(nextItem.modelA_Url);
-    if (nextItem.modelB_Url) preloadMedia(nextItem.modelB_Url);
+    const preloadUrls = [nextItem.modelA_Url, nextItem.modelB_Url].filter(Boolean) as string[];
 
     const nextEffectiveRefs = nextItem.referenceUrls || (() => {
       if (!nextItem.inputs) return undefined;
@@ -190,8 +189,10 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
     })();
 
     if (nextEffectiveRefs && nextEffectiveRefs.length > 0) {
-      nextEffectiveRefs.forEach(preloadMedia);
+      preloadUrls.push(nextEffectiveRefs[0]);
     }
+
+    preloadUrls.slice(0, allMediaLoaded ? 3 : 1).forEach(preloadMedia);
 
     return () => {
       preloadElements.forEach(element => {
@@ -203,7 +204,7 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
         }
       });
     };
-  }, [nextItem]);
+  }, [nextItem, allMediaLoaded]);
 
   useEffect(() => {
     mediaCycleKeyRef.current = mediaCycleKey;
@@ -446,7 +447,7 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
           </div>
           {mediaWaitTimedOut && !allMediaLoaded && (
             <div className="mx-4 mb-4 border border-amber-400/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-100 md:mx-6">
-              部分媒体响应较慢，已解除投票等待。建议确认画面后投票；媒体加载完成后会继续显示。
+              {'\u5a92\u4f53\u4ecd\u5728\u52a0\u8f7d\u3002\u8bf7\u4f18\u5148\u7b49\u5f85\u753b\u9762\u51fa\u73b0\uff1b\u5982\u957f\u65f6\u95f4\u65e0\u54cd\u5e94\uff0c\u53ef\u6253\u5f00\u539f\u94fe\u63a5\u6838\u5bf9\u6216\u8df3\u8fc7\u672c\u9898\u3002'}
             </div>
           )}
         </div>

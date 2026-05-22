@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, FileAudio, FileVideo, Image as ImageIcon, Loader2 } from 'lucide-react';
 import { VIDEO_EXTENSIONS } from '../constants';
-import { resolveMediaPlaybackUrl } from '../mediaProxy';
+import { resolveMediaPlaybackCandidates } from '../mediaProxy';
 
 interface MediaRendererProps {
   url: string;
@@ -13,28 +13,12 @@ interface MediaRendererProps {
   videoPreload?: 'none' | 'metadata' | 'auto';
 }
 
-// Some CDNs reject requests based on the Referer header. Try the strategies
-// most likely to work in embedded evaluation pages before showing a hard error.
 const REFERRER_POLICY_FALLBACKS = ['no-referrer', 'origin', 'unsafe-url'] as const;
 type ReferrerPolicyOption = typeof REFERRER_POLICY_FALLBACKS[number];
 
 const MEDIA_SOFT_TIMEOUT_MS = 7000;
 const AUDIO_EXTENSIONS = ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'];
 const IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'avif', 'svg'];
-
-const withRetryToken = (url: string, retryToken: number): string => {
-  if (!url || retryToken === 0 || url.startsWith('data:') || url.startsWith('blob:')) {
-    return url;
-  }
-
-  try {
-    const parsed = new URL(url);
-    parsed.searchParams.set('evaltrack_retry', String(retryToken));
-    return parsed.toString();
-  } catch {
-    return `${url}${url.includes('?') ? '&' : '?'}evaltrack_retry=${retryToken}`;
-  }
-};
 
 const inferMediaTypeFromUrl = (url: string): 'image' | 'video' | 'audio' => {
   const cleanUrl = url.trim().split('?')[0].split('#')[0].toLowerCase();
@@ -91,12 +75,23 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
   forceType,
   videoPreload = 'auto'
 }) => {
+  const candidates = useMemo(() => resolveMediaPlaybackCandidates(url || ''), [url]);
+  const candidateSignature = useMemo(
+    () => candidates.map(candidate => `${candidate.kind}:${candidate.url}`).join('|'),
+    [candidates]
+  );
+  const [candidateIndex, setCandidateIndex] = useState(0);
+  const currentCandidate = candidates[Math.min(candidateIndex, Math.max(candidates.length - 1, 0))];
+  const finalUrl = currentCandidate?.url || '';
+  const originalUrl = candidates.find(candidate => candidate.kind === 'direct')?.url || finalUrl;
+  const proxyCandidateIndex = candidates.findIndex(candidate => candidate.kind === 'proxy');
+  const canUseProxy = proxyCandidateIndex >= 0 && proxyCandidateIndex !== candidateIndex;
+  const canUseDirect = candidateIndex > 0 && Boolean(originalUrl);
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [mediaType, setMediaType] = useState<'image' | 'video' | 'audio'>('image');
-  const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
-  const [retryToken, setRetryToken] = useState(0);
   const [referrerPolicyIdx, setReferrerPolicyIdx] = useState(0);
   const [softTimedOut, setSoftTimedOut] = useState(false);
   const [errorStatus, setErrorStatus] = useState<number | null>(null);
@@ -108,19 +103,52 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
   const imgRef = useRef<HTMLImageElement | null>(null);
 
   const referrerPolicy: ReferrerPolicyOption = REFERRER_POLICY_FALLBACKS[referrerPolicyIdx];
-  const finalUrl = resolveMediaPlaybackUrl(url || '');
   const hasMergedUrl = (finalUrl.match(/https?:\/\//g) || []).length > 1;
-  const mediaSrc = blobUrl || withRetryToken(finalUrl, retryToken);
   const mediaRequestKey = useMemo(
-    () => `${mediaType}::${mediaSrc || ''}::${referrerPolicy}::${retryKey}`,
-    [mediaType, mediaSrc, referrerPolicy, retryKey]
+    () => `${mediaType}::${finalUrl || ''}::${currentCandidate?.kind || 'none'}::${referrerPolicy}::${retryKey}`,
+    [mediaType, finalUrl, currentCandidate?.kind, referrerPolicy, retryKey]
   );
 
   const isActiveRequest = useCallback((requestKey: string) => requestKey === activeRequestKeyRef.current, []);
 
+  const inferCurrentMediaType = useCallback((candidateUrl: string) => (
+    isForcedMediaType(forceType) ? forceType : inferMediaTypeFromUrl(candidateUrl)
+  ), [forceType]);
+
+  const resetCurrentRequest = useCallback(() => {
+    setLoading(true);
+    setError(false);
+    setErrorStatus(null);
+    setSoftTimedOut(false);
+    setReferrerPolicyIdx(0);
+    setRetryKey(prev => prev + 1);
+    onLoadStatusChangeRef.current?.(false);
+  }, []);
+
+  const switchToCandidate = useCallback((nextIndex: number) => {
+    if (nextIndex < 0 || nextIndex >= candidates.length) return;
+    setCandidateIndex(nextIndex);
+    setMediaType(inferCurrentMediaType(candidates[nextIndex].url));
+    resetCurrentRequest();
+  }, [candidates, inferCurrentMediaType, resetCurrentRequest]);
+
   useEffect(() => {
     onLoadStatusChangeRef.current = onLoadStatusChange;
   }, [onLoadStatusChange]);
+
+  useEffect(() => {
+    setCandidateIndex(0);
+    setReferrerPolicyIdx(0);
+    setRetryKey(prev => prev + 1);
+    setSoftTimedOut(false);
+    setErrorStatus(null);
+    setError(false);
+    setMediaType(inferCurrentMediaType(candidates[0]?.url || ''));
+  }, [candidateSignature, inferCurrentMediaType, candidates]);
+
+  useEffect(() => {
+    setMediaType(inferCurrentMediaType(finalUrl));
+  }, [finalUrl, inferCurrentMediaType]);
 
   useEffect(() => {
     activeRequestKeyRef.current = mediaRequestKey;
@@ -148,33 +176,7 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
     setErrorStatus(null);
     setSoftTimedOut(false);
     onLoadStatusChangeRef.current?.(false);
-  }, [finalUrl, mediaRequestKey]);
-
-  useEffect(() => {
-    if (!finalUrl) return;
-
-    setRetryToken(0);
-    setRetryKey(prev => prev + 1);
-    setBlobUrl(null);
-    setReferrerPolicyIdx(0);
-
-    if (hasMergedUrl) {
-      setError(true);
-      setLoading(false);
-      onLoadStatusChangeRef.current?.(true);
-      return;
-    }
-
-    setMediaType(isForcedMediaType(forceType) ? forceType : inferMediaTypeFromUrl(finalUrl));
-  }, [finalUrl, forceType, hasMergedUrl]);
-
-  useEffect(() => {
-    return () => {
-      if (blobUrl) {
-        URL.revokeObjectURL(blobUrl);
-      }
-    };
-  }, [blobUrl]);
+  }, [finalUrl, hasMergedUrl, mediaRequestKey]);
 
   const handleLoad = useCallback((requestKey: string) => {
     if (!isActiveRequest(requestKey)) return;
@@ -198,6 +200,11 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
       return;
     }
 
+    if (candidateIndex < candidates.length - 1) {
+      switchToCandidate(candidateIndex + 1);
+      return;
+    }
+
     setLoading(false);
     setError(true);
     setSoftTimedOut(false);
@@ -210,13 +217,13 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
   };
 
   useEffect(() => {
-    if (mediaType !== 'image' || error || !mediaSrc) return;
+    if (mediaType !== 'image' || error || !finalUrl) return;
 
     const image = imgRef.current;
     if (image?.complete && image.naturalWidth > 0) {
       handleLoad(mediaRequestKey);
     }
-  }, [mediaType, mediaSrc, mediaRequestKey, retryKey, referrerPolicyIdx, error, handleLoad]);
+  }, [mediaType, finalUrl, mediaRequestKey, retryKey, referrerPolicyIdx, error, handleLoad]);
 
   useEffect(() => {
     if (mediaType !== 'video' || error || !loading) return;
@@ -235,7 +242,7 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
     return () => {
       checks.forEach(window.clearTimeout);
     };
-  }, [mediaType, mediaSrc, mediaRequestKey, retryKey, error, loading, handleLoad, isActiveRequest]);
+  }, [mediaType, finalUrl, mediaRequestKey, retryKey, error, loading, handleLoad, isActiveRequest]);
 
   useEffect(() => {
     if (!loading || error || !finalUrl) return;
@@ -247,28 +254,15 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
     }, MEDIA_SOFT_TIMEOUT_MS);
 
     return () => window.clearTimeout(softTimeout);
-  }, [loading, error, finalUrl, mediaSrc, mediaType, mediaRequestKey, isActiveRequest]);
+  }, [loading, error, finalUrl, mediaType, mediaRequestKey, isActiveRequest]);
 
   const triggerRetry = () => {
-    setLoading(true);
-    setError(false);
-    setErrorStatus(null);
-    setSoftTimedOut(false);
-    setBlobUrl(null);
-    setRetryToken(Date.now());
-    setReferrerPolicyIdx(0);
-    setRetryKey(prev => prev + 1);
+    resetCurrentRequest();
   };
 
   const toggleMediaType = () => {
     setMediaType(prev => prev === 'image' ? 'video' : 'image');
-    setLoading(true);
-    setError(false);
-    setErrorStatus(null);
-    setSoftTimedOut(false);
-    setRetryToken(Date.now());
-    setReferrerPolicyIdx(0);
-    setRetryKey(prev => prev + 1);
+    resetCurrentRequest();
   };
 
   if (!finalUrl) {
@@ -280,6 +274,8 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
     );
   }
 
+  const sourceLabel = currentCandidate?.kind === 'proxy' ? '代理加载' : '直连加载';
+
   return (
     <div className={`relative w-full h-full min-h-0 flex flex-col bg-black/40 rounded-xl overflow-hidden border border-white/10 shadow-xl group ${className}`}>
       {label && (
@@ -289,8 +285,9 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
       )}
 
       {loading && !error && (
-        <div className="absolute inset-0 flex items-center justify-center bg-white/5 z-10">
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white/5 z-10">
           <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
+          <span className="text-xs text-slate-300">{sourceLabel}</span>
         </div>
       )}
 
@@ -301,32 +298,46 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
             {errorStatus ? `加载失败（浏览器媒体错误 ${errorStatus}）` : (hasMergedUrl ? '检测到多个链接被合并' : '加载失败')}
           </p>
           <p className="text-xs text-slate-500 mt-1 break-all max-w-full px-4 select-all">
-            {errorStatus
-              ? '已自动尝试 no-referrer / origin / unsafe-url 三种 Referrer 策略仍失败。常见原因：CDN 未放行当前域名、链接签名过期、服务端不支持浏览器嵌入播放，或资源响应格式不符合媒体标签要求。'
-              : (hasMergedUrl
-                ? '表格解析可能失败，多个列内容被合并到了同一个链接中。请检查上传文件的分隔符，建议使用逗号或制表符。'
-                : `尝试加载的链接：${finalUrl}`)}
+            {hasMergedUrl
+              ? '表格解析可能失败，多个列内容被合并到了同一个链接中。请检查上传文件的分隔符，建议使用逗号或制表符。'
+              : `当前尝试：${sourceLabel}。链接：${finalUrl}`}
           </p>
           <div className="mt-4 flex flex-wrap justify-center gap-3">
             <button
               onClick={triggerRetry}
               className="px-3 py-1.5 bg-white/10 glass-panel-hover text-slate-200 rounded-lg text-xs font-medium transition-colors"
             >
-              重试
+              重试当前源
             </button>
+            {canUseProxy && (
+              <button
+                onClick={() => switchToCandidate(proxyCandidateIndex)}
+                className="px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 rounded-lg text-xs font-medium transition-colors"
+              >
+                使用代理加载
+              </button>
+            )}
+            {canUseDirect && (
+              <button
+                onClick={() => switchToCandidate(0)}
+                className="px-3 py-1.5 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 rounded-lg text-xs font-medium transition-colors"
+              >
+                重新直连
+              </button>
+            )}
             <button
               onClick={toggleMediaType}
-              className="px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 border border-amber-500/30 rounded-lg text-xs font-medium transition-colors"
+              className="px-3 py-1.5 bg-white/10 hover:bg-white/15 text-slate-200 border border-white/10 rounded-lg text-xs font-medium transition-colors"
             >
               尝试作为{mediaType === 'image' ? '视频' : '图片'}加载
             </button>
             <a
-              href={finalUrl}
+              href={originalUrl || finalUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 rounded-lg text-xs font-medium transition-colors"
+              className="px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 rounded-lg text-xs font-medium transition-colors"
             >
-              在新标签页打开
+              打开原链接
             </a>
           </div>
         </div>
@@ -337,7 +348,7 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
           <video
             key={`video-${mediaRequestKey}`}
             ref={videoRef}
-            src={mediaSrc || undefined}
+            src={finalUrl || undefined}
             className={`w-full h-full object-contain object-center focus:outline-none ${loading ? 'opacity-0' : 'opacity-100'}`}
             controls
             autoPlay={isActive}
@@ -360,7 +371,7 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
             <audio
               key={`audio-${mediaRequestKey}`}
               ref={audioRef}
-              src={mediaSrc || undefined}
+              src={finalUrl || undefined}
               className="w-full max-w-xl"
               controls
               autoPlay={isActive}
@@ -379,7 +390,7 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
           <img
             key={`img-${mediaRequestKey}`}
             ref={imgRef}
-            src={mediaSrc || undefined}
+            src={finalUrl || undefined}
             alt={label || ''}
             className={`w-full h-full object-contain object-center ${loading ? 'opacity-0' : 'opacity-100'}`}
             referrerPolicy={referrerPolicy}
@@ -391,7 +402,39 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
 
       {softTimedOut && !error && (
         <div className="absolute left-3 bottom-3 right-12 z-20 rounded-lg border border-amber-400/30 bg-black/70 px-3 py-2 text-xs text-amber-100 shadow-lg backdrop-blur-sm">
-          媒体响应较慢。你可以继续等待、重试，或打开原链接核对；当前题加载完成后会自动显示。
+          <div className="mb-2">媒体仍在加载。可继续等待、打开原链接核对，或切换到代理加载。</div>
+          <div className="flex flex-wrap gap-2">
+            {canUseProxy && (
+              <button
+                onClick={() => switchToCandidate(proxyCandidateIndex)}
+                className="rounded border border-amber-300/30 bg-amber-400/15 px-2 py-1 text-amber-100 hover:bg-amber-400/25"
+              >
+                使用代理加载
+              </button>
+            )}
+            {canUseDirect && (
+              <button
+                onClick={() => switchToCandidate(0)}
+                className="rounded border border-emerald-300/30 bg-emerald-400/15 px-2 py-1 text-emerald-100 hover:bg-emerald-400/25"
+              >
+                重新直连
+              </button>
+            )}
+            <button
+              onClick={triggerRetry}
+              className="rounded border border-white/10 bg-white/10 px-2 py-1 text-slate-100 hover:bg-white/15"
+            >
+              重试
+            </button>
+            <a
+              href={originalUrl || finalUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded border border-blue-300/30 bg-blue-400/15 px-2 py-1 text-blue-100 hover:bg-blue-400/25"
+            >
+              打开原链接
+            </a>
+          </div>
         </div>
       )}
 

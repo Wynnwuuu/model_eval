@@ -3,7 +3,7 @@ import { ArrowDown, ArrowUp, CheckCircle2, Cloud, GripVertical, SkipForward, Tro
 import { EvaluationItem, RankingEntry } from '../types';
 import { getModelOutputsForItem } from '../rankingUtils';
 import MediaRenderer from './MediaRenderer';
-import { resolveMediaPlaybackUrl } from '../mediaProxy';
+import { resolveMediaPlaybackCandidates } from '../mediaProxy';
 import { VIDEO_EXTENSIONS } from '../constants';
 import DimensionChips from './DimensionChips';
 import { getDimensionValuesForItem, hasDimensionValues } from '../dimensionUtils';
@@ -66,12 +66,27 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
     return () => clearTimeout(timer);
   }, [mediaCycleKey, sourceOutputs]);
 
+  const outputsById = new Map(sourceOutputs.map(output => [output.modelId, output]));
+  const orderedOutputs = orderedIds
+    .map(id => outputsById.get(id))
+    .filter(Boolean) as typeof sourceOutputs;
+  const dimensionValues = getDimensionValuesForItem(item as any);
+  const hasDimensions = hasDimensionValues(dimensionValues);
+
+  const progress = (currentIndex / totalItems) * 100;
+  const allMediaLoaded = orderedOutputs.length >= 3 && orderedOutputs.every(output => loaded[output.modelId]);
+  const canSubmit = allMediaLoaded || mediaWaitTimedOut;
+  const visibleInputs = item.inputs ? Object.entries(item.inputs) : [];
+
   useEffect(() => {
     if (!nextItem) return;
     const preloadElements: Array<HTMLImageElement | HTMLVideoElement> = [];
+    const nextUrls = getModelOutputsForItem(nextItem, models)
+      .map(output => output.url)
+      .filter(Boolean);
 
-    getModelOutputsForItem(nextItem, models).forEach(output => {
-      const normalizedUrl = resolveMediaPlaybackUrl(output.url);
+    nextUrls.slice(0, allMediaLoaded ? Math.min(3, nextUrls.length) : 1).forEach(url => {
+      const normalizedUrl = resolveMediaPlaybackCandidates(url)[0]?.url || '';
       if (!normalizedUrl) return;
 
       const cleanUrl = normalizedUrl.split('?')[0].split('#')[0].toLowerCase();
@@ -103,19 +118,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
         }
       });
     };
-  }, [nextItem, models]);
-
-  const outputsById = new Map(sourceOutputs.map(output => [output.modelId, output]));
-  const orderedOutputs = orderedIds
-    .map(id => outputsById.get(id))
-    .filter(Boolean) as typeof sourceOutputs;
-  const dimensionValues = getDimensionValuesForItem(item as any);
-  const hasDimensions = hasDimensionValues(dimensionValues);
-
-  const progress = (currentIndex / totalItems) * 100;
-  const allMediaLoaded = orderedOutputs.length >= 3 && orderedOutputs.every(output => loaded[output.modelId]);
-  const canSubmit = allMediaLoaded || mediaWaitTimedOut;
-  const visibleInputs = item.inputs ? Object.entries(item.inputs) : [];
+  }, [nextItem, models, allMediaLoaded]);
 
   useEffect(() => {
     if (orderedOutputs.length < 3 || allMediaLoaded) {
@@ -333,7 +336,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
               </button>
               {mediaWaitTimedOut && !allMediaLoaded && (
                 <div className="mt-3 border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-amber-100">
-                  部分媒体响应较慢，已允许提交；媒体加载完成后会继续显示。
+                  {'\u5a92\u4f53\u4ecd\u5728\u52a0\u8f7d\u3002\u8bf7\u4f18\u5148\u7b49\u5f85\u753b\u9762\u51fa\u73b0\uff1b\u5982\u957f\u65f6\u95f4\u65e0\u54cd\u5e94\uff0c\u53ef\u6253\u5f00\u539f\u94fe\u63a5\u6838\u5bf9\u6216\u8df3\u8fc7\u672c\u9898\u3002'}
                 </div>
               )}
             </aside>

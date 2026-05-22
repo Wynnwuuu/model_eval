@@ -26,6 +26,8 @@ type ResponseDraft = {
   reason: string;
 };
 
+const SCORE_MEDIA_WAIT_FALLBACK_MS = 10000;
+
 const isScoreDimension = (dimension: EvalDimension) =>
   dimension.type === 'star_rating' && dimension.aggregationRole !== 'rationale';
 
@@ -74,6 +76,7 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
 }) => {
   const [showFullPrompt, setShowFullPrompt] = useState(false);
   const [loaded, setLoaded] = useState<Record<string, boolean>>({});
+  const [mediaWaitTimedOut, setMediaWaitTimedOut] = useState(false);
   const [draft, setDraft] = useState<Record<string, ResponseDraft>>({});
   const [justSaved, setJustSaved] = useState(false);
 
@@ -96,6 +99,7 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
 
   useEffect(() => {
     setLoaded({});
+    setMediaWaitTimedOut(false);
     setShowFullPrompt(false);
     setJustSaved(true);
     const nextDraft = Object.fromEntries(outputs.map(output => [
@@ -106,6 +110,19 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
     const timer = setTimeout(() => setJustSaved(false), 2000);
     return () => clearTimeout(timer);
   }, [mediaCycleKey, outputs]);
+
+  useEffect(() => {
+    if (isTextLikeOutput || allMediaLoaded) {
+      setMediaWaitTimedOut(false);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setMediaWaitTimedOut(true);
+    }, SCORE_MEDIA_WAIT_FALLBACK_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [mediaCycleKey, isTextLikeOutput, allMediaLoaded]);
 
   const handleLoadStatusChange = useCallback((modelId: string, isLoaded: boolean) => {
     if (mediaCycleKeyRef.current !== mediaCycleKey) return;
@@ -157,6 +174,7 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
     const reasonReady = !config.requireReason || current.reason.trim().length > 0;
     return scoreReady && otherReady && reasonReady;
   });
+  const canSubmit = isComplete && (allMediaLoaded || mediaWaitTimedOut);
 
   const submit = () => {
     if (!isComplete) return;
@@ -343,17 +361,17 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
 
       <div className="ark-operation-header flex shrink-0 items-center justify-between px-6 py-3">
         <div className="text-xs text-slate-300">
-          {isComplete ? '评分已完成，可提交当前 case。' : '请完成必填评分项。'}
+          {mediaWaitTimedOut && !allMediaLoaded ? '\u5a92\u4f53\u4ecd\u5728\u52a0\u8f7d\u3002\u8bf7\u4f18\u5148\u7b49\u5f85\u753b\u9762\u51fa\u73b0\uff1b\u5982\u957f\u65f6\u95f4\u65e0\u54cd\u5e94\uff0c\u53ef\u6253\u5f00\u539f\u94fe\u63a5\u6838\u5bf9\u6216\u8df3\u8fc7\u672c\u9898\u3002' : isComplete ? '\u8bc4\u5206\u5df2\u5b8c\u6210\uff0c\u53ef\u4ee5\u63d0\u4ea4\u5f53\u524d case\u3002' : '\u8bf7\u5b8c\u6210\u5fc5\u586b\u8bc4\u5206\u9879\u3002'}
         </div>
         <button
           onClick={submit}
-          disabled={!isComplete || !allMediaLoaded}
+          disabled={!canSubmit}
           className={`flex items-center gap-2 px-5 py-2.5 font-black ${
-            isComplete && allMediaLoaded ? 'btn-primary' : 'cursor-not-allowed border border-white/10 bg-white/10 text-slate-400'
+            canSubmit ? 'btn-primary' : 'cursor-not-allowed border border-white/10 bg-white/10 text-slate-400'
           }`}
         >
-          {isComplete && allMediaLoaded ? <Save size={18} /> : <ArrowLeft size={18} />}
-          {allMediaLoaded ? '提交评分' : '媒体加载中...'}
+          {canSubmit ? <Save size={18} /> : <ArrowLeft size={18} />}
+          {canSubmit ? '\u63d0\u4ea4\u8bc4\u5206' : '\u5a92\u4f53\u52a0\u8f7d\u4e2d...'}
         </button>
       </div>
     </div>
