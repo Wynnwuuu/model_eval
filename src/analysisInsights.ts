@@ -87,6 +87,11 @@ export interface AbInsightBundle {
     nonTieVotes: number;
     voterCount: number;
     votes: Record<VoteType, number>;
+    winnerSide: VoteType;
+    winnerLabel: string;
+    winnerVotes: number;
+    winnerRate: number;
+    conclusion: string;
     aShare: number;
     bShare: number;
     tieRate: number;
@@ -193,9 +198,9 @@ export const formatPValue = (value: number | null | undefined) => {
 
 export const getSignificanceLabel = (pValue: number | null | undefined) => {
   if (pValue === null || pValue === undefined || Number.isNaN(pValue)) return '样本不足';
-  if (pValue < 0.01) return '差异显著';
+  if (pValue < 0.01) return '差异高度显著';
   if (pValue < 0.05) return '差异显著';
-  if (pValue < 0.1) return '趋势信号';
+  if (pValue < 0.1) return '存在趋势信号';
   return '未见显著差异';
 };
 
@@ -246,6 +251,24 @@ export const getVoteLabel = (vote: VoteType, models: InsightModelNames) => {
   if (vote === 'A') return models.a;
   if (vote === 'B') return models.b;
   return '平局';
+};
+
+const getAbConclusion = ({
+  winnerSide,
+  winnerLabel,
+  pValue,
+  smallSample
+}: {
+  winnerSide: VoteType;
+  winnerLabel: string;
+  pValue: number | null;
+  smallSample: boolean;
+}) => {
+  if (smallSample) return '样本不足，当前结果只能作为方向信号';
+  if (winnerSide === 'Tie') return '当前没有明确胜出模型';
+  if (pValue !== null && pValue < 0.05) return `${winnerLabel} 显著胜出`;
+  if (pValue !== null && pValue < 0.1) return `${winnerLabel} 呈现领先趋势`;
+  return `${winnerLabel} 暂时领先，但未达到统计显著`;
 };
 
 const makeEmptyOutput = (modelId: string, modelName: string): ModelOutput => ({
@@ -483,6 +506,15 @@ export const buildAbInsights = ({
     : null;
 
   const dimensions = buildAbDimensionInsights(cases, models);
+  const winnerSide = getWinnerSide(totals);
+  const winnerLabel = getVoteLabel(winnerSide, models);
+  const winnerVotes = winnerSide === 'A'
+    ? totals.A
+    : winnerSide === 'B'
+      ? totals.B
+      : Math.max(totals.A, totals.B, totals.Tie);
+  const pValue = binomialSignTestTwoSided(totals.A, totals.B);
+  const smallSample = cases.length < 5 || totalVotes < 10;
 
   return {
     mode: 'ab',
@@ -493,19 +525,24 @@ export const buildAbInsights = ({
       nonTieVotes,
       voterCount,
       votes: totals,
+      winnerSide,
+      winnerLabel,
+      winnerVotes,
+      winnerRate: safeDivide(winnerVotes, totalVotes),
+      conclusion: getAbConclusion({ winnerSide, winnerLabel, pValue, smallSample }),
       aShare: safeDivide(totals.A, totalVotes),
       bShare: safeDivide(totals.B, totalVotes),
       tieRate: safeDivide(totals.Tie, totalVotes),
       nonTieAShare: safeDivide(totals.A, nonTieVotes),
       nonTieBShare: safeDivide(totals.B, nonTieVotes),
       confidenceInterval: wilsonInterval(totals.A, nonTieVotes),
-      pValue: binomialSignTestTwoSided(totals.A, totals.B),
+      pValue,
       marginVotes: Math.abs(totals.A - totals.B),
       marginRate: safeDivide(Math.abs(totals.A - totals.B), totalVotes),
       averageAgreement,
       lowConsensusCount: cases.filter(item => item.agreementRate < 0.6).length,
       krippendorffAlpha: buildKrippendorffAlphaNominal(rows),
-      smallSample: cases.length < 5 || totalVotes < 10
+      smallSample
     },
     cases: cases.sort((a, b) => a.itemId.localeCompare(b.itemId)),
     dimensions,
@@ -808,8 +845,14 @@ export const buildInsightSummaryCsv = (bundle: InsightBundle) => {
     [
       ['ModelA', bundle.models.a],
       ['ModelB', bundle.models.b],
+      ['WinnerModelName', bundle.summary.winnerLabel],
+      ['WinnerSide', bundle.summary.winnerSide],
+      ['WinnerVotes', bundle.summary.winnerVotes],
+      ['WinnerRate', bundle.summary.winnerRate.toFixed(4)],
+      ['Conclusion', bundle.summary.conclusion],
       ['ItemCount', bundle.summary.itemCount],
       ['TotalVotes', bundle.summary.totalVotes],
+      ['NonTieVotes', bundle.summary.nonTieVotes],
       ['Votes_A', bundle.summary.votes.A],
       ['Votes_B', bundle.summary.votes.B],
       ['Votes_Tie', bundle.summary.votes.Tie],
@@ -818,8 +861,10 @@ export const buildInsightSummaryCsv = (bundle: InsightBundle) => {
       ['Wilson95_Lower', bundle.summary.confidenceInterval.lower.toFixed(4)],
       ['Wilson95_Upper', bundle.summary.confidenceInterval.upper.toFixed(4)],
       ['SignTestPValue', bundle.summary.pValue ?? ''],
+      ['Significance', getSignificanceLabel(bundle.summary.pValue)],
       ['AverageAgreement', bundle.summary.averageAgreement ?? ''],
-      ['KrippendorffAlpha', bundle.summary.krippendorffAlpha ?? '']
+      ['KrippendorffAlpha', bundle.summary.krippendorffAlpha ?? ''],
+      ['SmallSample', bundle.summary.smallSample ? 'yes' : 'no']
     ]
   );
 };
