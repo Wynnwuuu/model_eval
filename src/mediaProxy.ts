@@ -1,4 +1,5 @@
 import { normalizeUrl } from './utils';
+import { API_BASE_URL } from './runtimeConfig';
 
 export const MEDIA_PROXY_HOSTS = ['vidmuse.sandcdn.com', 'vidmuse-dev.sandcdn.com'];
 export const CDN_PROXY_PREFIX = '/media-proxy';
@@ -16,9 +17,8 @@ export interface MediaPlaybackCandidate {
 }
 
 const createProxyUrl = (normalizedUrl: string, hostname: string): string | null => {
-  const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
-  if (apiBaseUrl) {
-    return `${apiBaseUrl}/api/media-proxy?url=${encodeURIComponent(normalizedUrl)}`;
+  if (API_BASE_URL) {
+    return `${API_BASE_URL}/api/media-proxy?url=${encodeURIComponent(normalizedUrl)}`;
   }
 
   if (!import.meta.env.DEV) {

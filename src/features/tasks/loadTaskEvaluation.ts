@@ -1,12 +1,12 @@
 import { collection, doc, getDoc, getDocs, setDoc } from '../../datastore';
-import { db, getCurrentUserDisplayName } from '../../auth';
+import { db, getCurrentReviewerIdentity } from '../../auth';
 import { getParadigmFromMethod, normalizeEvaluationConfig } from '../../evaluationMethods';
 import { EvalTask, EvalTemplate, EvaluationItem, EvaluationProject, TaskVoteGroup, VoteRecord } from '../../types';
 import { getApiAuthHeaders } from '../apiAuthHeaders';
 import { loadTaskItems } from './loadTaskItems';
+import { API_BASE_URL, USE_SHARED_DATA_SOURCE } from '../../runtimeConfig';
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
-const USE_API_BACKEND = import.meta.env.VITE_USE_API_BACKEND === 'true';
+const USE_API_BACKEND = USE_SHARED_DATA_SOURCE;
 
 const snapshotExists = (snapshot: any) => {
   if (!snapshot) return false;
@@ -43,6 +43,24 @@ export async function loadTaskVoteGroups(taskId: string): Promise<TaskVoteGroup[
     });
   });
   return voteGroups;
+}
+
+async function loadCurrentUserVotes(taskId: string, reviewer: ReturnType<typeof getCurrentReviewerIdentity>) {
+  if (!USE_API_BACKEND) return [];
+  const response = await fetch(`${API_BASE_URL}/api/tasks/${taskId}/my-votes`, { headers: getApiAuthHeaders() });
+  if (response.ok) {
+    return ((await response.json()) as { votes: VoteRecord[] }).votes || [];
+  }
+
+  const legacyKeys = [reviewer.id, reviewer.email, reviewer.displayName].filter(Boolean);
+  for (const key of legacyKeys) {
+    const legacyResponse = await fetch(`${API_BASE_URL}/api/tasks/${taskId}/votes/${encodeURIComponent(key)}`, { headers: getApiAuthHeaders() });
+    if (legacyResponse.ok) {
+      const legacyVotes = ((await legacyResponse.json()) as { votes: VoteRecord[] }).votes || [];
+      if (legacyVotes.length > 0) return legacyVotes;
+    }
+  }
+  return [];
 }
 
 export async function loadTaskEvaluation(taskId: string): Promise<LoadedTaskEvaluation> {
@@ -105,16 +123,14 @@ export async function loadTaskEvaluation(taskId: string): Promise<LoadedTaskEval
     throw new Error('这份评测物料没有可执行的 case 数据。');
   }
 
-  const userName = getCurrentUserDisplayName();
+  const reviewer = getCurrentReviewerIdentity();
+  const userName = reviewer.displayName;
   let votes: VoteRecord[] = [];
   let allUserVoteGroups: TaskVoteGroup[] = [];
   let allUserVoteError: string | undefined;
   try {
     if (USE_API_BACKEND) {
-      const voteResponse = await fetch(`${API_BASE_URL}/api/tasks/${task.id}/votes/${encodeURIComponent(userName)}`, { headers: getApiAuthHeaders() });
-      if (voteResponse.ok) {
-        votes = ((await voteResponse.json()) as { votes: VoteRecord[] }).votes;
-      }
+      votes = await loadCurrentUserVotes(task.id, reviewer);
       try {
         allUserVoteGroups = await loadTaskVoteGroups(task.id);
       } catch (error: any) {

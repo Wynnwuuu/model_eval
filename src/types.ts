@@ -151,6 +151,9 @@ export interface VoteRecord {
 
 export interface TaskVoteGroup {
   user: string;
+  userId?: string;
+  displayName?: string;
+  email?: string;
   votes: VoteRecord[];
 }
 

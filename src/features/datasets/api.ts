@@ -2,9 +2,8 @@ import { addDoc, collection, deleteDoc, doc, onSnapshot, orderBy, query, setDoc 
 import { db } from '../../auth';
 import { EvalDataset } from '../../types';
 import { getApiAuthHeaders } from '../apiAuthHeaders';
+import { API_BASE_URL, USE_SHARED_DATA_SOURCE } from '../../runtimeConfig';
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
-const USE_API_BACKEND = import.meta.env.VITE_USE_API_BACKEND === 'true';
 const HTTP_REFRESH_INTERVAL_MS = 5000;
 
 const datasetReloaders = new Set<() => void>();
@@ -58,7 +57,7 @@ export function subscribeDatasets(
   onNext: (datasets: EvalDataset[]) => void,
   onError?: (error: unknown) => void
 ) {
-  if (USE_API_BACKEND) {
+  if (USE_SHARED_DATA_SOURCE) {
     let active = true;
     const reload = () => {
       loadHttpDatasets()
@@ -90,7 +89,7 @@ export function subscribeDatasets(
 }
 
 export async function createDataset(dataset: Omit<EvalDataset, 'id'> & Partial<Pick<EvalDataset, 'id'>>) {
-  if (USE_API_BACKEND) {
+  if (USE_SHARED_DATA_SOURCE) {
     const response = await requestJson<{ dataset: EvalDataset }>('/api/datasets', {
       method: 'POST',
       body: JSON.stringify({ dataset: sanitizeDatasetValue(dataset) }),
@@ -104,7 +103,7 @@ export async function createDataset(dataset: Omit<EvalDataset, 'id'> & Partial<P
 }
 
 export async function saveDataset(dataset: EvalDataset) {
-  if (USE_API_BACKEND) {
+  if (USE_SHARED_DATA_SOURCE) {
     const response = await requestJson<{ dataset: EvalDataset }>(`/api/datasets/${dataset.id}`, {
       method: 'PUT',
       body: JSON.stringify({ dataset: sanitizeDatasetValue(dataset) }),
@@ -118,7 +117,7 @@ export async function saveDataset(dataset: EvalDataset) {
 }
 
 export async function deleteDataset(datasetId: string) {
-  if (USE_API_BACKEND) {
+  if (USE_SHARED_DATA_SOURCE) {
     await requestJson<void>(`/api/datasets/${datasetId}`, {
       method: 'DELETE',
     });

@@ -1,34 +1,53 @@
 param(
-  [int]$Port = 3000
+  [int]$Port = 3000,
+  [int]$ApiPort = 8787
 )
 
 $ErrorActionPreference = 'Stop'
-$Url = "http://localhost:$Port/"
+$WebUrl = "http://localhost:$Port/"
+$ApiHealthUrl = "http://localhost:$ApiPort/api/health"
+$DbHealthUrl = "http://localhost:$ApiPort/api/db/health"
+
+function Assert-HttpOk {
+  param(
+    [string]$Name,
+    [string]$TargetUrl
+  )
+
+  try {
+    $response = Invoke-WebRequest -Uri $TargetUrl -UseBasicParsing -TimeoutSec 5
+    if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) {
+      Write-Host "OK: $Name is reachable at $TargetUrl (HTTP $($response.StatusCode))."
+      return
+    }
+    throw "$TargetUrl responded with HTTP $($response.StatusCode)."
+  } catch {
+    Write-Host "ERROR: $Name is not reachable at $TargetUrl."
+    Write-Host $_.Exception.Message
+    throw
+  }
+}
 
 try {
-  $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 5
-  if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) {
-    Write-Host "OK: local app is reachable at $Url (HTTP $($response.StatusCode))."
-    exit 0
-  }
-
-  Write-Host "ERROR: $Url responded with HTTP $($response.StatusCode)."
-  exit 1
+  Assert-HttpOk -Name 'local web app' -TargetUrl $WebUrl
+  Assert-HttpOk -Name 'local API' -TargetUrl $ApiHealthUrl
+  Assert-HttpOk -Name 'local database API' -TargetUrl $DbHealthUrl
+  Write-Host "OK: shared local app is ready. Team task results use the shared PostgreSQL data source."
+  exit 0
 } catch {
-  Write-Host "ERROR: local app is not reachable at $Url."
-  Write-Host $_.Exception.Message
-
-  $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-  if ($listener) {
-    $process = Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)" -ErrorAction SilentlyContinue
-    Write-Host "A process is listening on port ${Port}:"
-    Write-Host "PID: $($listener.OwningProcess)"
-    if ($process) {
-      Write-Host "Command: $($process.CommandLine)"
+  foreach ($TargetPort in @($Port, $ApiPort)) {
+    $listener = Get-NetTCPConnection -LocalPort $TargetPort -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($listener) {
+      $process = Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)" -ErrorAction SilentlyContinue
+      Write-Host "A process is listening on port ${TargetPort}:"
+      Write-Host "PID: $($listener.OwningProcess)"
+      if ($process) {
+        Write-Host "Command: $($process.CommandLine)"
+      }
+    } else {
+      Write-Host "No process is listening on port $TargetPort."
     }
-  } else {
-    Write-Host "No process is listening on port $Port. Run npm.cmd run local:start."
   }
-
+  Write-Host "Run npm.cmd run local:start to start the shared local stack."
   exit 1
 }

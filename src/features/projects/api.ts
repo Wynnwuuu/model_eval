@@ -2,9 +2,8 @@ import { addDoc, collection, deleteDoc, doc, onSnapshot, orderBy, query, updateD
 import { db } from '../../auth';
 import { EvaluationProject } from '../../types';
 import { getApiAuthHeaders } from '../apiAuthHeaders';
+import { API_BASE_URL, USE_SHARED_DATA_SOURCE } from '../../runtimeConfig';
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
-const USE_API_BACKEND = import.meta.env.VITE_USE_API_BACKEND === 'true';
 const HTTP_REFRESH_INTERVAL_MS = 5000;
 
 const projectReloaders = new Set<() => void>();
@@ -44,7 +43,7 @@ export function subscribeProjects(
   onNext: (projects: EvaluationProject[]) => void,
   onError?: (error: unknown) => void
 ) {
-  if (USE_API_BACKEND) {
+  if (USE_SHARED_DATA_SOURCE) {
     let active = true;
     const reload = () => {
       loadHttpProjects()
@@ -76,7 +75,7 @@ export function subscribeProjects(
 }
 
 export async function createProject(project: Partial<EvaluationProject>, user: any) {
-  if (USE_API_BACKEND) {
+  if (USE_SHARED_DATA_SOURCE) {
     const response = await requestJson<{ project: EvaluationProject }>('/api/projects', {
       method: 'POST',
       body: JSON.stringify({
@@ -103,7 +102,7 @@ export async function createProject(project: Partial<EvaluationProject>, user: a
 }
 
 export async function updateProject(projectId: string, patch: Partial<EvaluationProject>) {
-  if (USE_API_BACKEND) {
+  if (USE_SHARED_DATA_SOURCE) {
     const response = await requestJson<{ project: EvaluationProject }>(`/api/projects/${projectId}`, {
       method: 'PATCH',
       body: JSON.stringify({ patch }),
@@ -125,7 +124,7 @@ export async function updateProjectSteps(projectId: string, steps: EvaluationPro
 }
 
 export async function deleteProject(projectId: string) {
-  if (USE_API_BACKEND) {
+  if (USE_SHARED_DATA_SOURCE) {
     await requestJson<void>(`/api/projects/${projectId}`, {
       method: 'DELETE',
     });

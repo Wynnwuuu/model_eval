@@ -1,4 +1,5 @@
 import { localDb, localUser } from './localPlatform';
+import { API_BASE_URL } from './runtimeConfig';
 
 export const shouldUseCloudAuth = (import.meta.env.VITE_AUTH_MODE || '').toLowerCase() === 'feishu';
 
@@ -19,11 +20,6 @@ type ApiUser = {
 
 const TOKEN_KEY = 'token';
 const USER_KEY = 'manueval_user';
-
-const USE_API_BACKEND =
-  import.meta.env.VITE_USE_API_BACKEND === 'true' ||
-  Boolean(import.meta.env.VITE_API_BASE_URL);
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || (USE_API_BACKEND ? '' : '')).replace(/\/+$/, '');
 
 const listeners = new Set<(user: AppUser | null) => void>();
 
@@ -92,6 +88,17 @@ export const getAuthToken = () => localStorage.getItem(TOKEN_KEY);
 export const getCurrentUserDisplayName = () => {
   const user = auth.currentUser;
   return user?.displayName || user?.email || localStorage.getItem('eval_username') || 'Anonymous';
+};
+
+export const getCurrentReviewerIdentity = () => {
+  const user = auth.currentUser;
+  const displayName = user?.displayName || user?.email || localStorage.getItem('eval_username') || 'Anonymous';
+  const email = user?.email || '';
+  return {
+    id: user?.uid || email || displayName,
+    displayName,
+    email,
+  };
 };
 
 export const refreshCurrentUser = async () => {

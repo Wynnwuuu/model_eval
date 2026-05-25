@@ -1,62 +1,74 @@
-# 本地后端 / localhost 启动说明
+# 本地共享后端启动说明
 
-## 这套本地服务是什么
-
-当前 `evals_studio` 没有单独的 Express 后端进程。浏览器访问的 `http://localhost:3000/` 就是 Vite 本地开发服务；本地免登录数据层写在浏览器 `localStorage` 里。
-
-所以电脑重启后看到“localhost 拒绝连接”，通常不是权限或数据库问题，而是本地 Vite 服务没有启动。
-
-## 最推荐的启动方式
-
-在 `evals_studio` 目录里双击：
+ManuEval 默认是多人协作平台。本地开发也应使用共享数据源：
 
 ```text
-start-local.cmd
+Browser -> Vite frontend -> Express API -> PostgreSQL
 ```
 
-它会自动做这些事：
+## 推荐启动
 
-- 如果 `http://localhost:3000/` 已经可访问，直接打开浏览器。
-- 如果服务没启动，后台运行 `npm.cmd run dev`。
-- 如果缺少 `node_modules`，先执行 `npm.cmd install`。
-- 等待服务可访问后打开浏览器。
-- 日志写到 `.codex-vite.out.log` 和 `.codex-vite.err.log`。
-
-命令行方式等价：
-
-```powershell
+```bash
 npm.cmd run local:start
 ```
 
-检查当前是否正常：
+该命令会启动完整共享栈：
 
-```powershell
+1. 启动或复用 Docker PostgreSQL 容器。
+2. 执行数据库 migration。
+3. 启动 Express API：`http://localhost:8787`。
+4. 启动 Vite 前端：`http://localhost:3000`，并把同源 `/api` 代理到 `http://localhost:8787`。
+5. 检查 web、API、DB health 全部可用。
+
+检查状态：
+
+```bash
 npm.cmd run local:check
 ```
 
-停止本项目的本地服务：
+停止本项目本地进程：
 
-```powershell
+```bash
 npm.cmd run local:stop
 ```
 
-## 重启电脑后的固定流程
+## 离线 demo
 
-1. 进入 `evals_studio` 目录。
-2. 双击 `start-local.cmd`。
-3. 浏览器打开 `http://localhost:3000/` 后即可继续本地测试。
+只有在明确不需要多人共享时才使用：
 
-如果希望开机自动出现入口，可以把 `start-local.cmd` 的快捷方式放到 Windows 启动文件夹：
-
-```powershell
-shell:startup
+```bash
+npm.cmd run dev:offline
 ```
 
-打开后，把快捷方式拖进去即可。这样每次登录 Windows 后会自动启动本地服务并打开浏览器。
+离线模式会把项目、任务和投票写入当前浏览器 localStorage。不同电脑、不同浏览器之间不会共享数据，因此不能用于团队结果洞察。
 
-## 常见问题
+## 局域网成员访问
 
-- `localhost:3000 refused to connect`：服务没启动，运行 `start-local.cmd`。
-- 端口被别的程序占用：运行 `npm.cmd run local:check` 看 PID 和命令行；如果是本项目旧进程，运行 `npm.cmd run local:stop` 后再启动。
-- 页面能打开但数据为空：本地数据保存在当前浏览器的 `localStorage`，换浏览器或清缓存会看起来像新环境。
-- 需要 Gemini API 的功能：复制 `.env.example` 为 `.env.local`，并填入 `GEMINI_API_KEY`；普通本地评测、数据集、模板、Arena-rank 流程不依赖线上 local platform。
+只有运行共享栈的机器需要 Docker。其他评测成员不需要启动 Docker，也不需要启动后端，只要访问运行机器的 Vite Network 地址即可，例如：
+
+```text
+http://192.168.x.x:3000/
+```
+
+前端 API 默认走同源 `/api`，所以其他成员的浏览器会请求 `http://192.168.x.x:3000/api/*`，再由 Vite 代理到运行机器本地的 `http://localhost:8787`。
+
+## 迁移旧本地数据
+
+切到共享后端后，如果浏览器里仍有 `evaltrack_local_platform_v1` 旧数据，页面会提示“迁移本机旧数据到共享后端”。流程是：
+
+1. 自动 dry-run，展示项目、任务、投票用户等数量。
+2. 先下载本机 JSON 备份。
+3. 点击迁移，把数据导入 PostgreSQL。
+
+也可以手动导出并迁移：
+
+```js
+copy(localStorage.getItem('evaltrack_local_platform_v1'))
+```
+
+保存为 `local-export.json` 后执行：
+
+```bash
+npm.cmd run migrate:postgres -- --source ./local-export.json --dry-run
+npm.cmd run migrate:postgres -- --source ./local-export.json
+```

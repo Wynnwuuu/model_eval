@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, BarChart3, Download, RefreshCw, RotateCcw, Trophy, Check, Users } from 'lucide-react';
+import { AlertTriangle, BarChart3, Download, RefreshCw, RotateCcw, Trophy, Check, Users, UploadCloud } from 'lucide-react';
 import { EvalParadigm, EvaluationConfig, ResultsVoteScope, TaskVoteGroup, VoteRecord, EvaluationItem, VotingStats } from '../types';
 import { calculateArenaRankModelStats, getArenaRankModelOutputUrl, getBordaScore, isArenaRankVote, resolveEvaluationItemPrompt, sortRanking } from '../rankingUtils';
 import ArenaRankVideoPreviewList from './ArenaRankVideoPreviewList';
@@ -10,6 +10,7 @@ import ScoreInsightsScreen from './ScoreInsightsScreen';
 import { getDefaultEvaluationConfig, getMethodFromParadigm, isPairwiseMethod, isPreviewMethod, isRankMethod, isScoreMethod } from '../evaluationMethods';
 import { buildScoreCaseCsv, buildPairwiseCaseCsv, buildScoreInsights, buildPairwiseInsights } from '../scoringInsights';
 import { getEffectiveVotes, getSkippedVoteCount, isSkippedVote } from '../voteUtils';
+import { DATA_SOURCE_LABEL, IS_OFFLINE_LOCAL_DEMO } from '../runtimeConfig';
 
 interface ResultsScreenProps {
   votes: VoteRecord[];
@@ -24,6 +25,11 @@ interface ResultsScreenProps {
   teamVotesLoading?: boolean;
   teamVotesError?: string | null;
   onRefreshTeamVotes?: () => void | Promise<void>;
+  taskId?: string | null;
+  reviewerIdentity?: { id: string; displayName: string; email?: string };
+  onResyncMyVotes?: () => void | Promise<void>;
+  resyncLoading?: boolean;
+  resyncError?: string | null;
   onGoToDashboard?: () => void;
 }
 
@@ -42,6 +48,11 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
   teamVotesLoading = false,
   teamVotesError = null,
   onRefreshTeamVotes,
+  taskId = null,
+  reviewerIdentity,
+  onResyncMyVotes,
+  resyncLoading = false,
+  resyncError = null,
   onGoToDashboard
 }) => {
   const [showInsights, setShowInsights] = useState(true);
@@ -51,17 +62,18 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
   const isArenaRank = isRankMethod(activeConfig);
   const isBenchmarkPreview = isPreviewMethod(activeConfig);
   const teamScopedVotes = useMemo(() => allUserVoteGroups.flatMap(group =>
-    (group.votes || []).map(vote => ({ ...vote, user: vote.user || group.user }))
+    (group.votes || []).map(vote => ({ ...vote, user: vote.user || group.displayName || group.email || group.user }))
   ), [allUserVoteGroups]);
   const hasTeamVotes = teamScopedVotes.length > 0;
   const teamScopeAvailable = hasTeamVotes && !teamVotesError;
   const scopedVotes = voteScope === 'all' && teamScopeAvailable ? teamScopedVotes : votes;
   const effectiveVotes = getEffectiveVotes(scopedVotes);
   const skippedCount = getSkippedVoteCount(scopedVotes);
-  const teamVoterCount = new Set(allUserVoteGroups.filter(group => group.votes?.length).map(group => group.user)).size;
+  const teamVoterCount = new Set(allUserVoteGroups.filter(group => group.votes?.length).map(group => group.userId || group.email || group.user)).size;
   const currentUserCompleted = items.length > 0 && votes.length >= items.length;
   const scopeLabel = voteScope === 'all' && teamScopeAvailable ? '全员汇总' : '我的结果';
   const exportScopeTag = voteScope === 'all' && teamScopeAvailable ? 'all' : 'mine';
+  const reviewerLabel = reviewerIdentity?.displayName || userName || 'Anonymous';
 
   useEffect(() => {
     if (!teamScopeAvailable && voteScope === 'all') {
@@ -76,6 +88,9 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
   const selectScope = (nextScope: ResultsVoteScope) => {
     setScopeTouched(true);
     setVoteScope(nextScope);
+    if (nextScope === 'all') {
+      void onRefreshTeamVotes?.();
+    }
   };
   const rankVotes = effectiveVotes.filter(isArenaRankVote);
   const rankStats = calculateArenaRankModelStats(rankVotes);
@@ -126,13 +141,22 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
             结果范围：{scopeLabel}
           </div>
           <p className="mt-1 text-xs leading-5 text-slate-400">
-            我的结果用于复盘个人评审；全员汇总会聚合当前评测物料下所有成员投票。当前全员数据包含 {teamVoterCount} 位成员、{teamScopedVotes.length} 条记录。
+            当前数据源：{DATA_SOURCE_LABEL}{IS_OFFLINE_LOCAL_DEMO ? '（仅本机数据，不代表团队共享结果）' : '（共享任务数据源）'}。我的结果用于复盘个人评审；全员汇总会聚合当前评测物料下所有成员投票。当前全员数据包含 {teamVoterCount} 位成员、{teamScopedVotes.length} 条记录。
             {currentUserCompleted ? ' 当前用户已完成本轮评测。' : ' 当前用户尚未完成全部 case。'}
+          </p>
+          <p className="mt-1 text-xs leading-5 text-slate-500">
+            任务：{taskId || '本地会话'}；当前账号：{reviewerLabel}{reviewerIdentity?.email ? `（${reviewerIdentity.email}）` : ''}。
           </p>
           {teamVotesError && (
             <div className="mt-2 flex items-center gap-2 text-xs text-amber-300">
               <AlertTriangle size={13} />
               {teamVotesError}；已保留“我的结果”可用。
+            </div>
+          )}
+          {resyncError && (
+            <div className="mt-2 flex items-center gap-2 text-xs text-red-300">
+              <AlertTriangle size={13} />
+              {resyncError}
             </div>
           )}
         </div>
@@ -163,6 +187,17 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
             >
               <RefreshCw size={14} className={teamVotesLoading ? 'animate-spin' : ''} />
               刷新全员结果
+            </button>
+          )}
+          {onResyncMyVotes && (
+            <button
+              type="button"
+              onClick={onResyncMyVotes}
+              disabled={resyncLoading || votes.length === 0}
+              className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <UploadCloud size={14} className={resyncLoading ? 'animate-pulse' : ''} />
+              重新同步我的结果
             </button>
           )}
         </div>

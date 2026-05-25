@@ -20,6 +20,11 @@ export default defineConfig(({mode}) => {
       // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
       proxy: {
+        '/api': {
+          target: env.VITE_API_PROXY_TARGET || 'http://localhost:8787',
+          changeOrigin: true,
+          secure: false,
+        },
         '/media-proxy': {
           target: 'https://vidmuse.sandcdn.com',
           changeOrigin: true,

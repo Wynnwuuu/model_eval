@@ -4,11 +4,11 @@ import { EvalTask, EvaluationItem, TaskVoteGroup, VoteRecord } from '../../types
 import { getApiAuthHeaders } from '../apiAuthHeaders';
 import { loadTaskEvaluation, loadTaskVoteGroups } from './loadTaskEvaluation';
 import { loadTaskItems } from './loadTaskItems';
+import { API_BASE_URL, USE_SHARED_DATA_SOURCE } from '../../runtimeConfig';
 
 export { loadTaskEvaluation, loadTaskItems, loadTaskVoteGroups };
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
-export const USE_TASK_API_BACKEND = import.meta.env.VITE_USE_API_BACKEND === 'true';
+export const USE_TASK_API_BACKEND = USE_SHARED_DATA_SOURCE;
 const HTTP_REFRESH_INTERVAL_MS = 5000;
 
 const taskReloaders = new Set<() => void>();
@@ -54,18 +54,24 @@ export async function loadTaskUserVotes(taskId: string, userName: string) {
   return response.votes;
 }
 
+export async function loadMyTaskVotes(taskId: string) {
+  if (!USE_TASK_API_BACKEND) return [];
+  const response = await requestTaskJson<{ votes: VoteRecord[] }>(`/api/tasks/${taskId}/my-votes`);
+  return response.votes;
+}
+
 export async function loadTaskVotes(taskId: string) {
   if (!USE_TASK_API_BACKEND) return loadTaskVoteGroups(taskId);
-  const response = await requestTaskJson<{ userVotes: Array<{ user: string; votes: VoteRecord[] }> }>(
+  const response = await requestTaskJson<{ userVotes: TaskVoteGroup[] }>(
     `/api/tasks/${taskId}/votes`
   );
   return response.userVotes as TaskVoteGroup[];
 }
 
-export async function saveTaskUserVotes(taskId: string, userName: string, votes: VoteRecord[], progress: number) {
+export async function saveMyTaskVotes(taskId: string, votes: VoteRecord[], progress: number) {
   if (USE_TASK_API_BACKEND) {
     const response = await requestTaskJson<{ votes: VoteRecord[] }>(
-      `/api/tasks/${taskId}/votes/${encodeURIComponent(userName)}`,
+      `/api/tasks/${taskId}/my-votes`,
       {
         method: 'PUT',
         body: JSON.stringify({ votes, progress }),
@@ -73,6 +79,14 @@ export async function saveTaskUserVotes(taskId: string, userName: string, votes:
     );
     notifyTaskReloaders();
     return response.votes;
+  }
+
+  return null;
+}
+
+export async function saveTaskUserVotes(taskId: string, userName: string, votes: VoteRecord[], progress: number) {
+  if (USE_TASK_API_BACKEND) {
+    return saveMyTaskVotes(taskId, votes, progress);
   }
 
   return null;

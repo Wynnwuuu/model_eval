@@ -4,11 +4,12 @@ import {
   createTask,
   deleteTask,
   getTask,
+  getTaskCurrentUserVotes,
   getTaskUserVotes,
   listTaskItems,
   listTaskVotes,
   listTasks,
-  saveTaskUserVotes,
+  saveTaskCurrentUserVotes,
   updateTask,
   updateTaskItem,
 } from './taskRepository.ts';
@@ -55,6 +56,18 @@ taskRoutes.get('/:taskId/votes', async (req, res) => {
   }
 });
 
+taskRoutes.get('/:taskId/my-votes', async (req, res) => {
+  try {
+    const task = await getTask(req.params.taskId);
+    if (!task) {
+      throw notFound('Task');
+    }
+    res.json({ votes: await getTaskCurrentUserVotes(req.params.taskId, req.user) });
+  } catch (error) {
+    sendError(res, error, 'Failed to load current user votes');
+  }
+});
+
 taskRoutes.get('/:taskId/votes/:userName', async (req, res) => {
   try {
     res.json({ votes: await getTaskUserVotes(req.params.taskId, decodeURIComponent(req.params.userName)) });
@@ -63,14 +76,37 @@ taskRoutes.get('/:taskId/votes/:userName', async (req, res) => {
   }
 });
 
-taskRoutes.put('/:taskId/votes/:userName', async (req, res) => {
+taskRoutes.put('/:taskId/my-votes', async (req, res) => {
   try {
-    await ensureTaskProjectRole(req.user, req.params.taskId, ['owner', 'editor', 'viewer']);
+    const task = await getTask(req.params.taskId);
+    if (!task) {
+      throw notFound('Task');
+    }
     const votePayload = requireArray(req.body?.votes, 'votes');
     const progress = optionalNumber(req.body?.progress, 'progress', votePayload.length);
-    const savedVotes = await saveTaskUserVotes(
+    const savedVotes = await saveTaskCurrentUserVotes(
       req.params.taskId,
-      decodeURIComponent(req.params.userName),
+      req.user,
+      votePayload as any,
+      progress
+    );
+    res.json({ votes: savedVotes });
+  } catch (error) {
+    sendError(res, error, 'Failed to save current user votes');
+  }
+});
+
+taskRoutes.put('/:taskId/votes/:userName', async (req, res) => {
+  try {
+    const task = await getTask(req.params.taskId);
+    if (!task) {
+      throw notFound('Task');
+    }
+    const votePayload = requireArray(req.body?.votes, 'votes');
+    const progress = optionalNumber(req.body?.progress, 'progress', votePayload.length);
+    const savedVotes = await saveTaskCurrentUserVotes(
+      req.params.taskId,
+      req.user,
       votePayload as any,
       progress
     );

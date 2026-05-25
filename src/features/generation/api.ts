@@ -2,9 +2,8 @@ import { collection, doc, onSnapshot, orderBy, query, setDoc, where } from '../.
 import { db } from '../../auth';
 import { DatasetGenerationJob, DatasetGenerationJobItem } from '../../types';
 import { getApiAuthHeaders } from '../apiAuthHeaders';
+import { API_BASE_URL, USE_SHARED_DATA_SOURCE } from '../../runtimeConfig';
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
-const USE_API_BACKEND = import.meta.env.VITE_USE_API_BACKEND === 'true';
 const HTTP_REFRESH_INTERVAL_MS = 5000;
 
 const reloaders = new Set<() => void>();
@@ -37,7 +36,7 @@ export function subscribeGenerationJobs(
   onNext: (jobs: DatasetGenerationJob[]) => void,
   onError?: (error: unknown) => void
 ) {
-  if (USE_API_BACKEND) {
+  if (USE_SHARED_DATA_SOURCE) {
     let active = true;
     const reload = () => {
       const queryString = params.datasetId ? `?datasetId=${encodeURIComponent(params.datasetId)}` : '';
@@ -72,7 +71,7 @@ export function subscribeGenerationJobs(
 }
 
 export async function saveGenerationJob(job: DatasetGenerationJob) {
-  if (USE_API_BACKEND) {
+  if (USE_SHARED_DATA_SOURCE) {
     const response = await requestJson<{ job: DatasetGenerationJob }>(`/api/generation/jobs/${job.id}`, {
       method: 'PUT',
       body: JSON.stringify({ job }),
@@ -86,7 +85,7 @@ export async function saveGenerationJob(job: DatasetGenerationJob) {
 }
 
 export async function saveGenerationJobItem(item: DatasetGenerationJobItem) {
-  if (USE_API_BACKEND) {
+  if (USE_SHARED_DATA_SOURCE) {
     const response = await requestJson<{ item: DatasetGenerationJobItem }>(
       `/api/generation/jobs/${item.jobId}/items/${item.id}`,
       {

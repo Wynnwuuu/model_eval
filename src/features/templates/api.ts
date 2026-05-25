@@ -2,9 +2,8 @@ import { collection, deleteDoc, doc, onSnapshot, orderBy, query, setDoc } from '
 import { db } from '../../auth';
 import { EvalTemplate } from '../../types';
 import { getApiAuthHeaders } from '../apiAuthHeaders';
+import { API_BASE_URL, USE_SHARED_DATA_SOURCE } from '../../runtimeConfig';
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
-const USE_API_BACKEND = import.meta.env.VITE_USE_API_BACKEND === 'true';
 const HTTP_REFRESH_INTERVAL_MS = 5000;
 
 const templateReloaders = new Set<() => void>();
@@ -41,7 +40,7 @@ export function subscribeTemplates(
   onNext: (templates: EvalTemplate[]) => void,
   onError?: (error: unknown) => void
 ) {
-  if (USE_API_BACKEND) {
+  if (USE_SHARED_DATA_SOURCE) {
     let active = true;
     const reload = () => {
       loadHttpTemplates()
@@ -73,7 +72,7 @@ export function subscribeTemplates(
 }
 
 export async function saveTemplate(template: EvalTemplate) {
-  if (USE_API_BACKEND) {
+  if (USE_SHARED_DATA_SOURCE) {
     const response = await requestJson<{ template: EvalTemplate }>(`/api/templates/${template.id}`, {
       method: 'PUT',
       body: JSON.stringify({ template }),
@@ -87,7 +86,7 @@ export async function saveTemplate(template: EvalTemplate) {
 }
 
 export async function deleteTemplate(templateId: string) {
-  if (USE_API_BACKEND) {
+  if (USE_SHARED_DATA_SOURCE) {
     await requestJson<void>(`/api/templates/${templateId}`, {
       method: 'DELETE',
     });

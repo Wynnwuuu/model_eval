@@ -14,6 +14,8 @@ React frontend -> HTTP API -> PostgreSQL
 single Docker image -> Express serves /api/* and Vite dist
 ```
 
+线上评测用户只需要访问部署站点并使用飞书登录；Docker、PostgreSQL 和 `local:start` 仅面向开发、CI 或部署维护。
+
 ## 核心能力
 
 - 项目、数据集、模板、任务、结果洞察的独立路由和可分享 URL。
@@ -25,18 +27,18 @@ single Docker image -> Express serves /api/* and Vite dist
 
 ## 本地开发
 
-推荐完整本地模式：
+推荐完整本地模式，也是默认多人协作模式：
 
 ```bash
 npm install
-npm run dev:full
+npm.cmd run local:start
 ```
 
-该脚本会启动 PostgreSQL、执行迁移、启动 API 和 Vite。
+该脚本会启动 PostgreSQL、执行迁移、启动 API 和 Vite，并检查 `http://localhost:3000/`、`http://localhost:8787/api/health`、`http://localhost:8787/api/db/health`。
 
 如果本机已经存在 `eval-studio-postgres` 容器，`dev:full` 会直接复用或启动该容器，避免重复创建导致容器名冲突。
 
-也可以分步运行：
+也可以前台分步运行：
 
 ```bash
 npm run db:up
@@ -44,6 +46,14 @@ npm run db:migrate
 npm run api:dev
 npm run dev
 ```
+
+如确实只需要单机 demo，可以显式运行离线模式：
+
+```bash
+npm.cmd run dev:offline
+```
+
+离线模式只读取当前浏览器 localStorage，不能用于多人评测或全员结果洞察。
 
 默认地址：
 
@@ -62,8 +72,10 @@ npm run dev
 | `DATABASE_URL` | API 连接 PostgreSQL 的连接串 |
 | `API_PORT` | API 监听端口，默认 `8787` |
 | `CORS_ORIGIN` | 本地跨域来源，默认可设为 `http://localhost:3000` |
-| `VITE_USE_API_BACKEND` | `true` 时前端使用 HTTP API |
-| `VITE_API_BASE_URL` | 本地开发通常为 `http://localhost:8787`；生产单容器部署可留空走同源 `/api` |
+| `VITE_STORAGE_MODE` | 仅设置为 `local` 时进入离线 localStorage demo |
+| `VITE_USE_API_BACKEND` | 兼容旧开关；设置为 `false` 时进入离线 localStorage demo |
+| `VITE_API_BASE_URL` | 默认留空走同源 `/api`；只有前后端分域部署时才填写 API 域名 |
+| `VITE_API_PROXY_TARGET` | Vite 本地代理目标，默认 `http://localhost:8787` |
 | `GEMINI_API_KEY` | 可选，生成相关能力需要时配置 |
 
 ## 数据库

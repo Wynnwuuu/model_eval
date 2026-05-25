@@ -9,6 +9,13 @@ const AUTH_HEADERS = {
   'X-Organization-Id': 'default',
 };
 
+const authHeadersFor = (id: string, email: string, displayName: string) => ({
+  'X-User-Id': id,
+  'X-User-Email': email,
+  'X-User-Name': displayName,
+  'X-Organization-Id': 'default',
+});
+
 const request = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
@@ -227,14 +234,35 @@ const main = async () => {
     const taskItems = await request<{ items: any[] }>(`/api/tasks/${ids.task}/items`);
     assert(taskItems.items.length === 2, 'task items were not persisted');
 
-    await sendJson(`/api/tasks/${ids.task}/votes/smoke%40example.com`, 'PUT', {
-      progress: 1,
-      votes: [
-        { itemId: `${RUN_ID}-item-1`, method: 'ab_preference', vote: 'A', choice: 'A', timestamp: Date.now(), user: 'smoke@example.com' },
-      ],
+    const sharedReviewerA = authHeadersFor('smoke-reviewer-a', 'smoke-reviewer-a@example.com', 'Shared Reviewer');
+    const sharedReviewerB = authHeadersFor('smoke-reviewer-b', 'smoke-reviewer-b@example.com', 'Shared Reviewer');
+    await request(`/api/tasks/${ids.task}/my-votes`, {
+      method: 'PUT',
+      headers: sharedReviewerA,
+      body: JSON.stringify({
+        progress: 1,
+        votes: [
+          { itemId: `${RUN_ID}-item-1`, method: 'ab_preference', vote: 'A', choice: 'A', timestamp: Date.now(), user: 'Shared Reviewer' },
+        ],
+      }),
     });
-    const votes = await request<{ userVotes: Array<{ user: string; votes: any[] }> }>(`/api/tasks/${ids.task}/votes`);
-    assert(votes.userVotes[0]?.votes.length === 1, 'votes were not persisted');
+    await request(`/api/tasks/${ids.task}/votes/ignored-legacy-name`, {
+      method: 'PUT',
+      headers: sharedReviewerB,
+      body: JSON.stringify({
+        progress: 2,
+        votes: [
+          { itemId: `${RUN_ID}-item-1`, method: 'ab_preference', vote: 'B', choice: 'B', timestamp: Date.now(), user: 'Shared Reviewer' },
+          { itemId: `${RUN_ID}-item-2`, method: 'ab_preference', vote: 'A', choice: 'A', timestamp: Date.now(), user: 'Shared Reviewer' },
+        ],
+      }),
+    });
+    const myVotes = await request<{ votes: any[] }>(`/api/tasks/${ids.task}/my-votes`, { headers: sharedReviewerB });
+    assert(myVotes.votes.length === 2, `current reviewer votes were not loaded through my-votes: ${JSON.stringify(myVotes)}`);
+    const votes = await request<{ userVotes: Array<{ user: string; userId?: string; displayName?: string; email?: string; votes: any[] }> }>(`/api/tasks/${ids.task}/votes`);
+    assert(votes.userVotes.length === 2, 'shared task votes did not include both users');
+    assert(new Set(votes.userVotes.map(group => group.userId)).size === 2, 'same display name reviewers were not kept separate by stable user id');
+    assert(votes.userVotes.reduce((sum, group) => sum + group.votes.length, 0) === 3, 'shared task vote total was incorrect');
 
     await sendJson<{ task: any }>('/api/tasks', 'POST', {
       task: {

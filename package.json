@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
+    "dev:offline": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$env:VITE_STORAGE_MODE='local'; npm.cmd run dev\"",
     "local:start": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-local.ps1",
     "local:check": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-local.ps1",
     "local:stop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop-local.ps1",
@@ -16,7 +17,7 @@
     "db:psql": "docker compose exec postgres psql -U eval_studio -d eval_studio",
     "api:dev": "tsx server/index.ts",
     "api:start": "node dist-server/server/index.js",
-    "server:build": "tsc -p tsconfig.server.json && mkdir -p dist-server/server/db && cp -R server/db/migrations dist-server/server/db/migrations",
+    "server:build": "tsc -p tsconfig.server.json && node scripts/copy-server-assets.mjs",
     "dev:full": "tsx scripts/dev-full.ts",
     "test:api:smoke": "tsx scripts/smoke-postgres-api.ts",
     "migrate:postgres": "tsx scripts/migrate-to-postgres.ts",

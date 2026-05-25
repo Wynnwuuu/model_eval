@@ -3,9 +3,9 @@ import { db } from '../../auth';
 import { getDimensionValuesForItem, getDimensionValuesFromRecord } from '../../dimensionUtils';
 import { EvalTask, EvaluationItem } from '../../types';
 import { getApiAuthHeaders } from '../apiAuthHeaders';
+import { API_BASE_URL, USE_SHARED_DATA_SOURCE } from '../../runtimeConfig';
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
-const USE_API_BACKEND = import.meta.env.VITE_USE_API_BACKEND === 'true';
+const USE_API_BACKEND = USE_SHARED_DATA_SOURCE;
 
 const snapshotExists = (snapshot: any) => {
   if (!snapshot) return false;
