@@ -15,10 +15,10 @@ import TemplateListPage from '../pages/templates/TemplateListPage';
 import TaskListPage from '../pages/tasks/TaskListPage';
 import InsightDashboardPage from '../pages/insights/InsightDashboardPage';
 import HistoryPage from '../pages/history/HistoryPage';
-import { AppRoute, EvalParadigm, EvaluationConfig, EvaluationItem, HistorySession, RankingEntry, RouteContext, VoteRecord, VoteType, EvaluationProject } from '../types';
+import { AppRoute, EvalParadigm, EvaluationConfig, EvaluationItem, HistorySession, RankingEntry, RouteContext, TaskVoteGroup, VoteRecord, VoteType, EvaluationProject } from '../types';
 import { auth, getCurrentUserDisplayName, signInWithGoogle, logout, shouldUseCloudAuth } from '../auth';
 import { getDefaultEvaluationConfig, getMethodFromParadigm, getParadigmFromMethod, isPreviewMethod, isRankMethod, isScoreMethod } from '../evaluationMethods';
-import { saveTaskUserVotes, loadTaskEvaluation } from '../features/tasks/api';
+import { saveTaskUserVotes, loadTaskEvaluation, loadTaskVoteGroups } from '../features/tasks/api';
 
 const STORAGE_KEY = 'modeleval_session';
 const HISTORY_KEY = 'modeleval_history';
@@ -54,6 +54,9 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
   const [taskBuilderMode, setTaskBuilderMode] = useState<'create' | 'list'>('create');
   const [routeTaskLoading, setRouteTaskLoading] = useState(false);
   const [routeTaskError, setRouteTaskError] = useState<string | null>(null);
+  const [allUserVoteGroups, setAllUserVoteGroups] = useState<TaskVoteGroup[]>([]);
+  const [teamVotesLoading, setTeamVotesLoading] = useState(false);
+  const [teamVotesError, setTeamVotesError] = useState<string | null>(null);
 
   // Confirm Modal State
   const [confirmConfig, setConfirmConfig] = useState<{
@@ -80,6 +83,28 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     setRouteContext(nextContext);
     setCurrentRoute(route);
     onRouteChange?.(route, nextContext);
+  };
+
+  const mergeCurrentUserVoteGroup = (groups: TaskVoteGroup[], nextVotes: VoteRecord[], nextUserName = userName) => {
+    const userKey = nextUserName || 'Anonymous';
+    const merged = groups.filter(group => group.user !== userKey);
+    merged.push({ user: userKey, votes: nextVotes });
+    return merged;
+  };
+
+  const refreshAllTaskVotes = async (taskId = activeTaskId || routeContext.taskId || '') => {
+    if (!taskId) return;
+    setTeamVotesLoading(true);
+    setTeamVotesError(null);
+    try {
+      const groups = await loadTaskVoteGroups(taskId);
+      setAllUserVoteGroups(groups);
+    } catch (error: any) {
+      console.error('Failed to refresh all task votes', error);
+      setTeamVotesError(error?.message || '无法读取全员汇总结果');
+    } finally {
+      setTeamVotesLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -165,6 +190,8 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
         }
         setItems(loaded.items);
         setVotes(loaded.votes);
+        setAllUserVoteGroups(loaded.allUserVoteGroups || []);
+        setTeamVotesError(loaded.allUserVoteError || null);
         setCurrentIndex(Math.min(loaded.votes.length, Math.max(loaded.items.length - 1, 0)));
         setUserName(loaded.userName);
         setModelNames(loaded.modelNames);
@@ -277,6 +304,12 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     setTaskParadigm(getParadigmFromMethod(nextConfig.method));
     setTaskEvaluationConfig(nextConfig);
     setActiveTaskId(taskId || null);
+    setAllUserVoteGroups([]);
+    setTeamVotesError(null);
+    setTeamVotesLoading(false);
+    if (taskId) {
+      refreshAllTaskVotes(taskId);
+    }
     
     // Generate unique ID for this session
     setSessionId(`session-${Date.now()}`);
@@ -341,11 +374,15 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     const updatedVotes = [...votes, newVote];
     setVotes(updatedVotes);
     await persistVoteProgress(updatedVotes, currentIndex + 1);
+    setAllUserVoteGroups(prev => mergeCurrentUserVoteGroup(prev, updatedVotes));
 
     if (currentIndex < items.length - 1) {
       setCurrentIndex(prev => prev + 1);
     } else {
       saveToHistory(updatedVotes);
+      if (activeTaskId) {
+        refreshAllTaskVotes(activeTaskId);
+      }
       goToRoute('results', activeTaskId ? { taskId: activeTaskId } : routeContext);
     }
   };
@@ -397,6 +434,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     if (currentIndex > 0) {
       const updatedVotes = votes.slice(0, -1);
       setVotes(updatedVotes);
+      setAllUserVoteGroups(prev => mergeCurrentUserVoteGroup(prev, updatedVotes));
       setCurrentIndex(prev => prev - 1);
 
       if (activeTaskId && userName) {
@@ -448,6 +486,9 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
         setTaskParadigm('Arena');
         setTaskEvaluationConfig(getDefaultEvaluationConfig('ab_preference'));
         setSessionId('');
+        setAllUserVoteGroups([]);
+        setTeamVotesError(null);
+        setTeamVotesLoading(false);
         localStorage.removeItem(STORAGE_KEY);
         setHasSavedSession(false);
       }
@@ -745,6 +786,10 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
             models={taskModels}
             paradigm={taskParadigm}
             evaluationConfig={taskEvaluationConfig}
+            allUserVoteGroups={allUserVoteGroups}
+            teamVotesLoading={teamVotesLoading}
+            teamVotesError={teamVotesError}
+            onRefreshTeamVotes={activeTaskId ? () => refreshAllTaskVotes(activeTaskId) : undefined}
             onGoToDashboard={() => navigate('overview')}
           />
         </div>

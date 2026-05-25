@@ -149,6 +149,13 @@ export interface VoteRecord {
   user?: string; // Who voted
 }
 
+export interface TaskVoteGroup {
+  user: string;
+  votes: VoteRecord[];
+}
+
+export type ResultsVoteScope = 'mine' | 'all';
+
 export type AppRoute =
   | 'overview'
   | 'projects'

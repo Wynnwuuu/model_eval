@@ -1,11 +1,11 @@
 import { addDoc, collection, deleteDoc, doc, onSnapshot, query, updateDoc, where } from '../../datastore';
 import { db } from '../../auth';
-import { EvalTask, EvaluationItem, VoteRecord } from '../../types';
+import { EvalTask, EvaluationItem, TaskVoteGroup, VoteRecord } from '../../types';
 import { getApiAuthHeaders } from '../apiAuthHeaders';
-import { loadTaskEvaluation } from './loadTaskEvaluation';
+import { loadTaskEvaluation, loadTaskVoteGroups } from './loadTaskEvaluation';
 import { loadTaskItems } from './loadTaskItems';
 
-export { loadTaskEvaluation, loadTaskItems };
+export { loadTaskEvaluation, loadTaskItems, loadTaskVoteGroups };
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 export const USE_TASK_API_BACKEND = import.meta.env.VITE_USE_API_BACKEND === 'true';
@@ -55,11 +55,11 @@ export async function loadTaskUserVotes(taskId: string, userName: string) {
 }
 
 export async function loadTaskVotes(taskId: string) {
-  if (!USE_TASK_API_BACKEND) return [];
+  if (!USE_TASK_API_BACKEND) return loadTaskVoteGroups(taskId);
   const response = await requestTaskJson<{ userVotes: Array<{ user: string; votes: VoteRecord[] }> }>(
     `/api/tasks/${taskId}/votes`
   );
-  return response.userVotes;
+  return response.userVotes as TaskVoteGroup[];
 }
 
 export async function saveTaskUserVotes(taskId: string, userName: string, votes: VoteRecord[], progress: number) {

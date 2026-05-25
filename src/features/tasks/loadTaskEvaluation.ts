@@ -1,7 +1,7 @@
-import { doc, getDoc, setDoc } from '../../datastore';
+import { collection, doc, getDoc, getDocs, setDoc } from '../../datastore';
 import { db, getCurrentUserDisplayName } from '../../auth';
 import { getParadigmFromMethod, normalizeEvaluationConfig } from '../../evaluationMethods';
-import { EvalTask, EvalTemplate, EvaluationItem, EvaluationProject, VoteRecord } from '../../types';
+import { EvalTask, EvalTemplate, EvaluationItem, EvaluationProject, TaskVoteGroup, VoteRecord } from '../../types';
 import { getApiAuthHeaders } from '../apiAuthHeaders';
 import { loadTaskItems } from './loadTaskItems';
 
@@ -19,10 +19,30 @@ export interface LoadedTaskEvaluation {
   items: EvaluationItem[];
   votes: VoteRecord[];
   userName: string;
+  allUserVoteGroups: TaskVoteGroup[];
+  allUserVoteError?: string;
   modelNames: { a: string; b: string };
   models: { id: string; name: string }[];
   paradigm: ReturnType<typeof getParadigmFromMethod>;
   evaluationConfig: ReturnType<typeof normalizeEvaluationConfig>;
+}
+
+export async function loadTaskVoteGroups(taskId: string): Promise<TaskVoteGroup[]> {
+  if (USE_API_BACKEND) {
+    const response = await fetch(`${API_BASE_URL}/api/tasks/${taskId}/votes`, { headers: getApiAuthHeaders() });
+    if (!response.ok) throw new Error('无法读取全员投票结果');
+    return ((await response.json()) as { userVotes: TaskVoteGroup[] }).userVotes || [];
+  }
+
+  const snapshot = await getDocs(collection(db, 'evalTasks', taskId, 'userVotes'));
+  const voteGroups: TaskVoteGroup[] = [];
+  snapshot.forEach((docSnap: any) => {
+    voteGroups.push({
+      user: docSnap.id,
+      votes: docSnap.data().votes || []
+    });
+  });
+  return voteGroups;
 }
 
 export async function loadTaskEvaluation(taskId: string): Promise<LoadedTaskEvaluation> {
@@ -87,11 +107,19 @@ export async function loadTaskEvaluation(taskId: string): Promise<LoadedTaskEval
 
   const userName = getCurrentUserDisplayName();
   let votes: VoteRecord[] = [];
+  let allUserVoteGroups: TaskVoteGroup[] = [];
+  let allUserVoteError: string | undefined;
   try {
     if (USE_API_BACKEND) {
       const voteResponse = await fetch(`${API_BASE_URL}/api/tasks/${task.id}/votes/${encodeURIComponent(userName)}`, { headers: getApiAuthHeaders() });
       if (voteResponse.ok) {
         votes = ((await voteResponse.json()) as { votes: VoteRecord[] }).votes;
+      }
+      try {
+        allUserVoteGroups = await loadTaskVoteGroups(task.id);
+      } catch (error: any) {
+        console.error('Failed to hydrate all task votes', error);
+        allUserVoteError = error?.message || '无法读取全员汇总结果';
       }
       return {
         task,
@@ -99,6 +127,8 @@ export async function loadTaskEvaluation(taskId: string): Promise<LoadedTaskEval
         items,
         votes,
         userName,
+        allUserVoteGroups,
+        allUserVoteError,
         modelNames: {
           a: models[0]?.name || 'Model A',
           b: models[1]?.name || 'Model B'
@@ -113,6 +143,12 @@ export async function loadTaskEvaluation(taskId: string): Promise<LoadedTaskEval
     if (snapshotExists(voteSnapshot)) {
       votes = voteSnapshot.data().votes || [];
     }
+    try {
+      allUserVoteGroups = await loadTaskVoteGroups(task.id);
+    } catch (error: any) {
+      console.error('Failed to hydrate all task votes', error);
+      allUserVoteError = error?.message || '无法读取全员汇总结果';
+    }
     if (task.progress?.[userName] === undefined) {
       await setDoc(doc(db, 'evalTasks', task.id), { progress: { [userName]: votes.length } }, { merge: true });
     }
@@ -126,6 +162,8 @@ export async function loadTaskEvaluation(taskId: string): Promise<LoadedTaskEval
     items,
     votes,
     userName,
+    allUserVoteGroups,
+    allUserVoteError,
     modelNames: {
       a: models[0]?.name || 'Model A',
       b: models[1]?.name || 'Model B'

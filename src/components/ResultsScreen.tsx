@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
-import { BarChart3, Download, RotateCcw, Trophy, Check } from 'lucide-react';
-import { EvalParadigm, EvaluationConfig, VoteRecord, EvaluationItem, VotingStats } from '../types';
+import React, { useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, BarChart3, Download, RefreshCw, RotateCcw, Trophy, Check, Users } from 'lucide-react';
+import { EvalParadigm, EvaluationConfig, ResultsVoteScope, TaskVoteGroup, VoteRecord, EvaluationItem, VotingStats } from '../types';
 import { calculateArenaRankModelStats, getArenaRankModelOutputUrl, getBordaScore, isArenaRankVote, resolveEvaluationItemPrompt, sortRanking } from '../rankingUtils';
 import ArenaRankVideoPreviewList from './ArenaRankVideoPreviewList';
 import DimensionChips from './DimensionChips';
@@ -20,18 +20,63 @@ interface ResultsScreenProps {
   models?: { id: string; name: string }[];
   paradigm?: EvalParadigm;
   evaluationConfig?: EvaluationConfig;
+  allUserVoteGroups?: TaskVoteGroup[];
+  teamVotesLoading?: boolean;
+  teamVotesError?: string | null;
+  onRefreshTeamVotes?: () => void | Promise<void>;
   onGoToDashboard?: () => void;
 }
 
 const escapeCsvField = (value: any) => `"${String(value ?? '').replace(/"/g, '""')}"`;
 
-const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, userName, modelNames, models = [], paradigm = 'Arena', evaluationConfig, onGoToDashboard }) => {
+const ResultsScreen: React.FC<ResultsScreenProps> = ({
+  votes,
+  items,
+  onReset,
+  userName,
+  modelNames,
+  models = [],
+  paradigm = 'Arena',
+  evaluationConfig,
+  allUserVoteGroups = [],
+  teamVotesLoading = false,
+  teamVotesError = null,
+  onRefreshTeamVotes,
+  onGoToDashboard
+}) => {
   const [showInsights, setShowInsights] = useState(true);
+  const [voteScope, setVoteScope] = useState<ResultsVoteScope>('mine');
+  const [scopeTouched, setScopeTouched] = useState(false);
   const activeConfig = evaluationConfig || getDefaultEvaluationConfig(getMethodFromParadigm(paradigm as EvalParadigm));
   const isArenaRank = isRankMethod(activeConfig);
   const isBenchmarkPreview = isPreviewMethod(activeConfig);
-  const effectiveVotes = getEffectiveVotes(votes);
-  const skippedCount = getSkippedVoteCount(votes);
+  const teamScopedVotes = useMemo(() => allUserVoteGroups.flatMap(group =>
+    (group.votes || []).map(vote => ({ ...vote, user: vote.user || group.user }))
+  ), [allUserVoteGroups]);
+  const hasTeamVotes = teamScopedVotes.length > 0;
+  const teamScopeAvailable = hasTeamVotes && !teamVotesError;
+  const scopedVotes = voteScope === 'all' && teamScopeAvailable ? teamScopedVotes : votes;
+  const effectiveVotes = getEffectiveVotes(scopedVotes);
+  const skippedCount = getSkippedVoteCount(scopedVotes);
+  const teamVoterCount = new Set(allUserVoteGroups.filter(group => group.votes?.length).map(group => group.user)).size;
+  const currentUserCompleted = items.length > 0 && votes.length >= items.length;
+  const scopeLabel = voteScope === 'all' && teamScopeAvailable ? '全员汇总' : '我的结果';
+  const exportScopeTag = voteScope === 'all' && teamScopeAvailable ? 'all' : 'mine';
+
+  useEffect(() => {
+    if (!teamScopeAvailable && voteScope === 'all') {
+      setVoteScope('mine');
+      return;
+    }
+    if (!scopeTouched && teamScopeAvailable) {
+      setVoteScope('all');
+    }
+  }, [scopeTouched, teamScopeAvailable, voteScope]);
+
+  const selectScope = (nextScope: ResultsVoteScope) => {
+    setScopeTouched(true);
+    setVoteScope(nextScope);
+  };
   const rankVotes = effectiveVotes.filter(isArenaRankVote);
   const rankStats = calculateArenaRankModelStats(rankVotes);
   const arenaRankModelList = models.length > 0
@@ -72,13 +117,66 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
   const voteDimensionSummaries = calculateVoteDimensionSummaries(aggregatedResultItems);
   const rankDimensionSummaries = calculateRankDimensionSummaries(rankVotes, items);
 
+  const scopeControls = (
+    <div className="mb-4 rounded-xl border border-white/10 bg-white/5 p-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <div className="flex items-center gap-2 text-sm font-semibold text-slate-100">
+            <Users size={16} className="text-amber-300" />
+            结果范围：{scopeLabel}
+          </div>
+          <p className="mt-1 text-xs leading-5 text-slate-400">
+            我的结果用于复盘个人评审；全员汇总会聚合当前评测物料下所有成员投票。当前全员数据包含 {teamVoterCount} 位成员、{teamScopedVotes.length} 条记录。
+            {currentUserCompleted ? ' 当前用户已完成本轮评测。' : ' 当前用户尚未完成全部 case。'}
+          </p>
+          {teamVotesError && (
+            <div className="mt-2 flex items-center gap-2 text-xs text-amber-300">
+              <AlertTriangle size={13} />
+              {teamVotesError}；已保留“我的结果”可用。
+            </div>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex overflow-hidden rounded-lg border border-white/10 bg-black/30 p-1">
+            <button
+              type="button"
+              onClick={() => selectScope('mine')}
+              className={`px-3 py-1.5 text-xs font-semibold transition-colors ${voteScope === 'mine' || !teamScopeAvailable ? 'bg-amber-400 text-black' : 'text-slate-300 hover:bg-white/10'}`}
+            >
+              我的结果
+            </button>
+            <button
+              type="button"
+              onClick={() => selectScope('all')}
+              disabled={!teamScopeAvailable}
+              className={`px-3 py-1.5 text-xs font-semibold transition-colors ${voteScope === 'all' && teamScopeAvailable ? 'bg-amber-400 text-black' : 'text-slate-300 hover:bg-white/10 disabled:cursor-not-allowed disabled:text-slate-600'}`}
+            >
+              全员汇总
+            </button>
+          </div>
+          {onRefreshTeamVotes && (
+            <button
+              type="button"
+              onClick={onRefreshTeamVotes}
+              disabled={teamVotesLoading}
+              className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-white/10 disabled:opacity-60"
+            >
+              <RefreshCw size={14} className={teamVotesLoading ? 'animate-spin' : ''} />
+              刷新全员结果
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
   const downloadPreviewCSV = () => {
     const inputHeaders: string[] = Array.from(new Set(items.flatMap(item => Object.keys(item.inputs || {}))));
     const outputHeaders = models.length > 0
       ? models.map(model => model.name)
       : Array.from(new Set(items.flatMap(item => item.modelOutputs?.map(output => output.modelName) || [])));
     const headers = ['ItemID', 'Status', 'Comment', 'Timestamp', 'User', ...dimensionColumns.map(col => col.header), ...inputHeaders, ...outputHeaders];
-    const rows = votes.map(vote => {
+    const rows = scopedVotes.map(vote => {
       const item = items.find(candidate => candidate.id === vote.itemId);
       const dimensionValues = getDimensionValuesForItem(item);
       const outputByName = new Map((item?.modelOutputs || []).map(output => [output.modelName, output.url]));
@@ -99,16 +197,16 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', `benchmark_preview_${userName || 'anon'}_${new Date().toISOString().slice(0,10)}.csv`);
+    link.setAttribute('download', `benchmark_preview_${exportScopeTag}_${userName || 'anon'}_${new Date().toISOString().slice(0,10)}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   };
 
   if (isBenchmarkPreview) {
-    const previewedCount = votes.filter(vote => vote.choice !== 'skipped').length;
-    const skippedCount = votes.filter(vote => vote.choice === 'skipped').length;
-    const commentedCount = votes.filter(vote => vote.reason?.trim()).length;
+    const previewedCount = scopedVotes.filter(vote => vote.choice !== 'skipped').length;
+    const skippedCount = scopedVotes.filter(vote => vote.choice === 'skipped').length;
+    const commentedCount = scopedVotes.filter(vote => vote.reason?.trim()).length;
 
     return (
       <div className="mx-auto max-w-6xl p-6 animate-in zoom-in-95 duration-500">
@@ -119,6 +217,8 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
           <h1 className="mb-2 text-4xl font-bold text-slate-200">Benchmark 预览完成</h1>
           <p className="text-slate-300">{userName || 'Reviewer'} 的数据预览记录</p>
         </div>
+
+        {scopeControls}
 
         <div className="mb-8 grid grid-cols-1 gap-4 md:grid-cols-4">
           <div className="border border-white/10 bg-white/5 p-5">
@@ -168,7 +268,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
                 </tr>
               </thead>
               <tbody>
-                {votes.map((vote, index) => {
+                {scopedVotes.map((vote, index) => {
                   const item = items.find(candidate => candidate.id === vote.itemId);
                   return (
                     <tr key={`${vote.itemId}-${index}`} className="border-b border-white/10 hover:bg-white/5">
@@ -202,6 +302,8 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
         <ScoreInsightsScreen
           mode="score"
           title={activeConfig.method === 'rubric_score' ? 'Rubric 单次结果洞察' : 'MOS 单次结果洞察'}
+          description={`当前展示范围：${scopeLabel}`}
+          controls={scopeControls}
           items={items}
           votes={effectiveVotes}
           models={models.length ? models : [
@@ -221,6 +323,8 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
         <ScoreInsightsScreen
           mode="pairwise"
           title="Pairwise 单次结果洞察"
+          description={`当前展示范围：${scopeLabel}`}
+          controls={scopeControls}
           items={items}
           votes={effectiveVotes}
           models={models.length ? models : [
@@ -238,6 +342,8 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
       <ResultsInsightsScreen
         mode={isArenaRank ? 'rank' : 'ab'}
         title={isArenaRank ? 'Arena-rank 单次结果洞察' : '单次评测结果洞察'}
+        description={`当前展示范围：${scopeLabel}`}
+        controls={scopeControls}
         items={items}
         votes={effectiveVotes}
         modelNames={modelNames}
@@ -265,7 +371,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.setAttribute('href', url);
-      link.setAttribute('download', `score_results_${userName || 'anon'}_${new Date().toISOString().slice(0,10)}.csv`);
+      link.setAttribute('download', `score_results_${exportScopeTag}_${userName || 'anon'}_${new Date().toISOString().slice(0,10)}.csv`);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -286,7 +392,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.setAttribute('href', url);
-      link.setAttribute('download', `pairwise_results_${userName || 'anon'}_${new Date().toISOString().slice(0,10)}.csv`);
+      link.setAttribute('download', `pairwise_results_${exportScopeTag}_${userName || 'anon'}_${new Date().toISOString().slice(0,10)}.csv`);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -298,7 +404,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
       const rankVideoHeaders = Array.from({ length: maxRankCount }, (_, idx) => `排名${idx + 1}视频链接`);
       const modelHeaders = arenaRankModelList.flatMap(model => [`${model.name}_rank`, `${model.name}_score`]);
       const headers = ['ItemID', 'Prompt', ...dimensionColumns.map(col => col.header), 'Status', 'Timestamp', 'User', ...rankHeaders, ...rankVideoHeaders, ...modelHeaders, 'ranking_json'];
-      const rows = votes.filter(v => isArenaRankVote(v) || isSkippedVote(v)).map(v => {
+      const rows = scopedVotes.filter(v => isArenaRankVote(v) || isSkippedVote(v)).map(v => {
         const item = items.find(candidate => candidate.id === v.itemId);
         const ranking = sortRanking(v.ranking);
         const dimensionValues = getDimensionValuesForItem(item);
@@ -323,7 +429,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
           ...getDimensionCsvValues(dimensionValues, dimensionColumns.map(col => col.key)),
           isSkippedVote(v) ? 'skipped' : 'ranked',
           new Date(v.timestamp).toISOString(),
-          userName || v.user || 'Anonymous',
+          v.user || userName || 'Anonymous',
           ...rankValues,
           ...rankVideoValues,
           ...modelValues,
@@ -336,7 +442,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.setAttribute('href', url);
-      link.setAttribute('download', `arena_rank_results_${userName || 'anon'}_${new Date().toISOString().slice(0,10)}.csv`);
+      link.setAttribute('download', `arena_rank_results_${exportScopeTag}_${userName || 'anon'}_${new Date().toISOString().slice(0,10)}.csv`);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -345,7 +451,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
 
     // Standard cols: ItemID, Prompt, dimensions, model urls, winner, timestamp, user, model names, references
     const headers = ['ItemID', 'Prompt', ...dimensionColumns.map(col => col.header), 'Status', 'ModelA_URL', 'ModelB_URL', 'Winner', 'Timestamp', 'User', 'ModelA_Name', 'ModelB_Name', 'References'];
-    const rows = votes.map(v => {
+    const rows = scopedVotes.map(v => {
       const item = items.find(i => i.id === v.itemId);
       const dimensionValues = getDimensionValuesForItem(item);
       return [
@@ -357,7 +463,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
         item?.modelB_Url || '',
         isSkippedVote(v) ? '' : v.vote,
         new Date(v.timestamp).toISOString(),
-        userName || 'Anonymous',
+        v.user || userName || 'Anonymous',
         modelNames.a,
         modelNames.b,
         item?.referenceUrls ? item.referenceUrls.join(' | ') : ''
@@ -369,7 +475,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', `results_${userName || 'anon'}_${new Date().toISOString().slice(0,10)}.csv`);
+    link.setAttribute('download', `results_${exportScopeTag}_${userName || 'anon'}_${new Date().toISOString().slice(0,10)}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -385,6 +491,8 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
           <h1 className="text-4xl font-bold text-slate-200 mb-2">Arena-rank 完成</h1>
           <p className="text-slate-300">{userName || 'Evaluator'} 的多视频排名结果</p>
         </div>
+
+        {scopeControls}
 
         {skippedCount > 0 && (
           <div className="mb-6 rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-center text-sm text-amber-100">
@@ -527,6 +635,8 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({ votes, items, onReset, us
         <h1 className="text-4xl font-bold text-slate-200 mb-2">评测完成</h1>
         <p className="text-slate-200">干得好，{userName || '评测者'}！以下是模型的表现。</p>
       </div>
+
+      {scopeControls}
 
       {skippedCount > 0 && (
         <div className="mb-6 rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-center text-sm text-amber-100">
