@@ -2,6 +2,7 @@ import React from 'react';
 import { ExternalLink, FileText } from 'lucide-react';
 import MediaRenderer from './MediaRenderer';
 import { inferPreviewMediaType, looksLikeUrl, PreviewMediaType } from '../mediaTypeUtils';
+import { resolvePlaybackUrl } from '../mediaUrlUtils';
 
 interface BenchmarkOutputCellProps {
   label: string;
@@ -18,6 +19,7 @@ const stringifyValue = (value: unknown) => {
 
 const BenchmarkOutputCell: React.FC<BenchmarkOutputCellProps> = ({ label, value, preferredType, isActive = false }) => {
   const textValue = stringifyValue(value);
+  const playbackUrl = resolvePlaybackUrl(textValue);
   const fallbackType: PreviewMediaType = preferredType || 'text';
   const mediaType = inferPreviewMediaType(textValue, fallbackType, label);
   const isMedia = mediaType === 'image' || mediaType === 'video' || mediaType === 'audio';
@@ -29,9 +31,9 @@ const BenchmarkOutputCell: React.FC<BenchmarkOutputCellProps> = ({ label, value,
           <h3 className="truncate text-sm font-semibold text-slate-100" title={label}>{label}</h3>
           <p className="mt-0.5 text-[11px] uppercase tracking-[0.14em] text-slate-500">{mediaType}</p>
         </div>
-        {looksLikeUrl(textValue) && (
+        {looksLikeUrl(textValue) && playbackUrl && (
           <a
-            href={textValue}
+            href={playbackUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10"
@@ -45,7 +47,7 @@ const BenchmarkOutputCell: React.FC<BenchmarkOutputCellProps> = ({ label, value,
       <div className="relative min-h-[180px] flex-1 bg-black/20">
         {isMedia ? (
           <MediaRenderer
-            url={textValue}
+            url={playbackUrl || textValue}
             label={label}
             isActive={isActive}
             forceType={mediaType}

@@ -1,6 +1,8 @@
 import { collection, doc, getDoc, getDocs, updateDoc } from '../../datastore';
 import { db } from '../../auth';
 import { getDimensionValuesForItem, getDimensionValuesFromRecord } from '../../dimensionUtils';
+import { sortReferenceUrls } from '../../mediaTypeUtils';
+import { extractMediaUrls } from '../../mediaUrlUtils';
 import { EvalTask, EvaluationItem } from '../../types';
 import { getApiAuthHeaders } from '../apiAuthHeaders';
 import { API_BASE_URL, USE_SHARED_DATA_SOURCE } from '../../runtimeConfig';
@@ -27,6 +29,7 @@ export async function loadTaskItems(task: EvalTask, options: LoadTaskItemsOption
     return data.items.map(item => ({
       ...item,
       dimensionValues: getDimensionValuesForItem(item as any, task.dimensionColumns || []),
+      referenceUrls: item.referenceUrls?.length ? sortReferenceUrls(item.referenceUrls) : item.referenceUrls,
     })).sort((a: any, b: any) => {
       const leftOrder = Number(a.itemOrder ?? 0);
       const rightOrder = Number(b.itemOrder ?? 0);
@@ -44,6 +47,9 @@ export async function loadTaskItems(task: EvalTask, options: LoadTaskItemsOption
   let items = itemsSnapshot.docs.map((docSnap: any) => {
     const data = { id: docSnap.id, ...docSnap.data() } as EvaluationItem;
     data.dimensionValues = getDimensionValuesForItem(data as any, task.dimensionColumns || []);
+    if (data.referenceUrls?.length) {
+      data.referenceUrls = sortReferenceUrls(data.referenceUrls);
+    }
     if (!data.modelOutputs?.length) {
       const originalData = (data as any).originalData || {};
       data.modelOutputs = models.map((model, idx) => ({
@@ -86,21 +92,26 @@ export async function loadTaskItems(task: EvalTask, options: LoadTaskItemsOption
           let startImageUrl: string | undefined;
           const referenceUrls: string[] = [];
           Object.keys(inputs).forEach(col => {
-            const val = inputs[col];
-            if (typeof val !== 'string') return;
-            const urls = val.match(/https?:\/\/[^\s"'\t|,;>]+/g);
-            if (!urls) return;
+            const urls = extractMediaUrls(inputs[col]);
+            if (urls.length === 0) return;
+
             const lowerCol = col.toLowerCase();
+            const isMusicCol = /music|audio|bgm|配乐|音乐|音频/.test(lowerCol);
+            const isStartCol = /start|首帧|first/.test(lowerCol);
+            const isRefCol = /ref|reference|参考|image_json|music_json/.test(lowerCol) || isMusicCol;
+
             urls.forEach(u => {
-              if (lowerCol.includes('start') || lowerCol.includes('首帧') || lowerCol.includes('first')) {
-                if (!startImageUrl) startImageUrl = u;
-                else referenceUrls.push(u);
-              } else if (lowerCol.includes('ref') || lowerCol.includes('参考')) {
+              if (isMusicCol || (isRefCol && !isStartCol)) {
                 referenceUrls.push(u);
-              } else {
+                return;
+              }
+              if (isStartCol) {
                 if (!startImageUrl) startImageUrl = u;
                 else referenceUrls.push(u);
+                return;
               }
+              if (!startImageUrl) startImageUrl = u;
+              else referenceUrls.push(u);
             });
           });
 
@@ -118,7 +129,7 @@ export async function loadTaskItems(task: EvalTask, options: LoadTaskItemsOption
             prompt: inputs['prompt'] || inputs['提示词'] || Object.values(inputs)[0] || '',
             type: task.outputType || 'text',
             startImageUrl,
-            referenceUrls: referenceUrls.length > 0 ? referenceUrls : undefined
+            referenceUrls: referenceUrls.length > 0 ? sortReferenceUrls(referenceUrls) : undefined
           } as EvaluationItem;
         });
       }

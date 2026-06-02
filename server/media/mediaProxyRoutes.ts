@@ -3,7 +3,7 @@ import express from 'express';
 
 import { badRequest } from '../http/errors.ts';
 
-const ALLOWED_MEDIA_HOSTS = new Set(['vidmuse.sandcdn.com', 'vidmuse-dev.sandcdn.com']);
+const ALLOWED_MEDIA_HOSTS = new Set(['vidmuse.sandcdn.com', 'vidmuse-dev.sandcdn.com', 'vidmuse-video.sandcdn.com']);
 const HOP_BY_HOP_HEADERS = new Set([
   'connection',
   'keep-alive',

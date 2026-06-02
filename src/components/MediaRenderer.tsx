@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertCircle, FileAudio, FileVideo, Image as ImageIcon, Loader2 } from 'lucide-react';
 import { VIDEO_EXTENSIONS } from '../constants';
 import { resolveMediaPlaybackCandidates } from '../mediaProxy';
+import { resolvePlaybackUrl } from '../mediaUrlUtils';
 
 interface MediaRendererProps {
   url: string;
@@ -20,7 +21,7 @@ const MEDIA_SOFT_TIMEOUT_MS = 7000;
 const AUDIO_EXTENSIONS = ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'];
 const IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'avif', 'svg'];
 
-const inferMediaTypeFromUrl = (url: string): 'image' | 'video' | 'audio' => {
+const detectMediaTypeFromUrl = (url: string): 'image' | 'video' | 'audio' | null => {
   const cleanUrl = url.trim().split('?')[0].split('#')[0].toLowerCase();
   const lowerUrl = url.toLowerCase();
   const decodedUrl = (() => {
@@ -60,8 +61,11 @@ const inferMediaTypeFromUrl = (url: string): 'image' | 'video' | 'audio' => {
     return 'image';
   }
 
-  return 'image';
+  return null;
 };
+
+const inferMediaTypeFromUrl = (url: string): 'image' | 'video' | 'audio' =>
+  detectMediaTypeFromUrl(url) || 'image';
 
 const isForcedMediaType = (value?: string): value is 'image' | 'video' | 'audio' =>
   value === 'image' || value === 'video' || value === 'audio';
@@ -75,7 +79,8 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
   forceType,
   videoPreload = 'auto'
 }) => {
-  const candidates = useMemo(() => resolveMediaPlaybackCandidates(url || ''), [url]);
+  const sourceUrl = useMemo(() => resolvePlaybackUrl(url), [url]);
+  const candidates = useMemo(() => resolveMediaPlaybackCandidates(sourceUrl || ''), [sourceUrl]);
   const candidateSignature = useMemo(
     () => candidates.map(candidate => `${candidate.kind}:${candidate.url}`).join('|'),
     [candidates]
@@ -111,9 +116,17 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
 
   const isActiveRequest = useCallback((requestKey: string) => requestKey === activeRequestKeyRef.current, []);
 
-  const inferCurrentMediaType = useCallback((candidateUrl: string) => (
-    isForcedMediaType(forceType) ? forceType : inferMediaTypeFromUrl(candidateUrl)
-  ), [forceType]);
+  const inferCurrentMediaType = useCallback((candidateUrl: string) => {
+    const detectedType = detectMediaTypeFromUrl(candidateUrl);
+    if (isForcedMediaType(forceType)) {
+      // Treat forceType as a hint: if URL clearly indicates audio/video, prefer URL type.
+      if ((forceType === 'video' && detectedType === 'audio') || (forceType === 'audio' && detectedType === 'video')) {
+        return detectedType;
+      }
+      return forceType;
+    }
+    return detectedType || 'image';
+  }, [forceType]);
 
   const resetCurrentRequest = useCallback(() => {
     setLoading(true);
@@ -353,7 +366,7 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
             controls
             autoPlay={isActive}
             loop
-            muted
+            defaultMuted={false}
             preload={videoPreload}
             playsInline
             referrerPolicy={referrerPolicy}

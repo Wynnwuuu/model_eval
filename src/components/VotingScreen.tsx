@@ -1,11 +1,13 @@
 import React, { useEffect, useCallback, useRef, useState } from 'react';
-import { CheckCircle2, ChevronDown, ChevronUp, Cloud, Equal, Expand, ThumbsUp, ArrowLeft, ArrowRight, Shuffle, SkipForward } from 'lucide-react';
+import { CheckCircle2, ChevronDown, ChevronUp, Cloud, Equal, Expand, ThumbsUp, ArrowLeft, ArrowRight, Shuffle, SkipForward, FileAudio } from 'lucide-react';
 import { EvaluationItem, VoteType } from '../types';
 import MediaRenderer from './MediaRenderer';
 import { KEYBOARD_SHORTCUTS, VIDEO_EXTENSIONS } from '../constants';
 import { resolveMediaPlaybackCandidates } from '../mediaProxy';
 import DimensionChips from './DimensionChips';
 import { getDimensionValuesForItem, hasDimensionValues } from '../dimensionUtils';
+import { extractMediaUrls } from '../mediaUrlUtils';
+import { getReferenceThumbnailUrl, inferReferenceMediaType, sortReferenceUrls } from '../mediaTypeUtils';
 
 interface VotingScreenProps {
   item: EvaluationItem;
@@ -20,13 +22,8 @@ interface VotingScreenProps {
   allowTie?: boolean;
 }
 
-const extractUrls = (value: unknown): string[] => {
-  if (typeof value !== 'string') return [];
-  return value.match(/https?:\/\/[^\s"'\t|,;>]+/g) || [];
-};
-
 const isStartImageKey = (key: string) => /start|first|首帧|首图|起始/i.test(key);
-const isReferenceKey = (key: string) => /ref|reference|参考|參考/i.test(key);
+const isReferenceKey = (key: string) => /ref|reference|参考|參考|music|audio|bgm|配乐|音乐|音频|image_json/i.test(key);
 const VOTE_MEDIA_WAIT_FALLBACK_MS = 8000;
 
 const VotingScreen: React.FC<VotingScreenProps> = ({
@@ -56,30 +53,36 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
     if (!item.inputs) return undefined;
     for (const [key, val] of Object.entries(item.inputs)) {
       if (isStartImageKey(key)) {
-        const [url] = extractUrls(val);
+        const [url] = extractMediaUrls(val);
         if (url) return url;
       }
     }
     return undefined;
   })();
 
-  const effectiveReferenceUrls = item.referenceUrls || (() => {
-    if (!item.inputs) return undefined;
-    const refs: string[] = [];
-    for (const [key, val] of Object.entries(item.inputs)) {
-      if (isReferenceKey(key)) {
-        refs.push(...extractUrls(val));
+  const effectiveReferenceUrls = (() => {
+    const refs = item.referenceUrls || (() => {
+      if (!item.inputs) return [] as string[];
+      const collected: string[] = [];
+      for (const [key, val] of Object.entries(item.inputs)) {
+        if (isReferenceKey(key)) {
+          collected.push(...extractMediaUrls(val));
+        }
       }
-    }
-    return refs.length > 0 ? refs : undefined;
+      return collected;
+    })();
+    return refs.length > 0 ? sortReferenceUrls(refs) : undefined;
   })();
 
+  const referenceThumbnailUrl = effectiveReferenceUrls
+    ? getReferenceThumbnailUrl(effectiveReferenceUrls)
+    : undefined;
   const hasReferences = Boolean(effectiveReferenceUrls && effectiveReferenceUrls.length > 0);
 
   const hiddenInputKeys = new Set<string>();
   if (item.inputs) {
     for (const [key, val] of Object.entries(item.inputs)) {
-      if (extractUrls(val).length > 0 && (isStartImageKey(key) || isReferenceKey(key))) {
+      if (extractMediaUrls(val).length > 0 && (isStartImageKey(key) || isReferenceKey(key))) {
         hiddenInputKeys.add(key);
       }
     }
@@ -179,17 +182,23 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
 
     const preloadUrls = [nextItem.modelA_Url, nextItem.modelB_Url].filter(Boolean) as string[];
 
-    const nextEffectiveRefs = nextItem.referenceUrls || (() => {
-      if (!nextItem.inputs) return undefined;
-      const refs: string[] = [];
-      for (const [key, val] of Object.entries(nextItem.inputs)) {
-        if (isReferenceKey(key)) refs.push(...extractUrls(val));
-      }
-      return refs.length > 0 ? refs : undefined;
+    const nextRefs = (() => {
+      const collected = nextItem.referenceUrls || (() => {
+        if (!nextItem.inputs) return [] as string[];
+        const refs: string[] = [];
+        for (const [key, val] of Object.entries(nextItem.inputs)) {
+          if (isReferenceKey(key)) refs.push(...extractMediaUrls(val));
+        }
+        return refs;
+      })();
+      return collected.length > 0 ? sortReferenceUrls(collected) : undefined;
     })();
 
-    if (nextEffectiveRefs && nextEffectiveRefs.length > 0) {
-      preloadUrls.push(nextEffectiveRefs[0]);
+    const nextRefThumbnail = nextRefs ? getReferenceThumbnailUrl(nextRefs) : undefined;
+    if (nextRefThumbnail) {
+      preloadUrls.push(nextRefThumbnail);
+    } else if (nextRefs?.[0]) {
+      preloadUrls.push(nextRefs[0]);
     }
 
     preloadUrls.slice(0, allMediaLoaded ? 3 : 1).forEach(preloadMedia);
@@ -381,15 +390,19 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
                           setCurrentRefIndex(0);
                         }}
                         className="relative flex h-16 w-16 items-center justify-center overflow-hidden border-2 border-white/15 bg-white/5 shadow-md shadow-black/20 transition-all hover:border-[var(--accent)]"
-                        title="查看参考图"
+                        title="查看参考素材"
                       >
-                        <img src={effectiveReferenceUrls![0] || undefined} className="h-full w-full object-cover opacity-80 group-hover:opacity-100" referrerPolicy="no-referrer" />
+                        {referenceThumbnailUrl ? (
+                          <img src={referenceThumbnailUrl} className="h-full w-full object-cover opacity-80 group-hover:opacity-100" referrerPolicy="no-referrer" />
+                        ) : (
+                          <FileAudio className="h-7 w-7 text-amber-300" />
+                        )}
                         <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
                           <Expand size={16} className="text-white" />
                         </div>
                       </button>
                       <div className="absolute -bottom-6 left-1/2 -translate-x-1/2 whitespace-nowrap text-[10px] font-medium text-slate-200">
-                        {effectiveReferenceUrls!.length > 1 ? `${effectiveReferenceUrls!.length} 张参考图` : '参考图'}
+                        {effectiveReferenceUrls!.length > 1 ? `${effectiveReferenceUrls!.length} 项参考素材` : (referenceThumbnailUrl ? '参考图' : '参考音频')}
                       </div>
                       {effectiveReferenceUrls!.length > 1 && (
                         <div className="absolute -right-2 -top-2 flex h-5 w-5 items-center justify-center rounded-full border border-white bg-[var(--accent-cold)] text-[10px] text-white">
@@ -490,7 +503,11 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
                       </button>
                     </>
                   )}
-                  {effectiveReferenceUrls && effectiveReferenceUrls.length === 1 && <span className="text-sm font-medium text-white">参考图像</span>}
+                  {effectiveReferenceUrls && effectiveReferenceUrls.length === 1 && (
+                    <span className="text-sm font-medium text-white">
+                      {inferReferenceMediaType(effectiveReferenceUrls[0]) === 'audio' ? '参考音频' : '参考图像'}
+                    </span>
+                  )}
                 </>
               )}
             </div>

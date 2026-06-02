@@ -8,6 +8,8 @@ import Papa from 'papaparse';
 import MediaRenderer from './MediaRenderer';
 import DimensionChips from './DimensionChips';
 import { getDimensionValuesForItem, getDimensionValuesFromRecord, isLikelyDimensionColumn } from '../dimensionUtils';
+import { extractMediaUrls, resolvePlaybackUrl } from '../mediaUrlUtils';
+import { sortReferenceUrls } from '../mediaTypeUtils';
 import { createTaskWithItems, deleteTask, loadTaskItems, subscribeTasks, updateTask, updateTaskItem } from '../features/tasks/api';
 import { createDataset, subscribeDatasets } from '../features/datasets/api';
 import { saveTemplate, subscribeTemplates } from '../features/templates/api';
@@ -423,47 +425,50 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
             let referenceUrls: string[] = [];
             
             inputColumns.forEach(col => {
-              const val = row[col];
-              if (typeof val === 'string') {
-                const urls = val.match(/https?:\/\/[^\s"'\t|,;>]+/g);
-                if (urls) {
-                  const lowerCol = col.toLowerCase();
-                  urls.forEach(u => {
-                    if (lowerCol.includes('start') || lowerCol.includes('首帧') || lowerCol.includes('first')) {
-                      if (!startImageUrl) startImageUrl = u;
-                      else referenceUrls.push(u);
-                    } else if (lowerCol.includes('ref') || lowerCol.includes('参考')) {
-                      referenceUrls.push(u);
-                    } else {
-                      if (!startImageUrl) startImageUrl = u;
-                      else referenceUrls.push(u);
-                    }
-                  });
+              const urls = extractMediaUrls(row[col]);
+              if (urls.length === 0) return;
+
+              const lowerCol = col.toLowerCase();
+              const isMusicCol = /music|audio|bgm|配乐|音乐|音频/.test(lowerCol);
+              const isStartCol = /start|首帧|first/.test(lowerCol);
+              const isRefCol = /ref|reference|参考|image_json|music_json/.test(lowerCol) || isMusicCol;
+
+              urls.forEach(u => {
+                if (isMusicCol || (isRefCol && !isStartCol)) {
+                  referenceUrls.push(u);
+                  return;
                 }
-              }
+                if (isStartCol) {
+                  if (!startImageUrl) startImageUrl = u;
+                  else referenceUrls.push(u);
+                  return;
+                }
+                if (!startImageUrl) startImageUrl = u;
+                else referenceUrls.push(u);
+              });
             });
 
             const baseItemData: any = {
               prompt: inputColumns.length === 1 ? row[inputColumns[0]] : inputColumns.map(col => `[${col}]: ${row[col]}`).join('\n'),
               inputs: inputColumns.reduce((acc, col) => ({ ...acc, [col]: row[col] }), {}),
-              modelA_Url: modelColumns[0] ? row[modelColumns[0]] : '',
-              modelB_Url: modelColumns[1] ? row[modelColumns[1]] : '',
+              modelA_Url: modelColumns[0] ? resolvePlaybackUrl(row[modelColumns[0]]) : '',
+              modelB_Url: modelColumns[1] ? resolvePlaybackUrl(row[modelColumns[1]]) : '',
               modelOutputs: taskModels.map((model, idx) => ({
                 modelId: model.id,
                 modelName: model.name,
-                url: modelColumns[idx] ? row[modelColumns[idx]] : ''
+                url: modelColumns[idx] ? resolvePlaybackUrl(row[modelColumns[idx]]) : ''
               })).filter(output => output.url),
               dimensionValues: getDimensionValuesFromRecord(row, dimensionColumns),
               type: newTask.outputType || 'text',
               originalData: row,
-              originalItemId: row.id || row['用例ID'] || row['ItemID'] || `case-${rowIndex + 1}`,
+              originalItemId: row.case_id || row.case_name || row.id || row['用例ID'] || row['ItemID'] || `case-${rowIndex + 1}`,
               isSwapped: (finalEvaluationConfig.method === 'ab_preference' || finalEvaluationConfig.method === 'pairwise') && finalEvaluationConfig.blind !== false
                 ? Math.random() > 0.5
                 : false
             };
             
             if (startImageUrl) baseItemData.startImageUrl = startImageUrl;
-            if (referenceUrls.length > 0) baseItemData.referenceUrls = referenceUrls;
+            if (referenceUrls.length > 0) baseItemData.referenceUrls = sortReferenceUrls(referenceUrls);
 
             if (finalEvaluationConfig.method === 'pairwise') {
               const pairs = buildPairwisePairs(taskModels || [], finalEvaluationConfig.pairwiseMode);
@@ -472,19 +477,19 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                 const rightIndex = (taskModels || []).findIndex(model => model.id === pair.modelB.id);
                 const pairItemData = {
                   ...baseItemData,
-                  id: `${baseItemData.originalItemId}__${pair.pairId}`,
-                  modelA_Url: leftIndex >= 0 ? row[modelColumns[leftIndex]] || '' : '',
-                  modelB_Url: rightIndex >= 0 ? row[modelColumns[rightIndex]] || '' : '',
+                  id: `row-${rowIndex}__${pair.pairId}`,
+                  modelA_Url: leftIndex >= 0 ? resolvePlaybackUrl(row[modelColumns[leftIndex]]) : '',
+                  modelB_Url: rightIndex >= 0 ? resolvePlaybackUrl(row[modelColumns[rightIndex]]) : '',
                   modelOutputs: [
                     {
                       modelId: pair.modelA.id,
                       modelName: pair.modelA.name,
-                      url: leftIndex >= 0 ? row[modelColumns[leftIndex]] || '' : ''
+                      url: leftIndex >= 0 ? resolvePlaybackUrl(row[modelColumns[leftIndex]]) : ''
                     },
                     {
                       modelId: pair.modelB.id,
                       modelName: pair.modelB.name,
-                      url: rightIndex >= 0 ? row[modelColumns[rightIndex]] || '' : ''
+                      url: rightIndex >= 0 ? resolvePlaybackUrl(row[modelColumns[rightIndex]]) : ''
                     }
                   ].filter(output => output.url),
                   pairContext: {
@@ -495,12 +500,16 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                     modelBId: pair.modelB.id,
                     modelBName: pair.modelB.name
                   },
-                  itemOrder: rowIndex
+                  itemOrder: taskItemsToSave.length
                 };
                 taskItemsToSave.push(pairItemData);
               }
             } else {
-              taskItemsToSave.push({ ...baseItemData, itemOrder: rowIndex });
+              taskItemsToSave.push({
+                ...baseItemData,
+                id: `row-${rowIndex}`,
+                itemOrder: taskItemsToSave.length
+              });
             }
           }
         } catch (err: any) {
@@ -635,7 +644,20 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
       data = results.data as any[];
       headers = results.meta.fields || (data.length > 0 ? Object.keys(data[0]) : []);
 
-      // Check if PapaParse failed to separate URLs or missed them entirely due to delimiter confusion
+      // Check if PapaParse failed to separate URLs or missed them entirely due to delimiter confusion.
+      // Note: some valid datasets store multiple URLs in one JSON-array cell
+      // (e.g. ["url1","url2"]). That should NOT be treated as "merged columns".
+      const isJsonLikeArrayCell = (value: string) => {
+        const trimmed = value.trim();
+        if (!trimmed.startsWith('[') || !trimmed.endsWith(']')) return false;
+        try {
+          const parsed = JSON.parse(trimmed);
+          return Array.isArray(parsed);
+        } catch {
+          return false;
+        }
+      };
+
       let hasMergedUrls = false;
       let hasUrlInParsedData = false;
       if (data.length > 0) {
@@ -644,7 +666,12 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
           if (rowVals.some(val => typeof val === 'string' && val.includes('http'))) {
             hasUrlInParsedData = true;
           }
-          if (rowVals.some(val => typeof val === 'string' && (val.match(/https?:\/\//g) || []).length > 1)) {
+          if (rowVals.some(val => {
+            if (typeof val !== 'string') return false;
+            const urlCount = (val.match(/https?:\/\//g) || []).length;
+            if (urlCount <= 1) return false;
+            return !isJsonLikeArrayCell(val);
+          })) {
             hasMergedUrls = true;
           }
         }

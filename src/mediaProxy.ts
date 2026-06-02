@@ -1,7 +1,7 @@
 import { normalizeUrl } from './utils';
 import { API_BASE_URL } from './runtimeConfig';
 
-export const MEDIA_PROXY_HOSTS = ['vidmuse.sandcdn.com', 'vidmuse-dev.sandcdn.com'];
+export const MEDIA_PROXY_HOSTS = ['vidmuse.sandcdn.com', 'vidmuse-dev.sandcdn.com', 'vidmuse-video.sandcdn.com'];
 export const CDN_PROXY_PREFIX = '/media-proxy';
 export const CDN_DEV_PROXY_PREFIX = '/media-dev-proxy';
 
@@ -16,30 +16,27 @@ export interface MediaPlaybackCandidate {
   label: string;
 }
 
-const createProxyUrl = (normalizedUrl: string, hostname: string): string | null => {
-  if (API_BASE_URL) {
-    return `${API_BASE_URL}/api/media-proxy?url=${encodeURIComponent(normalizedUrl)}`;
-  }
-
-  if (!import.meta.env.DEV) {
-    return `/api/media-proxy?url=${encodeURIComponent(normalizedUrl)}`;
-  }
-
+const createProxyUrl = (normalizedUrl: string): string | null => {
   try {
     const parsed = new URL(normalizedUrl);
-    if (hostname === 'vidmuse.sandcdn.com') {
-      return `${CDN_PROXY_PREFIX}${parsed.pathname}${parsed.search}${parsed.hash}`;
-    }
-
-    if (hostname === 'vidmuse-dev.sandcdn.com') {
-      return `${CDN_DEV_PROXY_PREFIX}${parsed.pathname}${parsed.search}${parsed.hash}`;
-    }
+    if (!MEDIA_PROXY_HOSTS.includes(parsed.hostname)) return null;
   } catch {
     return null;
   }
 
-  return null;
+  const encoded = encodeURIComponent(normalizedUrl);
+  if (API_BASE_URL) {
+    return `${API_BASE_URL}/api/media-proxy?url=${encoded}`;
+  }
+
+  // Vite dev server forwards /api to the local API (see vite.config.ts).
+  return `/api/media-proxy?url=${encoded}`;
 };
+
+const isAudioUrl = (url: string): boolean =>
+  /\.(mp3|wav|ogg|m4a|aac|flac)(?:$|[?#])/i.test(url) ||
+  /\/audios?\//i.test(url) ||
+  /vidmuse-video\.sandcdn\.com/i.test(url);
 
 export const resolveMediaPlaybackCandidates = (url: string): MediaPlaybackCandidate[] => {
   const raw = url?.trim() || '';
@@ -70,15 +67,19 @@ export const resolveMediaPlaybackCandidates = (url: string): MediaPlaybackCandid
       return [{ url: normalized, kind: 'direct', label: 'Direct' }];
     }
 
-    const candidates: MediaPlaybackCandidate[] = [
-      { url: normalized, kind: 'direct', label: 'Direct' }
-    ];
-    const proxyUrl = createProxyUrl(normalized, parsed.hostname);
-    if (proxyUrl && proxyUrl !== normalized) {
-      candidates.push({ url: proxyUrl, kind: 'proxy', label: 'Proxy' });
+    const proxyUrl = createProxyUrl(normalized);
+    const directCandidate: MediaPlaybackCandidate = { url: normalized, kind: 'direct', label: 'Direct' };
+    if (!proxyUrl || proxyUrl === normalized) {
+      return [directCandidate];
     }
 
-    return candidates;
+    const proxyCandidate: MediaPlaybackCandidate = { url: proxyUrl, kind: 'proxy', label: 'Proxy' };
+    // Audio on sandcdn often fails direct playback (CORS); try proxy first.
+    if (isAudioUrl(normalized)) {
+      return [proxyCandidate, directCandidate];
+    }
+
+    return [directCandidate, proxyCandidate];
   } catch {
     return [{ url: normalized, kind: 'direct', label: 'Direct' }];
   }

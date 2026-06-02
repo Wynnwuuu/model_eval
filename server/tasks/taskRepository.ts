@@ -183,8 +183,32 @@ const replaceModels = async (client: any, taskId: string, models: EvalTask['mode
 
 const replaceItems = async (client: any, taskId: string, items: EvaluationItem[] = []) => {
   await client.query('DELETE FROM eval_task_items WHERE task_id = $1', [taskId]);
+  const usedItemIds = new Set<string>();
+  const usedRowIndexes = new Set<number>();
+  let nextRowIndex = 0;
   for (const [index, item] of items.entries()) {
-    const itemId = item.id || randomUUID();
+    const rawItemId =
+      typeof item.id === 'string' && item.id.trim().length > 0
+        ? item.id.trim()
+        : `item-${index}`;
+    let itemId = `${taskId}:${rawItemId}`;
+    if (usedItemIds.has(itemId)) {
+      itemId = `${taskId}:${randomUUID()}`;
+    }
+    usedItemIds.add(itemId);
+    const preferredRowIndex = Number((item as any).itemOrder ?? index);
+    let rowIndex = Number.isFinite(preferredRowIndex) ? Math.trunc(preferredRowIndex) : index;
+    if (rowIndex < 0 || usedRowIndexes.has(rowIndex)) {
+      while (usedRowIndexes.has(nextRowIndex)) {
+        nextRowIndex += 1;
+      }
+      rowIndex = nextRowIndex;
+    }
+    usedRowIndexes.add(rowIndex);
+    if (rowIndex >= nextRowIndex) {
+      nextRowIndex = rowIndex + 1;
+    }
+
     await client.query(
       `
         INSERT INTO eval_task_items (
@@ -200,7 +224,7 @@ const replaceItems = async (client: any, taskId: string, items: EvaluationItem[]
       [
         itemId,
         taskId,
-        Number((item as any).itemOrder ?? index),
+        rowIndex,
         JSON.stringify({ ...item, id: itemId }),
         JSON.stringify((item as any).originalData || {}),
         JSON.stringify(item.dimensionValues || {}),
