@@ -233,6 +233,8 @@ const main = async () => {
 
     const taskItems = await request<{ items: any[] }>(`/api/tasks/${ids.task}/items`);
     assert(taskItems.items.length === 2, 'task items were not persisted');
+    const [firstTaskItem, secondTaskItem] = taskItems.items;
+    assert(firstTaskItem?.id && secondTaskItem?.id, 'task item ids were not returned from api');
 
     const sharedReviewerA = authHeadersFor('smoke-reviewer-a', 'smoke-reviewer-a@example.com', 'Shared Reviewer');
     const sharedReviewerB = authHeadersFor('smoke-reviewer-b', 'smoke-reviewer-b@example.com', 'Shared Reviewer');
@@ -242,7 +244,7 @@ const main = async () => {
       body: JSON.stringify({
         progress: 1,
         votes: [
-          { itemId: `${RUN_ID}-item-1`, method: 'ab_preference', vote: 'A', choice: 'A', timestamp: Date.now(), user: 'Shared Reviewer' },
+          { itemId: firstTaskItem.id, method: 'ab_preference', vote: 'A', choice: 'A', timestamp: Date.now(), user: 'Shared Reviewer' },
         ],
       }),
     });
@@ -252,8 +254,8 @@ const main = async () => {
       body: JSON.stringify({
         progress: 2,
         votes: [
-          { itemId: `${RUN_ID}-item-1`, method: 'ab_preference', vote: 'B', choice: 'B', timestamp: Date.now(), user: 'Shared Reviewer' },
-          { itemId: `${RUN_ID}-item-2`, method: 'ab_preference', vote: 'A', choice: 'A', timestamp: Date.now(), user: 'Shared Reviewer' },
+          { itemId: firstTaskItem.id, method: 'ab_preference', vote: 'B', choice: 'B', timestamp: Date.now(), user: 'Shared Reviewer' },
+          { itemId: secondTaskItem.id, method: 'ab_preference', vote: 'A', choice: 'A', timestamp: Date.now(), user: 'Shared Reviewer' },
         ],
       }),
     });
@@ -300,10 +302,15 @@ const main = async () => {
       ],
     });
 
+    const benchmarkItems = await request<{ items: any[] }>(`/api/tasks/${ids.benchmarkTask}/items`);
+    assert(benchmarkItems.items.length === 1, 'benchmark task items were not persisted');
+    const previewItemId = benchmarkItems.items[0]?.id;
+    assert(previewItemId, 'benchmark task item id was not returned from api');
+
     await sendJson(`/api/tasks/${ids.benchmarkTask}/votes/smoke%40example.com`, 'PUT', {
       progress: 1,
       votes: [
-        { itemId: `${RUN_ID}-preview-item-1`, method: 'benchmark_preview', choice: 'previewed', reason: 'looks ok', timestamp: Date.now(), user: 'smoke@example.com' },
+        { itemId: previewItemId, method: 'benchmark_preview', choice: 'previewed', reason: 'looks ok', timestamp: Date.now(), user: 'smoke@example.com' },
       ],
     });
     const benchmarkVotes = await request<{ userVotes: Array<{ user: string; votes: any[] }> }>(`/api/tasks/${ids.benchmarkTask}/votes`);
