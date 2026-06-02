@@ -62,7 +62,7 @@ const toTimestamp = (date: Date | string | number | null | undefined) => {
   return date instanceof Date ? date.getTime() : new Date(date).getTime();
 };
 
-const mapTask = (row: TaskRow, models: TaskModelRow[]): EvalTask => {
+const mapTask = (row: TaskRow, models: TaskModelRow[], reviewerNames?: Record<string, string>): EvalTask => {
   const source = row.source_json || {};
   return {
     id: row.id,
@@ -83,6 +83,7 @@ const mapTask = (row: TaskRow, models: TaskModelRow[]): EvalTask => {
     inputType: row.input_type || undefined,
     assignees: row.assignees_json || [],
     progress: row.progress_json || {},
+    reviewerNames: reviewerNames && Object.keys(reviewerNames).length ? reviewerNames : undefined,
     totalItems: row.total_items || undefined,
     status: row.status,
     externalResultsLink: row.external_results_link || undefined,
@@ -91,6 +92,46 @@ const mapTask = (row: TaskRow, models: TaskModelRow[]): EvalTask => {
     creatorName: source.creatorName,
     createdAt: toTimestamp(row.created_at),
   };
+};
+
+// Resolve progress/assignee keys (Feishu userId, email, or legacy display name)
+// to human-readable display names from the users table.
+const loadReviewerNames = async (
+  rows: TaskRow[]
+): Promise<Map<string, Record<string, string>>> => {
+  const keysByTask = new Map<string, Set<string>>();
+  const allKeys = new Set<string>();
+  for (const row of rows) {
+    const keys = new Set<string>();
+    Object.keys(row.progress_json || {}).forEach(key => keys.add(key));
+    (row.assignees_json || []).forEach(key => key && keys.add(key));
+    keysByTask.set(row.id, keys);
+    keys.forEach(key => allKeys.add(key));
+  }
+
+  const result = new Map<string, Record<string, string>>();
+  if (allKeys.size === 0) return result;
+
+  const userResult = await dbPool.query<{ id: string; email: string | null; display_name: string | null }>(
+    `SELECT id, email, display_name FROM users WHERE id = ANY($1) OR email = ANY($1)`,
+    [Array.from(allKeys)]
+  );
+  const nameByKey = new Map<string, string>();
+  for (const user of userResult.rows) {
+    const name = user.display_name || user.email || user.id;
+    if (user.id) nameByKey.set(user.id, name);
+    if (user.email) nameByKey.set(user.email, name);
+  }
+
+  for (const [taskId, keys] of keysByTask) {
+    const names: Record<string, string> = {};
+    for (const key of keys) {
+      const resolved = nameByKey.get(key);
+      if (resolved && resolved !== key) names[key] = resolved;
+    }
+    if (Object.keys(names).length) result.set(taskId, names);
+  }
+  return result;
 };
 
 const loadTaskRows = async (params: { taskId?: string; projectId?: string } = {}) => {
@@ -115,7 +156,7 @@ const loadTaskRows = async (params: { taskId?: string; projectId?: string } = {}
     values
   );
   const taskIds = taskResult.rows.map(row => row.id);
-  if (taskIds.length === 0) return { tasks: [], models: [] };
+  if (taskIds.length === 0) return { tasks: [], models: [], reviewerNames: new Map() };
 
   const modelResult = await dbPool.query<TaskModelRow>(
     `
@@ -126,18 +167,19 @@ const loadTaskRows = async (params: { taskId?: string; projectId?: string } = {}
     `,
     [taskIds]
   );
-  return { tasks: taskResult.rows, models: modelResult.rows };
+  const reviewerNames = await loadReviewerNames(taskResult.rows);
+  return { tasks: taskResult.rows, models: modelResult.rows, reviewerNames };
 };
 
 export const listTasks = async (params: { projectId?: string } = {}): Promise<EvalTask[]> => {
   const rows = await loadTaskRows(params);
-  return rows.tasks.map(task => mapTask(task, rows.models));
+  return rows.tasks.map(task => mapTask(task, rows.models, rows.reviewerNames.get(task.id)));
 };
 
 export const getTask = async (taskId: string): Promise<EvalTask | null> => {
   const rows = await loadTaskRows({ taskId });
   const task = rows.tasks[0];
-  return task ? mapTask(task, rows.models) : null;
+  return task ? mapTask(task, rows.models, rows.reviewerNames.get(task.id)) : null;
 };
 
 export const listTaskItems = async (taskId: string): Promise<EvaluationItem[]> => {

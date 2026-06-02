@@ -555,7 +555,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
                                                 const percentage = total > 0 ? Math.round((progress / total) * 100) : 0;
                                                 return (
                                                   <div key={assignee} className="flex items-center gap-3 ml-5">
-                                                    <span className="w-24 truncate" title={assignee}>{assignee.split('@')[0]}</span>
+                                                    <span className="w-24 truncate" title={task.reviewerNames?.[assignee] || assignee}>{task.reviewerNames?.[assignee] || assignee.split('@')[0]}</span>
                                                     <div className="flex-1 max-w-[120px] h-1.5 bg-black/20 rounded-full overflow-hidden border border-white/10">
                                                       <div 
                                                         className={`h-full rounded-full ${percentage === 100 ? 'bg-emerald-500' : 'bg-gradient-accent'}`}

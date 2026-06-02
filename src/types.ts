@@ -442,6 +442,7 @@ export interface EvalTask {
   inputType?: 'text' | 'text_image' | 'text_audio' | 'multi_turn' | 'other';
   assignees?: string[];
   progress?: Record<string, number>; // Progress per assignee
+  reviewerNames?: Record<string, string>; // Resolved display name per progress/assignee key (e.g. Feishu userId -> 姓名)
   totalItems?: number; // Total number of items in the task
   status: 'draft' | 'active' | 'completed';
   externalResultsLink?: string; // Link to externally generated results
