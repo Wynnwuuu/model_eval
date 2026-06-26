@@ -6,14 +6,17 @@ import {
   ClipboardList,
   Database,
   Download,
+  Eye,
   FileText,
   Filter,
+  GripVertical,
   History,
   Info,
   Layers,
   Music,
   Pencil,
   Plus,
+  RotateCcw,
   Save,
   Search,
   Settings,
@@ -31,7 +34,7 @@ import { ConfirmModal } from './ConfirmModal';
 import MediaRenderer from './MediaRenderer';
 import DatasetGenerationModal from './DatasetGenerationModal';
 import { normalizeUrl } from '../utils';
-import { deleteDataset, saveDataset, subscribeDatasets } from '../features/datasets/api';
+import { deleteDataset, loadDatasetVersion, rollbackDataset, saveDataset, subscribeDatasets } from '../features/datasets/api';
 import { subscribeGenerationJobs } from '../features/generation/api';
 import {
   DATASET_MODALITIES,
@@ -92,6 +95,39 @@ const PREVIEW_OPTIONS: Array<{ key: DatasetPreviewType; label: string }> = [
   { key: 'link', label: '链接' },
   { key: 'none', label: '不预览' }
 ];
+
+type DatasetPreviewSize = 'small' | 'medium' | 'large';
+
+const PREVIEW_SIZE_OPTIONS: Array<{ key: DatasetPreviewSize; label: string; description: string }> = [
+  { key: 'small', label: '小', description: '紧凑浏览' },
+  { key: 'medium', label: '中', description: '常规对比' },
+  { key: 'large', label: '大', description: '清晰审看' }
+];
+
+const PREVIEW_SIZE_STORAGE_KEY = 'eval_studio_dataset_preview_size';
+const DATASET_LAYOUT_STORAGE_KEY = 'eval_studio_dataset_repository_layout';
+const DEFAULT_LAYOUT_WIDTHS = { left: 280, right: 360 };
+
+const readStoredPreviewSize = (): DatasetPreviewSize => {
+  try {
+    const value = window.localStorage.getItem(PREVIEW_SIZE_STORAGE_KEY) as DatasetPreviewSize | null;
+    return PREVIEW_SIZE_OPTIONS.some(option => option.key === value) ? value as DatasetPreviewSize : 'medium';
+  } catch {
+    return 'medium';
+  }
+};
+
+const readStoredLayoutWidths = () => {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(DATASET_LAYOUT_STORAGE_KEY) || '{}');
+    return {
+      left: Number.isFinite(parsed.left) ? parsed.left : DEFAULT_LAYOUT_WIDTHS.left,
+      right: Number.isFinite(parsed.right) ? parsed.right : DEFAULT_LAYOUT_WIDTHS.right
+    };
+  } catch {
+    return DEFAULT_LAYOUT_WIDTHS;
+  }
+};
 
 const DEFAULT_TEMPLATE_HEADERS = STANDARD_DATASET_FIELDS.map(field => field.label);
 
@@ -355,14 +391,44 @@ const downloadCsv = (filename: string, rows: Record<string, any>[] | string[]) =
   URL.revokeObjectURL(url);
 };
 
-const MediaCell = ({ value, previewType }: { value: any; previewType?: DatasetPreviewType }) => {
+const mediaSizeClasses: Record<DatasetPreviewSize, { media: string; audio: string; link: string; text: string }> = {
+  small: {
+    media: 'w-36 h-24',
+    audio: 'w-40',
+    link: 'max-w-[220px]',
+    text: 'max-w-[260px] line-clamp-3',
+  },
+  medium: {
+    media: 'w-64 h-40',
+    audio: 'w-64',
+    link: 'max-w-[320px]',
+    text: 'max-w-[360px] line-clamp-4',
+  },
+  large: {
+    media: 'w-[420px] h-[260px]',
+    audio: 'w-[420px]',
+    link: 'max-w-[460px]',
+    text: 'max-w-[520px] line-clamp-6',
+  },
+};
+
+const MediaCell = ({
+  value,
+  previewType,
+  previewSize,
+}: {
+  value: any;
+  previewType?: DatasetPreviewType;
+  previewSize: DatasetPreviewSize;
+}) => {
   const url = firstUrl(value);
   if (!url) return <span className="text-xs text-slate-500">空</span>;
 
   const inferred = previewType && previewType !== 'none' ? previewType : inferPreviewType('', [url]);
+  const sizeClass = mediaSizeClasses[previewSize];
   if (inferred === 'image' || inferred === 'video') {
     return (
-      <div className="w-36 h-24 rounded-lg overflow-hidden border border-white/10 bg-black/40">
+      <div className={`${sizeClass.media} rounded-lg overflow-hidden border border-white/10 bg-black/40`}>
         <MediaRenderer
           url={url}
           isActive={false}
@@ -380,20 +446,20 @@ const MediaCell = ({ value, previewType }: { value: any; previewType?: DatasetPr
         controls
         preload="metadata"
         src={normalizeUrl(url)}
-        className="w-40 h-9"
+        className={`${sizeClass.audio} h-9`}
       />
     );
   }
 
   if (url.startsWith('http')) {
     return (
-      <a href={normalizeUrl(url)} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-300 hover:underline break-all line-clamp-2 max-w-[220px]">
+      <a href={normalizeUrl(url)} target="_blank" rel="noopener noreferrer" className={`text-xs text-blue-300 hover:underline break-all line-clamp-2 ${sizeClass.link}`}>
         {url}
       </a>
     );
   }
 
-  return <span className="text-xs text-slate-300 line-clamp-3 max-w-[260px] whitespace-pre-wrap">{String(value)}</span>;
+  return <span className={`text-xs text-slate-300 ${sizeClass.text} whitespace-pre-wrap`}>{String(value)}</span>;
 };
 
 const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBack, mode = 'repository', initialDatasetId }) => {
@@ -411,6 +477,22 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
   const [columnRenameDrafts, setColumnRenameDrafts] = useState<Record<string, string>>({});
   const [columnRenameError, setColumnRenameError] = useState('');
   const [isSavingColumnNames, setIsSavingColumnNames] = useState(false);
+  const [previewSize, setPreviewSize] = useState<DatasetPreviewSize>(readStoredPreviewSize);
+  const [layoutWidths, setLayoutWidths] = useState(readStoredLayoutWidths);
+  const [resizingPane, setResizingPane] = useState<'left' | 'right' | null>(null);
+  const resizeStateRef = useRef<{ pane: 'left' | 'right'; startX: number; startLeft: number; startRight: number } | null>(null);
+  const repositoryLayoutRef = useRef<HTMLDivElement>(null);
+  const [rowToDelete, setRowToDelete] = useState<number | null>(null);
+  const [isDeletingRow, setIsDeletingRow] = useState(false);
+  const [inlineRenameColumn, setInlineRenameColumn] = useState<string | null>(null);
+  const [inlineRenameValue, setInlineRenameValue] = useState('');
+  const [inlineRenameError, setInlineRenameError] = useState('');
+  const [isSavingInlineRename, setIsSavingInlineRename] = useState(false);
+  const [viewingVersionDataset, setViewingVersionDataset] = useState<EvalDataset | null>(null);
+  const [versionLoading, setVersionLoading] = useState<number | null>(null);
+  const [versionError, setVersionError] = useState('');
+  const [versionToRollback, setVersionToRollback] = useState<number | null>(null);
+  const [isRollingBackVersion, setIsRollingBackVersion] = useState(false);
 
   const [wizardOpen, setWizardOpen] = useState(false);
   const [wizardMode, setWizardMode] = useState<WizardMode>('create');
@@ -433,6 +515,58 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
 
     return () => unsubscribe();
   }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(PREVIEW_SIZE_STORAGE_KEY, previewSize);
+    } catch {
+      // Local UI preference only; ignore storage failures.
+    }
+  }, [previewSize]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(DATASET_LAYOUT_STORAGE_KEY, JSON.stringify(layoutWidths));
+    } catch {
+      // Local UI preference only; ignore storage failures.
+    }
+  }, [layoutWidths]);
+
+  useEffect(() => {
+    if (!resizingPane) return undefined;
+    const handlePointerMove = (event: PointerEvent) => {
+      const state = resizeStateRef.current;
+      if (!state) return;
+      const containerWidth = repositoryLayoutRef.current?.getBoundingClientRect().width || 1280;
+      const minCenterWidth = 520;
+      const maxSideTotal = Math.max(0, containerWidth - minCenterWidth);
+      const delta = event.clientX - state.startX;
+      setLayoutWidths(current => {
+        let nextLeft = current.left;
+        let nextRight = current.right;
+        if (state.pane === 'left') {
+          nextLeft = Math.max(220, Math.min(440, state.startLeft + delta));
+          if (nextLeft + nextRight > maxSideTotal) nextLeft = Math.max(220, maxSideTotal - nextRight);
+        } else {
+          nextRight = Math.max(320, Math.min(680, state.startRight - delta));
+          if (nextLeft + nextRight > maxSideTotal) nextRight = Math.max(320, maxSideTotal - nextLeft);
+        }
+        return { left: nextLeft, right: nextRight };
+      });
+    };
+    const handlePointerUp = () => {
+      resizeStateRef.current = null;
+      setResizingPane(null);
+    };
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+    };
+  }, [resizingPane]);
 
   const normalizedDatasets = useMemo(() => datasets.map(normalizeDatasetForDisplay), [datasets]);
 
@@ -477,12 +611,14 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
   }, [initialDatasetId, normalizedDatasets]);
 
   const selectedDataset = normalizedDatasets.find(dataset => dataset.id === selectedDatasetId) || filteredDatasets[0];
-  const selectedMappings = getDatasetColumnMappings(selectedDataset);
-  const selectedRows = selectedDataset?.items || [];
+  const tableDataset = viewingVersionDataset || selectedDataset;
+  const isViewingHistoricalVersion = !!viewingVersionDataset;
+  const selectedMappings = getDatasetColumnMappings(tableDataset);
+  const selectedRows = tableDataset?.items || [];
   const selectedRow = selectedRows[Math.min(selectedRowIndex, Math.max(selectedRows.length - 1, 0))];
   const outputColumns = selectedMappings.outputColumns;
   const referenceColumns = selectedMappings.referenceColumns;
-  const selectedColumnKeys = useMemo(() => getDatasetColumnKeys(selectedDataset), [selectedDataset]);
+  const currentColumnKeys = useMemo(() => getDatasetColumnKeys(selectedDataset), [selectedDataset]);
   const promptKeys = [
     selectedMappings.standard.full_prompt,
     selectedMappings.standard.zh_prompt,
@@ -512,8 +648,36 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
   const runningGenerationJobs = generationJobs.filter(job => job.status === 'running' || job.status === 'queued' || job.status === 'partial');
   const latestGenerationJob = generationJobs[0];
 
+  useEffect(() => {
+    setViewingVersionDataset(null);
+    setVersionError('');
+    setVersionLoading(null);
+    setVersionToRollback(null);
+    setSelectedRowIndex(0);
+  }, [selectedDatasetId]);
+
+  const beginPaneResize = (pane: 'left' | 'right', event: React.PointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    resizeStateRef.current = {
+      pane,
+      startX: event.clientX,
+      startLeft: layoutWidths.left,
+      startRight: layoutWidths.right,
+    };
+    setResizingPane(pane);
+  };
+
+  const adjustPaneWidth = (pane: 'left' | 'right', delta: number) => {
+    setLayoutWidths(current => {
+      if (pane === 'left') {
+        return { ...current, left: Math.max(220, Math.min(440, current.left + delta)) };
+      }
+      return { ...current, right: Math.max(320, Math.min(680, current.right + delta)) };
+    });
+  };
+
   const openColumnRenameEditor = () => {
-    if (!selectedDataset) return;
+    if (!selectedDataset || isViewingHistoricalVersion) return;
     const drafts = Object.fromEntries(getDatasetColumnKeys(selectedDataset).map(column => [column, column]));
     setColumnRenameDrafts(drafts);
     setColumnRenameError('');
@@ -526,32 +690,20 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
     setIsSavingColumnNames(false);
   };
 
-  const handleSaveColumnNames = async () => {
-    if (!selectedDataset || isSavingColumnNames) return;
-    const columns = getDatasetColumnKeys(selectedDataset);
-    const trimmedDrafts = Object.fromEntries(columns.map(column => [column, (columnRenameDrafts[column] ?? column).trim()]));
-    const emptyColumn = columns.find(column => !trimmedDrafts[column]);
-    if (emptyColumn) {
-      setColumnRenameError(`列「${emptyColumn}」的新名称不能为空。`);
+  const saveColumnRenameEntries = async (
+    renameEntries: Array<readonly [string, string]>,
+    options: {
+      setSaving: (value: boolean) => void;
+      setError: (value: string) => void;
+      onSuccess: () => void;
+    }
+  ) => {
+    if (!selectedDataset || isViewingHistoricalVersion) {
+      options.setError('历史版本为只读状态，请先返回当前版本再编辑列名。');
       return;
     }
-    const reservedColumn = columns.find(column => trimmedDrafts[column] === '_originalData');
-    if (reservedColumn) {
-      setColumnRenameError('列名不能使用系统保留字段 _originalData。');
-      return;
-    }
-    const normalizedNames = columns.map(column => trimmedDrafts[column]);
-    const duplicateName = normalizedNames.find((name, index) => normalizedNames.indexOf(name) !== index);
-    if (duplicateName) {
-      setColumnRenameError(`列名「${duplicateName}」重复，请为每一列设置唯一名称。`);
-      return;
-    }
-
-    const renameEntries = columns
-      .map(column => [column, trimmedDrafts[column]] as const)
-      .filter(([oldName, newName]) => oldName !== newName);
     if (!renameEntries.length) {
-      closeColumnRenameEditor();
+      options.onSuccess();
       return;
     }
 
@@ -605,17 +757,92 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
     };
 
     try {
-      setIsSavingColumnNames(true);
+      options.setSaving(true);
       const savedDataset = await saveDataset(nextDataset);
       setDatasets(prev => prev.map(dataset => dataset.id === savedDataset.id ? savedDataset : dataset));
       setSelectedDatasetId(savedDataset.id);
       setSelectedRowIndex(0);
-      closeColumnRenameEditor();
+      setViewingVersionDataset(null);
+      options.onSuccess();
     } catch (error: any) {
       console.error('Error renaming dataset columns:', error);
-      setColumnRenameError(`保存列名失败：${error.message || error}`);
-      setIsSavingColumnNames(false);
+      options.setError(`保存列名失败：${error.message || error}`);
+      options.setSaving(false);
     }
+  };
+
+  const handleSaveColumnNames = async () => {
+    if (!selectedDataset || isSavingColumnNames || isViewingHistoricalVersion) return;
+    const columns = currentColumnKeys;
+    const trimmedDrafts = Object.fromEntries(columns.map(column => [column, (columnRenameDrafts[column] ?? column).trim()]));
+    const emptyColumn = columns.find(column => !trimmedDrafts[column]);
+    if (emptyColumn) {
+      setColumnRenameError(`列「${emptyColumn}」的新名称不能为空。`);
+      return;
+    }
+    const reservedColumn = columns.find(column => trimmedDrafts[column] === '_originalData');
+    if (reservedColumn) {
+      setColumnRenameError('列名不能使用系统保留字段 _originalData。');
+      return;
+    }
+    const normalizedNames = columns.map(column => trimmedDrafts[column]);
+    const duplicateName = normalizedNames.find((name, index) => normalizedNames.indexOf(name) !== index);
+    if (duplicateName) {
+      setColumnRenameError(`列名「${duplicateName}」重复，请为每一列设置唯一名称。`);
+      return;
+    }
+
+    const renameEntries = columns
+      .map(column => [column, trimmedDrafts[column]] as const)
+      .filter(([oldName, newName]) => oldName !== newName);
+
+    await saveColumnRenameEntries(renameEntries, {
+      setSaving: setIsSavingColumnNames,
+      setError: setColumnRenameError,
+      onSuccess: closeColumnRenameEditor,
+    });
+  };
+
+  const openInlineColumnRename = (column: string) => {
+    if (isViewingHistoricalVersion) return;
+    setInlineRenameColumn(column);
+    setInlineRenameValue(column);
+    setInlineRenameError('');
+  };
+
+  const cancelInlineColumnRename = () => {
+    setInlineRenameColumn(null);
+    setInlineRenameValue('');
+    setInlineRenameError('');
+    setIsSavingInlineRename(false);
+  };
+
+  const commitInlineColumnRename = async () => {
+    if (!selectedDataset || !inlineRenameColumn || isSavingInlineRename) return;
+    const nextName = inlineRenameValue.trim();
+    if (!nextName) {
+      setInlineRenameError('新列名不能为空。');
+      return;
+    }
+    if (nextName === '_originalData') {
+      setInlineRenameError('列名不能使用系统保留字段 _originalData。');
+      return;
+    }
+    const duplicateName = currentColumnKeys.some(column => column !== inlineRenameColumn && column === nextName);
+    if (duplicateName) {
+      setInlineRenameError(`列名「${nextName}」已存在。`);
+      return;
+    }
+    if (nextName === inlineRenameColumn) {
+      cancelInlineColumnRename();
+      return;
+    }
+
+    await saveColumnRenameEntries([[inlineRenameColumn, nextName]], {
+      setSaving: setIsSavingInlineRename,
+      setError: setInlineRenameError,
+      onSuccess: cancelInlineColumnRename,
+    });
   };
 
   const openWizard = (mode: WizardMode, target?: EvalDataset) => {
@@ -843,6 +1070,124 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
     }
   };
 
+  const buildDatasetWithEditedItems = (dataset: EvalDataset, nextItems: Record<string, any>[], changeSummary: string): EvalDataset => {
+    const now = Date.now();
+    const userName = auth.currentUser?.displayName || auth.currentUser?.email || 'Unknown';
+    const mappings = getDatasetColumnMappings(dataset);
+    const inputSchema = dataset.inputSchema || [];
+    const nextInputType = inferInputTypeFromDataset({ ...dataset, items: nextItems, inputSchema, columnMappings: mappings } as EvalDataset);
+    const nextModality = inferDatasetModality(nextItems, mappings, dataset.modality || 'other', inputSchema);
+    const versionMeta = appendDatasetVersion(
+      dataset,
+      userName,
+      changeSummary,
+      dataset.items?.length || 0,
+      nextItems.length
+    );
+
+    return {
+      ...dataset,
+      items: nextItems,
+      inputSchema,
+      inputType: nextInputType,
+      modality: nextModality,
+      columnMappings: mappings,
+      datasetCard: buildDatasetCard(
+        {
+          ...dataset,
+          items: nextItems,
+          inputSchema,
+          columnMappings: mappings,
+          modality: nextModality,
+        } as EvalDataset,
+        mappings,
+        {
+          applicableTasks: dataset.datasetCard?.applicableTasks || [],
+          applicableStages: dataset.datasetCard?.applicableStages || [],
+          source: dataset.datasetCard?.source || '',
+          rubricBinding: dataset.datasetCard?.rubricBinding || '',
+          coverageGaps: dataset.datasetCard?.coverageGaps || [],
+          latestChange: changeSummary,
+          modality: nextModality,
+        }
+      ),
+      validationSummary: validateDatasetItems(nextItems, mappings),
+      ...versionMeta,
+      updatedAt: now,
+    };
+  };
+
+  const confirmDeleteRow = async () => {
+    if (!selectedDataset || rowToDelete === null || isDeletingRow || isViewingHistoricalVersion) return;
+    const row = selectedDataset.items[rowToDelete];
+    if (!row) {
+      setRowToDelete(null);
+      return;
+    }
+    const caseLabel = getDatasetDisplayValue(row, idKeys) || `第 ${rowToDelete + 1} 行`;
+    const nextItems = selectedDataset.items.filter((_, index) => index !== rowToDelete);
+    const nextDataset = buildDatasetWithEditedItems(selectedDataset, nextItems, `删除 case：${caseLabel}`);
+
+    try {
+      setIsDeletingRow(true);
+      const savedDataset = await saveDataset(nextDataset);
+      setDatasets(prev => prev.map(dataset => dataset.id === savedDataset.id ? savedDataset : dataset));
+      setSelectedDatasetId(savedDataset.id);
+      setSelectedRowIndex(Math.max(0, Math.min(rowToDelete, nextItems.length - 1)));
+      setRowToDelete(null);
+    } catch (error: any) {
+      console.error('Error deleting dataset row:', error);
+      alert(`删除行失败：${error.message || error}`);
+    } finally {
+      setIsDeletingRow(false);
+    }
+  };
+
+  const handleViewVersion = async (version: number) => {
+    if (!selectedDataset) return;
+    if (version === selectedDataset.version) {
+      setViewingVersionDataset(null);
+      setVersionError('');
+      setSelectedRowIndex(0);
+      return;
+    }
+    try {
+      setVersionLoading(version);
+      setVersionError('');
+      const dataset = await loadDatasetVersion(selectedDataset.id, version);
+      setViewingVersionDataset(normalizeDatasetForDisplay(dataset));
+      setSelectedRowIndex(0);
+    } catch (error: any) {
+      console.error('Error loading dataset version:', error);
+      setVersionError(`读取 v${version} 失败：${error.message || error}`);
+    } finally {
+      setVersionLoading(null);
+    }
+  };
+
+  const confirmRollbackVersion = async () => {
+    if (!selectedDataset || versionToRollback === null || isRollingBackVersion) return;
+    try {
+      setIsRollingBackVersion(true);
+      setVersionError('');
+      const savedDataset = await rollbackDataset(
+        selectedDataset.id,
+        versionToRollback,
+        `从 v${versionToRollback} 回退生成新版本`
+      );
+      setDatasets(prev => prev.map(dataset => dataset.id === savedDataset.id ? savedDataset : dataset));
+      setSelectedDatasetId(savedDataset.id);
+      setViewingVersionDataset(null);
+      setSelectedRowIndex(0);
+      setVersionToRollback(null);
+    } catch (error: any) {
+      console.error('Error rolling back dataset version:', error);
+      setVersionError(`回退失败：${error.message || error}`);
+    } finally {
+      setIsRollingBackVersion(false);
+    }
+  };
+
   const confirmDeleteDataset = async () => {
     if (!datasetToDelete) return;
     try {
@@ -856,6 +1201,44 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
       alert('删除失败: ' + error.message);
       setDatasetToDelete(null);
     }
+  };
+
+  const renderEditableHeader = (column: string, className = 'px-4 py-3') => {
+    const isEditing = inlineRenameColumn === column;
+    return (
+      <th key={column} className={className}>
+        {isEditing ? (
+          <div className="min-w-[180px] space-y-1">
+            <input
+              value={inlineRenameValue}
+              onChange={event => setInlineRenameValue(event.target.value)}
+              onKeyDown={event => {
+                if (event.key === 'Enter') commitInlineColumnRename();
+                if (event.key === 'Escape') cancelInlineColumnRename();
+              }}
+              onBlur={() => {
+                if (!isSavingInlineRename) commitInlineColumnRename();
+              }}
+              disabled={isSavingInlineRename}
+              autoFocus
+              className="w-full rounded-md border border-amber-400/40 bg-black/40 px-2 py-1 text-xs normal-case tracking-normal text-slate-100 outline-none"
+            />
+            {inlineRenameError && <div className="text-[11px] normal-case tracking-normal text-red-300">{inlineRenameError}</div>}
+          </div>
+        ) : (
+          <button
+            type="button"
+            onDoubleClick={() => openInlineColumnRename(column)}
+            disabled={isViewingHistoricalVersion}
+            title={isViewingHistoricalVersion ? '历史版本为只读' : '双击修改列名'}
+            className="group flex max-w-[260px] items-center gap-1 text-left uppercase tracking-wide text-slate-400 disabled:cursor-not-allowed"
+          >
+            <span className="truncate">{column}</span>
+            {!isViewingHistoricalVersion && <Pencil size={12} className="opacity-0 transition-opacity group-hover:opacity-70" />}
+          </button>
+        )}
+      </th>
+    );
   };
 
   const renderWizard = () => {
@@ -1252,7 +1635,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
                 <div>预览类型</div>
               </div>
               <div className="divide-y divide-white/10">
-                {selectedColumnKeys.map(column => {
+                {currentColumnKeys.map(column => {
                   const field = schemaByColumn.get(column);
                   const previewLabel = PREVIEW_OPTIONS.find(option => option.key === field?.previewType)?.label || field?.previewType || '-';
                   return (
@@ -1286,7 +1669,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
                 })}
               </div>
             </div>
-            {selectedColumnKeys.length === 0 && (
+            {currentColumnKeys.length === 0 && (
               <div className="py-12 text-center text-slate-400">当前评测集还没有可重命名的列。</div>
             )}
           </div>
@@ -1297,7 +1680,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
               <button onClick={closeColumnRenameEditor} className="px-4 py-2 rounded-xl glass-panel-hover text-slate-300 text-sm">取消</button>
               <button
                 onClick={handleSaveColumnNames}
-                disabled={isSavingColumnNames || selectedColumnKeys.length === 0}
+                disabled={isSavingColumnNames || currentColumnKeys.length === 0}
                 className="px-5 py-2 rounded-xl bg-amber-500 text-black font-medium text-sm flex items-center gap-2 disabled:opacity-50"
               >
                 <Save size={16} /> {isSavingColumnNames ? '保存中...' : '保存列名'}
@@ -1329,13 +1712,13 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
           </div>
         </div>
         <div className="flex flex-wrap gap-3">
-          <button onClick={() => setGenerationModalOpen(true)} disabled={!selectedDataset} className={`${isGenerationMode ? 'bg-gradient-accent text-black shadow-lg shadow-amber-500/20 hover:opacity-90' : 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/20'} flex items-center gap-2 px-4 py-2.5 rounded-xl font-medium text-sm disabled:opacity-40`}>
+          <button onClick={() => setGenerationModalOpen(true)} disabled={!selectedDataset || isViewingHistoricalVersion} className={`${isGenerationMode ? 'bg-gradient-accent text-black shadow-lg shadow-amber-500/20 hover:opacity-90' : 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/20'} flex items-center gap-2 px-4 py-2.5 rounded-xl font-medium text-sm disabled:opacity-40`}>
             <Wand2 size={18} /> {isGenerationMode ? '开始批量生产' : '批量生产产物'}
           </button>
-          <button onClick={() => selectedDataset && openWizard('append', selectedDataset)} disabled={!selectedDataset} className="flex items-center gap-2 bg-white/5 glass-panel-hover text-slate-300 px-4 py-2.5 rounded-xl font-medium text-sm border border-white/10 disabled:opacity-40">
+          <button onClick={() => selectedDataset && openWizard('append', selectedDataset)} disabled={!selectedDataset || isViewingHistoricalVersion} className="flex items-center gap-2 bg-white/5 glass-panel-hover text-slate-300 px-4 py-2.5 rounded-xl font-medium text-sm border border-white/10 disabled:opacity-40">
             <Upload size={18} /> 追加内容
           </button>
-          <button onClick={openColumnRenameEditor} disabled={!selectedDataset} className="flex items-center gap-2 bg-white/5 glass-panel-hover text-slate-300 px-4 py-2.5 rounded-xl font-medium text-sm border border-white/10 disabled:opacity-40">
+          <button onClick={openColumnRenameEditor} disabled={!selectedDataset || isViewingHistoricalVersion} className="flex items-center gap-2 bg-white/5 glass-panel-hover text-slate-300 px-4 py-2.5 rounded-xl font-medium text-sm border border-white/10 disabled:opacity-40">
             <Pencil size={18} /> 编辑列名
           </button>
           <button onClick={() => openWizard('create')} className="flex items-center gap-2 bg-gradient-accent text-black px-5 py-2.5 rounded-xl font-medium text-sm shadow-lg shadow-amber-500/20 transition-all hover:opacity-90">
@@ -1368,7 +1751,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
                 <div className="mt-1 text-sm font-semibold text-slate-100">{runningGenerationJobs.length}</div>
               </div>
             </div>
-            <button onClick={() => setGenerationModalOpen(true)} disabled={!selectedDataset} className="btn-primary shrink-0 disabled:opacity-40">
+            <button onClick={() => setGenerationModalOpen(true)} disabled={!selectedDataset || isViewingHistoricalVersion} className="btn-primary shrink-0 disabled:opacity-40">
               <Wand2 size={18} /> 配置并启动生产
             </button>
           </div>
@@ -1384,8 +1767,32 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
         </div>
       )}
 
-      <div className="grid grid-cols-1 xl:grid-cols-[280px_minmax(0,1fr)_360px] gap-4">
-        <aside className="glass-panel rounded-2xl border border-white/10 p-4 h-fit xl:sticky xl:top-4">
+      <div
+        ref={repositoryLayoutRef}
+        className="grid grid-cols-1 xl:grid-cols-[var(--dataset-left)_minmax(0,1fr)_var(--dataset-right)] gap-4"
+        style={{
+          '--dataset-left': `${layoutWidths.left}px`,
+          '--dataset-right': `${layoutWidths.right}px`,
+        } as React.CSSProperties}
+      >
+        <aside className="glass-panel rounded-2xl border border-white/10 p-4 h-fit xl:sticky xl:top-4 relative">
+          <button
+            type="button"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="调整左侧筛选栏宽度"
+            aria-valuemin={220}
+            aria-valuemax={440}
+            aria-valuenow={Math.round(layoutWidths.left)}
+            onPointerDown={event => beginPaneResize('left', event)}
+            onKeyDown={event => {
+              if (event.key === 'ArrowLeft') adjustPaneWidth('left', -16);
+              if (event.key === 'ArrowRight') adjustPaneWidth('left', 16);
+            }}
+            className={`hidden xl:flex absolute -right-3 top-6 bottom-6 z-20 w-5 cursor-col-resize items-center justify-center rounded-full border border-white/10 bg-black/60 text-slate-500 hover:text-amber-300 hover:border-amber-400/40 ${resizingPane === 'left' ? 'text-amber-300 border-amber-400/50' : ''}`}
+          >
+            <GripVertical size={14} />
+          </button>
           <div className="relative mb-4">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full pl-9 pr-3 py-2.5 glass-input rounded-xl text-sm text-slate-200" placeholder="搜索评测集/标签" />
@@ -1446,6 +1853,11 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
                   <div className="flex flex-wrap items-center gap-2">
                     <h2 className="text-xl font-bold text-slate-100">{selectedDataset.name}</h2>
                     <span className="px-2 py-1 rounded-md bg-white/10 text-xs text-slate-300">产物：{DATASET_MODALITIES.find(item => item.key === selectedDataset.modality)?.label || '未分类'}</span>
+                    {isViewingHistoricalVersion && (
+                      <span className="px-2 py-1 rounded-md bg-purple-500/15 text-xs text-purple-200 border border-purple-400/20">
+                        正在查看历史 v{tableDataset?.version}
+                      </span>
+                    )}
                     <span className={`px-2 py-1 rounded-md text-xs ${selectedDataset.validationSummary?.status === 'ok' ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}>
                       {selectedDataset.validationSummary?.status === 'ok' ? '校验通过' : '有警告'}
                     </span>
@@ -1453,23 +1865,46 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
                   <p className="text-sm text-slate-400 mt-1 line-clamp-2">{selectedDataset.description || '暂无描述'}</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <button onClick={() => setGenerationModalOpen(true)} className="px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-sm flex items-center gap-2 border border-amber-500/20">
+                  <div className="flex items-center rounded-xl border border-white/10 bg-black/20 p-1">
+                    {PREVIEW_SIZE_OPTIONS.map(option => (
+                      <button
+                        key={option.key}
+                        type="button"
+                        onClick={() => setPreviewSize(option.key)}
+                        title={option.description}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium ${previewSize === option.key ? 'bg-amber-400 text-black' : 'text-slate-300 hover:bg-white/10'}`}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                  {isViewingHistoricalVersion && (
+                    <button onClick={() => { setViewingVersionDataset(null); setSelectedRowIndex(0); }} className="px-3 py-2 rounded-xl bg-purple-500/10 hover:bg-purple-500/20 text-purple-200 text-sm flex items-center gap-2 border border-purple-400/20">
+                      <RotateCcw size={16} /> 返回当前版本
+                    </button>
+                  )}
+                  <button onClick={() => setGenerationModalOpen(true)} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-sm flex items-center gap-2 border border-amber-500/20 disabled:opacity-40">
                     <Wand2 size={16} /> 批量生产
                   </button>
-                  <button onClick={() => downloadCsv(selectedDataset.items.length ? `${selectedDataset.name}_data.csv` : `template_${selectedDataset.id}.csv`, selectedDataset.items.length ? selectedDataset.items : selectedDataset.inputSchema.map(field => field.key))} className="px-3 py-2 rounded-xl bg-white/5 glass-panel-hover text-slate-300 text-sm flex items-center gap-2 border border-white/10">
-                    <Download size={16} /> {selectedDataset.items.length ? '下载数据' : '下载模板'}
+                  <button onClick={() => tableDataset && downloadCsv(tableDataset.items.length ? `${selectedDataset.name}_v${tableDataset.version || selectedDataset.version || 1}_data.csv` : `template_${selectedDataset.id}.csv`, tableDataset.items.length ? tableDataset.items : tableDataset.inputSchema.map(field => field.key))} className="px-3 py-2 rounded-xl bg-white/5 glass-panel-hover text-slate-300 text-sm flex items-center gap-2 border border-white/10">
+                    <Download size={16} /> {tableDataset?.items.length ? '下载数据' : '下载模板'}
                   </button>
-                  <button onClick={openColumnRenameEditor} className="px-3 py-2 rounded-xl bg-white/5 glass-panel-hover text-slate-300 text-sm flex items-center gap-2 border border-white/10">
+                  <button onClick={openColumnRenameEditor} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-white/5 glass-panel-hover text-slate-300 text-sm flex items-center gap-2 border border-white/10 disabled:opacity-40">
                     <Pencil size={16} /> 编辑列名
                   </button>
-                  <button onClick={() => openWizard('append', selectedDataset)} className="px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-sm flex items-center gap-2 border border-amber-500/20">
+                  <button onClick={() => openWizard('append', selectedDataset)} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-sm flex items-center gap-2 border border-amber-500/20 disabled:opacity-40">
                     <Upload size={16} /> 追加
                   </button>
-                  <button onClick={() => setDatasetToDelete(selectedDataset.id)} className="px-3 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-300 text-sm flex items-center gap-2 border border-red-500/20">
+                  <button onClick={() => setDatasetToDelete(selectedDataset.id)} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-300 text-sm flex items-center gap-2 border border-red-500/20 disabled:opacity-40">
                     <Trash2 size={16} /> 删除
                   </button>
                 </div>
               </div>
+              {isViewingHistoricalVersion && (
+                <div className="border-b border-purple-400/20 bg-purple-500/10 px-5 py-3 text-sm text-purple-100">
+                  当前表格是 v{tableDataset?.version} 的只读快照。若要恢复，请在右侧版本记录点击“回退”，系统会复制该快照生成新的当前版本。
+                </div>
+              )}
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
                   <thead className="bg-black/20 text-xs uppercase tracking-wide text-slate-400">
@@ -1477,10 +1912,11 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
                       <th className="px-4 py-3 sticky left-0 bg-black/40 z-10">用例ID</th>
                       <th className="px-4 py-3 min-w-[260px]">Prompt</th>
                       <th className="px-4 py-3 min-w-[180px]">评测维度</th>
-                      {outputColumns.map(column => <th key={column} className="px-4 py-3 min-w-[180px]">{column}</th>)}
-                      {referenceColumns.slice(0, 2).map(column => <th key={column} className="px-4 py-3 min-w-[180px]">{column}</th>)}
+                      {outputColumns.map(column => renderEditableHeader(column, `${previewSize === 'large' ? 'min-w-[440px]' : previewSize === 'medium' ? 'min-w-[280px]' : 'min-w-[180px]'} px-4 py-3`))}
+                      {referenceColumns.slice(0, 2).map(column => renderEditableHeader(column, `${previewSize === 'large' ? 'min-w-[440px]' : previewSize === 'medium' ? 'min-w-[280px]' : 'min-w-[180px]'} px-4 py-3`))}
                       <th className="px-4 py-3">标签</th>
                       <th className="px-4 py-3">校验</th>
+                      <th className="px-4 py-3">操作</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/10">
@@ -1502,17 +1938,31 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
                           </td>
                           {outputColumns.map(column => (
                             <td key={column} className="px-4 py-3 align-top">
-                              <MediaCell value={row[column]} previewType={selectedDataset.inputSchema.find(field => field.key === column)?.previewType} />
+                              <MediaCell value={row[column]} previewType={tableDataset?.inputSchema.find(field => field.key === column)?.previewType} previewSize={previewSize} />
                             </td>
                           ))}
                           {referenceColumns.slice(0, 2).map(column => (
                             <td key={column} className="px-4 py-3 align-top">
-                              <MediaCell value={row[column]} previewType={selectedDataset.inputSchema.find(field => field.key === column)?.previewType} />
+                              <MediaCell value={row[column]} previewType={tableDataset?.inputSchema.find(field => field.key === column)?.previewType} previewSize={previewSize} />
                             </td>
                           ))}
                           <td className="px-4 py-3 text-xs text-slate-300">{getDatasetDisplayValue(row, tagKeys) || '-'}</td>
                           <td className="px-4 py-3">
                             <CheckCircle2 size={16} className="text-emerald-400" />
+                          </td>
+                          <td className="px-4 py-3">
+                            <button
+                              type="button"
+                              onClick={event => {
+                                event.stopPropagation();
+                                setRowToDelete(index);
+                              }}
+                              disabled={isViewingHistoricalVersion}
+                              title={isViewingHistoricalVersion ? '历史版本为只读' : '删除这一行'}
+                              className="inline-flex items-center gap-1 rounded-lg border border-red-400/20 bg-red-500/10 px-2 py-1 text-xs text-red-200 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              <Trash2 size={13} /> 删除
+                            </button>
                           </td>
                         </tr>
                       );
@@ -1534,7 +1984,24 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
           )}
         </main>
 
-        <aside className="glass-panel rounded-2xl border border-white/10 p-5 h-fit xl:sticky xl:top-4 min-w-0">
+        <aside className="glass-panel rounded-2xl border border-white/10 p-5 h-fit xl:sticky xl:top-4 min-w-0 relative">
+          <button
+            type="button"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="调整右侧详情栏宽度"
+            aria-valuemin={320}
+            aria-valuemax={680}
+            aria-valuenow={Math.round(layoutWidths.right)}
+            onPointerDown={event => beginPaneResize('right', event)}
+            onKeyDown={event => {
+              if (event.key === 'ArrowLeft') adjustPaneWidth('right', 16);
+              if (event.key === 'ArrowRight') adjustPaneWidth('right', -16);
+            }}
+            className={`hidden xl:flex absolute -left-3 top-6 bottom-6 z-20 w-5 cursor-col-resize items-center justify-center rounded-full border border-white/10 bg-black/60 text-slate-500 hover:text-amber-300 hover:border-amber-400/40 ${resizingPane === 'right' ? 'text-amber-300 border-amber-400/50' : ''}`}
+          >
+            <GripVertical size={14} />
+          </button>
           {selectedDataset ? (
             <div className="space-y-6">
               <section>
@@ -1542,21 +2009,21 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
                 <div className="grid grid-cols-2 gap-3 text-sm">
                   <div className="bg-white/5 rounded-xl p-3">
                     <div className="text-xs text-slate-400">样本规模</div>
-                    <div className="text-lg font-bold text-slate-100">{selectedDataset.datasetCard?.sampleSize || 0}</div>
+                    <div className="text-lg font-bold text-slate-100">{tableDataset?.datasetCard?.sampleSize || tableDataset?.items.length || 0}</div>
                   </div>
                   <div className="bg-white/5 rounded-xl p-3">
                     <div className="text-xs text-slate-400">版本</div>
-                    <div className="text-lg font-bold text-slate-100">v{selectedDataset.version || 1}</div>
+                    <div className="text-lg font-bold text-slate-100">v{tableDataset?.version || 1}</div>
                   </div>
                 </div>
                 <dl className="mt-4 space-y-2 text-sm">
-                  <div><dt className="text-slate-400">来源</dt><dd className="text-slate-200 break-words">{selectedDataset.datasetCard?.source || '-'}</dd></div>
-                  <div><dt className="text-slate-400">Rubric</dt><dd className="text-slate-200 break-words">{selectedDataset.datasetCard?.rubricBinding || '-'}</dd></div>
-                  <div><dt className="text-slate-400">最近变更</dt><dd className="text-slate-200">{selectedDataset.datasetCard?.latestChange || '-'}</dd></div>
-                  <div><dt className="text-slate-400">更新时间</dt><dd className="text-slate-200">{formatDate(selectedDataset.updatedAt)}</dd></div>
+                  <div><dt className="text-slate-400">来源</dt><dd className="text-slate-200 break-words">{tableDataset?.datasetCard?.source || '-'}</dd></div>
+                  <div><dt className="text-slate-400">Rubric</dt><dd className="text-slate-200 break-words">{tableDataset?.datasetCard?.rubricBinding || '-'}</dd></div>
+                  <div><dt className="text-slate-400">最近变更</dt><dd className="text-slate-200">{tableDataset?.datasetCard?.latestChange || '-'}</dd></div>
+                  <div><dt className="text-slate-400">更新时间</dt><dd className="text-slate-200">{formatDate(tableDataset?.updatedAt)}</dd></div>
                 </dl>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  {selectedDataset.tags?.map(tag => <span key={tag} className="text-xs bg-amber-500/10 text-amber-300 border border-amber-500/20 px-2 py-1 rounded-md">{tag}</span>)}
+                  {tableDataset?.tags?.map(tag => <span key={tag} className="text-xs bg-amber-500/10 text-amber-300 border border-amber-500/20 px-2 py-1 rounded-md">{tag}</span>)}
                 </div>
               </section>
 
@@ -1596,12 +2063,35 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
 
               <section>
                 <h3 className="font-semibold text-slate-100 mb-3 flex items-center gap-2"><History size={18} className="text-purple-400" /> 版本记录</h3>
-                <div className="space-y-2 max-h-44 overflow-auto">
+                {versionError && (
+                  <div className="mb-2 rounded-lg border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+                    {versionError}
+                  </div>
+                )}
+                <div className="space-y-2 max-h-64 overflow-auto">
                   {(selectedDataset.versionHistory || []).slice().reverse().map(entry => (
                     <div key={`${entry.version}-${entry.changedAt}`} className="bg-white/5 rounded-xl p-3 text-xs">
                       <div className="flex justify-between text-slate-200"><span>v{entry.version}</span><span>{entry.itemCountBefore} {'->'} {entry.itemCountAfter}</span></div>
                       <div className="text-slate-400 mt-1">{entry.changeSummary}</div>
                       <div className="text-slate-500 mt-1">{formatDate(entry.changedAt)}</div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleViewVersion(entry.version)}
+                          disabled={versionLoading === entry.version}
+                          className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-slate-200 hover:bg-white/10 disabled:opacity-50"
+                        >
+                          <Eye size={12} /> {versionLoading === entry.version ? '读取中' : entry.version === selectedDataset.version && !isViewingHistoricalVersion ? '当前' : '查看'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setVersionToRollback(entry.version)}
+                          disabled={entry.version === selectedDataset.version || isRollingBackVersion}
+                          className="inline-flex items-center gap-1 rounded-lg border border-purple-400/20 bg-purple-500/10 px-2 py-1 text-[11px] text-purple-100 hover:bg-purple-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          <RotateCcw size={12} /> 回退到此版本
+                        </button>
+                      </div>
                     </div>
                   ))}
                   {(!selectedDataset.versionHistory || selectedDataset.versionHistory.length === 0) && <div className="text-xs text-slate-400">旧版评测集暂无版本记录</div>}
@@ -1632,12 +2122,30 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
 
       {renderWizard()}
       {renderColumnRenameModal()}
-      {generationModalOpen && selectedDataset && (
+      {generationModalOpen && selectedDataset && !isViewingHistoricalVersion && (
         <DatasetGenerationModal
           dataset={selectedDataset}
           onClose={() => setGenerationModalOpen(false)}
         />
       )}
+
+      <ConfirmModal
+        isOpen={rowToDelete !== null}
+        title="删除当前行"
+        message={rowToDelete !== null ? `确定要删除第 ${rowToDelete + 1} 行吗？删除后会生成新的评测集版本，可在版本记录中回退。` : ''}
+        onConfirm={confirmDeleteRow}
+        onCancel={() => setRowToDelete(null)}
+        confirmText={isDeletingRow ? '删除中...' : '删除行'}
+      />
+
+      <ConfirmModal
+        isOpen={versionToRollback !== null}
+        title="回退历史版本"
+        message={versionToRollback !== null ? `确定要从 v${versionToRollback} 生成新的当前版本吗？原有历史版本会完整保留。` : ''}
+        onConfirm={confirmRollbackVersion}
+        onCancel={() => setVersionToRollback(null)}
+        confirmText={isRollingBackVersion ? '回退中...' : '生成新版本'}
+      />
 
       <ConfirmModal
         isOpen={!!datasetToDelete}

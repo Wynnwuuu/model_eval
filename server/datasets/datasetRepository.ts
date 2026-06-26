@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 
 import type { EvalDataset } from '../../src/types.ts';
+import type { RequestUser } from '../auth/context.ts';
 import { dbPool } from '../db/client.ts';
 
 type DatasetRow = {
@@ -25,6 +26,7 @@ type DatasetVersionRow = {
   version: number;
   schema_json: EvalDataset['inputSchema'] | null;
   column_mappings_json: EvalDataset['columnMappings'] | null;
+  validation_summary_json: EvalDataset['validationSummary'] | null;
   change_summary: string | null;
   item_count_before: number;
   item_count_after: number;
@@ -60,9 +62,12 @@ const toVersionHistory = (versions: DatasetVersionRow[]) =>
 const mapDataset = (
   row: DatasetRow,
   versions: DatasetVersionRow[],
-  items: DatasetItemRow[]
+  items: DatasetItemRow[],
+  targetVersionNumber?: number
 ): EvalDataset => {
-  const currentVersion = versions.find(version => version.version === row.current_version) || versions.at(-1);
+  const datasetVersions = versions.filter(version => version.dataset_id === row.id);
+  const currentVersion = datasetVersions.find(version => version.version === (targetVersionNumber || row.current_version))
+    || datasetVersions.at(-1);
   const currentItems = currentVersion
     ? items
       .filter(item => item.dataset_id === row.id && item.version_id === currentVersion.id)
@@ -81,12 +86,18 @@ const mapDataset = (
     modality: row.modality || undefined,
     categoryPath: row.category_path_json || [],
     columnMappings: currentVersion?.column_mappings_json || undefined,
-    datasetCard: row.dataset_card_json || undefined,
-    version: row.current_version,
-    versionHistory: toVersionHistory(versions.filter(version => version.dataset_id === row.id)),
-    validationSummary: row.validation_summary_json || undefined,
+    datasetCard: row.dataset_card_json
+      ? {
+        ...row.dataset_card_json,
+        sampleSize: currentItems.length,
+        updatedAt: currentVersion ? toTimestamp(currentVersion.created_at) : toTimestamp(row.updated_at),
+      }
+      : undefined,
+    version: currentVersion?.version || row.current_version,
+    versionHistory: toVersionHistory(datasetVersions),
+    validationSummary: currentVersion?.validation_summary_json || row.validation_summary_json || undefined,
     createdAt: toTimestamp(row.created_at),
-    updatedAt: toTimestamp(row.updated_at),
+    updatedAt: targetVersionNumber && currentVersion ? toTimestamp(currentVersion.created_at) : toTimestamp(row.updated_at),
   };
 };
 
@@ -149,14 +160,21 @@ export const getDataset = async (datasetId: string): Promise<EvalDataset | null>
   return dataset ? mapDataset(dataset, rows.versions, rows.items) : null;
 };
 
-const replaceCurrentVersion = async (client: PoolClient, dataset: EvalDataset) => {
+export const getDatasetVersion = async (datasetId: string, version: number): Promise<EvalDataset | null> => {
+  const rows = await loadDatasetRows(datasetId);
+  const dataset = rows.datasets[0];
+  if (!dataset) return null;
+  const exists = rows.versions.some(item => item.dataset_id === datasetId && item.version === version);
+  if (!exists) return null;
+  return mapDataset(dataset, rows.versions, rows.items, version);
+};
+
+const persistVersionSnapshot = async (client: PoolClient, dataset: EvalDataset, changedByUserId?: string | null) => {
   const version = dataset.version || 1;
   const versionId = `${dataset.id}:v${version}`;
   const latestHistory = dataset.versionHistory?.find(entry => entry.version === version)
     || dataset.versionHistory?.at(-1);
 
-  await client.query('DELETE FROM dataset_items WHERE dataset_id = $1', [dataset.id]);
-  await client.query('DELETE FROM dataset_versions WHERE dataset_id = $1', [dataset.id]);
   await client.query(
     `
       INSERT INTO dataset_versions (
@@ -173,6 +191,15 @@ const replaceCurrentVersion = async (client: PoolClient, dataset: EvalDataset) =
         created_at
       )
       VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7, $8, $9, $10, to_timestamp($11 / 1000.0))
+      ON CONFLICT (dataset_id, version) DO UPDATE SET
+        schema_json = EXCLUDED.schema_json,
+        column_mappings_json = EXCLUDED.column_mappings_json,
+        validation_summary_json = EXCLUDED.validation_summary_json,
+        change_summary = EXCLUDED.change_summary,
+        item_count_before = EXCLUDED.item_count_before,
+        item_count_after = EXCLUDED.item_count_after,
+        changed_by = EXCLUDED.changed_by,
+        created_at = EXCLUDED.created_at
     `,
     [
       versionId,
@@ -184,9 +211,14 @@ const replaceCurrentVersion = async (client: PoolClient, dataset: EvalDataset) =
       latestHistory?.changeSummary || '',
       latestHistory?.itemCountBefore || 0,
       latestHistory?.itemCountAfter || dataset.items.length,
-      null,
+      changedByUserId || null,
       latestHistory?.changedAt || dataset.updatedAt || Date.now(),
     ]
+  );
+
+  await client.query(
+    'DELETE FROM dataset_items WHERE dataset_id = $1 AND version_id = $2 AND row_index >= $3',
+    [dataset.id, versionId, dataset.items.length]
   );
 
   for (const [index, item] of dataset.items.entries()) {
@@ -202,6 +234,12 @@ const replaceCurrentVersion = async (client: PoolClient, dataset: EvalDataset) =
           dimension_values_json
         )
         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)
+        ON CONFLICT (id) DO UPDATE SET
+          case_key = EXCLUDED.case_key,
+          row_index = EXCLUDED.row_index,
+          payload_json = EXCLUDED.payload_json,
+          dimension_values_json = EXCLUDED.dimension_values_json,
+          updated_at = now()
       `,
       [
         `${dataset.id}:v${version}:row${index}`,
@@ -216,7 +254,7 @@ const replaceCurrentVersion = async (client: PoolClient, dataset: EvalDataset) =
   }
 };
 
-export const saveDataset = async (dataset: EvalDataset): Promise<EvalDataset> => {
+export const saveDataset = async (dataset: EvalDataset, changedByUserId?: string | null): Promise<EvalDataset> => {
   const now = Date.now();
   const nextDataset = {
     ...dataset,
@@ -277,7 +315,7 @@ export const saveDataset = async (dataset: EvalDataset): Promise<EvalDataset> =>
         nextDataset.updatedAt,
       ]
     );
-    await replaceCurrentVersion(client, nextDataset);
+    await persistVersionSnapshot(client, nextDataset, changedByUserId);
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK');
@@ -289,6 +327,59 @@ export const saveDataset = async (dataset: EvalDataset): Promise<EvalDataset> =>
   const saved = await getDataset(nextDataset.id);
   if (!saved) throw new Error('Saved dataset was not found');
   return saved;
+};
+
+export const rollbackDataset = async (
+  datasetId: string,
+  targetVersion: number,
+  user: RequestUser,
+  changeSummary?: string
+): Promise<EvalDataset | null> => {
+  const [current, snapshot] = await Promise.all([
+    getDataset(datasetId),
+    getDatasetVersion(datasetId, targetVersion),
+  ]);
+  if (!current || !snapshot) return null;
+
+  const now = Date.now();
+  const history = current.versionHistory || [];
+  const nextVersion = Math.max(current.version || 0, ...history.map(entry => entry.version), targetVersion) + 1;
+  const summary = changeSummary?.trim() || `从 v${targetVersion} 回退生成新版本`;
+  const itemCountBefore = current.items?.length || 0;
+  const itemCountAfter = snapshot.items?.length || 0;
+  const nextDataset: EvalDataset = {
+    ...current,
+    inputSchema: snapshot.inputSchema || [],
+    items: snapshot.items || [],
+    inputType: snapshot.inputType || current.inputType,
+    modality: snapshot.modality || current.modality,
+    categoryPath: snapshot.categoryPath || current.categoryPath,
+    columnMappings: snapshot.columnMappings,
+    validationSummary: snapshot.validationSummary,
+    datasetCard: current.datasetCard
+      ? {
+        ...current.datasetCard,
+        sampleSize: itemCountAfter,
+        latestChange: summary,
+        updatedAt: now,
+      }
+      : current.datasetCard,
+    version: nextVersion,
+    versionHistory: [
+      ...history,
+      {
+        version: nextVersion,
+        changedAt: now,
+        changedBy: user.displayName || user.email || user.id,
+        changeSummary: summary,
+        itemCountBefore,
+        itemCountAfter,
+      },
+    ].slice(-30),
+    updatedAt: now,
+  };
+
+  return saveDataset(nextDataset, user.id);
 };
 
 export const deleteDataset = async (datasetId: string): Promise<boolean> => {

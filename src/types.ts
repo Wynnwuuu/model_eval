@@ -300,6 +300,19 @@ export interface DatasetValidationSummary {
   warnings: string[];
 }
 
+export interface DatasetVersionSnapshot {
+  version: number;
+  inputSchema: DatasetSchemaField[];
+  items: Record<string, any>[];
+  inputType?: 'text' | 'text_image' | 'text_audio' | 'multi_turn' | 'other';
+  modality?: DatasetModality;
+  categoryPath?: string[];
+  columnMappings?: DatasetColumnMappings;
+  datasetCard?: DatasetCard;
+  validationSummary?: DatasetValidationSummary;
+  updatedAt: number;
+}
+
 export interface EvalDataset {
   id: string;
   name: string;
@@ -315,6 +328,7 @@ export interface EvalDataset {
   datasetCard?: DatasetCard;
   version?: number;
   versionHistory?: DatasetVersionEntry[];
+  versionSnapshots?: Record<string, DatasetVersionSnapshot>;
   validationSummary?: DatasetValidationSummary;
   creatorUid?: string;
   creatorName?: string;

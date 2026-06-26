@@ -1,6 +1,6 @@
-import { addDoc, collection, deleteDoc, doc, onSnapshot, orderBy, query, setDoc } from '../../datastore';
+import { addDoc, collection, deleteDoc, doc, getDoc, onSnapshot, orderBy, query, setDoc } from '../../datastore';
 import { db } from '../../auth';
-import { EvalDataset } from '../../types';
+import { DatasetVersionSnapshot, EvalDataset } from '../../types';
 import { getApiAuthHeaders } from '../apiAuthHeaders';
 import { API_BASE_URL, USE_SHARED_DATA_SOURCE } from '../../runtimeConfig';
 
@@ -53,6 +53,45 @@ const sanitizeDatasetValue = (value: any): any => {
   return value;
 };
 
+const toVersionSnapshot = (dataset: EvalDataset): DatasetVersionSnapshot => ({
+  version: dataset.version || 1,
+  inputSchema: dataset.inputSchema || [],
+  items: dataset.items || [],
+  inputType: dataset.inputType,
+  modality: dataset.modality,
+  categoryPath: dataset.categoryPath || [],
+  columnMappings: dataset.columnMappings,
+  datasetCard: dataset.datasetCard,
+  validationSummary: dataset.validationSummary,
+  updatedAt: dataset.updatedAt || Date.now(),
+});
+
+const attachLocalVersionSnapshot = (dataset: EvalDataset, existing?: EvalDataset): EvalDataset => {
+  const version = String(dataset.version || 1);
+  return {
+    ...dataset,
+    versionSnapshots: {
+      ...(existing?.versionSnapshots || {}),
+      ...(dataset.versionSnapshots || {}),
+      [version]: toVersionSnapshot(dataset),
+    },
+  };
+};
+
+const datasetFromSnapshot = (dataset: EvalDataset, snapshot: DatasetVersionSnapshot): EvalDataset => ({
+  ...dataset,
+  inputSchema: snapshot.inputSchema || [],
+  items: snapshot.items || [],
+  inputType: snapshot.inputType || dataset.inputType,
+  modality: snapshot.modality || dataset.modality,
+  categoryPath: snapshot.categoryPath || dataset.categoryPath || [],
+  columnMappings: snapshot.columnMappings,
+  datasetCard: snapshot.datasetCard || dataset.datasetCard,
+  validationSummary: snapshot.validationSummary,
+  version: snapshot.version,
+  updatedAt: snapshot.updatedAt || dataset.updatedAt,
+});
+
 export function subscribeDatasets(
   onNext: (datasets: EvalDataset[]) => void,
   onError?: (error: unknown) => void
@@ -98,7 +137,8 @@ export async function createDataset(dataset: Omit<EvalDataset, 'id'> & Partial<P
     return response.dataset.id;
   }
 
-  const ref = await addDoc(collection(db, 'evalDatasets'), sanitizeDatasetValue(dataset));
+  const datasetWithSnapshot = attachLocalVersionSnapshot(dataset as EvalDataset);
+  const ref = await addDoc(collection(db, 'evalDatasets'), sanitizeDatasetValue(datasetWithSnapshot));
   return ref.id as string;
 }
 
@@ -112,8 +152,73 @@ export async function saveDataset(dataset: EvalDataset) {
     return response.dataset;
   }
 
-  await setDoc(doc(db, 'evalDatasets', dataset.id), sanitizeDatasetValue(dataset));
-  return dataset;
+  const ref = doc(db, 'evalDatasets', dataset.id);
+  const existingSnap = await getDoc(ref);
+  const existing = existingSnap.exists ? existingSnap.data() as EvalDataset : undefined;
+  const datasetWithSnapshot = attachLocalVersionSnapshot(dataset, existing);
+  await setDoc(ref, sanitizeDatasetValue(datasetWithSnapshot));
+  return datasetWithSnapshot;
+}
+
+export async function loadDatasetVersion(datasetId: string, version: number) {
+  if (USE_SHARED_DATA_SOURCE) {
+    const response = await requestJson<{ dataset: EvalDataset }>(`/api/datasets/${datasetId}/versions/${version}`);
+    return response.dataset;
+  }
+
+  const snap = await getDoc(doc(db, 'evalDatasets', datasetId));
+  if (!snap.exists) {
+    throw new Error('评测集不存在');
+  }
+  const dataset = snap.data() as EvalDataset;
+  const snapshot = dataset.versionSnapshots?.[String(version)];
+  if (!snapshot) {
+    throw new Error('这个历史版本没有可回退的本地快照');
+  }
+  return datasetFromSnapshot(dataset, snapshot);
+}
+
+export async function rollbackDataset(datasetId: string, version: number, changeSummary?: string) {
+  if (USE_SHARED_DATA_SOURCE) {
+    const response = await requestJson<{ dataset: EvalDataset }>(`/api/datasets/${datasetId}/rollback`, {
+      method: 'POST',
+      body: JSON.stringify({ version, changeSummary }),
+    });
+    notifyDatasetReloaders();
+    return response.dataset;
+  }
+
+  const snap = await getDoc(doc(db, 'evalDatasets', datasetId));
+  if (!snap.exists) {
+    throw new Error('评测集不存在');
+  }
+  const dataset = snap.data() as EvalDataset;
+  const snapshot = dataset.versionSnapshots?.[String(version)];
+  if (!snapshot) {
+    throw new Error('这个历史版本没有可回退的本地快照');
+  }
+  const history = dataset.versionHistory || [];
+  const now = Date.now();
+  const nextVersion = Math.max(dataset.version || 0, version, ...history.map(entry => entry.version)) + 1;
+  const summary = changeSummary || `从 v${version} 回退生成新版本`;
+  const nextDataset = attachLocalVersionSnapshot({
+    ...datasetFromSnapshot(dataset, snapshot),
+    version: nextVersion,
+    versionHistory: [
+      ...history,
+      {
+        version: nextVersion,
+        changedAt: now,
+        changedBy: 'Local',
+        changeSummary: summary,
+        itemCountBefore: dataset.items?.length || 0,
+        itemCountAfter: snapshot.items?.length || 0,
+      },
+    ].slice(-30),
+    updatedAt: now,
+  }, dataset);
+  await setDoc(doc(db, 'evalDatasets', datasetId), sanitizeDatasetValue(nextDataset));
+  return nextDataset;
 }
 
 export async function deleteDataset(datasetId: string) {

@@ -191,6 +191,31 @@ const main = async () => {
       },
     });
 
+    const datasetVersionOne = await request<{ dataset: any }>(`/api/datasets/${ids.dataset}/versions/1`);
+    assert(datasetVersionOne.dataset.items.length === 2, 'dataset version 1 snapshot was not readable');
+    await sendJson(`/api/datasets/${ids.dataset}`, 'PUT', {
+      dataset: {
+        ...datasetVersionOne.dataset,
+        items: datasetVersionOne.dataset.items.slice(0, 1),
+        version: 2,
+        versionHistory: [
+          ...(datasetVersionOne.dataset.versionHistory || []),
+          { version: 2, changedAt: Date.now(), changedBy: 'smoke', changeSummary: 'trim to one row', itemCountBefore: 2, itemCountAfter: 1 },
+        ],
+        updatedAt: Date.now(),
+      },
+    });
+    const preservedVersionOne = await request<{ dataset: any }>(`/api/datasets/${ids.dataset}/versions/1`);
+    assert(preservedVersionOne.dataset.items.length === 2, 'dataset version 1 snapshot was overwritten by version 2 save');
+    const datasetRollback = await sendJson<{ dataset: any }>(`/api/datasets/${ids.dataset}/rollback`, 'POST', {
+      version: 1,
+      changeSummary: 'rollback smoke to version 1',
+    });
+    assert(datasetRollback.dataset.version === 3, 'dataset rollback did not create a new current version');
+    assert(datasetRollback.dataset.items.length === 2, 'dataset rollback did not restore version 1 items');
+    const preservedVersionTwo = await request<{ dataset: any }>(`/api/datasets/${ids.dataset}/versions/2`);
+    assert(preservedVersionTwo.dataset.items.length === 1, 'dataset version 2 snapshot was not preserved after rollback');
+
     await sendJson(`/api/templates/${ids.template}`, 'PUT', {
       template: {
         id: ids.template,
