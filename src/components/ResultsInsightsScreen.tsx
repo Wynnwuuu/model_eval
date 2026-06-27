@@ -568,18 +568,24 @@ const EvidenceMediaStrip: React.FC<{ caseItem: AbCaseInsight | RankCaseInsight }
   }
 
   return (
-    <div className="flex flex-wrap gap-3">
+    <div
+      className="grid gap-4"
+      style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 360px), 1fr))' }}
+    >
       {outputs.map(output => (
-        <div key={`${caseItem.itemId}-${output.modelId}-${output.modelName}`} className="w-[184px] overflow-hidden rounded-lg border border-white/10 bg-white/5">
-          <div className="flex items-center justify-between gap-2 border-b border-white/10 px-2.5 py-2">
-            <span className="truncate text-xs font-semibold text-slate-200" title={output.modelName}>{output.modelName}</span>
+        <div key={`${caseItem.itemId}-${output.modelId}-${output.modelName}`} className="min-w-0 overflow-hidden rounded-xl border border-white/10 bg-white/5">
+          <div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2.5">
+            <span className="truncate text-sm font-semibold text-slate-100" title={output.modelName}>{output.modelName}</span>
             {output.url && (
               <a href={output.url} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-white" title="打开产物链接">
-                <ExternalLink size={13} />
+                <ExternalLink size={15} />
               </a>
             )}
           </div>
-          <div className="h-[104px] bg-black/30">
+          <div
+            className="w-full bg-black/40"
+            style={{ height: 'clamp(220px, 28vw, 460px)' }}
+          >
             <MediaRenderer
               url={output.url}
               isActive={false}
@@ -605,11 +611,11 @@ const EvidenceGallery: React.FC<{
         <p className="text-xs text-slate-500">{filterLabel} / 当前显示 {cases.length} 个 case</p>
       </div>
     </div>
-    <div className="max-h-[680px] overflow-y-auto p-4">
+    <div className="p-4">
       {cases.length ? (
         <div className="space-y-4">
           {cases.map(item => (
-            <article key={item.itemId} className="rounded-xl border border-white/10 bg-black/20 p-4">
+            <article key={item.itemId} className="rounded-xl border border-white/10 bg-black/20 p-4 lg:p-5">
               <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
                   <div className="font-mono text-xs text-amber-300">{item.itemId}</div>
