@@ -7,11 +7,9 @@ import {
   FileClock,
   Home,
   Layers,
-  LayoutTemplate,
   LogIn,
   LogOut,
   Menu,
-  PlayCircle,
   Trash2,
   Wand2,
   X
@@ -37,9 +35,7 @@ const iconMap = {
   projects: Layers,
   datasets: Database,
   generation: Wand2,
-  templates: LayoutTemplate,
   tasks: ClipboardCheck,
-  evaluation: PlayCircle,
   insights: BarChart3,
   history: FileClock
 };
@@ -49,9 +45,7 @@ const navItems: NavItem[] = [
   { id: 'projects', label: '项目', icon: 'projects', route: 'projects' },
   { id: 'datasets', label: '评测集', icon: 'datasets', route: 'datasets' },
   { id: 'generation', label: '生产', icon: 'generation', route: 'generation' },
-  { id: 'templates', label: 'Rubric 库', icon: 'templates', route: 'templates' },
   { id: 'tasks', label: '评测物料', icon: 'tasks', route: 'tasks' },
-  { id: 'evaluation', label: '参与评测', icon: 'evaluation', route: 'evaluation' },
   { id: 'insights', label: '结果洞察', icon: 'insights', route: 'insights' },
   { id: 'history', label: '历史', icon: 'history', route: 'history' }
 ];
@@ -61,9 +55,9 @@ const routeTitles: Record<AppRoute, string> = {
   projects: '项目',
   datasets: '评测集',
   generation: '生产',
-  templates: 'Rubric 库',
+  templates: 'Rubric 与评分预设',
   tasks: '评测物料',
-  evaluation: '参与评测',
+  evaluation: '快速评测',
   insights: '结果洞察',
   history: '历史',
   voting: '评测执行',
@@ -271,7 +265,7 @@ const AppShell: React.FC<AppShellProps> = ({
               <div className="min-w-0">
                 <div className="truncate text-sm font-black uppercase tracking-wide text-white">{title}</div>
                 <div className="truncate font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--text-muted)]">
-                  评测集 / 生产 / 参与评测 / 结果洞察一体化工作台
+                  评测集 / 生产 / 评测物料 / 结果洞察一体化工作台
                 </div>
               </div>
             </div>

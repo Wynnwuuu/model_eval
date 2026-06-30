@@ -144,6 +144,7 @@ export interface DataTableShellProps<TData> {
   searchPlaceholder?: string;
   emptyTitle?: string;
   className?: string;
+  onRowClick?: (row: TData) => void;
 }
 
 export function DataTableShell<TData>({
@@ -151,7 +152,8 @@ export function DataTableShell<TData>({
   columns,
   searchPlaceholder = '搜索...',
   emptyTitle = '暂无数据',
-  className = ''
+  className = '',
+  onRowClick
 }: DataTableShellProps<TData>) {
   const [sorting, setSorting] = React.useState<SortingState>([]);
   const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>([]);
@@ -211,7 +213,24 @@ export function DataTableShell<TData>({
           </thead>
           <tbody>
             {table.getRowModel().rows.length ? table.getRowModel().rows.map(row => (
-              <tr key={row.id} className="border-b border-[var(--border-subtle)] last:border-0 hover:bg-white/[0.03]">
+              <tr
+                key={row.id}
+                role={onRowClick ? 'button' : undefined}
+                tabIndex={onRowClick ? 0 : undefined}
+                onClick={event => {
+                  if (!onRowClick) return;
+                  const target = event.target as HTMLElement;
+                  if (target.closest('button,a,input,select,textarea')) return;
+                  onRowClick(row.original);
+                }}
+                onKeyDown={event => {
+                  if (!onRowClick) return;
+                  if (event.key !== 'Enter' && event.key !== ' ') return;
+                  event.preventDefault();
+                  onRowClick(row.original);
+                }}
+                className={`border-b border-[var(--border-subtle)] last:border-0 hover:bg-white/[0.03] ${onRowClick ? 'cursor-pointer focus:outline-none focus-visible:bg-white/[0.06]' : ''}`}
+              >
                 {row.getVisibleCells().map(cell => (
                   <td key={cell.id} className="px-4 py-3 align-top text-[var(--text-secondary)]">
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}

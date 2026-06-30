@@ -1,4 +1,4 @@
-import { addDoc, collection, deleteDoc, doc, onSnapshot, query, updateDoc, where } from '../../datastore';
+import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query, setDoc, updateDoc, where } from '../../datastore';
 import { db } from '../../auth';
 import { EvalTask, EvaluationItem, TaskVoteGroup, VoteRecord } from '../../types';
 import { getApiAuthHeaders } from '../apiAuthHeaders';
@@ -12,6 +12,50 @@ export const USE_TASK_API_BACKEND = USE_SHARED_DATA_SOURCE;
 const HTTP_REFRESH_INTERVAL_MS = 5000;
 
 const taskReloaders = new Set<() => void>();
+
+const snapshotExists = (snapshot: any) => {
+  if (!snapshot) return false;
+  return typeof snapshot.exists === 'function' ? snapshot.exists() : !!snapshot.exists;
+};
+
+async function resolveLocalTaskItemDocId(taskId: string, itemId: string) {
+  const directSnap = await getDoc(doc(db, 'evalTasks', taskId, 'items', itemId));
+  if (snapshotExists(directSnap)) return itemId;
+
+  const itemsSnapshot = await getDocs(collection(db, 'evalTasks', taskId, 'items'));
+  const matchedDoc = itemsSnapshot.docs.find((docSnap: any) => {
+    const data = docSnap.data?.() || {};
+    return docSnap.id === itemId || data.id === itemId;
+  });
+  if (matchedDoc) return matchedDoc.id;
+
+  throw new Error(`Task item not found: ${itemId}`);
+}
+
+async function syncLocalTaskProgressAfterItemDelete(taskId: string) {
+  const remainingItemsSnapshot = await getDocs(collection(db, 'evalTasks', taskId, 'items'));
+  const remainingItemIds = new Set<string>();
+  remainingItemsSnapshot.docs.forEach((docSnap: any) => {
+    const data = docSnap.data?.() || {};
+    remainingItemIds.add(docSnap.id);
+    if (data.id) remainingItemIds.add(data.id);
+  });
+
+  const progress: Record<string, number> = {};
+  const votesSnapshot = await getDocs(collection(db, 'evalTasks', taskId, 'userVotes'));
+  for (const docSnap of votesSnapshot.docs as any[]) {
+    const data = docSnap.data?.() || {};
+    const filteredVotes = (data.votes || []).filter((vote: VoteRecord) => remainingItemIds.has(vote.itemId));
+    progress[docSnap.id] = filteredVotes.length;
+    await setDoc(doc(db, 'evalTasks', taskId, 'userVotes', docSnap.id), { ...data, votes: filteredVotes }, { merge: true });
+  }
+
+  await setDoc(doc(db, 'evalTasks', taskId), {
+    hasTaskItemEdits: true,
+    totalItems: remainingItemsSnapshot.docs.length,
+    progress,
+  }, { merge: true });
+}
 
 export async function requestTaskJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -174,7 +218,23 @@ export async function updateTaskItem(taskId: string, itemId: string, patch: Part
     return response.item;
   }
 
-  await updateDoc(doc(db, 'evalTasks', taskId, 'items', itemId), patch);
+  const docId = await resolveLocalTaskItemDocId(taskId, itemId);
+  await updateDoc(doc(db, 'evalTasks', taskId, 'items', docId), patch);
+}
+
+export async function deleteTaskItem(taskId: string, itemId: string) {
+  if (USE_TASK_API_BACKEND) {
+    await requestTaskJson<void>(`/api/tasks/${taskId}/items/${itemId}`, {
+      method: 'DELETE',
+    });
+    notifyTaskReloaders();
+    return;
+  }
+
+  const docId = await resolveLocalTaskItemDocId(taskId, itemId);
+  await deleteDoc(doc(db, 'evalTasks', taskId, 'items', docId));
+  await syncLocalTaskProgressAfterItemDelete(taskId);
+  notifyTaskReloaders();
 }
 
 export async function deleteTask(taskId: string) {

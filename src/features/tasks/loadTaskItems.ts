@@ -70,7 +70,7 @@ export async function loadTaskItems(task: EvalTask, options: LoadTaskItemsOption
     return String(a.id).localeCompare(String(b.id));
   });
 
-  if (items.length === 0 && task.datasetId && task.datasetId !== 'external-csv') {
+  if (items.length === 0 && !(task as any).hasTaskItemEdits && task.datasetId && task.datasetId !== 'external-csv') {
     const datasetSnapshot = await getDoc(doc(db, 'evalDatasets', task.datasetId));
     if (snapshotExists(datasetSnapshot)) {
       const datasetData = datasetSnapshot.data() as any;

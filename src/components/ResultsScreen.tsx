@@ -11,6 +11,7 @@ import { getDefaultEvaluationConfig, getMethodFromParadigm, isPairwiseMethod, is
 import { buildScoreCaseCsv, buildPairwiseCaseCsv, buildScoreInsights, buildPairwiseInsights } from '../scoringInsights';
 import { getEffectiveVotes, getSkippedVoteCount, isSkippedVote } from '../voteUtils';
 import { DATA_SOURCE_LABEL, IS_OFFLINE_LOCAL_DEMO } from '../runtimeConfig';
+import { itemFromVoteSnapshot, resolveVoteDisplayItem } from '../taskItemSnapshot';
 
 interface ResultsScreenProps {
   votes: VoteRecord[];
@@ -68,6 +69,18 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
   const teamScopeAvailable = hasTeamVotes && !teamVotesError;
   const scopedVotes = voteScope === 'all' && teamScopeAvailable ? teamScopedVotes : votes;
   const effectiveVotes = getEffectiveVotes(scopedVotes);
+  const itemMap = useMemo(() => new Map(items.map(item => [item.id, item])), [items]);
+  const snapshotAwareItems = useMemo(() => {
+    const merged = new Map<string, EvaluationItem>();
+    items.forEach(item => merged.set(item.id, item));
+    scopedVotes.forEach(vote => {
+      const snapshotItem = itemFromVoteSnapshot(vote);
+      if (snapshotItem) merged.set(snapshotItem.id, snapshotItem);
+    });
+    return Array.from(merged.values());
+  }, [items, scopedVotes]);
+  const getDisplayItemForVote = (vote: VoteRecord) =>
+    resolveVoteDisplayItem(vote, itemMap.get(vote.itemId)) as EvaluationItem | undefined;
   const skippedCount = getSkippedVoteCount(scopedVotes);
   const teamVoterCount = new Set(allUserVoteGroups.filter(group => group.votes?.length).map(group => group.userId || group.email || group.user)).size;
   const currentUserCompleted = items.length > 0 && votes.length >= items.length;
@@ -98,7 +111,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
     ? models
     : rankStats.map(stat => ({ id: stat.modelId, name: stat.modelName }));
   const maxRankCount = Math.max(0, ...rankVotes.map(v => v.ranking?.length || 0));
-  const dimensionColumns = getDimensionColumnsForCsv(items);
+  const dimensionColumns = getDimensionColumnsForCsv(snapshotAwareItems);
 
   // Calculate Stats
   const stats: VotingStats = effectiveVotes.reduce(
@@ -115,12 +128,13 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
   const aPercent = stats.total ? Math.round((stats.aCount / stats.total) * 100) : 0;
   const bPercent = stats.total ? Math.round((stats.bCount / stats.total) * 100) : 0;
   const tiePercent = stats.total ? 100 - aPercent - bPercent : 0;
-  const aggregatedResultItems = items.map(item => {
+  const aggregatedResultItems = snapshotAwareItems.map(item => {
     const itemVotes = effectiveVotes.filter(v => v.itemId === item.id && v.vote);
+    const displayItem = itemVotes[0] ? getDisplayItemForVote(itemVotes[0]) || item : item;
     return {
       itemId: item.id,
-      prompt: resolveEvaluationItemPrompt(item),
-      dimensionValues: getDimensionValuesForItem(item),
+      prompt: resolveEvaluationItemPrompt(displayItem),
+      dimensionValues: getDimensionValuesForItem(displayItem),
       votes: {
         A: itemVotes.filter(v => v.vote === 'A').length,
         B: itemVotes.filter(v => v.vote === 'B').length,
@@ -130,7 +144,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
     };
   });
   const voteDimensionSummaries = calculateVoteDimensionSummaries(aggregatedResultItems);
-  const rankDimensionSummaries = calculateRankDimensionSummaries(rankVotes, items);
+  const rankDimensionSummaries = calculateRankDimensionSummaries(rankVotes, snapshotAwareItems);
 
   const scopeControls = (
     <div className="mb-4 rounded-xl border border-white/10 bg-white/5 p-4">
@@ -206,13 +220,13 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
   );
 
   const downloadPreviewCSV = () => {
-    const inputHeaders: string[] = Array.from(new Set(items.flatMap(item => Object.keys(item.inputs || {}))));
+    const inputHeaders: string[] = Array.from(new Set(snapshotAwareItems.flatMap(item => Object.keys(item.inputs || {}))));
     const outputHeaders = models.length > 0
       ? models.map(model => model.name)
-      : Array.from(new Set(items.flatMap(item => item.modelOutputs?.map(output => output.modelName) || [])));
+      : Array.from(new Set(snapshotAwareItems.flatMap(item => item.modelOutputs?.map(output => output.modelName) || [])));
     const headers = ['ItemID', 'Status', 'Comment', 'Timestamp', 'User', ...dimensionColumns.map(col => col.header), ...inputHeaders, ...outputHeaders];
     const rows = scopedVotes.map(vote => {
-      const item = items.find(candidate => candidate.id === vote.itemId);
+      const item = getDisplayItemForVote(vote);
       const dimensionValues = getDimensionValuesForItem(item);
       const outputByName = new Map((item?.modelOutputs || []).map(output => [output.modelName, output.url]));
       return [
@@ -304,7 +318,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
               </thead>
               <tbody>
                 {scopedVotes.map((vote, index) => {
-                  const item = items.find(candidate => candidate.id === vote.itemId);
+                  const item = getDisplayItemForVote(vote);
                   return (
                     <tr key={`${vote.itemId}-${index}`} className="border-b border-white/10 hover:bg-white/5">
                       <td className="p-4 font-mono text-sm text-slate-200">{vote.itemId}</td>
@@ -440,7 +454,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
       const modelHeaders = arenaRankModelList.flatMap(model => [`${model.name}_rank`, `${model.name}_score`]);
       const headers = ['ItemID', 'Prompt', ...dimensionColumns.map(col => col.header), 'Status', 'Timestamp', 'User', ...rankHeaders, ...rankVideoHeaders, ...modelHeaders, 'ranking_json'];
       const rows = scopedVotes.filter(v => isArenaRankVote(v) || isSkippedVote(v)).map(v => {
-        const item = items.find(candidate => candidate.id === v.itemId);
+        const item = getDisplayItemForVote(v);
         const ranking = sortRanking(v.ranking);
         const dimensionValues = getDimensionValuesForItem(item);
         const rankValues = rankHeaders.map((_, idx) => {
@@ -487,7 +501,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
     // Standard cols: ItemID, Prompt, dimensions, model urls, winner, timestamp, user, model names, references
     const headers = ['ItemID', 'Prompt', ...dimensionColumns.map(col => col.header), 'Status', 'ModelA_URL', 'ModelB_URL', 'Winner', 'Timestamp', 'User', 'ModelA_Name', 'ModelB_Name', 'References'];
     const rows = scopedVotes.map(v => {
-      const item = items.find(i => i.id === v.itemId);
+      const item = getDisplayItemForVote(v);
       const dimensionValues = getDimensionValuesForItem(item);
       return [
         v.itemId,
@@ -627,7 +641,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
               </thead>
               <tbody>
                 {rankVotes.map((v, i) => {
-                  const item = items.find(candidate => candidate.id === v.itemId);
+                  const item = getDisplayItemForVote(v);
                   const prompt = resolveEvaluationItemPrompt(item);
                   const ranking = sortRanking(v.ranking);
                   const dimensionValues = getDimensionValuesForItem(item);
@@ -802,7 +816,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
             </thead>
             <tbody>
               {effectiveVotes.map((v, i) => {
-                const item = items.find(candidate => candidate.id === v.itemId);
+                const item = getDisplayItemForVote(v);
                 return (
                   <tr key={i} className="border-b border-white/10 glass-panel-hover">
                     <td className="p-4 text-sm text-slate-200 font-mono">{v.itemId}</td>

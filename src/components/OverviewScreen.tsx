@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Activity, BarChart3, ClipboardCheck, Database, FileText, PlayCircle, Wand2 } from 'lucide-react';
+import { Activity, BarChart3, ClipboardCheck, Database, FileText, Wand2 } from 'lucide-react';
 import { DatasetGenerationJob, EvalDataset, EvalTask } from '../types';
 import { handlePersistenceError } from '../auth';
 import { DataTableShell, EmptyState, PageFrame, PageHeader, SectionPanel, StatTile, StatusBadge, Toolbar } from './ui';
@@ -11,7 +11,7 @@ interface OverviewScreenProps {
   onGoToProjects: () => void;
   onGoToDatasets: () => void;
   onGoToTasks: (statusFilter?: EvalTask['status']) => void;
-  onGoToEvaluation: () => void;
+  onOpenTask: (taskId: string) => void;
   onGoToInsights: (statusFilter?: EvalTask['status']) => void;
   onGoToGeneration: () => void;
 }
@@ -71,7 +71,7 @@ const OverviewScreen: React.FC<OverviewScreenProps> = ({
   onGoToProjects,
   onGoToDatasets,
   onGoToTasks,
-  onGoToEvaluation,
+  onOpenTask,
   onGoToInsights,
   onGoToGeneration
 }) => {
@@ -109,7 +109,13 @@ const OverviewScreen: React.FC<OverviewScreenProps> = ({
       header: '评测物料',
       cell: ({ row }: any) => (
         <div>
-          <div className="font-medium text-[var(--text-primary)]">{row.original.name}</div>
+          <button
+            type="button"
+            onClick={() => onOpenTask(row.original.id)}
+            className="text-left font-medium text-[var(--text-primary)] hover:text-[var(--accent)]"
+          >
+            {row.original.name}
+          </button>
           <div className="mt-1 text-xs text-[var(--text-muted)]">{row.original.totalItems || 0} cases</div>
         </div>
       )
@@ -124,7 +130,7 @@ const OverviewScreen: React.FC<OverviewScreenProps> = ({
       header: '创建时间',
       cell: ({ row }: any) => formatDate(row.original.createdAt)
     }
-  ], []);
+  ], [onOpenTask]);
 
   const jobColumns = useMemo(() => [
     {
@@ -169,8 +175,8 @@ const OverviewScreen: React.FC<OverviewScreenProps> = ({
       />
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <ClickableStatTile onClick={onGoToEvaluation} ariaLabel="查看进行中的评测物料并参与评测">
-          <StatTile label="进行中评测物料" value={activeTasks.length} hint={`${draftTasks.length} 个草稿待发布，点击参与评测`} icon={<Activity size={18} />} tone="green" />
+        <ClickableStatTile onClick={() => onGoToTasks('active')} ariaLabel="查看进行中的评测物料">
+          <StatTile label="进行中评测物料" value={activeTasks.length} hint={`${draftTasks.length} 个草稿待发布，点击查看待评物料`} icon={<Activity size={18} />} tone="green" />
         </ClickableStatTile>
         <ClickableStatTile onClick={onGoToDatasets} ariaLabel="打开评测集仓库">
           <StatTile label="评测集" value={datasets.length} hint={`${datasetRows} 条 case 已归档，点击管理评测集`} icon={<Database size={18} />} tone="blue" />
@@ -185,7 +191,7 @@ const OverviewScreen: React.FC<OverviewScreenProps> = ({
 
       <Toolbar className="mt-6">
         <div className="flex flex-wrap gap-2">
-          <button onClick={onGoToEvaluation} className="btn-secondary"><PlayCircle size={16} /> 参与评测</button>
+          <button onClick={() => onGoToTasks('active')} className="btn-secondary"><ClipboardCheck size={16} /> 待评物料</button>
           <button onClick={onGoToGeneration} className="btn-secondary"><Wand2 size={16} /> 批量生产</button>
           <button onClick={() => onGoToInsights()} className="btn-secondary"><BarChart3 size={16} /> 打开结果洞察</button>
         </div>
@@ -195,7 +201,13 @@ const OverviewScreen: React.FC<OverviewScreenProps> = ({
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.4fr)_minmax(360px,0.8fr)]">
         <SectionPanel title="最近评测物料" description="关注待执行、进行中和刚完成的可执行评测配置。">
           {loading || tasks.length ? (
-            <DataTableShell data={tasks.slice(0, 8)} columns={taskColumns as any} searchPlaceholder="搜索评测物料..." emptyTitle="暂无评测物料" />
+            <DataTableShell
+              data={tasks.slice(0, 8)}
+              columns={taskColumns as any}
+              searchPlaceholder="搜索评测物料..."
+              emptyTitle="暂无评测物料"
+              onRowClick={(task: EvalTask) => onOpenTask(task.id)}
+            />
           ) : (
             <EmptyState icon={<FileText size={32} />} title="暂无评测物料" description="从评测物料页面创建可执行评测配置后，这里会显示最近状态。" />
           )}

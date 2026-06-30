@@ -53,6 +53,7 @@ type VoteRow = {
   scores_json: VoteRecord['scores'] | null;
   rubric_responses_json: VoteRecord['rubricResponses'] | null;
   pair_context_json: VoteRecord['pairContext'] | null;
+  item_snapshot_json: VoteRecord['itemSnapshot'] | null;
   reason: string | null;
   submitted_at: Date;
 };
@@ -475,6 +476,65 @@ export const updateTaskItem = async (
   } as EvaluationItem;
 };
 
+const syncTaskItemCounts = async (client: any, taskId: string) => {
+  const itemCountResult = await client.query(
+    'SELECT COUNT(*)::int AS count FROM eval_task_items WHERE task_id = $1',
+    [taskId]
+  ) as { rows: Array<{ count: string }> };
+  const totalItems = Number(itemCountResult.rows[0]?.count || 0);
+
+  const taskResult = await client.query(
+    'SELECT progress_json FROM eval_tasks WHERE id = $1 AND deleted_at IS NULL',
+    [taskId]
+  ) as { rows: Array<{ progress_json: Record<string, number> | null }> };
+  const existingProgress = taskResult.rows[0]?.progress_json || {};
+
+  const voteCountResult = await client.query(
+    `
+      SELECT user_id, COUNT(*)::int AS count
+      FROM evaluation_votes
+      WHERE task_id = $1
+      GROUP BY user_id
+    `,
+    [taskId]
+  ) as { rows: Array<{ user_id: string; count: string }> };
+  const nextProgress: Record<string, number> = {};
+  Object.keys(existingProgress).forEach(key => {
+    nextProgress[key] = 0;
+  });
+  voteCountResult.rows.forEach(row => {
+    nextProgress[row.user_id] = Math.min(Number(row.count || 0), totalItems);
+  });
+
+  await client.query(
+    'UPDATE eval_tasks SET total_items = $2, progress_json = $3::jsonb, updated_at = now() WHERE id = $1 AND deleted_at IS NULL',
+    [taskId, totalItems, JSON.stringify(nextProgress)]
+  );
+};
+
+export const deleteTaskItem = async (taskId: string, itemId: string): Promise<boolean> => {
+  const client = await dbPool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      'DELETE FROM eval_task_items WHERE task_id = $1 AND id = $2',
+      [taskId, itemId]
+    );
+    if (result.rowCount === 0) {
+      await client.query('ROLLBACK');
+      return false;
+    }
+    await syncTaskItemCounts(client, taskId);
+    await client.query('COMMIT');
+    return true;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
 const getVoteUserLabel = (row: VoteRow) => row.user_display_name || row.user_email || row.user_id;
 
 const mapVote = (row: VoteRow): VoteRecord => ({
@@ -486,6 +546,7 @@ const mapVote = (row: VoteRow): VoteRecord => ({
   scores: row.scores_json || undefined,
   rubricResponses: row.rubric_responses_json || undefined,
   pairContext: row.pair_context_json || undefined,
+  itemSnapshot: row.item_snapshot_json && Object.keys(row.item_snapshot_json).length ? row.item_snapshot_json : undefined,
   reason: row.reason || undefined,
   timestamp: toTimestamp(row.submitted_at),
   user: getVoteUserLabel(row),
@@ -666,10 +727,11 @@ const insertVoteRows = async (client: any, taskId: string, userId: string, votes
           scores_json,
           rubric_responses_json,
           pair_context_json,
+          item_snapshot_json,
           reason,
           submitted_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10::jsonb, $11, to_timestamp($12 / 1000.0))
+        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10::jsonb, $11::jsonb, $12, to_timestamp($13 / 1000.0))
       `,
       [
         `${taskId}:${userId}:${vote.itemId}:${index}`,
@@ -682,6 +744,7 @@ const insertVoteRows = async (client: any, taskId: string, userId: string, votes
         JSON.stringify(vote.scores || {}),
         JSON.stringify(vote.rubricResponses || {}),
         JSON.stringify(vote.pairContext || {}),
+        JSON.stringify(vote.itemSnapshot || {}),
         vote.reason || null,
         vote.timestamp || Date.now(),
       ]

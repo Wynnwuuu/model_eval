@@ -2,6 +2,7 @@ import { Router } from 'express';
 
 import {
   createTask,
+  deleteTaskItem,
   deleteTask,
   getTask,
   getTaskCurrentUserVotes,
@@ -156,6 +157,19 @@ taskRoutes.patch('/:taskId/items/:itemId', async (req, res) => {
     res.json({ item });
   } catch (error) {
     sendError(res, error, 'Failed to update task item');
+  }
+});
+
+taskRoutes.delete('/:taskId/items/:itemId', async (req, res) => {
+  try {
+    await ensureTaskProjectRole(req.user, req.params.taskId, ['owner', 'editor']);
+    const deleted = await deleteTaskItem(req.params.taskId, req.params.itemId);
+    if (!deleted) {
+      throw notFound('Task item');
+    }
+    res.status(204).end();
+  } catch (error) {
+    sendError(res, error, 'Failed to delete task item');
   }
 });
 

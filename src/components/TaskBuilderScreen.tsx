@@ -10,7 +10,7 @@ import DimensionChips from './DimensionChips';
 import { getDimensionValuesForItem, getDimensionValuesFromRecord, isLikelyDimensionColumn } from '../dimensionUtils';
 import { extractMediaUrls, resolvePlaybackUrl } from '../mediaUrlUtils';
 import { sortReferenceUrls } from '../mediaTypeUtils';
-import { createTaskWithItems, deleteTask, loadTaskItems, subscribeTasks, updateTask, updateTaskItem } from '../features/tasks/api';
+import { createTaskWithItems, deleteTask, deleteTaskItem, loadTaskItems, subscribeTasks, updateTask, updateTaskItem } from '../features/tasks/api';
 import { createDataset, subscribeDatasets } from '../features/datasets/api';
 import { saveTemplate, subscribeTemplates } from '../features/templates/api';
 import {
@@ -45,9 +45,106 @@ interface TaskBuilderScreenProps {
   initialMode?: 'create' | 'list';
   initialStatusFilter?: EvalTask['status'];
   initialTaskId?: string;
+  onClearProjectScope?: () => void;
+  onEvaluateTask?: (task: EvalTask) => void;
+  onOpenInsights?: (task: EvalTask) => void;
 }
 
-export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'create', initialStatusFilter, initialTaskId }: TaskBuilderScreenProps) {
+type TaskItemEditForm = {
+  prompt: string;
+  type: EvaluationItem['type'];
+  inputsText: string;
+  dimensionsText: string;
+  startImageUrl: string;
+  referenceUrlsText: string;
+  expectedOutput: string;
+  modelOutputs: Array<{ modelId: string; modelName: string; url: string }>;
+};
+
+const formatKeyValueText = (record?: Record<string, any>) =>
+  Object.entries(record || {})
+    .map(([key, value]) => `${key}: ${typeof value === 'string' ? value : JSON.stringify(value)}`)
+    .join('\n');
+
+const parseKeyValueText = (text: string): Record<string, string> => {
+  const result: Record<string, string> = {};
+  text.split(/\r?\n/).forEach(line => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    const separatorIndex = ['\t', ':', '=']
+      .map(separator => trimmed.indexOf(separator))
+      .filter(index => index > 0)
+      .sort((a, b) => a - b)[0];
+    if (!separatorIndex) return;
+    const key = trimmed.slice(0, separatorIndex).trim();
+    const value = trimmed.slice(separatorIndex + 1).trim();
+    if (key) result[key] = value;
+  });
+  return result;
+};
+
+const createItemEditForm = (item: EvaluationItem, task: EvalTask): TaskItemEditForm => {
+  const usedIds = new Set<string>();
+  const taskOutputs = (task.models || []).map((model, index) => {
+    usedIds.add(model.id);
+    const existing = item.modelOutputs?.find(output => output.modelId === model.id) || item.modelOutputs?.[index];
+    return {
+      modelId: model.id || `model-${index}`,
+      modelName: model.name || existing?.modelName || `Model ${index + 1}`,
+      url: existing?.url || (index === 0 ? item.modelA_Url : index === 1 ? item.modelB_Url : ''),
+    };
+  });
+  const extraOutputs = (item.modelOutputs || [])
+    .filter(output => !usedIds.has(output.modelId))
+    .map(output => ({ modelId: output.modelId, modelName: output.modelName, url: output.url || '' }));
+
+  return {
+    prompt: item.prompt || '',
+    type: item.type || task.outputType || 'unknown',
+    inputsText: formatKeyValueText(item.inputs),
+    dimensionsText: formatKeyValueText(item.dimensionValues),
+    startImageUrl: item.startImageUrl || '',
+    referenceUrlsText: (item.referenceUrls || []).join('\n'),
+    expectedOutput: (item as any).expectedOutput || '',
+    modelOutputs: [...taskOutputs, ...extraOutputs],
+  };
+};
+
+const buildItemPatchFromForm = (form: TaskItemEditForm): Partial<EvaluationItem> & Record<string, any> => {
+  const modelOutputs = form.modelOutputs.map(output => ({
+    modelId: output.modelId,
+    modelName: output.modelName,
+    url: output.url.trim(),
+  }));
+  const referenceUrls = form.referenceUrlsText
+    .split(/\r?\n/)
+    .map(url => url.trim())
+    .filter(Boolean);
+
+  return {
+    prompt: form.prompt,
+    type: form.type,
+    inputs: parseKeyValueText(form.inputsText),
+    dimensionValues: parseKeyValueText(form.dimensionsText),
+    startImageUrl: form.startImageUrl.trim() || undefined,
+    referenceUrls: referenceUrls.length ? sortReferenceUrls(referenceUrls) : undefined,
+    modelOutputs,
+    modelA_Url: modelOutputs[0]?.url || '',
+    modelB_Url: modelOutputs[1]?.url || '',
+    expectedOutput: form.expectedOutput,
+  };
+};
+
+export default function TaskBuilderScreen({
+  projectId,
+  onBack,
+  initialMode = 'create',
+  initialStatusFilter,
+  initialTaskId,
+  onClearProjectScope,
+  onEvaluateTask,
+  onOpenInsights
+}: TaskBuilderScreenProps) {
   const [tasks, setTasks] = useState<EvalTask[]>([]);
   const [datasets, setDatasets] = useState<EvalDataset[]>([]);
   const [templates, setTemplates] = useState<EvalTemplate[]>([]);
@@ -95,12 +192,11 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
   
   // Item Editing State
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
-  const [editItemForm, setEditItemForm] = useState<any>({});
+  const [editItemForm, setEditItemForm] = useState<TaskItemEditForm | null>(null);
+  const [itemToDelete, setItemToDelete] = useState<EvaluationItem | null>(null);
 
   useEffect(() => {
-    if (projectId) {
-      setNewTask(prev => ({ ...prev, projectId }));
-    }
+    setNewTask(prev => ({ ...prev, projectId: projectId || '' }));
   }, [projectId]);
 
   useEffect(() => {
@@ -108,6 +204,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
   }, [initialStatusFilter]);
 
   useEffect(() => {
+    setLoading(true);
     const unsubscribeTasks = subscribeTasks({ projectId }, setTasks, (error) => {
       console.error("Error fetching tasks:", error);
       setError("加载评测物料失败");
@@ -142,7 +239,7 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
       unsubscribeTemplates();
       unsubscribeUsers();
     };
-  }, []);
+  }, [projectId]);
 
   const validateSetup = () => {
     if (!newTask.name) return "请填写物料名称";
@@ -861,14 +958,46 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
   }, [initialTaskId, tasks, viewingTask?.id, viewingTaskItems.length, loadingItems]);
 
   const handleSaveItemEdit = async (itemId: string) => {
-    if (!viewingTask) return;
+    if (!viewingTask || !editItemForm) return;
     try {
-      await updateTaskItem(viewingTask.id, itemId, editItemForm);
-      setViewingTaskItems(prev => prev.map(item => item.id === itemId ? { ...item, ...editItemForm } : item));
+      const patch = buildItemPatchFromForm(editItemForm);
+      await updateTaskItem(viewingTask.id, itemId, patch);
+      setViewingTaskItems(prev => prev.map(item => item.id === itemId ? { ...item, ...patch } as EvaluationItem : item));
       setEditingItemId(null);
+      setEditItemForm(null);
     } catch (error) {
       console.error("Error updating item:", error);
-      setError("更新用例失败");
+      setError("更新 case 失败");
+    }
+  };
+
+  const handleCancelItemEdit = () => {
+    setEditingItemId(null);
+    setEditItemForm(null);
+  };
+
+  const handleStartItemEdit = (item: EvaluationItem) => {
+    if (!viewingTask) return;
+    setEditingItemId(item.id);
+    setEditItemForm(createItemEditForm(item, viewingTask));
+  };
+
+  const confirmDeleteTaskItem = async () => {
+    if (!viewingTask || !itemToDelete) return;
+    const task = viewingTask;
+    const deletedItemId = itemToDelete.id;
+    try {
+      await deleteTaskItem(task.id, deletedItemId);
+      const reloadedItems = await loadTaskItems({ ...task, totalItems: undefined, hasTaskItemEdits: true } as EvalTask);
+      setViewingTaskItems(reloadedItems);
+      setViewingTask({ ...task, totalItems: reloadedItems.length, hasTaskItemEdits: true } as EvalTask);
+      setTasks(prev => prev.map(existingTask => existingTask.id === task.id ? { ...existingTask, totalItems: reloadedItems.length, hasTaskItemEdits: true } as EvalTask : existingTask));
+      if (editingItemId === deletedItemId) handleCancelItemEdit();
+      setItemToDelete(null);
+    } catch (error: any) {
+      console.error('Error deleting task item:', error);
+      setError(`删除 case 失败: ${error?.message || error}`);
+      setItemToDelete(null);
     }
   };
 
@@ -930,6 +1059,20 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
               评测物料构建器
             </h1>
             <p className="text-slate-300 mt-2">将评测集、评测方式、评分标准、模型结果列或输出预览列和评委分配组合为可执行物料。</p>
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-slate-300">
+                {projectId ? '当前仅显示该项目物料' : '当前显示全部评测物料'}
+              </span>
+              {projectId && onClearProjectScope && (
+                <button
+                  type="button"
+                  onClick={onClearProjectScope}
+                  className="rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 font-medium text-amber-300 hover:bg-amber-500/20"
+                >
+                  查看全部物料
+                </button>
+              )}
+            </div>
           </div>
         </div>
         {!isCreating && (
@@ -1624,8 +1767,10 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
       {!isCreating && tasks.length > 0 && (
         <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
           <div>
-            <h2 className="text-xl font-bold text-slate-100">本项目已创建的评测物料</h2>
-            <p className="text-slate-300 text-sm mt-1">在此管理历史创建的可执行评测配置，启动后评委可在“参与评测”入口完成评测。</p>
+            <h2 className="text-xl font-bold text-slate-100">{projectId ? '本项目已创建的评测物料' : '全部评测物料'}</h2>
+            <p className="text-slate-300 text-sm mt-1">
+              在此管理可执行评测配置。草稿可启动，进行中的物料可直接进入评测，已完成的物料可进入结果洞察。
+            </p>
           </div>
           <label className="block min-w-[180px]">
             <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">物料状态</span>
@@ -1744,6 +1889,24 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                     </button>
                   )}
                   {task.status === 'active' && (
+                    <button
+                      onClick={() => onEvaluateTask?.(task)}
+                      className="flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 rounded-lg transition-colors"
+                      title="进入该物料的评测执行页"
+                    >
+                      <Play size={14} /> 进入评测
+                    </button>
+                  )}
+                  {task.status === 'completed' && (
+                    <button
+                      onClick={() => onOpenInsights?.(task)}
+                      className="flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-blue-300 bg-blue-500/10 hover:bg-blue-500/20 rounded-lg transition-colors"
+                      title="查看该物料的结果洞察"
+                    >
+                      <Eye size={14} /> 结果洞察
+                    </button>
+                  )}
+                  {task.status === 'active' && (
                     <button 
                       onClick={() => handleUpdateTaskStatus(task.id, 'completed')}
                       className="flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-blue-700 bg-blue-100 hover:bg-blue-200 rounded-lg transition-colors"
@@ -1855,6 +2018,15 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
         confirmText="删除"
       />
 
+      <ConfirmModal
+        isOpen={!!itemToDelete}
+        title="删除评测数据项"
+        message={`确定要删除 ${itemToDelete?.id || '这条 case'} 吗？该 case 会从未来评测和结果统计中移除，相关投票记录也会被清理。`}
+        onConfirm={confirmDeleteTaskItem}
+        onCancel={() => setItemToDelete(null)}
+        confirmText="删除"
+      />
+
       {viewingTask && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white/5 rounded-2xl shadow-xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col animate-in zoom-in-95 duration-200">
@@ -1956,103 +2128,173 @@ export default function TaskBuilderScreen({ projectId, onBack, initialMode = 'cr
                     </div>
                     {viewingTaskItems.map((item, idx) => {
                       const isEditing = editingItemId === item.id;
+                      const form = isEditing ? editItemForm : null;
+                      const displayOutputs = item.modelOutputs?.length
+                        ? item.modelOutputs
+                        : viewingTask.models.map((model, mIdx) => ({
+                          modelId: model.id,
+                          modelName: model.name,
+                          url: mIdx === 0 ? item.modelA_Url : mIdx === 1 ? item.modelB_Url : ''
+                        }));
                       return (
-                    <div key={item.id || idx} className="bg-white/5 p-4 rounded-xl border border-white/10 shadow-md shadow-black/20">
-                      <div className="flex justify-between items-center mb-2 border-b border-white/10 pb-2">
-                        <div className="font-medium text-slate-200">
-                          数据项 {idx + 1}
-                        </div>
-                        {isEditing ? (
-                          <div className="flex gap-2">
-                            <button onClick={() => setEditingItemId(null)} className="text-slate-300 hover:text-slate-200 text-sm">取消</button>
-                            <button onClick={() => handleSaveItemEdit(item.id)} className="text-amber-400 hover:text-amber-300 text-sm font-medium">保存</button>
-                          </div>
-                        ) : (
-                          <button onClick={() => {
-                            setEditingItemId(item.id);
-                            setEditItemForm({
-                              prompt: item.prompt || '',
-                              modelA_Url: item.modelA_Url || '',
-                              modelB_Url: item.modelB_Url || '',
-                              expectedOutput: item.expectedOutput || ''
-                            });
-                          }} className="text-amber-400 hover:text-amber-300 text-sm flex items-center gap-1">
-                            <Edit size={14} /> 编辑内容
-                          </button>
-                        )}
-                      </div>
-                      
-                      <DimensionChips
-                        values={getDimensionValuesForItem(item as any, viewingTask.dimensionColumns || [])}
-                        className="mb-4"
-                      />
-
-                      {/* Input */}
-                      <div className="mb-4">
-                        <div className="text-xs font-medium text-slate-300 uppercase tracking-wider mb-1">输入</div>
-                        {isEditing ? (
-                          <textarea 
-                            className="w-full p-3 glass-input rounded-lg text-sm font-mono"
-                            rows={4}
-                            value={editItemForm.prompt}
-                            onChange={(e) => setEditItemForm({...editItemForm, prompt: e.target.value})}
-                          />
-                        ) : (
-                          <div className="bg-white/5 p-3 rounded-lg text-sm text-slate-200 whitespace-pre-wrap font-mono">
-                            {item.prompt || Object.entries(item.inputs || {}).map(([k, v]) => `[${k}]: ${v}`).join('\n')}
-                          </div>
-                        )}
-                      </div>
-                      
-                      {/* Expected Output */}
-                      {(item.expectedOutput || isEditing) && (
-                        <div className="mb-4">
-                          <div className="text-xs font-medium text-slate-300 uppercase tracking-wider mb-1">预期输出</div>
-                          {isEditing ? (
-                            <textarea 
-                              className="w-full p-3 glass-input rounded-lg text-sm font-mono"
-                              rows={3}
-                              value={editItemForm.expectedOutput}
-                              onChange={(e) => setEditItemForm({...editItemForm, expectedOutput: e.target.value})}
-                            />
-                          ) : (
-                            <div className="bg-emerald-500/10 p-3 rounded-lg text-sm text-emerald-400 whitespace-pre-wrap font-mono">
-                              {item.expectedOutput}
+                        <div key={item.id || idx} className="bg-white/5 p-4 rounded-xl border border-white/10 shadow-md shadow-black/20">
+                          <div className="flex flex-col gap-3 mb-3 border-b border-white/10 pb-3 md:flex-row md:items-center md:justify-between">
+                            <div>
+                              <div className="font-medium text-slate-200">数据项 {idx + 1}</div>
+                              <div className="mt-1 font-mono text-xs text-slate-500">{item.id}</div>
                             </div>
-                          )}
-                        </div>
-                      )}
-                      
-                      {/* Models Output */}
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {viewingTask.models.map((model, mIdx) => {
-                          const modelOutput = item.modelOutputs?.find(output => output.modelId === model.id) || item.modelOutputs?.[mIdx];
-                          const outputKey = mIdx === 0 ? 'modelA_Url' : 'modelB_Url';
-                          const outputValue = isEditing && mIdx < 2 ? editItemForm[outputKey] : (modelOutput?.url || (mIdx === 0 ? item.modelA_Url : item.modelB_Url));
-                          return (
-                            <div key={model.id} className="border border-white/10 rounded-lg overflow-hidden">
-                              <div className="bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 border-b border-white/10">
-                                {model.name}
+                            {isEditing ? (
+                              <div className="flex flex-wrap gap-2">
+                                <button onClick={handleCancelItemEdit} className="text-slate-300 hover:text-slate-200 text-sm">取消</button>
+                                <button onClick={() => handleSaveItemEdit(item.id)} className="text-amber-400 hover:text-amber-300 text-sm font-medium">保存</button>
                               </div>
-                              {isEditing && mIdx < 2 ? (
-                                <textarea 
-                                  className="w-full p-3 border-0 text-sm font-mono focus:ring-0"
-                                  rows={6}
-                                  value={outputValue}
-                                  onChange={(e) => setEditItemForm({...editItemForm, [outputKey]: e.target.value})}
+                            ) : (
+                              <div className="flex flex-wrap gap-2">
+                                <button onClick={() => handleStartItemEdit(item)} className="text-amber-400 hover:text-amber-300 text-sm flex items-center gap-1">
+                                  <Edit size={14} /> 编辑内容
+                                </button>
+                                <button onClick={() => setItemToDelete(item)} className="text-red-300 hover:text-red-200 text-sm flex items-center gap-1">
+                                  <Trash2 size={14} /> 删除
+                                </button>
+                              </div>
+                            )}
+                          </div>
+
+                          {form ? (
+                            <div className="space-y-4">
+                              <div className="grid gap-4 md:grid-cols-[1fr_180px]">
+                                <label className="block">
+                                  <span className="mb-1 block text-xs font-medium uppercase tracking-wider text-slate-300">Prompt</span>
+                                  <textarea
+                                    className="w-full p-3 glass-input rounded-lg text-sm font-mono"
+                                    rows={4}
+                                    value={form.prompt}
+                                    onChange={(event) => setEditItemForm(prev => prev ? { ...prev, prompt: event.target.value } : prev)}
+                                  />
+                                </label>
+                                <label className="block">
+                                  <span className="mb-1 block text-xs font-medium uppercase tracking-wider text-slate-300">媒体类型</span>
+                                  <select
+                                    className="w-full px-3 py-2 glass-input rounded-lg text-sm"
+                                    value={form.type}
+                                    onChange={(event) => setEditItemForm(prev => prev ? { ...prev, type: event.target.value as EvaluationItem['type'] } : prev)}
+                                  >
+                                    {['text', 'image', 'video', 'audio', 'markdown', 'unknown'].map(type => (
+                                      <option key={type} value={type}>{type}</option>
+                                    ))}
+                                  </select>
+                                </label>
+                              </div>
+
+                              <div className="grid gap-4 md:grid-cols-2">
+                                <label className="block">
+                                  <span className="mb-1 block text-xs font-medium uppercase tracking-wider text-slate-300">输入字段（每行 key: value）</span>
+                                  <textarea
+                                    className="w-full p-3 glass-input rounded-lg text-sm font-mono"
+                                    rows={5}
+                                    value={form.inputsText}
+                                    onChange={(event) => setEditItemForm(prev => prev ? { ...prev, inputsText: event.target.value } : prev)}
+                                  />
+                                </label>
+                                <label className="block">
+                                  <span className="mb-1 block text-xs font-medium uppercase tracking-wider text-slate-300">评测维度（每行 key: value）</span>
+                                  <textarea
+                                    className="w-full p-3 glass-input rounded-lg text-sm font-mono"
+                                    rows={5}
+                                    value={form.dimensionsText}
+                                    onChange={(event) => setEditItemForm(prev => prev ? { ...prev, dimensionsText: event.target.value } : prev)}
+                                  />
+                                </label>
+                              </div>
+
+                              <div className="grid gap-4 md:grid-cols-2">
+                                <label className="block">
+                                  <span className="mb-1 block text-xs font-medium uppercase tracking-wider text-slate-300">首帧图 URL</span>
+                                  <input
+                                    className="w-full px-3 py-2 glass-input rounded-lg text-sm font-mono"
+                                    value={form.startImageUrl}
+                                    onChange={(event) => setEditItemForm(prev => prev ? { ...prev, startImageUrl: event.target.value } : prev)}
+                                  />
+                                </label>
+                                <label className="block">
+                                  <span className="mb-1 block text-xs font-medium uppercase tracking-wider text-slate-300">预期输出</span>
+                                  <input
+                                    className="w-full px-3 py-2 glass-input rounded-lg text-sm font-mono"
+                                    value={form.expectedOutput}
+                                    onChange={(event) => setEditItemForm(prev => prev ? { ...prev, expectedOutput: event.target.value } : prev)}
+                                  />
+                                </label>
+                              </div>
+
+                              <label className="block">
+                                <span className="mb-1 block text-xs font-medium uppercase tracking-wider text-slate-300">参考素材 URL（每行一个）</span>
+                                <textarea
+                                  className="w-full p-3 glass-input rounded-lg text-sm font-mono"
+                                  rows={3}
+                                  value={form.referenceUrlsText}
+                                  onChange={(event) => setEditItemForm(prev => prev ? { ...prev, referenceUrlsText: event.target.value } : prev)}
                                 />
-                              ) : (
-                                <div className="p-3 text-sm text-slate-200 whitespace-pre-wrap font-mono bg-white/5">
-                                  {outputValue || <span className="text-slate-300 italic">无输出</span>}
+                              </label>
+
+                              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                                {form.modelOutputs.map((output, outputIndex) => (
+                                  <div key={`${output.modelId}-${outputIndex}`} className="border border-white/10 rounded-lg overflow-hidden">
+                                    <div className="bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 border-b border-white/10">
+                                      {output.modelName || output.modelId}
+                                    </div>
+                                    <textarea
+                                      className="w-full p-3 glass-input rounded-none text-sm font-mono"
+                                      rows={5}
+                                      value={output.url}
+                                      onChange={(event) => setEditItemForm(prev => prev ? {
+                                        ...prev,
+                                        modelOutputs: prev.modelOutputs.map((current, idx) => idx === outputIndex ? { ...current, url: event.target.value } : current)
+                                      } : prev)}
+                                    />
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              <DimensionChips
+                                values={getDimensionValuesForItem(item as any, viewingTask.dimensionColumns || [])}
+                                className="mb-4"
+                              />
+
+                              <div className="mb-4">
+                                <div className="text-xs font-medium text-slate-300 uppercase tracking-wider mb-1">输入</div>
+                                <div className="bg-white/5 p-3 rounded-lg text-sm text-slate-200 whitespace-pre-wrap font-mono">
+                                  {item.prompt || Object.entries(item.inputs || {}).map(([key, value]) => `[${key}]: ${value}`).join('\n') || '-'}
+                                </div>
+                              </div>
+
+                              {(item as any).expectedOutput && (
+                                <div className="mb-4">
+                                  <div className="text-xs font-medium text-slate-300 uppercase tracking-wider mb-1">预期输出</div>
+                                  <div className="bg-emerald-500/10 p-3 rounded-lg text-sm text-emerald-400 whitespace-pre-wrap font-mono">
+                                    {(item as any).expectedOutput}
+                                  </div>
                                 </div>
                               )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })}
+
+                              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                                {displayOutputs.map((output, outputIndex) => (
+                                  <div key={`${output.modelId}-${outputIndex}`} className="border border-white/10 rounded-lg overflow-hidden">
+                                    <div className="bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 border-b border-white/10">
+                                      {output.modelName}
+                                    </div>
+                                    <div className="p-3 text-sm text-slate-200 whitespace-pre-wrap font-mono bg-white/5">
+                                      {output.url || <span className="text-slate-300 italic">无输出</span>}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
               </div>
             )}
           </div>

@@ -77,6 +77,19 @@ export interface EvaluationItem {
   isSwapped?: boolean; // New: If true, UI displays B on left and A on right for blind testing
 }
 
+export interface VoteItemSnapshot {
+  itemId: string;
+  prompt?: string;
+  inputs?: Record<string, any>;
+  dimensionValues?: Record<string, string>;
+  modelOutputs?: ModelOutput[];
+  modelA_Url?: string;
+  modelB_Url?: string;
+  startImageUrl?: string;
+  referenceUrls?: string[];
+  type?: EvaluationItem['type'];
+}
+
 export type EvalParadigm = 'GSB' | 'MOS' | 'Arena' | 'Arena-rank' | 'Pairwise' | 'RubricScore' | 'BenchmarkPreview';
 
 export type EvaluationMethod = 'ab_preference' | 'pairwise' | 'direct_score' | 'rubric_score' | 'rank_order' | 'benchmark_preview';
@@ -124,6 +137,7 @@ export interface RankingEntry {
 
 export interface VoteRecord {
   itemId: string;
+  itemSnapshot?: VoteItemSnapshot;
   vote?: VoteType;
   ranking?: RankingEntry[];
   method?: EvaluationMethod;
@@ -461,6 +475,7 @@ export interface EvalTask {
   status: 'draft' | 'active' | 'completed';
   externalResultsLink?: string; // Link to externally generated results
   hasImportedData?: boolean; // Flag to indicate if CSV data was imported
+  hasTaskItemEdits?: boolean; // Local compatibility: prevents deleted task items from being regenerated from dataset fallback
   creatorUid?: string;
   creatorName?: string;
   createdAt: number;

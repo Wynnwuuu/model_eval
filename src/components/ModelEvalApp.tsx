@@ -19,6 +19,7 @@ import { AppRoute, EvalParadigm, EvaluationConfig, EvaluationItem, HistorySessio
 import { auth, getCurrentReviewerIdentity, getCurrentUserDisplayName, signInWithGoogle, logout, shouldUseCloudAuth } from '../auth';
 import { getDefaultEvaluationConfig, getMethodFromParadigm, getParadigmFromMethod, isPreviewMethod, isRankMethod, isScoreMethod } from '../evaluationMethods';
 import { saveTaskUserVotes, loadTaskEvaluation, loadTaskVoteGroups, USE_TASK_API_BACKEND } from '../features/tasks/api';
+import { createVoteItemSnapshot } from '../taskItemSnapshot';
 
 const STORAGE_KEY = 'modeleval_session';
 const HISTORY_KEY = 'modeleval_history';
@@ -396,6 +397,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     const currentItem = items[currentIndex];
     const newVote: VoteRecord = {
       itemId: currentItem.id,
+      itemSnapshot: createVoteItemSnapshot(currentItem),
       method: taskEvaluationConfig.method,
       timestamp: Date.now(),
       user: userName,
@@ -672,7 +674,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
           onGoToProjects={() => navigate('projects')}
           onGoToDatasets={() => navigate('datasets')}
           onGoToTasks={(statusFilter) => navigate('tasks', { materialStatusFilter: statusFilter })}
-          onGoToEvaluation={() => navigate('evaluation')}
+          onOpenTask={(taskId) => navigate('tasks', { taskId, materialId: taskId, source: 'task', taskBuilderMode: 'list' })}
           onGoToInsights={(statusFilter) => navigate('insights', { materialStatusFilter: statusFilter })}
           onGoToGeneration={() => navigate('generation')}
         />
@@ -702,7 +704,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
                 const nextUserName = getCurrentUserDisplayName();
                 handleStart(taskItems, nextUserName, modelNames, taskId, existingVotes, paradigm, models, evaluationConfig);
               } else {
-                navigate('evaluation', { projectId: project.id, source: 'dashboard' });
+                navigate('tasks', { projectId: project.id, source: 'dashboard', materialStatusFilter: 'active', taskBuilderMode: 'list' });
               }
             }}
             onGoToAnalysis={(project) => {
@@ -745,11 +747,14 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
       return (
         <div className="py-6">
           <TaskListPage
-            projectId={activeProject?.id || routeContext.projectId}
+            projectId={routeContext.projectId}
             initialMode={routeContext.taskBuilderMode || taskBuilderMode}
             initialStatusFilter={routeContext.materialStatusFilter}
             initialTaskId={routeContext.taskId}
-            onBack={() => navigate('projects')}
+            onBack={() => routeContext.projectId ? navigate('projects', { projectId: routeContext.projectId, source: 'dashboard' }) : navigate('overview')}
+            onClearProjectScope={routeContext.projectId ? () => navigate('tasks', { taskBuilderMode: 'list' }) : undefined}
+            onEvaluateTask={(task) => navigate('voting', { taskId: task.id, materialId: task.id, source: 'task' })}
+            onOpenInsights={(task) => navigate('insights', { taskId: task.id, materialId: task.id, source: 'task' })}
           />
         </div>
       );
