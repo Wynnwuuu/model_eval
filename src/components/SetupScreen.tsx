@@ -29,19 +29,11 @@ const SetupScreen: React.FC<SetupScreenProps> = ({
   const [userName, setUserName] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  // If project has materialFile, we could pre-fill or show a message
-  const materialFile = project?.steps.find(s => s.id === 1)?.materialFile;
-
   useEffect(() => {
     // Try to pre-fill name from local storage
     const savedName = localStorage.getItem('eval_username');
     if (savedName) setUserName(savedName);
-    
-    // If we have a material file from the project, we could simulate loading it
-    if (materialFile) {
-      setInputText(SAMPLE_CSV); // Simulate loading the file content
-    }
-  }, [materialFile]);
+  }, []);
 
   const isUrl = (str: string) => {
     if (!str) return false;
@@ -356,21 +348,6 @@ const SetupScreen: React.FC<SetupScreenProps> = ({
             </div>
 
             <div className="flex-1 relative min-h-[300px]">
-              {materialFile && inputText === SAMPLE_CSV ? (
-                <div className="absolute inset-0 bg-emerald-50 flex flex-col items-center justify-center p-6 text-center z-10">
-                  <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mb-4">
-                    <FileSpreadsheet size={32} />
-                  </div>
-                  <h3 className="text-xl font-bold text-slate-100 mb-2">已加载评测物料</h3>
-                  <p className="text-slate-300 mb-6">已自动加载来自节点1的物料文件：<br/><span className="font-medium">{materialFile.name}</span></p>
-                  <button 
-                    onClick={() => setInputText('')} 
-                    className="text-sm glass-panel border border-white/10 px-4 py-2 rounded-lg glass-panel-hover font-medium text-slate-200 transition-colors"
-                  >
-                    重新编辑数据
-                  </button>
-                </div>
-              ) : null}
               <textarea
                 className="w-full h-full p-6 glass-panel font-mono text-sm leading-relaxed resize-none focus:outline-none text-slate-200 placeholder:text-slate-300"
                 placeholder={`在此处粘贴您的数据（推荐从 Excel 复制粘贴）。\n\n解析规则：\n1. 支持多行 Prompt（如果在 Excel 中换行，会自动处理）。\n2. 最后两列 = 模型 URL。\n3. 中间的列 = 参考图 URL。\n4. 第一列 = Prompt。\n\n*注意：在投票期间，"模型 A" 和 "模型 B" 的位置会随机交换以进行盲测。`}

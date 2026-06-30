@@ -129,6 +129,21 @@ const OverviewScreen: React.FC<OverviewScreenProps> = ({
       accessorKey: 'createdAt',
       header: '创建时间',
       cell: ({ row }: any) => formatDate(row.original.createdAt)
+    },
+    {
+      id: 'actions',
+      header: '操作',
+      enableSorting: false,
+      cell: ({ row }: any) => (
+        <button
+          type="button"
+          onClick={() => onOpenTask(row.original.id)}
+          className="btn-secondary px-3 py-1.5 text-xs"
+          title="查看该评测物料的配置和 case 内容"
+        >
+          查看内容
+        </button>
+      )
     }
   ], [onOpenTask]);
 

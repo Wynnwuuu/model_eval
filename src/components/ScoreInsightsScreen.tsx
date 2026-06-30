@@ -183,7 +183,7 @@ const ScoreLeaderboard: React.FC<{ bundle: ScoreInsightBundle }> = ({ bundle }) 
 
 const ScoreDimensionPanel: React.FC<{ bundle: ScoreInsightBundle }> = ({ bundle }) => (
   <section className="glass-panel p-4">
-    <h2 className="mb-4 text-lg font-bold text-slate-100">Rubric / 维度表现</h2>
+    <h2 className="mb-4 text-lg font-bold text-slate-100">评分维度表现</h2>
     {bundle.dimensions.length ? (
       <div className="space-y-4">
         {bundle.dimensions.map(dimension => {

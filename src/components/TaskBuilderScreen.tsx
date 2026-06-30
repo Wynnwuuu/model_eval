@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowLeft, Plus, Save, Trash2, Database, LayoutTemplate, Box, CheckCircle2, Play, Link as LinkIcon, Upload, X, Users, Edit, Eye, Loader2, ClipboardList } from 'lucide-react';
-import { EvalDataset, EvalTemplate, EvalTask, EvalDimension, EvalParadigm, EvaluationConfig, EvaluationItem, EvaluationMethod } from '../types';
+import { EvalDataset, EvalTemplate, EvalTask, EvalDimension, EvalParadigm, EvaluationConfig, EvaluationItem, EvaluationMethod, EvaluationProject } from '../types';
 import { db, auth } from '../auth';
 import { collection, onSnapshot, query } from '../datastore';
 import { ConfirmModal } from './ConfirmModal';
@@ -13,6 +13,7 @@ import { sortReferenceUrls } from '../mediaTypeUtils';
 import { createTaskWithItems, deleteTask, deleteTaskItem, loadTaskItems, subscribeTasks, updateTask, updateTaskItem } from '../features/tasks/api';
 import { createDataset, subscribeDatasets } from '../features/datasets/api';
 import { saveTemplate, subscribeTemplates } from '../features/templates/api';
+import { subscribeProjects } from '../features/projects/api';
 import {
   STANDARD_DATASET_FIELDS,
   appendDatasetVersion,
@@ -148,6 +149,7 @@ export default function TaskBuilderScreen({
   const [tasks, setTasks] = useState<EvalTask[]>([]);
   const [datasets, setDatasets] = useState<EvalDataset[]>([]);
   const [templates, setTemplates] = useState<EvalTemplate[]>([]);
+  const [projects, setProjects] = useState<EvaluationProject[]>([]);
   const [users, setUsers] = useState<{uid: string, email: string, displayName: string}[]>([]);
   
   const [isCreating, setIsCreating] = useState(initialMode === 'create');
@@ -182,13 +184,14 @@ export default function TaskBuilderScreen({
   const [evaluationConfig, setEvaluationConfig] = useState<EvaluationConfig>(getDefaultEvaluationConfig('ab_preference'));
   const [saveConfigAsRubric, setSaveConfigAsRubric] = useState(false);
 
-  // Inline Rubric Creation State
+  // Inline scoring preset creation state
   const [showCreateTemplateModal, setShowCreateTemplateModal] = useState(false);
   const [newTemplateName, setNewTemplateName] = useState('');
   const [newTemplateParadigm, setNewTemplateParadigm] = useState<EvalParadigm>('GSB');
   const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
   const isBenchmarkPreview = isPreviewMethod(evaluationConfig);
   const [statusFilter, setStatusFilter] = useState<EvalTask['status'] | 'all'>(initialStatusFilter || 'all');
+  const [selectedProjectFilter, setSelectedProjectFilter] = useState(projectId || 'all');
   
   // Item Editing State
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
@@ -197,6 +200,7 @@ export default function TaskBuilderScreen({
 
   useEffect(() => {
     setNewTask(prev => ({ ...prev, projectId: projectId || '' }));
+    setSelectedProjectFilter(projectId || 'all');
   }, [projectId]);
 
   useEffect(() => {
@@ -205,7 +209,7 @@ export default function TaskBuilderScreen({
 
   useEffect(() => {
     setLoading(true);
-    const unsubscribeTasks = subscribeTasks({ projectId }, setTasks, (error) => {
+    const unsubscribeTasks = subscribeTasks({}, setTasks, (error) => {
       console.error("Error fetching tasks:", error);
       setError("加载评测物料失败");
     });
@@ -220,8 +224,12 @@ export default function TaskBuilderScreen({
       setLoading(false);
     }, (error) => {
       console.error("Error fetching templates:", error);
-      setError("加载 Rubric 模板失败");
+      setError("加载评分标准预设失败");
       setLoading(false);
+    });
+
+    const unsubscribeProjects = subscribeProjects(setProjects, (error) => {
+      console.error("Error fetching projects:", error);
     });
 
     const usersQuery = query(collection(db, 'users'));
@@ -237,9 +245,10 @@ export default function TaskBuilderScreen({
       unsubscribeTasks();
       unsubscribeDatasets();
       unsubscribeTemplates();
+      unsubscribeProjects();
       unsubscribeUsers();
     };
-  }, [projectId]);
+  }, []);
 
   const validateSetup = () => {
     if (!newTask.name) return "请填写物料名称";
@@ -465,7 +474,7 @@ export default function TaskBuilderScreen({
         const templateId = `tpl-${Date.now()}`;
         const templateData: EvalTemplate = {
           id: templateId,
-          name: `${newTask.name} Rubric`,
+          name: `${newTask.name} 评分标准`,
           description: `从评测物料「${newTask.name}」保存的评分标准`,
           paradigm: getParadigmFromMethod(evaluationConfig.method),
           dimensions: normalizeDimensions(evaluationConfig.dimensions || [], evaluationConfig.method),
@@ -491,13 +500,13 @@ export default function TaskBuilderScreen({
         ...evaluationConfig,
         dimensions: normalizeDimensions(evaluationConfig.dimensions || [], evaluationConfig.method),
         sourceRubricId: finalTemplateId || evaluationConfig.sourceRubricId,
-        rubricName: finalTemplateId ? `${newTask.name} Rubric` : evaluationConfig.rubricName
+        rubricName: finalTemplateId ? `${newTask.name} 评分标准` : evaluationConfig.rubricName
       };
 
       const taskData = {
         ...newTask,
         templateId: finalTemplateId,
-        projectId: projectId || newTask.projectId || '',
+        projectId: newTask.projectId || '',
         datasetId: finalDatasetId || 'external-csv',
         models: taskModels,
         evaluationConfig: finalEvaluationConfig,
@@ -626,7 +635,7 @@ export default function TaskBuilderScreen({
       setShowPreview(false);
       setNewTask({
         name: '',
-        projectId: projectId || '',
+        projectId: selectedProjectFilter !== 'all' ? selectedProjectFilter : projectId || '',
         datasetId: '',
         templateId: '',
         outputType: 'text',
@@ -894,7 +903,7 @@ export default function TaskBuilderScreen({
     const newTemplate: EvalTemplate = {
       id: `tpl-${Date.now()}`,
       name: newTemplateName,
-      description: '快速创建的 Rubric / 评测方式预设',
+      description: '快速创建的评分标准 / 评测方式预设',
       paradigm: newTemplateParadigm,
       dimensions: defaultDimensions,
       creatorUid: auth.currentUser.uid,
@@ -1037,9 +1046,16 @@ export default function TaskBuilderScreen({
     return <div className="flex items-center justify-center h-full">加载中...</div>;
   }
 
-  const visibleTasks = statusFilter === 'all'
+  const projectNameById = new Map(projects.map(project => [project.id, project.name]));
+  const projectScopedTasks = selectedProjectFilter === 'all'
     ? tasks
-    : tasks.filter(task => task.status === statusFilter);
+    : tasks.filter(task => (task.projectId || '') === selectedProjectFilter);
+  const visibleTasks = statusFilter === 'all'
+    ? projectScopedTasks
+    : projectScopedTasks.filter(task => task.status === statusFilter);
+  const selectedProjectLabel = selectedProjectFilter === 'all'
+    ? '全部项目'
+    : projectNameById.get(selectedProjectFilter) || '未命名项目';
   const availableOutputHeaders = csvHeaders.filter(h => !inputColumns.includes(h) && !dimensionColumns.includes(h));
   const availableDimensionHeaders = csvHeaders.filter(h => !inputColumns.includes(h) && !modelColumns.includes(h));
 
@@ -1061,12 +1077,15 @@ export default function TaskBuilderScreen({
             <p className="text-slate-300 mt-2">将评测集、评测方式、评分标准、模型结果列或输出预览列和评委分配组合为可执行物料。</p>
             <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
               <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-slate-300">
-                {projectId ? '当前仅显示该项目物料' : '当前显示全部评测物料'}
+                当前物料范围：{selectedProjectLabel}
               </span>
-              {projectId && onClearProjectScope && (
+              {selectedProjectFilter !== 'all' && (
                 <button
                   type="button"
-                  onClick={onClearProjectScope}
+                  onClick={() => {
+                    setSelectedProjectFilter('all');
+                    if (projectId && onClearProjectScope) onClearProjectScope();
+                  }}
                   className="rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 font-medium text-amber-300 hover:bg-amber-500/20"
                 >
                   查看全部物料
@@ -1113,6 +1132,21 @@ export default function TaskBuilderScreen({
                   className="w-full px-4 py-2 glass-input rounded-xl focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
                   placeholder="例如：V2.5 视觉能力评测物料"
                 />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-slate-200 mb-2">所属项目（可选）</label>
+                <select
+                  value={newTask.projectId || ''}
+                  onChange={(event) => setNewTask({ ...newTask, projectId: event.target.value })}
+                  className="w-full px-4 py-2 glass-input rounded-xl focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
+                >
+                  <option value="">不归属项目</option>
+                  {projects.map(project => (
+                    <option key={project.id} value={project.id}>{project.name}</option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-slate-400">从项目页进入时会默认带入当前项目；全局新建时可在这里选择归属。</p>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -1247,7 +1281,7 @@ export default function TaskBuilderScreen({
 
                   {!isBenchmarkPreview && (
                     <div>
-                      <label className="block text-sm font-medium text-slate-200 mb-2">套用 Rubric 库（可选）</label>
+                      <label className="block text-sm font-medium text-slate-200 mb-2">套用评分标准预设（可选）</label>
                       <select
                         value={newTask.templateId}
                         onChange={(e) => {
@@ -1263,7 +1297,7 @@ export default function TaskBuilderScreen({
                         {templates.map(tpl => (
                           <option key={tpl.id} value={tpl.id}>{tpl.name} ({getEvaluationMethodShortLabel(normalizeEvaluationConfig(undefined, tpl).method)})</option>
                         ))}
-                        <option value="CREATE_NEW" className="font-medium text-amber-400">+ 新建 Rubric</option>
+                        <option value="CREATE_NEW" className="font-medium text-amber-400">+ 新建评分标准预设</option>
                       </select>
                     </div>
                   )}
@@ -1453,7 +1487,7 @@ export default function TaskBuilderScreen({
                 <div className="bg-white/5 p-4 rounded-xl border border-white/10 space-y-4">
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <h3 className="text-sm font-bold text-slate-100">评分维度与 Rubric 定义</h3>
+                      <h3 className="text-sm font-bold text-slate-100">评分维度与标准定义</h3>
                       <p className="mt-1 text-xs text-slate-400">
                         这里定义的每个评分项都会出现在评测执行页，并进入结果洞察的模型榜单、维度统计和导出文件。
                       </p>
@@ -1556,7 +1590,7 @@ export default function TaskBuilderScreen({
                       onChange={(e) => setSaveConfigAsRubric(e.target.checked)}
                       className="rounded text-amber-400 focus:ring-amber-500"
                     />
-                    创建物料时将当前评分标准保存到 Rubric 库
+                    创建物料时将当前评分标准保存为预设
                   </label>
                 </div>
               )}
@@ -1767,20 +1801,35 @@ export default function TaskBuilderScreen({
       {!isCreating && tasks.length > 0 && (
         <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
           <div>
-            <h2 className="text-xl font-bold text-slate-100">{projectId ? '本项目已创建的评测物料' : '全部评测物料'}</h2>
+            <h2 className="text-xl font-bold text-slate-100">{selectedProjectFilter === 'all' ? '全部评测物料' : `${selectedProjectLabel} 的评测物料`}</h2>
             <p className="text-slate-300 text-sm mt-1">
               在此管理可执行评测配置。草稿可启动，进行中的物料可直接进入评测，已完成的物料可进入结果洞察。
             </p>
           </div>
-          <label className="block min-w-[180px]">
-            <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">物料状态</span>
-            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as EvalTask['status'] | 'all')} className="glass-input w-full px-3 py-2 text-sm">
-              <option value="all">全部状态</option>
-              <option value="draft">草稿</option>
-              <option value="active">进行中</option>
-              <option value="completed">已完成</option>
-            </select>
-          </label>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="block min-w-[180px]">
+              <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">所属项目</span>
+              <select
+                value={selectedProjectFilter}
+                onChange={(event) => setSelectedProjectFilter(event.target.value)}
+                className="glass-input w-full px-3 py-2 text-sm"
+              >
+                <option value="all">全部项目</option>
+                {projects.map(project => (
+                  <option key={project.id} value={project.id}>{project.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="block min-w-[180px]">
+              <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">物料状态</span>
+              <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as EvalTask['status'] | 'all')} className="glass-input w-full px-3 py-2 text-sm">
+                <option value="all">全部状态</option>
+                <option value="draft">草稿</option>
+                <option value="active">进行中</option>
+                <option value="completed">已完成</option>
+              </select>
+            </label>
+          </div>
         </div>
       )}
 
@@ -1793,17 +1842,20 @@ export default function TaskBuilderScreen({
           return (
             <div key={task.id} className="bg-white/5 rounded-2xl border border-white/10 shadow-md shadow-black/20 overflow-hidden flex flex-col">
               <div className="p-5 border-b border-white/10 flex-1">
-                <div className="flex justify-between items-start mb-3">
-                  <h3 className="font-bold text-lg text-slate-100">{task.name}</h3>
-                  <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${
-                    task.status === 'active' ? 'bg-emerald-500/20 text-emerald-300' : 
-                    task.status === 'completed' ? 'bg-white/10 text-slate-200' : 
-                    'bg-amber-100 text-amber-700'
-                  }`}>
-                    {task.status === 'active' ? '进行中' : task.status === 'completed' ? '已完成' : '草稿'}
-                  </span>
-                </div>
-                
+                  <div className="flex justify-between items-start mb-3">
+                    <h3 className="font-bold text-lg text-slate-100">{task.name}</h3>
+                    <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${
+                      task.status === 'active' ? 'bg-emerald-500/20 text-emerald-300' :
+                      task.status === 'completed' ? 'bg-white/10 text-slate-200' :
+                      'bg-amber-100 text-amber-700'
+                    }`}>
+                      {task.status === 'active' ? '进行中' : task.status === 'completed' ? '已完成' : '草稿'}
+                    </span>
+                  </div>
+                  <div className="mb-3 text-xs text-slate-400">
+                    所属项目：{task.projectId ? (projectNameById.get(task.projectId) || '未命名项目') : '未归属项目'}
+                  </div>
+
                 <div className="space-y-3 mt-4">
                   <div className="flex items-start gap-2 text-sm">
                     <Database size={16} className="text-slate-300 mt-0.5" />
@@ -1817,7 +1869,7 @@ export default function TaskBuilderScreen({
                     <div>
                       <span className="text-slate-300">评测方式: </span>
                       <span className="font-medium text-slate-200">{getEvaluationMethodShortLabel(taskEvaluation.method)}</span>
-                      {taskEvaluation.rubricName && <span className="ml-2 text-xs text-slate-400">Rubric: {taskEvaluation.rubricName}</span>}
+                      {taskEvaluation.rubricName && <span className="ml-2 text-xs text-slate-400">评分标准: {taskEvaluation.rubricName}</span>}
                     </div>
                   </div>
                   <div className="flex items-start gap-2 text-sm">
@@ -1953,7 +2005,7 @@ export default function TaskBuilderScreen({
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white/5 rounded-2xl shadow-xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
             <div className="flex items-center justify-between p-6 border-b border-white/10">
-              <h3 className="text-xl font-bold text-slate-200">新建 Rubric / 评测预设</h3>
+              <h3 className="text-xl font-bold text-slate-200">新建评分标准 / 评测预设</h3>
               <button 
                 onClick={() => setShowCreateTemplateModal(false)}
                 className="text-slate-300 hover:text-slate-300 transition-colors"
@@ -1963,13 +2015,13 @@ export default function TaskBuilderScreen({
             </div>
             <div className="p-6 space-y-4">
               <div>
-                <label className="block text-sm font-medium text-slate-200 mb-1">Rubric 名称</label>
+                <label className="block text-sm font-medium text-slate-200 mb-1">评分标准名称</label>
                 <input 
                   type="text" 
                   value={newTemplateName}
                   onChange={(e) => setNewTemplateName(e.target.value)}
                   className="w-full px-4 py-2 glass-input rounded-xl focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
-                  placeholder="例如：文生图 Rubric 多维评分"
+                  placeholder="例如：文生图多维评分标准"
                 />
               </div>
               <div>
@@ -1986,7 +2038,7 @@ export default function TaskBuilderScreen({
                   <option value="Arena-rank">全量排序 / Arena-rank</option>
                 </select>
                 <p className="text-xs text-slate-300 mt-2">
-                  系统会自动生成兼容该评测方式的默认评分标准，可在 Rubric 库继续细化定义。
+                  系统会自动生成兼容该评测方式的默认评分标准，保存后可在物料构建器中继续复用和细化。
                 </p>
               </div>
             </div>
@@ -2064,6 +2116,12 @@ export default function TaskBuilderScreen({
                       }}
                       className="w-full px-3 py-2 glass-input rounded-lg focus:ring-2 focus:ring-amber-500 focus:border-amber-500 text-sm"
                     />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-200 mb-1">所属项目</label>
+                    <div className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200">
+                      {viewingTask.projectId ? (projectNameById.get(viewingTask.projectId) || '未命名项目') : '未归属项目'}
+                    </div>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-slate-200 mb-1 flex items-center gap-2">
@@ -2278,17 +2336,71 @@ export default function TaskBuilderScreen({
                                 </div>
                               )}
 
-                              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                                {displayOutputs.map((output, outputIndex) => (
-                                  <div key={`${output.modelId}-${outputIndex}`} className="border border-white/10 rounded-lg overflow-hidden">
-                                    <div className="bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 border-b border-white/10">
-                                      {output.modelName}
-                                    </div>
-                                    <div className="p-3 text-sm text-slate-200 whitespace-pre-wrap font-mono bg-white/5">
-                                      {output.url || <span className="text-slate-300 italic">无输出</span>}
-                                    </div>
+                              {(item.referenceUrls?.length || item.startImageUrl) && (
+                                <div className="mb-4">
+                                  <div className="text-xs font-medium text-slate-300 uppercase tracking-wider mb-2">参考素材</div>
+                                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                    {[item.startImageUrl, ...(item.referenceUrls || [])].filter(Boolean).map((url, refIndex) => (
+                                      <div key={`${item.id}-ref-${refIndex}`} className="overflow-hidden rounded-lg border border-white/10 bg-black/30">
+                                        <div className="border-b border-white/10 px-3 py-2 text-xs text-slate-300">
+                                          {refIndex === 0 && item.startImageUrl ? '首帧 / 主参考' : `参考素材 ${refIndex + 1}`}
+                                        </div>
+                                        <div className="h-40">
+                                          <MediaRenderer
+                                            url={url as string}
+                                            isActive
+                                            className="h-full w-full"
+                                            videoPreload="metadata"
+                                          />
+                                        </div>
+                                      </div>
+                                    ))}
                                   </div>
-                                ))}
+                                </div>
+                              )}
+
+                              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                                {displayOutputs.map((output, outputIndex) => {
+                                  const outputType = item.type || viewingTask.outputType;
+                                  const hasPreviewableUrl = !!output.url && (
+                                    ['image', 'video', 'audio'].includes(outputType || '') ||
+                                    extractMediaUrls(output.url).length > 0
+                                  );
+
+                                  return (
+                                    <div key={`${output.modelId}-${outputIndex}`} className="border border-white/10 rounded-lg overflow-hidden">
+                                      <div className="bg-white/5 px-3 py-2 text-xs font-medium text-slate-300 border-b border-white/10">
+                                        {output.modelName}
+                                      </div>
+                                      {hasPreviewableUrl ? (
+                                        <div className="space-y-2 bg-white/5 p-3">
+                                          <div className="h-48 overflow-hidden rounded-lg border border-white/10 bg-black/30">
+                                            <MediaRenderer
+                                              url={output.url}
+                                              isActive
+                                              forceType={['image', 'video', 'audio'].includes(outputType || '') ? outputType : undefined}
+                                              className="h-full w-full"
+                                              videoPreload="metadata"
+                                            />
+                                          </div>
+                                          <a
+                                            href={output.url}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="block truncate text-xs text-amber-300 hover:text-amber-200 hover:underline"
+                                            title={output.url}
+                                          >
+                                            打开原始链接
+                                          </a>
+                                        </div>
+                                      ) : (
+                                        <div className="p-3 text-sm text-slate-200 whitespace-pre-wrap font-mono bg-white/5">
+                                          {output.url || <span className="text-slate-300 italic">无输出</span>}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
                               </div>
                             </>
                           )}

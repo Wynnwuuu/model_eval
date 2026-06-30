@@ -365,7 +365,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   const [selectedTaskId, setSelectedTaskId] = useState<string>('');
   const [selectedProjectId, setSelectedProjectId] = useState<string>(initialProjectId || '');
   const [selectedMaterialScope, setSelectedMaterialScope] = useState<string>(initialMaterialId ? `material:${initialMaterialId}` : '');
-  const [statusFilter, setStatusFilter] = useState<EvalTask['status'] | 'all'>(initialStatusFilter || 'completed');
+  const [statusFilter, setStatusFilter] = useState<EvalTask['status'] | 'all'>(initialStatusFilter || 'all');
   const [loadedScopeKey, setLoadedScopeKey] = useState('');
   const [loadingResults, setLoadingResults] = useState(false);
   const [isDownloadingTemplate, setIsDownloadingTemplate] = useState(false);
@@ -680,6 +680,14 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     };
   };
 
+  const hasAnalyzableMaterialResult = (result: ImportedMaterialResult) => {
+    if (result.paradigm === 'Arena-rank') return result.rankVotes.length > 0;
+    if (isScoreMethod(result.evaluationConfig) || isPairwiseMethod(result.evaluationConfig)) {
+      return result.methodVotes.length > 0;
+    }
+    return result.aggregatedData.some(item => item.votes.A + item.votes.B + item.votes.Tie > 0);
+  };
+
   const applyImportedMaterialResults = (results: ImportedMaterialResult[]) => {
     setAggregatedData([]);
     setRankVotes([]);
@@ -815,10 +823,22 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     setLoadingResults(true);
     setError(null);
     try {
-      const results = await Promise.all(materialIds.map(materialId => loadMaterialResult(materialId)));
+      const loadedResults = await Promise.all(materialIds.map(materialId => loadMaterialResult(materialId)));
+      const shouldSkipEmptyMaterials = statusFilter === 'all' && materialIds.length > 1;
+      const results = shouldSkipEmptyMaterials
+        ? loadedResults.filter(hasAnalyzableMaterialResult)
+        : loadedResults;
+
+      if (shouldSkipEmptyMaterials && results.length === 0) {
+        applyImportedMaterialResults([]);
+        setError('当前范围内的评测物料还没有可分析结果。默认已包含全部状态；可切换到单个物料查看具体状态，或完成评测后再刷新洞察。');
+        setLoadedScopeKey(`${selectedProjectId}|${statusFilter}|${selectedMaterialScope}|${materialIds.join('|')}`);
+        return;
+      }
+
       applyImportedMaterialResults(results);
       setTotalFiles(0);
-      setSelectedTaskId(materialIds[0] || '');
+      setSelectedTaskId(results[0]?.task.id || materialIds[0] || '');
       setShowInsights(true);
       setLoadedScopeKey(`${selectedProjectId}|${statusFilter}|${selectedMaterialScope}|${materialIds.join('|')}`);
     } catch (err: any) {
@@ -1180,10 +1200,10 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
             }}
             className="glass-input w-full px-3 py-2 text-sm"
           >
+            <option value="all">全部状态</option>
             <option value="completed">已完成</option>
             <option value="active">进行中</option>
             <option value="draft">草稿</option>
-            <option value="all">全部状态</option>
           </select>
         </label>
 

@@ -27,6 +27,9 @@ const buildRoutePath = (route: AppRoute, context: RouteContext = {}) => {
     case 'templates':
       return context.templateId ? `/templates/${context.templateId}` : '/templates';
     case 'tasks':
+      if (context.taskId || context.materialId) {
+        return withSearch(`/tasks/${context.taskId || context.materialId}`);
+      }
       if (context.taskBuilderMode === 'create') {
         if (context.projectId) search.set('projectId', context.projectId);
         return withSearch('/tasks/new');

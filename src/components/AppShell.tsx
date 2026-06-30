@@ -55,7 +55,7 @@ const routeTitles: Record<AppRoute, string> = {
   projects: '项目',
   datasets: '评测集',
   generation: '生产',
-  templates: 'Rubric 与评分预设',
+  templates: '评分标准预设',
   tasks: '评测物料',
   evaluation: '快速评测',
   insights: '结果洞察',

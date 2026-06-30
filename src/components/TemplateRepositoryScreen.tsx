@@ -109,7 +109,7 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
       ]);
     } catch (error) {
       console.error("Error saving template:", error);
-      alert("保存 Rubric 失败，请重试。");
+      alert("保存评分标准预设失败，请重试。");
     }
   };
 
@@ -120,7 +120,7 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
           <button onClick={() => { setIsCreating(false); setEditingTemplateId(null); }} className="text-slate-300 hover:text-slate-200 transition-colors">
             &larr; 返回列表
           </button>
-          <h1 className="text-2xl font-bold text-slate-200">{editingTemplateId ? '编辑 Rubric' : '创建新 Rubric'}</h1>
+          <h1 className="text-2xl font-bold text-slate-200">{editingTemplateId ? '编辑评分标准预设' : '创建评分标准预设'}</h1>
         </div>
 
         <div className="glass-panel rounded-2xl border border-white/10 p-8 space-y-8 shadow-2xl">
@@ -131,11 +131,11 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
             </h2>
             <div className="grid gap-4">
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1.5">Rubric 名称 *</label>
+                <label className="block text-sm font-medium text-slate-300 mb-1.5">评分标准名称 *</label>
                 <input 
                   type="text" value={newName} onChange={e => setNewName(e.target.value)}
                   className="w-full px-4 py-2.5 glass-input rounded-xl text-sm text-slate-200 focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500/50 outline-none transition-all placeholder:text-slate-400"
-                  placeholder="例如：视频生成多维度 Rubric 评分"
+                  placeholder="例如：视频生成多维度评分标准"
                 />
               </div>
               <div>
@@ -143,7 +143,7 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
                 <textarea 
                   value={newDesc} onChange={e => setNewDesc(e.target.value)} rows={3}
                   className="w-full px-4 py-2.5 glass-input rounded-xl text-sm text-slate-200 focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500/50 outline-none transition-all placeholder:text-slate-400"
-                  placeholder="描述这个 Rubric 的适用产物模态、评测目标、通过/失败边界和不可判断规则..."
+                  placeholder="描述这个评分标准的适用产物模态、评测目标、通过/失败边界和不可判断规则..."
                 />
               </div>
               <div>
@@ -300,7 +300,7 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
               disabled={!newName.trim() || ((getMethodFromParadigm(newParadigm) === 'direct_score' || getMethodFromParadigm(newParadigm) === 'rubric_score') && dimensions.length === 0)}
               className="px-6 py-2.5 rounded-xl font-medium bg-gradient-accent text-black shadow-lg shadow-amber-500/20 hover:opacity-90 transition-all disabled:opacity-50 disabled:cursor-not-allowed text-sm"
             >
-              保存 Rubric
+              保存评分标准
             </button>
           </div>
         </div>
@@ -319,9 +319,9 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
         </button>
         <div className="ml-32">
           <h1 className="text-3xl font-bold text-slate-100 flex items-center gap-3">
-            <LayoutTemplate className="text-amber-500" /> Rubric 库
+            <LayoutTemplate className="text-amber-500" /> 评分标准预设
           </h1>
-          <p className="text-slate-300 mt-1 text-sm">沉淀可复用的评测方式、评分维度、尺度锚点和不可判断规则。</p>
+          <p className="text-slate-300 mt-1 text-sm">沉淀可复用的评测方式、评分维度、尺度锚点和不可判断规则，供评测物料创建时套用。</p>
         </div>
         <button 
           onClick={() => {
@@ -334,7 +334,7 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
             }}
           className="flex items-center gap-2 bg-gradient-accent text-black px-6 py-2.5 rounded-xl font-medium text-sm shadow-lg shadow-amber-500/20 transition-all hover:opacity-90"
         >
-          <Plus size={18} /> 新建 Rubric
+          <Plus size={18} /> 新建评分标准
         </button>
       </div>
 
@@ -344,7 +344,7 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
             <button 
               onClick={() => setTemplateToDelete(template.id)}
               className="absolute top-4 right-4 p-2 text-slate-300 hover:text-red-400 hover:bg-red-400/10 rounded-lg opacity-0 group-hover:opacity-100 transition-all"
-              title="删除 Rubric"
+              title="删除评分标准预设"
             >
               <Trash2 size={18} />
             </button>
@@ -385,7 +385,7 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
                 onClick={() => handleEditTemplate(template)}
                 className="flex-1 flex items-center justify-center gap-2 bg-white/5 glass-panel-hover text-slate-300 py-2.5 rounded-xl text-sm font-medium transition-colors border border-white/10"
               >
-                <Edit2 size={16} /> 编辑 Rubric
+                <Edit2 size={16} /> 编辑评分标准
               </button>
             </div>
           </div>
@@ -394,8 +394,8 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
 
       <ConfirmModal
         isOpen={!!templateToDelete}
-        title="删除 Rubric"
-        message="确定要删除这个 Rubric 吗？此操作不可恢复，已创建的评测物料仍会保留当时保存的评分配置。"
+        title="删除评分标准预设"
+        message="确定要删除这个评分标准预设吗？此操作不可恢复，已创建的评测物料仍会保留当时保存的评分配置。"
         onConfirm={confirmDeleteTemplate}
         onCancel={() => setTemplateToDelete(null)}
         confirmText="删除"

@@ -390,14 +390,9 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
                         </div>
                         <div className="text-sm text-slate-300 mt-1.5">负责人: {step.owner}</div>
                         
-                        {(step.resultNote || step.materialFile) && (
+                        {step.resultNote && (
                           <div className="mt-4 p-4 glass-panel rounded-xl text-sm">
-                            {step.materialFile && (
-                              <div className="text-slate-300 mb-2 flex items-center gap-2">
-                                <span className="text-slate-300 font-medium">已上传物料:</span> {step.materialFile.name}
-                              </div>
-                            )}
-                            {step.resultNote && <div className="text-slate-300 whitespace-pre-wrap mb-2 leading-relaxed">{step.resultNote}</div>}
+                            <div className="text-slate-300 whitespace-pre-wrap mb-2 leading-relaxed">{step.resultNote}</div>
                           </div>
                         )}
                         
@@ -493,15 +488,6 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
                                   className="glass-panel glass-panel-hover text-slate-300 px-4 py-2 rounded-xl text-sm font-medium transition-colors flex items-center gap-2"
                                 >
                                   <Database size={14} className="text-amber-500" /> 评测集仓库
-                                </button>
-                                <button 
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onGoToTemplateRepo();
-                                  }}
-                                  className="glass-panel glass-panel-hover text-slate-300 px-4 py-2 rounded-xl text-sm font-medium transition-colors flex items-center gap-2"
-                                >
-                                  <LayoutTemplate size={14} className="text-yellow-500" /> Rubric 库
                                 </button>
                               </div>
                             )}
@@ -732,7 +718,6 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
         actions={user ? (
           <>
             <button onClick={onGoToDatasetRepo} className="btn-secondary"><Database size={16} /> 评测集</button>
-            <button onClick={onGoToTemplateRepo} className="btn-secondary"><LayoutTemplate size={16} /> Rubric 库</button>
             <button onClick={() => setIsCreateModalOpen(true)} className="btn-primary"><Plus size={18} /> 新建项目</button>
           </>
         ) : (
@@ -831,13 +816,6 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
                 title="管理数据集"
               >
                 <Database size={16} className="text-amber-500" /> 数据集
-              </button>
-              <button 
-                onClick={onGoToTemplateRepo}
-                className="flex items-center gap-2 glass-panel glass-panel-hover text-slate-300 px-5 py-3 rounded-2xl font-medium text-sm transition-colors"
-                title="管理模板"
-              >
-                <LayoutTemplate size={16} className="text-yellow-500" /> 模板
               </button>
               <button 
                 onClick={() => setIsCreateModalOpen(true)}
@@ -964,7 +942,6 @@ const EditStepModal: React.FC<EditStepModalProps> = ({ step, onClose, onSave }) 
   const [status, setStatus] = useState(step.status);
   const [executionType, setExecutionType] = useState(step.executionType || 'internal');
   const [resultNote, setResultNote] = useState(step.resultNote || '');
-  const [materialFile, setMaterialFile] = useState<{name: string, url: string} | undefined>(step.materialFile);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -975,23 +952,9 @@ const EditStepModal: React.FC<EditStepModalProps> = ({ step, onClose, onSave }) 
       executionType: executionType as 'internal' | 'external',
       resultNote: resultNote || '',
     };
-    
-    if (materialFile) {
-      updatedStep.materialFile = materialFile;
-    } else {
-      delete updatedStep.materialFile;
-    }
-    
-    onSave(updatedStep);
-  };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      // In a real app, upload to object storage here.
-      // For now, just save the name and a fake URL.
-      setMaterialFile({ name: file.name, url: URL.createObjectURL(file) });
-    }
+    delete updatedStep.materialFile;
+    onSave(updatedStep);
   };
 
   return (
@@ -1041,7 +1004,7 @@ const EditStepModal: React.FC<EditStepModalProps> = ({ step, onClose, onSave }) 
               </select>
             </div>
 
-            {executionType === 'internal' && (step.id === 1 || step.id === 2) ? (
+            {executionType === 'internal' && (step.id === 1 || step.id === 2) && (
               <div className="bg-indigo-500/10 border border-indigo-500/20 text-indigo-300 p-4 rounded-xl text-sm flex items-start gap-3 mt-5">
                 <Activity size={18} className="mt-0.5 shrink-0 text-indigo-400" />
                 <div>
@@ -1049,27 +1012,6 @@ const EditStepModal: React.FC<EditStepModalProps> = ({ step, onClose, onSave }) 
                   <p className="text-indigo-300/80 mt-1.5 leading-relaxed">此环节的产出物（如评测物料、评测结果）由平台自动管理，无需手动上传外部链接或文件。</p>
                 </div>
               </div>
-            ) : (
-              <>
-                {step.id === 1 && (
-                  <div className="mt-5">
-                    <label className="block text-sm font-medium text-slate-300 mb-2">上传评测物料 (CSV)</label>
-                    <div className="flex items-center gap-3">
-                      <input 
-                        type="file" 
-                        accept=".csv"
-                        onChange={handleFileChange}
-                        className="block w-full text-sm text-slate-300 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-white/10 file:text-slate-200 hover:file:bg-white/20 transition-colors cursor-pointer"
-                      />
-                    </div>
-                    {materialFile && (
-                      <div className="mt-3 text-xs text-emerald-400 flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/20 p-2 rounded-lg">
-                        ✓ 已选择: {materialFile.name}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </>
             )}
 
             <div className="pt-2">
