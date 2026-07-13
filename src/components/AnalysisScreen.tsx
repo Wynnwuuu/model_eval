@@ -12,7 +12,7 @@ import ResultsInsightsScreen from './ResultsInsightsScreen';
 import ScoreInsightsScreen from './ScoreInsightsScreen';
 import { calculateRankDimensionSummaries, calculateVoteDimensionSummaries, getDimensionColumnsForCsv, getDimensionCsvValues, getDimensionValuesForItem, getDimensionValuesFromRecord } from '../dimensionUtils';
 import Papa from 'papaparse';
-import { getParadigmFromMethod, isPairwiseMethod, isScoreMethod, normalizeEvaluationConfig } from '../evaluationMethods';
+import { getDefaultEvaluationConfig, getParadigmFromMethod, isPairwiseMethod, isScoreMethod, normalizeEvaluationConfig } from '../evaluationMethods';
 import { subscribeProjects } from '../features/projects/api';
 import { subscribeTemplates } from '../features/templates/api';
 import { loadTaskItems, loadTaskVotes, USE_TASK_API_BACKEND } from '../features/tasks/api';
@@ -901,6 +901,8 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     const newAnalysisItemsById = new Map<string, EvaluationItem>();
     const newAnalysisVoteRows: AnalysisVoteRow[] = [];
     const newRankVotes: VoteRecord[] = [];
+    const newPairwiseVotes: VoteRecord[] = [];
+    const newPairwiseModels = new Map<string, { id: string; name: string }>();
     const newRankItemsById = new Map<string, ArenaRankPromptItem>();
     const voters = new Set<string>();
     const selectedTask = tasks.find(task => task.id === selectedTaskId);
@@ -910,6 +912,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     let filesProcessed = 0;
     let validRowsFound = 0;
     let rankRowsFound = 0;
+    let pairwiseRowsFound = 0;
 
     Array.from(files).forEach((file: File) => {
       Papa.parse<any>(file, {
@@ -964,6 +967,76 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
                 ranking,
                 timestamp: Date.now(),
                 user
+              });
+              return;
+            }
+
+            const assignmentId = getCsvField(row, keys, ['AssignmentID', 'assignment_id']).value;
+            const pairId = getCsvField(row, keys, ['PairID', 'pair_id']).value;
+            const explicitModelAId = getCsvField(row, keys, ['ModelA_ID', 'model_a_id']).value;
+            const explicitModelBId = getCsvField(row, keys, ['ModelB_ID', 'model_b_id']).value;
+            const looksLikeArenaBattle = Boolean(itemId && (assignmentId || pairId) && explicitModelAId && explicitModelBId);
+            if (looksLikeArenaBattle) {
+              const winner = normalizeVoteSide(voteValue, modelData.names);
+              if (!winner) return;
+              const originalItemId = getCsvField(row, keys, ['OriginalItemID', 'original_item_id']).value || itemId;
+              const leftModelId = getCsvField(row, keys, ['LeftModelID', 'left_model_id']).value || explicitModelAId;
+              const rightModelId = getCsvField(row, keys, ['RightModelID', 'right_model_id']).value || explicitModelBId;
+              const samplingPhaseValue = getCsvField(row, keys, ['SamplingPhase', 'sampling_phase']).value;
+              const samplingProbability = Number(getCsvField(row, keys, ['SamplingProbability', 'sampling_probability']).value);
+              const eligiblePairCount = Number(getCsvField(row, keys, ['EligiblePairCount', 'eligible_pair_count']).value);
+              const schedulerVersion = getCsvField(row, keys, ['SchedulerVersion', 'scheduler_version']).value || 'legacy';
+              const modelAName = modelData.names.a || explicitModelAId;
+              const modelBName = modelData.names.b || explicitModelBId;
+              const dimensionValues = getDimensionValuesFromRecord(row, selectedTask?.dimensionColumns || []);
+              const mediaType = normalizeOutputMediaType(selectedTask?.outputType, [modelData.urls.a, modelData.urls.b]);
+              pairwiseRowsFound += 1;
+              validRowsFound += 1;
+              voters.add(user);
+              newPairwiseModels.set(explicitModelAId, { id: explicitModelAId, name: modelAName });
+              newPairwiseModels.set(explicitModelBId, { id: explicitModelBId, name: modelBName });
+              newPairwiseVotes.push({
+                itemId,
+                method: 'pairwise',
+                vote: winner,
+                choice: winner,
+                timestamp,
+                user,
+                itemSnapshot: {
+                  itemId,
+                  prompt,
+                  inputs: row,
+                  dimensionValues,
+                  modelOutputs: [
+                    { modelId: explicitModelAId, modelName: modelAName, url: modelData.urls.a },
+                    { modelId: explicitModelBId, modelName: modelBName, url: modelData.urls.b },
+                  ].filter(output => output.url),
+                  modelA_Url: modelData.urls.a,
+                  modelB_Url: modelData.urls.b,
+                  referenceUrls,
+                  type: mediaType,
+                },
+                pairContext: {
+                  assignmentId: assignmentId || undefined,
+                  pairId: pairId || [explicitModelAId, explicitModelBId].sort().join('::'),
+                  originalItemId,
+                  modelAId: explicitModelAId,
+                  modelAName,
+                  modelBId: explicitModelBId,
+                  modelBName,
+                  leftModelId,
+                  rightModelId,
+                  samplingPhase: samplingPhaseValue === 'coverage' || samplingPhaseValue === 'adaptive'
+                    ? samplingPhaseValue
+                    : undefined,
+                  samplingProbability: Number.isFinite(samplingProbability) && samplingProbability > 0
+                    ? samplingProbability
+                    : undefined,
+                  eligiblePairCount: Number.isFinite(eligiblePairCount) && eligiblePairCount > 0
+                    ? eligiblePairCount
+                    : undefined,
+                  schedulerVersion,
+                },
               });
               return;
             }
@@ -1042,6 +1115,26 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
               setAnalysisModels(DEFAULT_ANALYSIS_MODELS);
               setUniqueVoters(voters);
               setAnalysisMode('Arena-rank');
+              setMethodVotes([]);
+            } else if (pairwiseRowsFound > 0) {
+              const pairwiseModels = Array.from(newPairwiseModels.values());
+              const pairwiseConfig = selectedTask && isPairwiseMethod(getMaterialEvaluationConfig(selectedTask))
+                ? getMaterialEvaluationConfig(selectedTask)
+                : getDefaultEvaluationConfig('pairwise');
+              setMethodVotes(newPairwiseVotes);
+              setAnalysisItems(Array.from(newAnalysisItemsById.values()));
+              setAnalysisModelList(pairwiseModels);
+              setAnalysisModels({
+                a: pairwiseModels[0]?.name || DEFAULT_ANALYSIS_MODELS.a,
+                b: pairwiseModels[1]?.name || DEFAULT_ANALYSIS_MODELS.b,
+              });
+              setAnalysisEvaluationConfig(pairwiseConfig);
+              setAggregatedData([]);
+              setAnalysisVoteRows([]);
+              setRankVotes([]);
+              setRankItems([]);
+              setUniqueVoters(voters);
+              setAnalysisMode('Pairwise');
             } else if (validRowsFound === 0) {
               setError("未能从上传的文件中识别出有效的投票结果。请确保 CSV 文件包含 'Item ID' 和 'Winner' 列。");
               setTotalFiles(0);
@@ -1052,6 +1145,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
               setAnalysisItems(Array.from(newAnalysisItemsById.values()));
               setAnalysisModels(importedModelNames);
               setAnalysisVoteRows(newAnalysisVoteRows);
+              setMethodVotes([]);
               setUniqueVoters(voters);
               setAnalysisMode('Arena');
             }

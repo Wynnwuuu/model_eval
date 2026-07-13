@@ -3,6 +3,8 @@ import { getDimensionValuesForItem } from './dimensionUtils';
 import { getModelOutputsForItem, resolveEvaluationItemPrompt } from './rankingUtils';
 import { normalizeDimensions, scoreDimensionWeightTotal } from './evaluationMethods';
 import { getEffectiveVotes } from './voteUtils';
+import { calculateBradleyTerry, getBradleyTerryAnalysisWeight, type BradleyTerryResult } from './bradleyTerry';
+import { itemFromVoteSnapshot } from './taskItemSnapshot';
 
 const escapeCsv = (value: any) => `"${String(value ?? '').replace(/"/g, '""')}"`;
 
@@ -114,9 +116,49 @@ export interface PairwiseInsightBundle {
     comparisonCount: number;
     topModelName: string;
     topWinRate: number;
+    connected: boolean;
+    pairCoverage: number;
+    effectiveSampleSize: number;
+    maturity: 'insufficient' | 'warming' | 'ready';
   };
   models: PairwiseModelSummary[];
   matchups: PairwiseMatchupSummary[];
+  bradleyTerry: BradleyTerryResult;
+  battles: Array<{
+    assignmentId: string;
+    pairId: string;
+    itemId: string;
+    originalItemId: string;
+    prompt: string;
+    dimensionValues: Record<string, string>;
+    user: string;
+    timestamp: number;
+    modelAId: string;
+    modelAName: string;
+    modelAUrl: string;
+    modelBId: string;
+    modelBName: string;
+    modelBUrl: string;
+    leftModelId: string;
+    rightModelId: string;
+    vote: 'A' | 'B' | 'Tie';
+    winnerModelName: string;
+    samplingPhase: string;
+    samplingProbability: number;
+    analysisWeight: number;
+    eligiblePairCount: number;
+    schedulerVersion: string;
+  }>;
+  dimensions: Array<{
+    dimension: string;
+    value: string;
+    itemCount: number;
+    battleCount: number;
+    connected: boolean;
+    sufficient: boolean;
+    leader: string;
+    leaderScore?: number;
+  }>;
   cases: Array<{
     itemId: string;
     originalItemId: string;
@@ -295,7 +337,21 @@ export const buildScoreInsights = ({
 
 const pairKey = (left: string, right: string) => [left, right].sort().join('__');
 
-export const buildPairwiseInsights = ({
+interface PairwiseRawInsightBundle {
+  mode: 'pairwise';
+  summary: {
+    itemCount: number;
+    voterCount: number;
+    comparisonCount: number;
+    topModelName: string;
+    topWinRate: number;
+  };
+  models: PairwiseModelSummary[];
+  matchups: PairwiseMatchupSummary[];
+  cases: PairwiseInsightBundle['cases'];
+}
+
+const buildPairwiseRawInsights = ({
   items,
   votes,
   models
@@ -303,7 +359,7 @@ export const buildPairwiseInsights = ({
   items: Array<Partial<EvaluationItem> & { id: string }>;
   votes: VoteRecord[];
   models: { id: string; name: string }[];
-}): PairwiseInsightBundle => {
+}): PairwiseRawInsightBundle => {
   const effectiveVotes = getEffectiveVotes(votes);
   const itemMap = new Map(items.map(item => [item.id, item]));
   const modelStats = new Map<string, PairwiseModelSummary>();
@@ -326,7 +382,8 @@ export const buildPairwiseInsights = ({
 
   effectiveVotes.forEach(vote => {
     const pair = vote.pairContext;
-    if (!pair || !vote.vote) return;
+    const outcome = vote.vote || vote.choice;
+    if (!pair || !['A', 'B', 'Tie'].includes(String(outcome))) return;
     const key = pairKey(pair.modelAId, pair.modelBId);
     const matchup = matchups.get(key) || {
       pairKey: key,
@@ -365,11 +422,11 @@ export const buildPairwiseInsights = ({
     leftStat.total += 1;
     rightStat.total += 1;
 
-    if (vote.vote === 'A') {
+    if (outcome === 'A') {
       matchup.modelAWins += 1;
       leftStat.wins += 1;
       rightStat.losses += 1;
-    } else if (vote.vote === 'B') {
+    } else if (outcome === 'B') {
       matchup.modelBWins += 1;
       rightStat.wins += 1;
       leftStat.losses += 1;
@@ -396,7 +453,7 @@ export const buildPairwiseInsights = ({
       winner: '',
       representativeOutputs: outputs.filter(output => output.modelId === pair.modelAId || output.modelId === pair.modelBId)
     };
-    caseRow.votes[vote.vote] += 1;
+    caseRow.votes[outcome as 'A' | 'B' | 'Tie'] += 1;
     const maxVotes = Math.max(caseRow.votes.A, caseRow.votes.B, caseRow.votes.Tie);
     caseRow.winner = caseRow.votes.Tie === maxVotes
       ? '平局'
@@ -420,13 +477,169 @@ export const buildPairwiseInsights = ({
     summary: {
       itemCount: cases.size,
       voterCount: voters.size,
-      comparisonCount: effectiveVotes.filter(vote => vote.pairContext && vote.vote).length,
+      comparisonCount: effectiveVotes.filter(vote =>
+        vote.pairContext && ['A', 'B', 'Tie'].includes(String(vote.vote || vote.choice))
+      ).length,
       topModelName: modelsSorted[0]?.modelName || '-',
       topWinRate: modelsSorted[0]?.nonTieWinRate || 0
     },
     models: modelsSorted,
     matchups: Array.from(matchups.values()).sort((a, b) => b.total - a.total),
     cases: Array.from(cases.values()).sort((a, b) => a.itemId.localeCompare(b.itemId))
+  };
+};
+
+export const buildPairwiseInsights = ({
+  items,
+  votes,
+  models
+}: {
+  items: Array<Partial<EvaluationItem> & { id: string }>;
+  votes: VoteRecord[];
+  models: { id: string; name: string }[];
+}): PairwiseInsightBundle => {
+  const effectiveVotes = getEffectiveVotes(votes).filter(vote =>
+    !!vote.pairContext && ['A', 'B', 'Tie'].includes(String(vote.vote || vote.choice))
+  );
+  const legacy = buildPairwiseRawInsights({ items, votes: effectiveVotes, models });
+  const itemMap = new Map<string, Partial<EvaluationItem> & { id: string }>();
+  items.forEach(item => {
+    itemMap.set(item.id, item);
+    if (item.originalItemId) itemMap.set(item.originalItemId, item);
+  });
+  const caseMap = new Map<string, PairwiseInsightBundle['cases'][number]>();
+  const dimensionGroups = new Map<string, {
+    dimension: string;
+    value: string;
+    votes: VoteRecord[];
+    itemIds: Set<string>;
+  }>();
+  const battles: PairwiseInsightBundle['battles'] = [];
+
+  effectiveVotes.forEach(vote => {
+    const pair = vote.pairContext!;
+    const outcome = (vote.vote || vote.choice) as 'A' | 'B' | 'Tie';
+    const originalItemId = pair.originalItemId || vote.itemId;
+    const item = itemFromVoteSnapshot(vote)
+      || itemMap.get(originalItemId)
+      || itemMap.get(vote.itemId);
+    const prompt = resolveEvaluationItemPrompt(item as any);
+    const dimensionValues = getDimensionValuesForItem(item as any);
+    const outputs = getModelOutputsForItem(item as EvaluationItem | undefined, models);
+    const outputMap = new Map(outputs.map(output => [output.modelId, output.url]));
+    const matchupKey = pairKey(pair.modelAId, pair.modelBId);
+    const caseKey = `${originalItemId}::${matchupKey}`;
+    const caseRow = caseMap.get(caseKey) || {
+      itemId: caseKey,
+      originalItemId,
+      prompt,
+      dimensionValues,
+      modelAName: pair.modelAName,
+      modelBName: pair.modelBName,
+      votes: { A: 0, B: 0, Tie: 0 },
+      winner: '',
+      representativeOutputs: outputs.filter(output => output.modelId === pair.modelAId || output.modelId === pair.modelBId),
+    };
+    caseRow.votes[outcome] += 1;
+    const maxVotes = Math.max(caseRow.votes.A, caseRow.votes.B, caseRow.votes.Tie);
+    const tiedLeaders = [caseRow.votes.A, caseRow.votes.B, caseRow.votes.Tie]
+      .filter(value => value === maxVotes).length;
+    caseRow.winner = tiedLeaders > 1 || caseRow.votes.Tie === maxVotes
+      ? '平局'
+      : caseRow.votes.A === maxVotes ? pair.modelAName : pair.modelBName;
+    caseMap.set(caseKey, caseRow);
+
+    battles.push({
+      assignmentId: pair.assignmentId || '',
+      pairId: pair.pairId || pairKey(pair.modelAId, pair.modelBId),
+      itemId: vote.itemId,
+      originalItemId,
+      prompt,
+      dimensionValues,
+      user: vote.user || 'Anonymous',
+      timestamp: vote.timestamp,
+      modelAId: pair.modelAId,
+      modelAName: pair.modelAName,
+      modelAUrl: outputMap.get(pair.modelAId) || item?.modelA_Url || '',
+      modelBId: pair.modelBId,
+      modelBName: pair.modelBName,
+      modelBUrl: outputMap.get(pair.modelBId) || item?.modelB_Url || '',
+      leftModelId: pair.leftModelId || pair.modelAId,
+      rightModelId: pair.rightModelId || pair.modelBId,
+      vote: outcome,
+      winnerModelName: outcome === 'Tie' ? '平局' : outcome === 'A' ? pair.modelAName : pair.modelBName,
+      samplingPhase: pair.samplingPhase || 'legacy',
+      samplingProbability: pair.samplingProbability || 1,
+      analysisWeight: getBradleyTerryAnalysisWeight(vote),
+      eligiblePairCount: pair.eligiblePairCount || 0,
+      schedulerVersion: pair.schedulerVersion || 'legacy',
+    });
+
+    Object.entries(dimensionValues).forEach(([dimension, value]) => {
+      if (!String(value).trim()) return;
+      const key = `${dimension}\u0000${value}`;
+      const group = dimensionGroups.get(key) || {
+        dimension,
+        value: String(value),
+        votes: [],
+        itemIds: new Set<string>(),
+      };
+      group.votes.push(vote);
+      group.itemIds.add(originalItemId);
+      dimensionGroups.set(key, group);
+    });
+  });
+
+  const bradleyTerry = calculateBradleyTerry(effectiveVotes, models);
+  const meanAnalysisWeight = battles.length
+    ? battles.reduce((sum, battle) => sum + battle.analysisWeight, 0) / battles.length
+    : 1;
+  battles.forEach(battle => {
+    battle.analysisWeight /= meanAnalysisWeight;
+  });
+  const expectedPairCount = models.length > 1 ? (models.length * (models.length - 1)) / 2 : 0;
+  const pairCoverage = expectedPairCount ? legacy.matchups.length / expectedPairCount : 0;
+  const maturity: PairwiseInsightBundle['summary']['maturity'] = !bradleyTerry.connected
+    ? 'insufficient'
+    : bradleyTerry.totalBattles < Math.max(10, models.length * 3) ? 'warming' : 'ready';
+  const topBtModel = bradleyTerry.connected ? bradleyTerry.models[0] : undefined;
+  const topRawModel = topBtModel
+    ? legacy.models.find((model: PairwiseModelSummary) => model.modelId === topBtModel.modelId)
+    : undefined;
+  const dimensions = Array.from(dimensionGroups.values()).map(group => {
+    const result = calculateBradleyTerry(group.votes, models);
+    const sufficient = group.itemIds.size >= 5 && group.votes.length >= 10 && result.connected;
+    return {
+      dimension: group.dimension,
+      value: group.value,
+      itemCount: group.itemIds.size,
+      battleCount: group.votes.length,
+      connected: result.connected,
+      sufficient,
+      leader: sufficient ? result.models[0]?.modelName || '-' : '-',
+      leaderScore: sufficient ? result.models[0]?.rating : undefined,
+    };
+  }).sort((left, right) => left.dimension.localeCompare(right.dimension) || left.value.localeCompare(right.value));
+
+  return {
+    mode: 'pairwise',
+    summary: {
+      itemCount: new Set(battles.map(battle => battle.originalItemId)).size,
+      voterCount: new Set(battles.map(battle => battle.user)).size,
+      comparisonCount: bradleyTerry.totalBattles,
+      topModelName: topBtModel?.modelName || '数据不足',
+      topWinRate: topRawModel?.nonTieWinRate || 0,
+      connected: bradleyTerry.connected,
+      pairCoverage,
+      effectiveSampleSize: bradleyTerry.effectiveSampleSize,
+      maturity,
+    },
+    models: legacy.models,
+    matchups: legacy.matchups,
+    bradleyTerry,
+    battles,
+    dimensions,
+    cases: Array.from(caseMap.values()).sort((left, right) => left.itemId.localeCompare(right.itemId)),
   };
 };
 
@@ -463,31 +676,167 @@ export const buildScoreCaseCsv = (bundle: ScoreInsightBundle) =>
 
 export const buildPairwiseSummaryCsv = (bundle: PairwiseInsightBundle) =>
   rowsToCsv(
-    ['ModelID', 'ModelName', 'Wins', 'Losses', 'Ties', 'Total', 'WinRate', 'NonTieWinRate'],
-    bundle.models.map(model => [
-      model.modelId,
-      model.modelName,
-      model.wins,
-      model.losses,
-      model.ties,
-      model.total,
-      model.winRate.toFixed(4),
-      model.nonTieWinRate.toFixed(4)
-    ])
+    ['ModelID', 'ModelName', 'ArenaScore', 'CI95_Lower', 'CI95_Upper', 'Rank', 'RankRange_Lower', 'RankRange_Upper', 'Component', 'GraphConnected', 'Battles', 'CoverageBattles', 'AdaptiveBattles', 'AverageSamplingProbability', 'AverageAnalysisWeight', 'Wins', 'Losses', 'Ties', 'WinRate', 'NonTieWinRate', 'EffectiveSampleSize'],
+    bundle.bradleyTerry.models.map(rating => {
+      const raw = bundle.models.find(model => model.modelId === rating.modelId);
+      const modelBattles = bundle.battles.filter(battle => battle.modelAId === rating.modelId || battle.modelBId === rating.modelId);
+      const comparable = bundle.bradleyTerry.connected;
+      return [
+        rating.modelId,
+        rating.modelName,
+        comparable ? rating.rating.toFixed(4) : '',
+        comparable ? rating.ratingLower.toFixed(4) : '',
+        comparable ? rating.ratingUpper.toFixed(4) : '',
+        comparable ? rating.rank : '',
+        comparable ? rating.rankLower : '',
+        comparable ? rating.rankUpper : '',
+        rating.component,
+        comparable,
+        rating.battles,
+        modelBattles.filter(battle => battle.samplingPhase === 'coverage').length,
+        modelBattles.filter(battle => battle.samplingPhase === 'adaptive').length,
+        safeMean(modelBattles.map(battle => battle.samplingProbability)).toFixed(8),
+        safeMean(modelBattles.map(battle => battle.analysisWeight)).toFixed(8),
+        raw?.wins || 0,
+        raw?.losses || 0,
+        raw?.ties || 0,
+        (raw?.winRate || 0).toFixed(4),
+        (raw?.nonTieWinRate || 0).toFixed(4),
+        bundle.bradleyTerry.effectiveSampleSize.toFixed(4),
+      ];
+    })
   );
 
-export const buildPairwiseCaseCsv = (bundle: PairwiseInsightBundle) =>
-  rowsToCsv(
-    ['ItemID', 'OriginalItemID', 'Prompt', 'ModelA', 'ModelB', 'Votes_A', 'Votes_B', 'Votes_Tie', 'Winner'],
-    bundle.cases.map(item => [
+export const buildPairwiseCaseCsv = (bundle: PairwiseInsightBundle) => rowsToCsv(
+  ['ItemID', 'OriginalItemID', 'Prompt', 'DimensionsJSON', 'ModelA', 'ModelA_URL', 'ModelB', 'ModelB_URL', 'Votes_A', 'Votes_B', 'Votes_Tie', 'Winner', 'SamplingPhases', 'AverageSamplingProbability', 'AverageAnalysisWeight', 'GraphConnected'],
+  bundle.cases.map(item => {
+    const caseBattles = bundle.battles.filter(battle =>
+      battle.originalItemId === item.originalItemId
+      && [battle.modelAName, battle.modelBName].includes(item.modelAName)
+      && [battle.modelAName, battle.modelBName].includes(item.modelBName)
+    );
+    return [
       item.itemId,
       item.originalItemId,
       item.prompt,
+      JSON.stringify(item.dimensionValues),
       item.modelAName,
+      item.representativeOutputs.find(output => output.modelName === item.modelAName)?.url || '',
       item.modelBName,
+      item.representativeOutputs.find(output => output.modelName === item.modelBName)?.url || '',
       item.votes.A,
       item.votes.B,
       item.votes.Tie,
-      item.winner
+      item.winner,
+      Array.from(new Set(caseBattles.map(battle => battle.samplingPhase))).join(' | '),
+      safeMean(caseBattles.map(battle => battle.samplingProbability)).toFixed(8),
+      safeMean(caseBattles.map(battle => battle.analysisWeight)).toFixed(8),
+      bundle.bradleyTerry.connected,
+    ];
+  })
+);
+
+export const buildPairwiseMatchupCsv = (bundle: PairwiseInsightBundle) =>
+  rowsToCsv(
+    ['PairID', 'ModelA_ID', 'ModelA_Name', 'ModelA_ArenaScore', 'ModelA_CI95_Lower', 'ModelA_CI95_Upper', 'ModelA_RankRange', 'ModelB_ID', 'ModelB_Name', 'ModelB_ArenaScore', 'ModelB_CI95_Lower', 'ModelB_CI95_Upper', 'ModelB_RankRange', 'ModelA_Wins', 'ModelB_Wins', 'Ties', 'Battles', 'CoverageBattles', 'AdaptiveBattles', 'AverageSamplingProbability', 'AverageAnalysisWeight', 'CoverageRate', 'GraphConnected'],
+    bundle.matchups.map(matchup => {
+      const modelA = bundle.bradleyTerry.models.find(model => model.modelId === matchup.modelAId);
+      const modelB = bundle.bradleyTerry.models.find(model => model.modelId === matchup.modelBId);
+      const pairBattles = bundle.battles.filter(battle => battle.pairId === matchup.pairKey || [battle.modelAId, battle.modelBId].sort().join('__') === matchup.pairKey);
+      const comparable = bundle.bradleyTerry.connected;
+      return [
+        matchup.pairKey,
+        matchup.modelAId,
+        matchup.modelAName,
+        comparable && modelA ? modelA.rating.toFixed(4) : '',
+        comparable && modelA ? modelA.ratingLower.toFixed(4) : '',
+        comparable && modelA ? modelA.ratingUpper.toFixed(4) : '',
+        comparable && modelA ? `${modelA.rankLower}-${modelA.rankUpper}` : '',
+        matchup.modelBId,
+        matchup.modelBName,
+        comparable && modelB ? modelB.rating.toFixed(4) : '',
+        comparable && modelB ? modelB.ratingLower.toFixed(4) : '',
+        comparable && modelB ? modelB.ratingUpper.toFixed(4) : '',
+        comparable && modelB ? `${modelB.rankLower}-${modelB.rankUpper}` : '',
+        matchup.modelAWins,
+        matchup.modelBWins,
+        matchup.ties,
+        matchup.total,
+        pairBattles.filter(battle => battle.samplingPhase === 'coverage').length,
+        pairBattles.filter(battle => battle.samplingPhase === 'adaptive').length,
+        safeMean(pairBattles.map(battle => battle.samplingProbability)).toFixed(8),
+        safeMean(pairBattles.map(battle => battle.analysisWeight)).toFixed(8),
+        bundle.summary.pairCoverage.toFixed(4),
+        comparable,
+      ];
+    })
+  );
+
+export const buildPairwiseBattleCsv = (bundle: PairwiseInsightBundle) => {
+  const dimensionNames = Array.from(new Set(bundle.battles.flatMap(battle => Object.keys(battle.dimensionValues))));
+  return rowsToCsv(
+    [
+      'AssignmentID', 'PairID', 'ItemID', 'OriginalItemID', 'Prompt', ...dimensionNames.map(name => `Dimension_${name}`),
+      'User', 'Timestamp', 'ModelA_ID', 'ModelA_Name', 'ModelA_URL', 'ModelB_ID', 'ModelB_Name', 'ModelB_URL',
+      'LeftModelID', 'RightModelID', 'VoteSide', 'WinnerModelName', 'SamplingPhase', 'SamplingProbability',
+      'UniformProbability', 'AnalysisWeight', 'EligiblePairCount', 'SchedulerVersion',
+      'ModelA_ArenaScore', 'ModelA_CI95_Lower', 'ModelA_CI95_Upper', 'ModelA_RankRange',
+      'ModelB_ArenaScore', 'ModelB_CI95_Lower', 'ModelB_CI95_Upper', 'ModelB_RankRange', 'GraphConnected',
+    ],
+    bundle.battles.map(battle => {
+      const modelA = bundle.bradleyTerry.models.find(model => model.modelId === battle.modelAId);
+      const modelB = bundle.bradleyTerry.models.find(model => model.modelId === battle.modelBId);
+      const comparable = bundle.bradleyTerry.connected;
+      return [
+        battle.assignmentId,
+        battle.pairId,
+        battle.itemId,
+        battle.originalItemId,
+        battle.prompt,
+        ...dimensionNames.map(name => battle.dimensionValues[name] || ''),
+        battle.user,
+        new Date(battle.timestamp).toISOString(),
+        battle.modelAId,
+        battle.modelAName,
+        battle.modelAUrl,
+        battle.modelBId,
+        battle.modelBName,
+        battle.modelBUrl,
+        battle.leftModelId,
+        battle.rightModelId,
+        battle.vote,
+        battle.winnerModelName,
+        battle.samplingPhase,
+        battle.samplingProbability.toFixed(8),
+        battle.eligiblePairCount ? (1 / battle.eligiblePairCount).toFixed(8) : '',
+        battle.analysisWeight.toFixed(8),
+        battle.eligiblePairCount,
+        battle.schedulerVersion,
+        comparable && modelA ? modelA.rating.toFixed(4) : '',
+        comparable && modelA ? modelA.ratingLower.toFixed(4) : '',
+        comparable && modelA ? modelA.ratingUpper.toFixed(4) : '',
+        comparable && modelA ? `${modelA.rankLower}-${modelA.rankUpper}` : '',
+        comparable && modelB ? modelB.rating.toFixed(4) : '',
+        comparable && modelB ? modelB.ratingLower.toFixed(4) : '',
+        comparable && modelB ? modelB.ratingUpper.toFixed(4) : '',
+        comparable && modelB ? `${modelB.rankLower}-${modelB.rankUpper}` : '',
+        comparable,
+      ];
+    })
+  );
+};
+
+export const buildPairwiseDimensionCsv = (bundle: PairwiseInsightBundle) =>
+  rowsToCsv(
+    ['Dimension', 'Value', 'ItemCount', 'BattleCount', 'GraphConnected', 'Sufficient', 'Leader', 'LeaderArenaScore'],
+    bundle.dimensions.map(dimension => [
+      dimension.dimension,
+      dimension.value,
+      dimension.itemCount,
+      dimension.battleCount,
+      dimension.connected,
+      dimension.sufficient,
+      dimension.leader,
+      dimension.leaderScore?.toFixed(4) || '',
     ])
   );

@@ -63,6 +63,44 @@ export interface EvaluationProject {
   createdAt?: number;
 }
 
+export type ArenaSamplingPhase = 'coverage' | 'adaptive';
+
+export interface PairwiseVoteContext {
+  pairId?: string;
+  originalItemId?: string;
+  assignmentId?: string;
+  modelAId: string;
+  modelAName: string;
+  modelBId: string;
+  modelBName: string;
+  leftModelId?: string;
+  rightModelId?: string;
+  samplingPhase?: ArenaSamplingPhase;
+  samplingProbability?: number;
+  eligiblePairCount?: number;
+  schedulerVersion?: string;
+}
+
+export interface ArenaBattleAssignment {
+  assignmentId: string;
+  itemId: string;
+  originalItemId: string;
+  modelAId: string;
+  modelAName: string;
+  modelAUrl: string;
+  modelBId: string;
+  modelBName: string;
+  modelBUrl: string;
+  leftModelId: string;
+  rightModelId: string;
+  isSwapped: boolean;
+  samplingPhase: ArenaSamplingPhase;
+  samplingProbability: number;
+  eligiblePairCount: number;
+  schedulerVersion: string;
+  pairContext: PairwiseVoteContext;
+}
+
 export interface EvaluationItem {
   id: string;
   modelA_Url: string; // Control or Model A
@@ -75,6 +113,10 @@ export interface EvaluationItem {
   referenceUrls?: string[]; // Changed from single string to array
   type: 'text' | 'image' | 'video' | 'audio' | 'markdown' | 'unknown';
   isSwapped?: boolean; // New: If true, UI displays B on left and A on right for blind testing
+  pairContext?: PairwiseVoteContext;
+  originalItemId?: string;
+  originalData?: Record<string, any>;
+  itemOrder?: number;
 }
 
 export interface VoteItemSnapshot {
@@ -88,6 +130,7 @@ export interface VoteItemSnapshot {
   startImageUrl?: string;
   referenceUrls?: string[];
   type?: EvaluationItem['type'];
+  pairContext?: PairwiseVoteContext;
 }
 
 export type EvalParadigm = 'GSB' | 'MOS' | 'Arena' | 'Arena-rank' | 'Pairwise' | 'RubricScore' | 'BenchmarkPreview';
@@ -95,7 +138,7 @@ export type EvalParadigm = 'GSB' | 'MOS' | 'Arena' | 'Arena-rank' | 'Pairwise' |
 export type EvaluationMethod = 'ab_preference' | 'pairwise' | 'direct_score' | 'rubric_score' | 'rank_order' | 'benchmark_preview';
 
 export type TiePolicy = 'allow' | 'disallow';
-export type PairwiseMode = 'all_pairs' | 'adjacent_pairs';
+export type PairwiseMode = 'arena_sampled' | 'all_pairs' | 'adjacent_pairs';
 export type DimensionScope = 'primary' | 'secondary' | 'rationale';
 export type DimensionAggregationRole = 'score' | 'preference' | 'rationale' | 'metadata';
 
@@ -116,6 +159,7 @@ export interface EvaluationConfig {
   };
   dimensions?: EvalDimension[];
   pairwiseMode?: PairwiseMode;
+  arenaSampling?: ArenaSamplingConfig;
   requireReason?: boolean;
   sourceRubricId?: string;
   rubricName?: string;
@@ -150,14 +194,7 @@ export interface VoteRecord {
     answers?: Record<string, string>;
     reason?: string;
   }>;
-  pairContext?: {
-    pairId?: string;
-    originalItemId?: string;
-    modelAId: string;
-    modelAName: string;
-    modelBId: string;
-    modelBName: string;
-  };
+  pairContext?: PairwiseVoteContext;
   reason?: string;
   timestamp: number;
   user?: string; // Who voted
@@ -312,6 +349,14 @@ export interface DatasetValidationSummary {
   emptyOutputCells: number;
   dimensionDistribution: Record<string, Record<string, number>>;
   warnings: string[];
+}
+
+export interface ArenaSamplingConfig {
+  suggestedBattlesPerReviewer: number;
+  warmupBattlesPerModel: number;
+  explorationRate: number;
+  schedulerVersion: string;
+  seed: string;
 }
 
 export interface DatasetVersionSnapshot {

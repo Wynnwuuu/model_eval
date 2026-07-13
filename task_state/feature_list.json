@@ -1,0 +1,10 @@
+{
+  "feature": "balanced_adaptive_arena",
+  "requirements": [
+    { "id": "arena-sampling", "status": "completed", "description": "Coverage-first adaptive pair sampling without case expansion" },
+    { "id": "arena-soft-target", "status": "completed", "description": "Soft reviewer target and partial contribution flow" },
+    { "id": "arena-bt", "status": "completed", "description": "Weighted Bradley-Terry ratings, confidence intervals, and connectivity guards" },
+    { "id": "arena-insights", "status": "completed", "description": "Leaderboard, coverage diagnostics, evidence, and CSV exports" },
+    { "id": "arena-compat", "status": "completed", "description": "Backward compatibility for all-pairs, adjacent-pairs, and legacy votes" }
+  ]
+}

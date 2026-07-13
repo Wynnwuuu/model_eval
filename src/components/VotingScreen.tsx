@@ -20,6 +20,11 @@ interface VotingScreenProps {
   onGoBack?: () => void;
   onSkip?: () => void;
   allowTie?: boolean;
+  arenaProgress?: {
+    contributed: number;
+    suggested: number;
+    reached: boolean;
+  };
 }
 
 const isStartImageKey = (key: string) => /start|first|首帧|首图|起始/i.test(key);
@@ -36,7 +41,8 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
   onBack,
   onGoBack,
   onSkip,
-  allowTie = true
+  allowTie = true,
+  arenaProgress
 }) => {
   const [showFullPrompt, setShowFullPrompt] = useState(false);
   const [showReference, setShowReference] = useState(false);
@@ -94,7 +100,9 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
   const dimensionValues = getDimensionValuesForItem(item as any);
   const hasDimensions = hasDimensionValues(dimensionValues);
 
-  const progress = (currentIndex / totalItems) * 100;
+  const progress = arenaProgress
+    ? Math.min(100, (arenaProgress.contributed / Math.max(arenaProgress.suggested, 1)) * 100)
+    : (currentIndex / totalItems) * 100;
   const isSwapped = item.isSwapped ?? false;
 
   const leftData = isSwapped
@@ -248,7 +256,9 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
         <div className="flex items-center gap-4">
           <h2 className="text-lg font-black uppercase tracking-wide text-slate-100">批量评测</h2>
           <span className="border border-white/15 bg-white/10 px-2 py-1 font-mono text-xs text-slate-200">
-            {currentIndex + 1} / {totalItems}
+            {arenaProgress
+              ? `已贡献 ${arenaProgress.contributed} / 建议 ${arenaProgress.suggested} 场`
+              : `${currentIndex + 1} / ${totalItems}`}
           </span>
 
           <div className={`flex items-center gap-1 text-xs font-medium transition-all duration-500 ${justSaved ? 'text-emerald-400 opacity-100' : 'text-slate-200 opacity-50'}`}>
@@ -278,9 +288,14 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
               返回大盘
             </button>
           )}
-          <button onClick={onEnd} className="border-l border-white/10 pl-4 text-sm font-medium text-slate-200 transition-colors hover:text-white">
-            提前结束
-          </button>
+          {(!arenaProgress || arenaProgress.contributed > 0) && (
+            <button
+              onClick={onEnd}
+              className={`border-l border-white/10 pl-4 text-sm font-medium transition-colors ${arenaProgress?.reached ? 'text-amber-300 hover:text-amber-100' : 'text-slate-200 hover:text-white'}`}
+            >
+              {arenaProgress ? (arenaProgress.reached ? '查看结果' : '结束并查看结果') : '提前结束'}
+            </button>
+          )}
         </div>
       </div>
 
