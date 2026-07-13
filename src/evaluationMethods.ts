@@ -24,9 +24,9 @@ export const EVALUATION_METHOD_OPTIONS: Array<{
   },
   {
     method: 'pairwise',
-    title: 'Pairwise 对战',
+    title: 'Arena / Pairwise 对战',
     shortLabel: 'Pairwise',
-    description: '三个及以上模型按两两组合对战，适合形成模型胜率矩阵。',
+    description: '多个模型按不完全两两对战评测；推荐 Arena 均衡采样，也可在高级设置使用全组合或相邻对战。',
     minModels: 2
   },
   {
@@ -148,7 +148,16 @@ export const getDefaultEvaluationConfig = (method: EvaluationMethod): Evaluation
   method,
   blind: method === 'ab_preference' || method === 'pairwise' || method === 'rank_order',
   tiePolicy: method === 'direct_score' || method === 'rubric_score' || method === 'rank_order' ? 'disallow' : 'allow',
-  pairwiseMode: method === 'pairwise' ? 'all_pairs' : undefined,
+  pairwiseMode: method === 'pairwise' ? 'arena_sampled' : undefined,
+  arenaSampling: method === 'pairwise' ? {
+    // Zero is the draft-only "auto" sentinel. Task creation resolves it from
+    // the eligible case and model counts before persisting the configuration.
+    suggestedBattlesPerReviewer: 0,
+    warmupBattlesPerModel: 3,
+    explorationRate: 0.15,
+    schedulerVersion: 'arena_v1',
+    seed: 'eval-studio-arena'
+  } : undefined,
   requireReason: method === 'rubric_score',
   scale: method === 'direct_score' || method === 'rubric_score'
     ? { min: 1, max: 5, labels: DEFAULT_SCORE_LEVELS }
@@ -178,6 +187,12 @@ export const normalizeEvaluationConfig = (task?: EvalTask, template?: EvalTempla
     sourceRubricId: task?.evaluationConfig?.sourceRubricId || template?.id,
     rubricName: task?.evaluationConfig?.rubricName || template?.name
   };
+
+  // Pairwise tasks created before arena_sampled existed were expanded as all-pairs.
+  // Keep that interpretation when a persisted task has no explicit mode.
+  if (method === 'pairwise' && task?.id && !task.evaluationConfig?.pairwiseMode) {
+    merged.pairwiseMode = 'all_pairs';
+  }
 
   merged.dimensions = normalizeDimensions(
     task?.evaluationConfig?.dimensions?.length ? task.evaluationConfig.dimensions : templateDimensions,

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, BarChart3, Download, RefreshCw, RotateCcw, Trophy, Check, Users, UploadCloud } from 'lucide-react';
+import { AlertTriangle, BarChart3, Download, Play, RefreshCw, RotateCcw, Trophy, Check, Users, UploadCloud } from 'lucide-react';
 import { EvalParadigm, EvaluationConfig, ResultsVoteScope, TaskVoteGroup, VoteRecord, EvaluationItem, VotingStats } from '../types';
 import { calculateArenaRankModelStats, getArenaRankModelOutputUrl, getBordaScore, isArenaRankVote, resolveEvaluationItemPrompt, sortRanking } from '../rankingUtils';
 import ArenaRankVideoPreviewList from './ArenaRankVideoPreviewList';
@@ -32,6 +32,7 @@ interface ResultsScreenProps {
   resyncLoading?: boolean;
   resyncError?: string | null;
   onGoToDashboard?: () => void;
+  onContinueEvaluation?: () => void;
 }
 
 const escapeCsvField = (value: any) => `"${String(value ?? '').replace(/"/g, '""')}"`;
@@ -54,7 +55,8 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
   onResyncMyVotes,
   resyncLoading = false,
   resyncError = null,
-  onGoToDashboard
+  onGoToDashboard,
+  onContinueEvaluation
 }) => {
   const [showInsights, setShowInsights] = useState(true);
   const [voteScope, setVoteScope] = useState<ResultsVoteScope>('mine');
@@ -175,6 +177,16 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
           )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {onContinueEvaluation && (
+            <button
+              type="button"
+              onClick={onContinueEvaluation}
+              className="inline-flex items-center gap-2 border border-amber-400/40 bg-amber-400 px-3 py-2 text-xs font-bold text-black hover:bg-amber-300"
+            >
+              <Play size={14} />
+              继续贡献
+            </button>
+          )}
           <div className="inline-flex overflow-hidden rounded-lg border border-white/10 bg-black/30 p-1">
             <button
               type="button"
@@ -353,7 +365,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
           title={activeConfig.method === 'rubric_score' ? 'Rubric 单次结果洞察' : 'MOS 单次结果洞察'}
           description={`当前展示范围：${scopeLabel}`}
           controls={scopeControls}
-          items={items}
+          items={snapshotAwareItems}
           votes={effectiveVotes}
           models={models.length ? models : [
             { id: 'model-0', name: modelNames.a },
@@ -374,7 +386,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
           title="Pairwise 单次结果洞察"
           description={`当前展示范围：${scopeLabel}`}
           controls={scopeControls}
-          items={items}
+          items={snapshotAwareItems}
           votes={effectiveVotes}
           models={models.length ? models : [
             { id: 'model-0', name: modelNames.a },

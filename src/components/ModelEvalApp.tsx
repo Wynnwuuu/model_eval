@@ -17,9 +17,10 @@ import InsightDashboardPage from '../pages/insights/InsightDashboardPage';
 import HistoryPage from '../pages/history/HistoryPage';
 import { AppRoute, EvalParadigm, EvaluationConfig, EvaluationItem, HistorySession, RankingEntry, RouteContext, TaskVoteGroup, VoteRecord, VoteType, EvaluationProject } from '../types';
 import { auth, getCurrentReviewerIdentity, getCurrentUserDisplayName, signInWithGoogle, logout, shouldUseCloudAuth } from '../auth';
-import { getDefaultEvaluationConfig, getMethodFromParadigm, getParadigmFromMethod, isPreviewMethod, isRankMethod, isScoreMethod } from '../evaluationMethods';
+import { getDefaultEvaluationConfig, getMethodFromParadigm, getParadigmFromMethod, isPairwiseMethod, isPreviewMethod, isRankMethod, isScoreMethod } from '../evaluationMethods';
 import { saveTaskUserVotes, loadTaskEvaluation, loadTaskVoteGroups, USE_TASK_API_BACKEND } from '../features/tasks/api';
 import { createVoteItemSnapshot } from '../taskItemSnapshot';
+import { applyArenaAssignmentToItem, assignArenaBattle, buildArenaSessionItems } from '../arenaSampling';
 
 const STORAGE_KEY = 'modeleval_session';
 const HISTORY_KEY = 'modeleval_history';
@@ -94,10 +95,13 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     const reviewer = getCurrentReviewerIdentity();
     const userKey = reviewer.id || nextUserName || 'Anonymous';
     const displayName = reviewer.displayName || nextUserName || 'Anonymous';
-    const merged = groups.filter(group => (
-      group.userId !== userKey &&
-      group.email !== reviewer.email
-    ));
+    const merged = groups.filter(group => {
+      const isCurrentReviewer = group.userId === userKey
+        || Boolean(reviewer.email && group.email === reviewer.email)
+        || group.user === displayName
+        || group.displayName === displayName;
+      return !isCurrentReviewer;
+    });
     merged.push({
       user: displayName,
       userId: userKey,
@@ -107,6 +111,19 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     });
     return merged;
   };
+
+  const getSchedulingVotes = (nextVotes: VoteRecord[], groups = allUserVoteGroups, nextUserName = userName) =>
+    mergeCurrentUserVoteGroup(groups, nextVotes, nextUserName)
+      .flatMap(group => group.votes || []);
+
+  const isSampledArena = isPairwiseMethod(taskEvaluationConfig)
+    && taskEvaluationConfig.pairwiseMode === 'arena_sampled';
+  const arenaValidVoteCount = votes.filter(vote => ['A', 'B', 'Tie'].includes(String(vote.vote || vote.choice))).length;
+  const arenaSuggestedBattleCount = Math.min(
+    items.length || 1,
+    taskEvaluationConfig.arenaSampling?.suggestedBattlesPerReviewer
+      || Math.max(20, taskModels.length * 2)
+  );
 
   const refreshAllTaskVotes = async (taskId = activeTaskId || routeContext.taskId || '') => {
     if (!taskId) return;
@@ -185,12 +202,13 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
         taskModels,
         taskParadigm,
         taskEvaluationConfig,
+        activeTaskId,
         timestamp: Date.now(),
         sessionId // Persist the ID
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(sessionData));
     }
-  }, [items, votes, currentIndex, currentRoute, userName, modelNames, taskModels, taskParadigm, taskEvaluationConfig, sessionId]);
+  }, [items, votes, currentIndex, currentRoute, userName, modelNames, taskModels, taskParadigm, taskEvaluationConfig, sessionId, activeTaskId]);
 
   useEffect(() => {
     const taskId = routeContext.taskId;
@@ -212,20 +230,66 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
         if (loaded.project && !activeProject) {
           setActiveProject(loaded.project);
         }
-        setItems(loaded.items);
+        const loadedIsSampledArena = isPairwiseMethod(loaded.evaluationConfig)
+          && loaded.evaluationConfig.pairwiseMode === 'arena_sampled';
+        const reviewerId = getCurrentReviewerIdentity().id || loaded.userName;
+        const arenaSession = loadedIsSampledArena
+          ? buildArenaSessionItems({
+              taskId: loaded.task.id,
+              reviewerId,
+              items: loaded.items,
+              reviewerVotes: loaded.votes,
+              schedulingVotes: mergeCurrentUserVoteGroup(loaded.allUserVoteGroups || [], loaded.votes, loaded.userName)
+                .flatMap(group => group.votes || []),
+              models: loaded.models,
+              config: loaded.evaluationConfig.arenaSampling || {},
+            })
+          : null;
+        let hydratedItems = arenaSession?.items || loaded.items;
+        let hydratedCurrentIndex = arenaSession
+          ? Math.min(arenaSession.currentIndex, Math.max(hydratedItems.length - 1, 0))
+          : Math.min(loaded.votes.length, Math.max(loaded.items.length - 1, 0));
+        let restoredSessionId = '';
+        if (loadedIsSampledArena && arenaSession && currentRoute === 'voting') {
+          try {
+            const savedSession = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+            const savedCurrentItem = savedSession?.items?.[savedSession.currentIndex] as EvaluationItem | undefined;
+            const expectedCurrentItem = hydratedItems[arenaSession.currentIndex];
+            const savedOriginalId = savedCurrentItem?.pairContext?.originalItemId || savedCurrentItem?.originalItemId || savedCurrentItem?.id;
+            const expectedOriginalId = expectedCurrentItem?.originalItemId || expectedCurrentItem?.id;
+            if (
+              savedSession?.activeTaskId === loaded.task.id
+              && savedSession?.votes?.length === loaded.votes.length
+              && savedCurrentItem?.pairContext?.assignmentId
+              && savedOriginalId === expectedOriginalId
+            ) {
+              hydratedItems = hydratedItems.map((item, index) =>
+                index === arenaSession.currentIndex ? savedCurrentItem : item
+              );
+              hydratedCurrentIndex = arenaSession.currentIndex;
+              restoredSessionId = savedSession.sessionId || '';
+            }
+          } catch (error) {
+            console.warn('Failed to restore pending Arena assignment', error);
+          }
+        }
+        setItems(hydratedItems);
         setVotes(loaded.votes);
         setAllUserVoteGroups(loaded.allUserVoteGroups || []);
         setTeamVotesError(loaded.allUserVoteError || null);
-        setCurrentIndex(Math.min(loaded.votes.length, Math.max(loaded.items.length - 1, 0)));
+        setCurrentIndex(hydratedCurrentIndex);
         setUserName(loaded.userName);
         setModelNames(loaded.modelNames);
         setTaskModels(loaded.models);
         setTaskParadigm(loaded.paradigm);
         setTaskEvaluationConfig(loaded.evaluationConfig);
         setActiveTaskId(loaded.task.id);
-        setSessionId(`session-${loaded.task.id}-${Date.now()}`);
+        setSessionId(restoredSessionId || `session-${loaded.task.id}-${Date.now()}`);
         setVoteSaveError(null);
         setResyncError(null);
+        if (loadedIsSampledArena && arenaSession?.remainingCount === 0 && currentRoute === 'voting') {
+          goToRoute('results', { taskId: loaded.task.id, source: 'task' });
+        }
       } catch (error: any) {
         if (!cancelled) {
           console.error('Failed to load task from route', error);
@@ -318,15 +382,29 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     models?: { id: string; name: string }[],
     evaluationConfig?: EvaluationConfig
   ) => {
-    setItems(parsedItems);
+    const resolvedModels = models && models.length > 0 ? models : [
+      { id: 'model-a', name: parsedNames?.a || 'Model A' },
+      { id: 'model-b', name: parsedNames?.b || 'Model B' }
+    ];
+    const nextConfig = evaluationConfig || getDefaultEvaluationConfig(getMethodFromParadigm(paradigm));
+    const nextVotes = existingVotes || [];
+    const sampledArenaSession = isPairwiseMethod(nextConfig) && nextConfig.pairwiseMode === 'arena_sampled'
+      ? buildArenaSessionItems({
+          taskId: taskId || 'local-arena',
+          reviewerId: getCurrentReviewerIdentity().id || name,
+          items: parsedItems,
+          reviewerVotes: nextVotes,
+          schedulingVotes: nextVotes,
+          models: resolvedModels,
+          config: nextConfig.arenaSampling || {},
+        })
+      : null;
+    const sessionItems = sampledArenaSession?.items || parsedItems;
+    setItems(sessionItems);
     setUserName(name);
     if (parsedNames) setModelNames(parsedNames);
     else setModelNames({ a: 'Model A', b: 'Model B' });
-    setTaskModels(models && models.length > 0 ? models : [
-      { id: 'model-a', name: parsedNames?.a || 'Model A' },
-      { id: 'model-b', name: parsedNames?.b || 'Model B' }
-    ]);
-    const nextConfig = evaluationConfig || getDefaultEvaluationConfig(getMethodFromParadigm(paradigm));
+    setTaskModels(resolvedModels);
     setTaskParadigm(getParadigmFromMethod(nextConfig.method));
     setTaskEvaluationConfig(nextConfig);
     setActiveTaskId(taskId || null);
@@ -342,13 +420,13 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     // Generate unique ID for this session
     setSessionId(`session-${Date.now()}`);
 
-    if (existingVotes && existingVotes.length > 0) {
-      setVotes(existingVotes);
-      if (existingVotes.length >= parsedItems.length) {
-        setCurrentIndex(parsedItems.length - 1);
+    if (nextVotes.length > 0) {
+      setVotes(nextVotes);
+      if (sampledArenaSession ? sampledArenaSession.remainingCount === 0 : nextVotes.length >= parsedItems.length) {
+        setCurrentIndex(Math.max(sessionItems.length - 1, 0));
         goToRoute('results', taskId ? { taskId } : {});
       } else {
-        setCurrentIndex(existingVotes.length);
+        setCurrentIndex(sampledArenaSession?.currentIndex ?? nextVotes.length);
         goToRoute('voting', taskId ? { taskId } : {});
       }
     } else {
@@ -409,11 +487,27 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     setVoteSaveError(null);
 
     try {
-      await persistVoteProgress(updatedVotes, currentIndex + 1);
+      await persistVoteProgress(updatedVotes, updatedVotes.length);
       setVotes(updatedVotes);
       setAllUserVoteGroups(prev => mergeCurrentUserVoteGroup(prev, updatedVotes));
 
       if (currentIndex < items.length - 1) {
+        if (isSampledArena && !items[currentIndex + 1]?.pairContext) {
+          const nextItem = items[currentIndex + 1];
+          const assignment = assignArenaBattle({
+            taskId: activeTaskId || 'local-arena',
+            reviewerId: getCurrentReviewerIdentity().id || userName,
+            item: nextItem,
+            models: taskModels,
+            votes: getSchedulingVotes(updatedVotes),
+            config: taskEvaluationConfig.arenaSampling || {},
+          });
+          if (assignment) {
+            setItems(previous => previous.map((item, index) =>
+              index === currentIndex + 1 ? applyArenaAssignmentToItem(item, assignment) : item
+            ));
+          }
+        }
         setCurrentIndex(prev => prev + 1);
       } else {
         saveToHistory(updatedVotes);
@@ -559,8 +653,20 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
 
   const handleEndSessionEarly = () => {
     if (votes.length > 0) {
-      saveToHistory(votes);
-      goToRoute('results', activeTaskId ? { taskId: activeTaskId } : routeContext);
+      const finish = () => {
+        saveToHistory(votes);
+        goToRoute('results', activeTaskId ? { taskId: activeTaskId } : routeContext);
+      };
+      if (isSampledArena) {
+        setConfirmConfig({
+          isOpen: true,
+          title: '结束本轮竞技场评测？',
+          message: `已提交的 ${arenaValidVoteCount} 场有效对战均已保存并会立即纳入统计。之后仍可从结果页继续贡献未评过的 case。`,
+          onConfirm: finish,
+        });
+      } else {
+        finish();
+      }
     } else {
       handleReset();
     }
@@ -852,6 +958,11 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
           onEnd={handleEndSessionEarly}
           onBack={() => navigate('overview')}
           onGoBack={currentIndex > 0 ? handleGoBack : undefined}
+          arenaProgress={isSampledArena ? {
+            contributed: arenaValidVoteCount,
+            suggested: arenaSuggestedBattleCount,
+            reached: arenaValidVoteCount >= arenaSuggestedBattleCount,
+          } : undefined}
         />
       );
     }
@@ -895,6 +1006,9 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
             resyncLoading={resyncLoading}
             resyncError={resyncError}
             onGoToDashboard={() => navigate('overview')}
+            onContinueEvaluation={isSampledArena && votes.length < items.length
+              ? () => navigate('voting', activeTaskId ? { taskId: activeTaskId, source: 'task' } : routeContext)
+              : undefined}
           />
         </div>
       );

@@ -13,6 +13,7 @@ export const createVoteItemSnapshot = (item?: EvaluationItem): VoteItemSnapshot 
     startImageUrl: item.startImageUrl,
     referenceUrls: item.referenceUrls ? [...item.referenceUrls] : undefined,
     type: item.type,
+    pairContext: item.pairContext ? { ...item.pairContext } : undefined,
   };
 };
 
@@ -30,6 +31,7 @@ export const itemFromVoteSnapshot = (vote?: Pick<VoteRecord, 'itemId' | 'itemSna
     startImageUrl: snapshot.startImageUrl,
     referenceUrls: snapshot.referenceUrls ? [...snapshot.referenceUrls] : undefined,
     type: snapshot.type || 'unknown',
+    pairContext: snapshot.pairContext ? { ...snapshot.pairContext } : undefined,
   };
 };
 

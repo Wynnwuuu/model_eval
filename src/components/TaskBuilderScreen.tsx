@@ -10,6 +10,7 @@ import DimensionChips from './DimensionChips';
 import { getDimensionValuesForItem, getDimensionValuesFromRecord, isLikelyDimensionColumn } from '../dimensionUtils';
 import { extractMediaUrls, resolvePlaybackUrl } from '../mediaUrlUtils';
 import { sortReferenceUrls } from '../mediaTypeUtils';
+import { normalizeArenaSamplingConfig } from '../arenaSampling';
 import { createTaskWithItems, deleteTask, deleteTaskItem, loadTaskItems, subscribeTasks, updateTask, updateTaskItem } from '../features/tasks/api';
 import { createDataset, subscribeDatasets } from '../features/datasets/api';
 import { saveTemplate, subscribeTemplates } from '../features/templates/api';
@@ -492,15 +493,19 @@ export default function TaskBuilderScreen({
         name: col
       })) : newTask.models;
 
-      const pairCount = evaluationConfig.method === 'pairwise'
+      const sourceItemCount = csvData.length > 0 ? csvData.length : (datasets.find(d => d.id === finalDatasetId)?.items?.length || 0);
+      const isSampledArena = evaluationConfig.method === 'pairwise' && evaluationConfig.pairwiseMode === 'arena_sampled';
+      const pairCount = evaluationConfig.method === 'pairwise' && !isSampledArena
         ? buildPairwisePairs(taskModels || [], evaluationConfig.pairwiseMode).length
         : 1;
-      const sourceItemCount = csvData.length > 0 ? csvData.length : (datasets.find(d => d.id === finalDatasetId)?.items?.length || 0);
       const finalEvaluationConfig: EvaluationConfig = {
         ...evaluationConfig,
         dimensions: normalizeDimensions(evaluationConfig.dimensions || [], evaluationConfig.method),
         sourceRubricId: finalTemplateId || evaluationConfig.sourceRubricId,
-        rubricName: finalTemplateId ? `${newTask.name} 评分标准` : evaluationConfig.rubricName
+        rubricName: finalTemplateId ? `${newTask.name} 评分标准` : evaluationConfig.rubricName,
+        arenaSampling: isSampledArena
+          ? normalizeArenaSamplingConfig(evaluationConfig.arenaSampling, sourceItemCount, (taskModels || []).length)
+          : evaluationConfig.arenaSampling
       };
 
       const taskData = {
@@ -568,7 +573,9 @@ export default function TaskBuilderScreen({
               type: newTask.outputType || 'text',
               originalData: row,
               originalItemId: row.case_id || row.case_name || row.id || row['用例ID'] || row['ItemID'] || `case-${rowIndex + 1}`,
-              isSwapped: (finalEvaluationConfig.method === 'ab_preference' || finalEvaluationConfig.method === 'pairwise') && finalEvaluationConfig.blind !== false
+              isSwapped: (finalEvaluationConfig.method === 'ab_preference'
+                || (finalEvaluationConfig.method === 'pairwise' && finalEvaluationConfig.pairwiseMode !== 'arena_sampled'))
+                && finalEvaluationConfig.blind !== false
                 ? Math.random() > 0.5
                 : false
             };
@@ -576,7 +583,7 @@ export default function TaskBuilderScreen({
             if (startImageUrl) baseItemData.startImageUrl = startImageUrl;
             if (referenceUrls.length > 0) baseItemData.referenceUrls = sortReferenceUrls(referenceUrls);
 
-            if (finalEvaluationConfig.method === 'pairwise') {
+            if (finalEvaluationConfig.method === 'pairwise' && finalEvaluationConfig.pairwiseMode !== 'arena_sampled') {
               const pairs = buildPairwisePairs(taskModels || [], finalEvaluationConfig.pairwiseMode);
               for (const pair of pairs) {
                 const leftIndex = (taskModels || []).findIndex(model => model.id === pair.modelA.id);
@@ -1331,14 +1338,74 @@ export default function TaskBuilderScreen({
                     <label className="block">
                       <span className="mb-2 block text-sm font-medium text-slate-200">Pairwise 组合方式</span>
                       <select
-                        value={evaluationConfig.pairwiseMode || 'all_pairs'}
+                        value={evaluationConfig.pairwiseMode || 'arena_sampled'}
                         onChange={(e) => setEvaluationConfig(prev => ({ ...prev, pairwiseMode: e.target.value as any }))}
                         className="w-full px-4 py-2 glass-input rounded-xl"
                       >
-                        <option value="all_pairs">全组合对战（推荐，统计最完整）</option>
-                        <option value="adjacent_pairs">相邻模型对战（更省评测量）</option>
+                        <option value="arena_sampled">Arena 竞技场（推荐，可随时结束并纳入统计）</option>
+                        <option value="all_pairs">全组合对战（高级，覆盖所有模型对）</option>
+                        <option value="adjacent_pairs">相邻模型对战（高级，评测量较少）</option>
                       </select>
                     </label>
+                  )}
+
+                  {evaluationConfig.method === 'pairwise' && evaluationConfig.pairwiseMode === 'arena_sampled' && (
+                    <div className="grid grid-cols-1 gap-3 border border-amber-400/25 bg-amber-400/5 p-4 md:grid-cols-3">
+                      <label className="block">
+                        <span className="mb-1 block text-xs font-medium text-slate-300">建议场次数 / 评委</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={Math.max(csvData.length || datasets.find(dataset => dataset.id === newTask.datasetId)?.items?.length || 1, 1)}
+                          value={evaluationConfig.arenaSampling?.suggestedBattlesPerReviewer || Math.max(20, modelColumns.length * 2)}
+                          onChange={(event) => setEvaluationConfig(previous => ({
+                            ...previous,
+                            arenaSampling: {
+                              ...(previous.arenaSampling || getDefaultEvaluationConfig('pairwise').arenaSampling!),
+                              suggestedBattlesPerReviewer: Math.max(1, Number(event.target.value) || 1)
+                            }
+                          }))}
+                          className="glass-input w-full px-3 py-2"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-xs font-medium text-slate-300">覆盖预热 / 模型</span>
+                        <input
+                          type="number"
+                          min={1}
+                          value={evaluationConfig.arenaSampling?.warmupBattlesPerModel || 3}
+                          onChange={(event) => setEvaluationConfig(previous => ({
+                            ...previous,
+                            arenaSampling: {
+                              ...(previous.arenaSampling || getDefaultEvaluationConfig('pairwise').arenaSampling!),
+                              warmupBattlesPerModel: Math.max(1, Number(event.target.value) || 1)
+                            }
+                          }))}
+                          className="glass-input w-full px-3 py-2"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-xs font-medium text-slate-300">探索比例</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={evaluationConfig.arenaSampling?.explorationRate ?? 0.15}
+                          onChange={(event) => setEvaluationConfig(previous => ({
+                            ...previous,
+                            arenaSampling: {
+                              ...(previous.arenaSampling || getDefaultEvaluationConfig('pairwise').arenaSampling!),
+                              explorationRate: Math.min(1, Math.max(0, Number(event.target.value) || 0))
+                            }
+                          }))}
+                          className="glass-input w-full px-3 py-2"
+                        />
+                      </label>
+                      <p className="text-xs leading-5 text-slate-400 md:col-span-3">
+                        每个评委在同一 case 最多评一场。完成第一场后即可结束，已提交投票会立即进入团队统计；达到建议值后仍可继续贡献。
+                      </p>
+                    </div>
                   )}
 
                   {(evaluationConfig.method === 'direct_score' || evaluationConfig.method === 'rubric_score') && (
