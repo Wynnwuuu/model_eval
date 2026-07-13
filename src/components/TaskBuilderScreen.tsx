@@ -902,7 +902,7 @@ export default function TaskBuilderScreen({
     } else if (newTemplateParadigm === 'Pairwise') {
       defaultDimensions = [];
     } else if (newTemplateParadigm === 'Arena-rank') {
-      defaultDimensions = [{ id: `dim-${Date.now()}`, name: 'Arena-rank ranking', description: 'Rank three or more videos from best to worst.', type: 'radio_select', options: ['Full ranking'] }];
+      defaultDimensions = [{ id: `dim-${Date.now()}`, name: 'Arena-rank 排名', description: '将三个及以上产物按梯队排序，可合并为多个并列组。', type: 'radio_select', options: ['完整弱序排名'] }];
     } else {
       defaultDimensions = [{ id: `dim-${Date.now()}`, name: '竞技场排位', description: '选择你认为更好的模型', type: 'radio_select', options: ['模型 A', '模型 B', '平局', '都很差'] }];
     }
@@ -2102,7 +2102,7 @@ export default function TaskBuilderScreen({
                   <option value="Pairwise">Pairwise - 多模型两两对战</option>
                   <option value="MOS">直接评分 / MOS - 单项或多模型打分</option>
                   <option value="RubricScore">Rubric 多维评分</option>
-                  <option value="Arena-rank">全量排序 / Arena-rank</option>
+                  <option value="Arena-rank">梯队排序 / Arena-rank</option>
                 </select>
                 <p className="text-xs text-slate-300 mt-2">
                   系统会自动生成兼容该评测方式的默认评分标准，保存后可在物料构建器中继续复用和细化。

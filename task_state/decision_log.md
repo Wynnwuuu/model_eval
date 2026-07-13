@@ -23,3 +23,23 @@ The Bradley-Terry solver uses a symmetric weak penalty on centered model strengt
 ## 2026-07-13: CSV evidence is vote-specific
 
 Raw Arena CSV imports create a vote item snapshot containing the exact pair IDs, names, URLs, prompt, dimensions, and media type from each row. This avoids attaching the first observed pair's media to other battles on the same case.
+
+## 2026-07-13: Arena-rank is a complete weak order
+
+Every rank ballot contains each eligible model exactly once, while repeated ranks encode ties. Imported non-competition numbering such as `1,1,2,3` is normalized to `1,1,3,4`; legacy strict rankings retain their original meaning.
+
+## 2026-07-13: Media identity stays spatially stable
+
+The randomized anonymous media cards never move while a reviewer edits the ranking. Ordering happens in a separate tier editor so reviewers do not need to visually reacquire moving videos or images.
+
+## 2026-07-13: Ties share occupied rank value
+
+A tie tier receives the average of its occupied ranks for both mid-rank and Borda. This preserves the total Borda mass of every ballot. Normalized Borda is averaged per ballot so cases with different candidate counts remain comparable.
+
+## 2026-07-13: Agreement and distinction are separate claims
+
+Exact pair-relation agreement is the primary intuitive agreement measure and Kendall tau-b is the tie-corrected secondary measure. Distinction is reported separately, so unanimous all-tied ballots read as high agreement with zero distinction rather than as a decisive model difference.
+
+## 2026-07-13: Ties do not create significance
+
+Pairwise dominance counts a tie as 0.5, but Wilson intervals and binomial sign tests use decisive relations only. An all-tied pair has 50% dominance and no reportable confidence interval or p-value.

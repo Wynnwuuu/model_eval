@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, BarChart3, Download, Play, RefreshCw, RotateCcw, Trophy, Check, Users, UploadCloud } from 'lucide-react';
 import { EvalParadigm, EvaluationConfig, ResultsVoteScope, TaskVoteGroup, VoteRecord, EvaluationItem, VotingStats } from '../types';
-import { calculateArenaRankModelStats, getArenaRankModelOutputUrl, getBordaScore, isArenaRankVote, resolveEvaluationItemPrompt, sortRanking } from '../rankingUtils';
+import { calculateArenaRankModelStats, formatRanking, getArenaRankModelOutputUrl, getRankingEntryMetrics, getRankingTieSummary, isArenaRankVote, resolveEvaluationItemPrompt, sortRanking } from '../rankingUtils';
 import ArenaRankVideoPreviewList from './ArenaRankVideoPreviewList';
 import DimensionChips from './DimensionChips';
 import { calculateRankDimensionSummaries, calculateVoteDimensionSummaries, getDimensionColumnsForCsv, getDimensionCsvValues, getDimensionValuesForItem } from '../dimensionUtils';
@@ -463,11 +463,18 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
     if (isArenaRank) {
       const rankHeaders = Array.from({ length: maxRankCount }, (_, idx) => `rank_${idx + 1}`);
       const rankVideoHeaders = Array.from({ length: maxRankCount }, (_, idx) => `排名${idx + 1}视频链接`);
-      const modelHeaders = arenaRankModelList.flatMap(model => [`${model.name}_rank`, `${model.name}_score`]);
-      const headers = ['ItemID', 'Prompt', ...dimensionColumns.map(col => col.header), 'Status', 'Timestamp', 'User', ...rankHeaders, ...rankVideoHeaders, ...modelHeaders, 'ranking_json'];
+      const modelHeaders = arenaRankModelList.flatMap(model => [
+        `${model.name}_rank`,
+        `${model.name}_score`,
+        `${model.name}_midrank`,
+        `${model.name}_borda_score`,
+        `${model.name}_normalized_borda`
+      ]);
+      const headers = ['ItemID', 'Prompt', ...dimensionColumns.map(col => col.header), 'Status', 'Timestamp', 'User', 'RankingDisplay', 'HasTie', 'AllTied', 'TieGroupCount', 'TopTieSize', ...rankHeaders, ...rankVideoHeaders, ...modelHeaders, 'ranking_json'];
       const rows = scopedVotes.filter(v => isArenaRankVote(v) || isSkippedVote(v)).map(v => {
         const item = getDisplayItemForVote(v);
         const ranking = sortRanking(v.ranking);
+        const tieSummary = getRankingTieSummary(ranking);
         const dimensionValues = getDimensionValuesForItem(item);
         const rankValues = rankHeaders.map((_, idx) => {
           const entry = ranking[idx];
@@ -479,10 +486,10 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
         });
         const modelValues = arenaRankModelList.flatMap(model => {
           const entry = ranking.find(candidate => candidate.modelId === model.id);
-          return [
-            entry?.rank || '',
-            entry ? getBordaScore(entry.rank, ranking.length) : ''
-          ];
+          const metrics = entry ? getRankingEntryMetrics(ranking, entry.modelId) : null;
+          return metrics
+            ? [String(entry!.rank), String(metrics.bordaScore), String(metrics.midRank), String(metrics.bordaScore), String(metrics.normalizedBorda)]
+            : ['', '', '', '', ''];
         });
         return [
           v.itemId,
@@ -491,6 +498,11 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
           isSkippedVote(v) ? 'skipped' : 'ranked',
           new Date(v.timestamp).toISOString(),
           v.user || userName || 'Anonymous',
+          formatRanking(ranking),
+          tieSummary.hasTie ? 'true' : 'false',
+          tieSummary.allTied ? 'true' : 'false',
+          tieSummary.tieGroupCount,
+          tieSummary.topTieSize,
           ...rankValues,
           ...rankVideoValues,
           ...modelValues,
@@ -562,26 +574,29 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
         )}
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
-          {rankStats.slice(0, 3).map((stat, index) => (
-            <div key={stat.modelId} className={`p-5 rounded-xl border shadow-md shadow-black/20 ${index === 0 ? 'bg-amber-500/10 border-amber-500/30' : 'bg-white/5 border-white/10'}`}>
-              <div className="text-xs text-slate-400 uppercase tracking-wider mb-2">Rank {index + 1}</div>
+          {rankStats.slice(0, 3).map((stat) => {
+            const consensusRank = rankStats.findIndex(candidate => Math.abs(candidate.normalizedScore - stat.normalizedScore) < 1e-9) + 1;
+            const isSharedRank = rankStats.filter(candidate => Math.abs(candidate.normalizedScore - stat.normalizedScore) < 1e-9).length > 1;
+            return (
+            <div key={stat.modelId} className={`p-5 rounded-xl border shadow-md shadow-black/20 ${consensusRank === 1 ? 'bg-amber-500/10 border-amber-500/30' : 'bg-white/5 border-white/10'}`}>
+              <div className="text-xs text-slate-400 uppercase tracking-wider mb-2">{isSharedRank ? `并列 Rank ${consensusRank}` : `Rank ${consensusRank}`}</div>
               <h3 className="font-bold text-slate-100 truncate" title={stat.modelName}>{stat.modelName}</h3>
               <div className="mt-4 grid grid-cols-3 gap-2 text-center">
                 <div>
-                  <div className="text-2xl font-bold text-amber-300">{stat.totalScore}</div>
-                  <div className="text-[10px] text-slate-400">总积分</div>
+                  <div className="text-2xl font-bold text-amber-300">{(stat.normalizedScore * 100).toFixed(1)}</div>
+                  <div className="text-[10px] text-slate-400">归一化 Borda</div>
                 </div>
                 <div>
                   <div className="text-2xl font-bold text-slate-100">{stat.averageRank.toFixed(2)}</div>
                   <div className="text-[10px] text-slate-400">平均名次</div>
                 </div>
                 <div>
-                  <div className="text-2xl font-bold text-slate-100">{stat.firstPlaceCount}</div>
-                  <div className="text-[10px] text-slate-400">第一名</div>
+                  <div className="text-2xl font-bold text-slate-100">{stat.firstPlaceCredit.toFixed(2)}</div>
+                  <div className="text-[10px] text-slate-400">第一名份额</div>
                 </div>
               </div>
             </div>
-          ))}
+          );})}
         </div>
 
         {rankDimensionSummaries.length > 0 && (
@@ -598,6 +613,8 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
                     <th className="p-4 text-xs font-semibold text-slate-300 uppercase border-b border-white/10">Case 数</th>
                     <th className="p-4 text-xs font-semibold text-slate-300 uppercase border-b border-white/10">排名记录</th>
                     <th className="p-4 text-xs font-semibold text-slate-300 uppercase border-b border-white/10">领先模型</th>
+                    <th className="p-4 text-xs font-semibold text-slate-300 uppercase border-b border-white/10">关系一致率</th>
+                    <th className="p-4 text-xs font-semibold text-slate-300 uppercase border-b border-white/10">区分度 / 并列票</th>
                     <th className="p-4 text-xs font-semibold text-slate-300 uppercase border-b border-white/10">模型统计</th>
                   </tr>
                 </thead>
@@ -608,9 +625,18 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
                       <td className="p-4 text-sm text-slate-200">{summary.dimensionValue}</td>
                       <td className="p-4 text-sm text-slate-200">{summary.itemCount}</td>
                       <td className="p-4 text-sm text-slate-200">{summary.rankingRecords}</td>
-                      <td className="p-4 text-sm font-semibold text-amber-300">{summary.modelStats[0]?.modelName || '-'}</td>
+                      <td className="p-4 text-sm font-semibold text-amber-300">
+                        {summary.modelStats.length
+                          ? summary.modelStats
+                              .filter(stat => Math.abs(stat.normalizedScore - summary.modelStats[0].normalizedScore) < 1e-9)
+                              .map(stat => stat.modelName)
+                              .join(' = ')
+                          : '-'}
+                      </td>
+                      <td className="p-4 text-sm text-slate-200">{summary.relationAgreement === null ? '-' : `${(summary.relationAgreement * 100).toFixed(0)}%`}</td>
+                      <td className="p-4 text-sm text-slate-200">{(summary.distinctionRate * 100).toFixed(0)}% / {(summary.tieBallotRate * 100).toFixed(0)}%</td>
                       <td className="p-4 text-xs text-slate-300 min-w-[280px]">
-                        {summary.modelStats.map(stat => `${stat.modelName}: score=${stat.totalScore}, avg=${stat.averageRank.toFixed(2)}, first=${stat.firstPlaceCount}`).join(' | ')}
+                        {summary.modelStats.map(stat => `${stat.modelName}: normalized=${(stat.normalizedScore * 100).toFixed(1)}, score=${stat.totalScore.toFixed(2)}, mid-rank=${stat.averageRank.toFixed(2)}, outright/co-first=${stat.outrightFirstCount}/${stat.coFirstCount}`).join(' | ')}
                       </td>
                     </tr>
                   ))}
@@ -670,7 +696,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
                           entries={ranking.map(entry => ({
                             id: entry.modelId,
                             modelName: entry.modelName,
-                            rankLabel: `#${entry.rank}`,
+                            rankLabel: ranking.filter(candidate => candidate.rank === entry.rank).length > 1 ? `并列 #${entry.rank}` : `#${entry.rank}`,
                             videoUrl: getArenaRankModelOutputUrl(item, entry, arenaRankModelList)
                           }))}
                         />

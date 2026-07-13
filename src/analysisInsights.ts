@@ -2,11 +2,15 @@ import { AggregatedResult, EvaluationItem, ModelOutput, RankingEntry, VoteRecord
 import { DimensionValues, getDimensionEntries, getDimensionValuesForItem } from './dimensionUtils';
 import {
   ArenaRankPromptItem,
+  calculateRankPairwiseStats,
+  calculateRankingAgreement,
   calculateArenaRankModelStats,
+  formatRanking,
   getArenaRankModelOutputUrl,
-  getBordaScore,
+  getRankingTieSummary,
   getModelOutputsForItem,
   isArenaRankVote,
+  kendallTauBForRankings,
   resolveEvaluationItemPrompt,
   sortRanking
 } from './rankingUtils';
@@ -115,10 +119,17 @@ export interface RankModelInsight {
   modelId: string;
   modelName: string;
   totalScore: number;
+  normalizedScore: number;
   averageRank: number;
   firstPlaceCount: number;
+  outrightFirstCount: number;
+  coFirstCount: number;
+  firstPlaceCredit: number;
+  tieCount: number;
+  tieRate: number;
   rankedCount: number;
   firstPlaceRate: number;
+  topTierRate: number;
   confidenceInterval: ConfidenceInterval;
 }
 
@@ -129,8 +140,12 @@ export interface PairwiseComparisonStat {
   modelBName: string;
   aWins: number;
   bWins: number;
+  ties: number;
   total: number;
+  decisiveTotal: number;
   aShare: number;
+  decisiveAShare: number;
+  tieRate: number;
   confidenceInterval: ConfidenceInterval;
   pValue: number | null;
 }
@@ -141,6 +156,11 @@ export interface RankCaseInsight extends AnalysisEvidence {
   rankings: RankingEntry[][];
   consensusRanking: RankModelInsight[];
   kendallTau: number | null;
+  relationAgreement: number | null;
+  distinctionRate: number;
+  tieBallots: number;
+  allTieBallots: number;
+  consensusLeaders: string[];
 }
 
 export interface RankDimensionInsight {
@@ -151,7 +171,11 @@ export interface RankDimensionInsight {
   rankingRecords: number;
   modelStats: RankModelInsight[];
   leadingModel: string;
+  leadingModels: string[];
   agreement: number | null;
+  kendallTauB: number | null;
+  distinctionRate: number;
+  tieBallotRate: number;
   smallSample: boolean;
 }
 
@@ -163,8 +187,17 @@ export interface RankInsightBundle {
     rankingRecords: number;
     voterCount: number;
     bestModel: string;
+    bestModels: string[];
     averageKendallTau: number | null;
+    averageRelationAgreement: number | null;
+    averageDistinctionRate: number;
+    tieBallots: number;
+    allTieBallots: number;
+    tieBallotRate: number;
+    allTieBallotRate: number;
+    averageTieGroupSize: number;
     lowConsensusCount: number;
+    lowDistinctionCount: number;
     smallSample: boolean;
   };
   cases: RankCaseInsight[];
@@ -602,93 +635,20 @@ const toRankModelInsights = (votes: VoteRecord[]): RankModelInsight[] => {
   const stats = calculateArenaRankModelStats(votes);
   return stats.map(stat => ({
     ...stat,
-    firstPlaceRate: safeDivide(stat.firstPlaceCount, stat.rankedCount),
+    firstPlaceRate: safeDivide(stat.firstPlaceCredit, stat.rankedCount),
+    topTierRate: safeDivide(stat.firstPlaceCount, stat.rankedCount),
     confidenceInterval: wilsonInterval(stat.firstPlaceCount, stat.rankedCount)
   }));
 };
 
-const rankingToMap = (ranking: RankingEntry[] = []) => {
-  const map = new Map<string, number>();
-  ranking.forEach(entry => map.set(entry.modelId, entry.rank));
-  return map;
-};
-
-export const kendallTauForRankings = (left: RankingEntry[] = [], right: RankingEntry[] = []) => {
-  const leftMap = rankingToMap(left);
-  const rightMap = rankingToMap(right);
-  const ids = Array.from(leftMap.keys()).filter(id => rightMap.has(id));
-  if (ids.length < 2) return null;
-
-  let concordant = 0;
-  let discordant = 0;
-  for (let i = 0; i < ids.length; i += 1) {
-    for (let j = i + 1; j < ids.length; j += 1) {
-      const leftDiff = (leftMap.get(ids[i]) || 0) - (leftMap.get(ids[j]) || 0);
-      const rightDiff = (rightMap.get(ids[i]) || 0) - (rightMap.get(ids[j]) || 0);
-      const product = leftDiff * rightDiff;
-      if (product > 0) concordant += 1;
-      if (product < 0) discordant += 1;
-    }
-  }
-
-  const comparable = concordant + discordant;
-  return comparable ? (concordant - discordant) / comparable : null;
-};
-
-const averageCaseKendallTau = (rankings: RankingEntry[][]) => {
-  const values: number[] = [];
-  for (let i = 0; i < rankings.length; i += 1) {
-    for (let j = i + 1; j < rankings.length; j += 1) {
-      const tau = kendallTauForRankings(rankings[i], rankings[j]);
-      if (tau !== null) values.push(tau);
-    }
-  }
-  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
-};
+export const kendallTauForRankings = kendallTauBForRankings;
 
 const buildPairwiseStats = (votes: VoteRecord[], models: { id: string; name: string }[]) => {
-  const pairs = new Map<string, PairwiseComparisonStat>();
-  const ensurePair = (a: { id: string; name: string }, b: { id: string; name: string }) => {
-    const key = `${a.id}::${b.id}`;
-    const existing = pairs.get(key) || {
-      modelAId: a.id,
-      modelAName: a.name,
-      modelBId: b.id,
-      modelBName: b.name,
-      aWins: 0,
-      bWins: 0,
-      total: 0,
-      aShare: 0,
-      confidenceInterval: { lower: 0, upper: 0 },
-      pValue: null
-    };
-    pairs.set(key, existing);
-    return existing;
-  };
-
-  votes.filter(isArenaRankVote).forEach(vote => {
-    const ranking = sortRanking(vote.ranking);
-    const byId = new Map(ranking.map(entry => [entry.modelId, entry]));
-    for (let i = 0; i < models.length; i += 1) {
-      for (let j = i + 1; j < models.length; j += 1) {
-        const modelA = models[i];
-        const modelB = models[j];
-        const aRank = byId.get(modelA.id)?.rank;
-        const bRank = byId.get(modelB.id)?.rank;
-        if (!aRank || !bRank || aRank === bRank) continue;
-        const pair = ensurePair(modelA, modelB);
-        pair.total += 1;
-        if (aRank < bRank) pair.aWins += 1;
-        else pair.bWins += 1;
-      }
-    }
-  });
-
-  return Array.from(pairs.values()).map(pair => ({
+  return calculateRankPairwiseStats(votes, models).map(pair => ({
     ...pair,
-    aShare: safeDivide(pair.aWins, pair.total),
-    confidenceInterval: wilsonInterval(pair.aWins, pair.total),
-    pValue: binomialSignTestTwoSided(pair.aWins, pair.bWins)
+    aShare: pair.dominanceScore,
+    confidenceInterval: wilsonInterval(pair.aWins, pair.decisiveTotal),
+    pValue: pair.decisiveTotal ? binomialSignTestTwoSided(pair.aWins, pair.bWins) : null
   }));
 };
 
@@ -700,7 +660,7 @@ const buildRankTrend = (votes: VoteRecord[]) => {
     const leader = calculateArenaRankModelStats(running)[0];
     return {
       timestamp: getTimestamp(vote.timestamp),
-      leaderScore: leader?.totalScore || 0,
+      leaderScore: (leader?.normalizedScore || 0) * 100,
       totalRankings: running.length
     };
   });
@@ -735,7 +695,14 @@ export const buildRankInsights = ({
         url: getArenaRankModelOutputUrl(item, entry, modelList)
       }))
       .filter(output => output.url);
-    const kendallTau = averageCaseKendallTau(rankings);
+    const agreement = calculateRankingAgreement(rankings);
+    const tieSummaries = rankings.map(getRankingTieSummary);
+    const leaderScore = consensusRanking[0]?.normalizedScore;
+    const consensusLeaders = leaderScore === undefined
+      ? []
+      : consensusRanking
+          .filter(model => Math.abs(model.normalizedScore - leaderScore) < 1e-9)
+          .map(model => model.modelName);
 
     return {
       mode: 'rank',
@@ -746,7 +713,7 @@ export const buildRankInsights = ({
       humanVotes: itemVotes.map(vote => ({
         user: vote.user || 'Anonymous',
         vote: 'Tie' as VoteType,
-        voteLabel: sortRanking(vote.ranking).map(entry => `#${entry.rank} ${entry.modelName}`).join(' > '),
+        voteLabel: formatRanking(vote.ranking),
         timestamp: vote.timestamp
       })),
       aiJudgeRationale: '',
@@ -754,18 +721,39 @@ export const buildRankInsights = ({
       referenceUrls: (item as EvaluationItem | undefined)?.referenceUrls || [],
       metrics: {
         voterCount: new Set(itemVotes.map(vote => vote.user || 'Anonymous')).size,
-        kendallTau,
-        topModel: consensusRanking[0]?.modelName || ''
+        kendallTauB: agreement.kendallTauB,
+        relationAgreement: agreement.relationAgreement,
+        distinctionRate: agreement.distinctionRate,
+        topModel: consensusLeaders.join(' = ')
       },
       voterCount: new Set(itemVotes.map(vote => vote.user || 'Anonymous')).size,
       rankings,
       consensusRanking,
-      kendallTau
+      kendallTau: agreement.kendallTauB,
+      relationAgreement: agreement.relationAgreement,
+      distinctionRate: agreement.distinctionRate,
+      tieBallots: tieSummaries.filter(summary => summary.hasTie).length,
+      allTieBallots: tieSummaries.filter(summary => summary.allTied).length,
+      consensusLeaders,
     };
   });
 
   const dimensions = buildRankDimensionInsights(cases, rankVotes);
   const validTaus = cases.map(item => item.kendallTau).filter((value): value is number => value !== null);
+  const validRelations = cases.map(item => item.relationAgreement).filter((value): value is number => value !== null);
+  const ballotTieSummaries = rankVotes.map(vote => getRankingTieSummary(vote.ranking));
+  const tiedTierSizes = rankVotes.flatMap(vote =>
+    sortRanking(vote.ranking).reduce<number[]>((sizes, entry, index, ranking) => {
+      if (index > 0 && ranking[index - 1].rank === entry.rank) return sizes;
+      const size = ranking.filter(candidate => candidate.rank === entry.rank).length;
+      if (size > 1) sizes.push(size);
+      return sizes;
+    }, []),
+  );
+  const bestScore = modelStats[0]?.normalizedScore;
+  const bestModels = bestScore === undefined
+    ? []
+    : modelStats.filter(model => Math.abs(model.normalizedScore - bestScore) < 1e-9).map(model => model.modelName);
 
   return {
     mode: 'rank',
@@ -774,9 +762,18 @@ export const buildRankInsights = ({
       itemCount: cases.length,
       rankingRecords: rankVotes.length,
       voterCount: new Set(rankVotes.map(vote => vote.user || 'Anonymous')).size,
-      bestModel: modelStats[0]?.modelName || '',
+      bestModel: bestModels.join(' = '),
+      bestModels,
       averageKendallTau: validTaus.length ? validTaus.reduce((sum, value) => sum + value, 0) / validTaus.length : null,
-      lowConsensusCount: cases.filter(item => item.kendallTau !== null && item.kendallTau < 0.3).length,
+      averageRelationAgreement: validRelations.length ? validRelations.reduce((sum, value) => sum + value, 0) / validRelations.length : null,
+      averageDistinctionRate: cases.length ? cases.reduce((sum, item) => sum + item.distinctionRate, 0) / cases.length : 0,
+      tieBallots: ballotTieSummaries.filter(summary => summary.hasTie).length,
+      allTieBallots: ballotTieSummaries.filter(summary => summary.allTied).length,
+      tieBallotRate: safeDivide(ballotTieSummaries.filter(summary => summary.hasTie).length, rankVotes.length),
+      allTieBallotRate: safeDivide(ballotTieSummaries.filter(summary => summary.allTied).length, rankVotes.length),
+      averageTieGroupSize: tiedTierSizes.length ? tiedTierSizes.reduce((sum, size) => sum + size, 0) / tiedTierSizes.length : 0,
+      lowConsensusCount: cases.filter(item => item.relationAgreement !== null && item.relationAgreement < 0.6).length,
+      lowDistinctionCount: cases.filter(item => item.distinctionRate < 0.5).length,
       smallSample: cases.length < 5 || rankVotes.length < 10
     },
     cases: cases.sort((a, b) => a.itemId.localeCompare(b.itemId)),
@@ -803,6 +800,11 @@ const buildRankDimensionInsights = (cases: RankCaseInsight[], votes: VoteRecord[
     .map(group => {
       const modelStats = toRankModelInsights(group.votes);
       const taus = group.cases.map(item => item.kendallTau).filter((value): value is number => value !== null);
+      const relations = group.cases.map(item => item.relationAgreement).filter((value): value is number => value !== null);
+      const leaderScore = modelStats[0]?.normalizedScore;
+      const leadingModels = leaderScore === undefined
+        ? []
+        : modelStats.filter(model => Math.abs(model.normalizedScore - leaderScore) < 1e-9).map(model => model.modelName);
       return {
         mode: 'rank' as const,
         dimensionKey: group.key,
@@ -810,8 +812,12 @@ const buildRankDimensionInsights = (cases: RankCaseInsight[], votes: VoteRecord[
         itemCount: group.cases.length,
         rankingRecords: group.votes.length,
         modelStats,
-        leadingModel: modelStats[0]?.modelName || '',
-        agreement: taus.length ? taus.reduce((sum, value) => sum + value, 0) / taus.length : null,
+        leadingModel: leadingModels.join(' = '),
+        leadingModels,
+        agreement: relations.length ? relations.reduce((sum, value) => sum + value, 0) / relations.length : null,
+        kendallTauB: taus.length ? taus.reduce((sum, value) => sum + value, 0) / taus.length : null,
+        distinctionRate: group.cases.length ? group.cases.reduce((sum, item) => sum + item.distinctionRate, 0) / group.cases.length : 0,
+        tieBallotRate: safeDivide(group.cases.reduce((sum, item) => sum + item.tieBallots, 0), group.votes.length),
         smallSample: group.cases.length < 5 || group.votes.length < 10
       };
     })
@@ -826,14 +832,20 @@ export const rowsToCsv = (headers: string[], rows: any[][]) =>
 export const buildInsightSummaryCsv = (bundle: InsightBundle) => {
   if (bundle.mode === 'rank') {
     return rowsToCsv(
-      ['Model', 'TotalScore', 'AverageRank', 'FirstPlaceCount', 'RankedCount', 'FirstPlaceRate', 'CI95_Lower', 'CI95_Upper'],
+      ['Model', 'NormalizedBorda', 'TotalScore', 'AverageMidRank', 'OutrightFirstCount', 'CoFirstCount', 'FirstPlaceCredit', 'FirstPlaceShare', 'TopTierCount', 'TieCount', 'TieRate', 'RankedCount', 'CI95_Lower', 'CI95_Upper'],
       bundle.models.map(model => [
         model.modelName,
+        model.normalizedScore.toFixed(4),
         model.totalScore,
         model.averageRank.toFixed(4),
-        model.firstPlaceCount,
-        model.rankedCount,
+        model.outrightFirstCount,
+        model.coFirstCount,
+        model.firstPlaceCredit.toFixed(4),
         model.firstPlaceRate.toFixed(4),
+        model.firstPlaceCount,
+        model.tieCount,
+        model.tieRate.toFixed(4),
+        model.rankedCount,
         model.confidenceInterval.lower.toFixed(4),
         model.confidenceInterval.upper.toFixed(4)
       ])
@@ -872,7 +884,7 @@ export const buildInsightSummaryCsv = (bundle: InsightBundle) => {
 export const buildInsightDimensionCsv = (bundle: InsightBundle) => {
   if (bundle.mode === 'rank') {
     return rowsToCsv(
-      ['Dimension', 'Value', 'ItemCount', 'RankingRecords', 'LeadingModel', 'Agreement', 'SmallSample', 'ModelStats'],
+      ['Dimension', 'Value', 'ItemCount', 'RankingRecords', 'LeadingModels', 'RelationAgreement', 'KendallTauB', 'DistinctionRate', 'TieBallotRate', 'SmallSample', 'ModelStats'],
       bundle.dimensions.map(item => [
         item.dimensionKey,
         item.dimensionValue,
@@ -880,8 +892,11 @@ export const buildInsightDimensionCsv = (bundle: InsightBundle) => {
         item.rankingRecords,
         item.leadingModel,
         item.agreement ?? '',
+        item.kendallTauB ?? '',
+        item.distinctionRate.toFixed(4),
+        item.tieBallotRate.toFixed(4),
         item.smallSample ? 'yes' : 'no',
-        item.modelStats.map(stat => `${stat.modelName}: score=${stat.totalScore}, avgRank=${stat.averageRank.toFixed(4)}, first=${stat.firstPlaceCount}`).join(' | ')
+        item.modelStats.map(stat => `${stat.modelName}: normalized=${stat.normalizedScore.toFixed(4)}, score=${stat.totalScore}, avgMidRank=${stat.averageRank.toFixed(4)}, outrightFirst=${stat.outrightFirstCount}, coFirst=${stat.coFirstCount}`).join(' | ')
       ])
     );
   }
@@ -907,6 +922,39 @@ export const buildInsightDimensionCsv = (bundle: InsightBundle) => {
     ])
   );
 };
+
+export const buildRankPairwiseCsv = (bundle: RankInsightBundle) => rowsToCsv(
+  [
+    'ModelA',
+    'ModelB',
+    'Wins_A',
+    'Ties',
+    'Wins_B',
+    'TotalRelations',
+    'DecisiveRelations',
+    'DominanceScore',
+    'Decisive_A_Share',
+    'TieRate',
+    'Wilson95_Lower',
+    'Wilson95_Upper',
+    'SignTestPValue'
+  ],
+  bundle.pairwise.map(pair => [
+    pair.modelAName,
+    pair.modelBName,
+    pair.aWins,
+    pair.ties,
+    pair.bWins,
+    pair.total,
+    pair.decisiveTotal,
+    pair.aShare.toFixed(4),
+    pair.decisiveAShare.toFixed(4),
+    pair.tieRate.toFixed(4),
+    pair.decisiveTotal ? pair.confidenceInterval.lower.toFixed(4) : '',
+    pair.decisiveTotal ? pair.confidenceInterval.upper.toFixed(4) : '',
+    pair.pValue ?? ''
+  ])
+);
 
 export const buildEvidenceJson = (bundle: InsightBundle) =>
   JSON.stringify({

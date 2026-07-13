@@ -1,10 +1,15 @@
 {
-  "feature": "balanced_adaptive_arena",
+  "feature": "balanced_adaptive_arena_and_rank_ties",
   "requirements": [
     { "id": "arena-sampling", "status": "completed", "description": "Coverage-first adaptive pair sampling without case expansion" },
     { "id": "arena-soft-target", "status": "completed", "description": "Soft reviewer target and partial contribution flow" },
     { "id": "arena-bt", "status": "completed", "description": "Weighted Bradley-Terry ratings, confidence intervals, and connectivity guards" },
     { "id": "arena-insights", "status": "completed", "description": "Leaderboard, coverage diagnostics, evidence, and CSV exports" },
-    { "id": "arena-compat", "status": "completed", "description": "Backward compatibility for all-pairs, adjacent-pairs, and legacy votes" }
+    { "id": "arena-compat", "status": "completed", "description": "Backward compatibility for all-pairs, adjacent-pairs, and legacy votes" },
+    { "id": "rank-weak-order", "status": "completed", "description": "Competition-ranked weak orders with multiple tie tiers and legacy strict-rank compatibility" },
+    { "id": "rank-tier-editor", "status": "completed", "description": "Stable blinded media cards with desktop and mobile tier editing, merging, splitting, and drag ordering" },
+    { "id": "rank-tie-stats", "status": "completed", "description": "Tie-adjusted and normalized Borda, fractional first-place credit, pairwise ties, tau-b, relation agreement, and distinction" },
+    { "id": "rank-tie-exports", "status": "completed", "description": "Tie-aware result, analysis, dimension, pairwise, raw vote, history, and evidence exports with legacy CSV import" },
+    { "id": "rank-tie-tests", "status": "completed", "description": "Deterministic weak-order regression coverage and desktop/mobile browser verification" }
   ]
 }

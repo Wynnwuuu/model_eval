@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Upload, FileText, BarChart3, Users, AlertCircle, PlusCircle, Download, ArrowRight, Database, Loader2, ExternalLink, Layers } from 'lucide-react';
 import { AggregatedResult, EvalParadigm, EvaluationConfig, EvalTask, EvalTemplate, EvaluationItem, EvaluationProject, ModelOutput, RankingEntry, VoteRecord, VoteType } from '../types';
-import { ArenaRankPromptItem, calculateArenaRankCaseSummaries, calculateArenaRankModelStats, getArenaRankModelOutputUrl, getBordaScore, getModelOutputsForItem, isArenaRankVote, resolveEvaluationItemPrompt, sortRanking } from '../rankingUtils';
+import { ArenaRankPromptItem, calculateArenaRankCaseSummaries, calculateArenaRankModelStats, formatConsensusRanking, formatRanking, getArenaRankModelOutputUrl, getModelOutputsForItem, getRankingTieSummary, isArenaRankVote, normalizeRanking, resolveEvaluationItemPrompt, sortRanking, validateRanking } from '../rankingUtils';
 import { VIDEO_EXTENSIONS } from '../constants';
 import { db, handlePersistenceError } from '../auth';
 import { collection, getDocs, query, orderBy } from '../datastore';
@@ -203,10 +203,12 @@ const getRankVideoUrlFromRow = (row: any, keys: string[], rank: number): string 
 
 const buildModelOutputsFromRanking = (row: any, keys: string[], ranking: RankingEntry[]): ModelOutput[] =>
   sortRanking(ranking)
-    .map(entry => ({
+    .map((entry, index) => ({
       modelId: entry.modelId,
       modelName: entry.modelName,
-      url: getRankVideoUrlFromRow(row, keys, entry.rank)
+      // Video-link columns are positional for backward compatibility. With
+      // ties, two entries can share a rank but still occupy separate columns.
+      url: getRankVideoUrlFromRow(row, keys, index + 1)
     }))
     .filter(output => output.url);
 
@@ -855,19 +857,34 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     handleImportFromPlatform(selectedMaterialIds);
   }, [loadedScopeKey, loadingTasks, selectedMaterialIds, selectedMaterialScope, selectedProjectId, statusFilter]);
 
-  const parseRankingRow = (row: any, keys: string[]): RankingEntry[] => {
+  const parseRankingRow = (row: any, keys: string[], expectedModels: Array<{ id: string; name: string }> = []): RankingEntry[] => {
+    const aliases = new Map<string, { id: string; name: string }>();
+    expectedModels.forEach(model => {
+      aliases.set(model.id.trim().toLowerCase(), model);
+      aliases.set(model.name.trim().toLowerCase(), model);
+    });
+    const canonicalizeModels = (ranking: RankingEntry[]) => ranking.map(entry => {
+      const matched = aliases.get(entry.modelId.trim().toLowerCase()) || aliases.get(entry.modelName.trim().toLowerCase());
+      return matched ? { ...entry, modelId: matched.id, modelName: matched.name } : entry;
+    });
+    const expectedModelIds = expectedModels.map(model => model.id);
     const rankingJsonKey = keys.find(k => k.toLowerCase() === 'ranking_json' || k.toLowerCase() === 'ranking');
     if (rankingJsonKey && row[rankingJsonKey]) {
       try {
         const parsed = JSON.parse(row[rankingJsonKey]);
         if (Array.isArray(parsed)) {
-          return parsed
+          const validation = validateRanking(canonicalizeModels(parsed
             .filter(entry => entry.modelId && entry.rank)
             .map(entry => ({
               modelId: String(entry.modelId),
               modelName: String(entry.modelName || entry.modelId),
               rank: Number(entry.rank)
-            }));
+            }))), expectedModelIds);
+          if (!validation.valid) {
+            console.warn('Invalid ranking_json row:', validation.errors.join('; '));
+            return [];
+          }
+          return validation.ranking;
         }
       } catch (err) {
         console.error("Failed to parse ranking_json", err);
@@ -878,7 +895,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
       .filter(k => /^rank_\d+$/i.test(k))
       .sort((a, b) => Number(a.split('_')[1]) - Number(b.split('_')[1]));
 
-    return rankKeys
+    const validation = validateRanking(canonicalizeModels(rankKeys
       .map((key, index) => {
         const rawValue = String(row[key] || '').trim();
         if (!rawValue) return null;
@@ -888,7 +905,8 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         const modelId = idMatch?.[1] || modelName;
         return { modelId, modelName, rank: index + 1 };
       })
-      .filter((entry): entry is RankingEntry => Boolean(entry));
+      .filter((entry): entry is RankingEntry => Boolean(entry))), expectedModelIds);
+    return validation.valid ? validation.ranking : [];
   };
   
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -940,7 +958,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
               if (referenceUrls.length > 0) item.referenceUrls = referenceUrls;
               upsertAnalysisItem(newAnalysisItemsById, item);
             }
-            const ranking = parseRankingRow(row, keys);
+            const ranking = parseRankingRow(row, keys, selectedTask?.models || []);
 
             if (itemId && ranking.length >= 3) {
               const itemIdString = String(itemId);
@@ -1250,6 +1268,17 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   const isArenaRankAnalysis = analysisMode === 'Arena-rank';
   const rankModelStats = calculateArenaRankModelStats(rankVotes);
   const rankCaseSummaries = calculateArenaRankCaseSummaries(rankVotes, rankItems);
+  const rankTieSummaries = rankVotes.map(vote => getRankingTieSummary(vote.ranking));
+  const leadingRankModels = rankModelStats.length
+    ? rankModelStats.filter(model => Math.abs(model.normalizedScore - rankModelStats[0].normalizedScore) < 1e-9)
+    : [];
+  const averageRankRelationAgreement = (() => {
+    const values = rankCaseSummaries.map(item => item.relationAgreement).filter((value): value is number => value !== null);
+    return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+  })();
+  const averageRankDistinction = rankCaseSummaries.length
+    ? rankCaseSummaries.reduce((sum, item) => sum + item.distinctionRate, 0) / rankCaseSummaries.length
+    : 0;
   const analysisItemsById = new Map<string, EvaluationItem>(analysisItems.map(item => [item.id, item] as [string, EvaluationItem]));
   const analysisDimensionColumns = getDimensionColumnsForCsv(analysisItems);
   const rankDimensionColumns = getDimensionColumnsForCsv(rankItems as any);
@@ -1353,7 +1382,20 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     if (isArenaRankAnalysis) {
       const maxSummaryRankCount = Math.max(0, ...rankCaseSummaries.map(item => item.ranking.length));
       const rankVideoHeaders = Array.from({ length: maxSummaryRankCount }, (_, idx) => `排名${idx + 1}视频链接`);
-      const headers = ['ItemID', 'Prompt', ...rankDimensionColumns.map(col => col.header), 'Voters', 'ConsensusRanking', ...rankVideoHeaders, 'ModelStats'];
+      const headers = [
+        'ItemID',
+        'Prompt',
+        ...rankDimensionColumns.map(col => col.header),
+        'Voters',
+        'ConsensusRanking',
+        'RelationAgreement',
+        'KendallTauB',
+        'DistinctionRate',
+        'TieBallots',
+        'AllTieBallots',
+        ...rankVideoHeaders,
+        'ModelStats'
+      ];
       const rows = rankCaseSummaries.map(item => {
         const sourceItem = rankItems.find(candidate => candidate.id === item.itemId);
         const dimensionValues = getDimensionValuesForItem(sourceItem as any);
@@ -1367,9 +1409,14 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
           item.prompt || '',
           ...getDimensionCsvValues(dimensionValues, rankDimensionColumns.map(col => col.key)),
           item.voterCount,
-          item.ranking.map(entry => `#${entry.averageRank.toFixed(2)} ${entry.modelName}`).join(' | '),
+          formatConsensusRanking(item.ranking),
+          item.relationAgreement ?? '',
+          item.kendallTauB ?? '',
+          item.distinctionRate,
+          item.tieBallots,
+          item.allTieBallots,
           ...rankVideoValues,
-          item.ranking.map(entry => `${entry.modelName}: score=${entry.totalScore}, avgRank=${entry.averageRank.toFixed(2)}, first=${entry.firstPlaceCount}`).join(' | ')
+          item.ranking.map(entry => `${entry.modelName}: normalized=${entry.normalizedScore.toFixed(4)}, score=${entry.totalScore.toFixed(4)}, avgMidRank=${entry.averageRank.toFixed(4)}, outrightFirst=${entry.outrightFirstCount}, coFirst=${entry.coFirstCount}, firstCredit=${entry.firstPlaceCredit.toFixed(4)}, tieRate=${entry.tieRate.toFixed(4)}, ranked=${entry.rankedCount}`).join(' | ')
         ].map(escapeCsvField).join(',');
       });
       csvContent = [headers.join(','), ...rows].join('\n');
@@ -1459,6 +1506,43 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   };
 
   const downloadRawVotesCsv = () => {
+    if (isArenaRankAnalysis) {
+      const maxRankCount = Math.max(0, ...rankVotes.map(vote => vote.ranking?.length || 0));
+      const rankHeaders = Array.from({ length: maxRankCount }, (_, index) => `rank_${index + 1}`);
+      const rankVideoHeaders = Array.from({ length: maxRankCount }, (_, index) => `排名${index + 1}视频链接`);
+      const headers = ['ItemID', 'Prompt', ...rankDimensionColumns.map(col => col.header), 'User', 'Timestamp', 'RankingDisplay', 'HasTie', 'AllTied', 'TieGroupCount', 'TopTieSize', ...rankHeaders, ...rankVideoHeaders, 'ranking_json'];
+      const rows = rankVotes.map(vote => {
+        const sourceItem = rankItems.find(item => item.id === vote.itemId);
+        const ranking = normalizeRanking(vote.ranking);
+        const tieSummary = getRankingTieSummary(ranking);
+        return [
+          vote.itemId,
+          resolveEvaluationItemPrompt(sourceItem),
+          ...getDimensionCsvValues(getDimensionValuesForItem(sourceItem as any), rankDimensionColumns.map(col => col.key)),
+          vote.user || 'Anonymous',
+          new Date(vote.timestamp).toISOString(),
+          formatRanking(ranking),
+          tieSummary.hasTie ? 'true' : 'false',
+          tieSummary.allTied ? 'true' : 'false',
+          tieSummary.tieGroupCount,
+          tieSummary.topTieSize,
+          ...rankHeaders.map((_, index) => ranking[index] ? `${ranking[index].modelName} (${ranking[index].modelId})` : ''),
+          ...rankVideoHeaders.map((_, index) => ranking[index] ? getArenaRankModelOutputUrl(sourceItem, ranking[index]) : ''),
+          JSON.stringify(ranking)
+        ].map(escapeCsvField).join(',');
+      });
+      const csvContent = [headers.join(','), ...rows].join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.setAttribute('href', url);
+      link.setAttribute('download', `arena_rank_raw_votes_${new Date().toISOString().slice(0,10)}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      return;
+    }
+
     const headers = [
       'ItemID',
       'Prompt',
@@ -1508,7 +1592,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   const downloadDimensionAnalysisCsv = () => {
     const isRank = isArenaRankAnalysis;
     const headers = isRank
-      ? ['Dimension', 'Value', 'ItemCount', 'RankingRecords', 'LeadingModel', 'ModelStats']
+      ? ['Dimension', 'Value', 'ItemCount', 'RankingRecords', 'LeadingModels', 'RelationAgreement', 'KendallTauB', 'DistinctionRate', 'TieBallotRate', 'AllTieBallotRate', 'ModelStats']
       : ['Dimension', 'Value', 'ItemCount', 'TotalVotes', 'Votes_A', 'Votes_B', 'Votes_Tie', 'Winner', 'AgreementRate', 'MarginRate'];
 
     const rows = isRank
@@ -1517,8 +1601,15 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
           summary.dimensionValue,
           summary.itemCount,
           summary.rankingRecords,
-          summary.modelStats[0]?.modelName || '',
-          summary.modelStats.map(stat => `${stat.modelName}: score=${stat.totalScore}, avgRank=${stat.averageRank.toFixed(2)}, first=${stat.firstPlaceCount}`).join(' | ')
+          summary.modelStats.length
+            ? summary.modelStats.filter(stat => Math.abs(stat.normalizedScore - summary.modelStats[0].normalizedScore) < 1e-9).map(stat => stat.modelName).join(' = ')
+            : '',
+          summary.relationAgreement ?? '',
+          summary.kendallTauB ?? '',
+          summary.distinctionRate,
+          summary.tieBallotRate,
+          summary.allTieBallotRate,
+          summary.modelStats.map(stat => `${stat.modelName}: normalized=${stat.normalizedScore.toFixed(4)}, score=${stat.totalScore.toFixed(4)}, avgMidRank=${stat.averageRank.toFixed(4)}, outrightFirst=${stat.outrightFirstCount}, coFirst=${stat.coFirstCount}, firstCredit=${stat.firstPlaceCredit.toFixed(4)}, tieRate=${stat.tieRate.toFixed(4)}`).join(' | ')
         ].map(escapeCsvField).join(','))
       : voteDimensionSummaries.map(summary => [
           summary.dimensionKey,
@@ -1755,18 +1846,19 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
               </div>
             </div>
             <div className="glass-panel p-4 rounded-xl shadow-sm">
-              <div className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-1">最高积分</div>
+              <div className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-1">领先模型</div>
               <div className="flex items-center gap-2 text-2xl font-bold text-slate-100">
                 <BarChart3 className="text-amber-500" />
-                {rankModelStats[0]?.totalScore || 0}
+                <span className="truncate text-base" title={leadingRankModels.map(model => model.modelName).join(' = ')}>{leadingRankModels.map(model => model.modelName).join(' = ') || '-'}</span>
               </div>
             </div>
             <div className="glass-panel p-4 rounded-xl shadow-sm">
-              <div className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-1">最佳平均名次</div>
+              <div className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-1">一致率 / 区分度</div>
               <div className="flex items-center gap-2 text-2xl font-bold text-slate-100">
                 <BarChart3 className="text-emerald-500" />
-                {rankModelStats[0]?.averageRank.toFixed(2) || '-'}
+                {averageRankRelationAgreement === null ? '-' : `${(averageRankRelationAgreement * 100).toFixed(0)}%`} / {(averageRankDistinction * 100).toFixed(0)}%
               </div>
+              <div className="mt-1 text-xs text-slate-400">含并列票 {rankTieSummaries.filter(summary => summary.hasTie).length} / 全部并列 {rankTieSummaries.filter(summary => summary.allTied).length}</div>
             </div>
           </div>
 
@@ -1780,6 +1872,9 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
               <button onClick={downloadAnalysisCsv} className="flex items-center gap-2 px-4 py-2 bg-black/40 glass-panel-hover text-white rounded-lg text-sm font-medium">
                 <Download size={16} /> 导出分析 CSV
               </button>
+              <button onClick={downloadRawVotesCsv} className="flex items-center gap-2 px-4 py-2 bg-black/40 glass-panel-hover text-white rounded-lg text-sm font-medium">
+                <Download size={16} /> 导出原始排名 CSV
+              </button>
               </div>
             </div>
             <div className="overflow-x-auto">
@@ -1788,21 +1883,30 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
                   <tr>
                     <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">排名</th>
                     <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">模型</th>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">总积分</th>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">平均名次</th>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">第一名次数</th>
+                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">归一化 Borda</th>
+                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">原始 Borda</th>
+                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">平均 mid-rank</th>
+                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">独占 / 并列第一</th>
+                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">第一名份额</th>
+                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">并列参与率</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {rankModelStats.map((model, index) => (
+                  {rankModelStats.map((model) => {
+                    const consensusRank = rankModelStats.findIndex(candidate => Math.abs(candidate.normalizedScore - model.normalizedScore) < 1e-9) + 1;
+                    const tied = rankModelStats.filter(candidate => Math.abs(candidate.normalizedScore - model.normalizedScore) < 1e-9).length > 1;
+                    return (
                     <tr key={model.modelId} className="border-b border-white/10 hover:bg-white/5">
-                      <td className="p-4 text-sm font-mono text-amber-300">#{index + 1}</td>
+                      <td className="p-4 text-sm font-mono text-amber-300">{tied ? `并列 #${consensusRank}` : `#${consensusRank}`}</td>
                       <td className="p-4 text-sm font-bold text-slate-200">{model.modelName}</td>
-                      <td className="p-4 text-sm text-slate-200">{model.totalScore}</td>
+                      <td className="p-4 text-sm text-slate-200">{(model.normalizedScore * 100).toFixed(1)}%</td>
+                      <td className="p-4 text-sm text-slate-200">{model.totalScore.toFixed(2)}</td>
                       <td className="p-4 text-sm text-slate-200">{model.averageRank.toFixed(2)}</td>
-                      <td className="p-4 text-sm text-slate-200">{model.firstPlaceCount}</td>
+                      <td className="p-4 text-sm text-slate-200">{model.outrightFirstCount} / {model.coFirstCount}</td>
+                      <td className="p-4 text-sm text-slate-200">{model.firstPlaceCredit.toFixed(2)}</td>
+                      <td className="p-4 text-sm text-slate-200">{(model.tieRate * 100).toFixed(1)}%</td>
                     </tr>
-                  ))}
+                  );})}
                 </tbody>
               </table>
             </div>
@@ -1825,6 +1929,8 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
                       <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">Case 数</th>
                       <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">排名记录</th>
                       <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">领先模型</th>
+                      <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">关系一致率</th>
+                      <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">区分度 / 并列票</th>
                       <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">模型统计</th>
                     </tr>
                   </thead>
@@ -1835,9 +1941,13 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
                         <td className="p-4 text-sm text-slate-200">{summary.dimensionValue}</td>
                         <td className="p-4 text-sm text-slate-200">{summary.itemCount}</td>
                         <td className="p-4 text-sm text-slate-200">{summary.rankingRecords}</td>
-                        <td className="p-4 text-sm font-semibold text-amber-300">{summary.modelStats[0]?.modelName || '-'}</td>
+                        <td className="p-4 text-sm font-semibold text-amber-300">
+                          {summary.modelStats.length ? summary.modelStats.filter(stat => Math.abs(stat.normalizedScore - summary.modelStats[0].normalizedScore) < 1e-9).map(stat => stat.modelName).join(' = ') : '-'}
+                        </td>
+                        <td className="p-4 text-sm text-slate-200">{summary.relationAgreement === null ? '-' : `${(summary.relationAgreement * 100).toFixed(0)}%`}</td>
+                        <td className="p-4 text-sm text-slate-200">{(summary.distinctionRate * 100).toFixed(0)}% / {(summary.tieBallotRate * 100).toFixed(0)}%</td>
                         <td className="p-4 text-xs text-slate-300 min-w-[280px]">
-                          {summary.modelStats.map(stat => `${stat.modelName}: score=${stat.totalScore}, avg=${stat.averageRank.toFixed(2)}, first=${stat.firstPlaceCount}`).join(' | ')}
+                          {summary.modelStats.map(stat => `${stat.modelName}: normalized=${(stat.normalizedScore * 100).toFixed(1)}, score=${stat.totalScore.toFixed(2)}, mid-rank=${stat.averageRank.toFixed(2)}, outright/co-first=${stat.outrightFirstCount}/${stat.coFirstCount}`).join(' | ')}
                         </td>
                       </tr>
                     ))}
@@ -1863,6 +1973,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
                     <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">Prompt</th>
                     <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">评测维度</th>
                     <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">参与人数</th>
+                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">一致率 / 区分度</th>
                     <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">共识排名</th>
                   </tr>
                 </thead>
@@ -1878,15 +1989,23 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
                           <DimensionChips values={getDimensionValuesForItem(sourceItem as any)} label="" />
                         </td>
                         <td className="p-4 text-sm text-slate-200">{item.voterCount}</td>
+                        <td className="p-4 text-xs text-slate-300 min-w-[150px]">
+                          <div>{item.relationAgreement === null ? '一致率 -' : `一致率 ${(item.relationAgreement * 100).toFixed(0)}%`}</div>
+                          <div>区分度 {(item.distinctionRate * 100).toFixed(0)}%</div>
+                          <div className="text-slate-500">并列票 {item.tieBallots} / 全并列 {item.allTieBallots}</div>
+                        </td>
                         <td className="p-4">
                           <ArenaRankVideoPreviewList
-                            entries={item.ranking.map((entry, index) => ({
+                            entries={item.ranking.map((entry) => {
+                              const consensusRank = item.ranking.findIndex(candidate => Math.abs(candidate.normalizedScore - entry.normalizedScore) < 1e-9) + 1;
+                              const tied = item.ranking.filter(candidate => Math.abs(candidate.normalizedScore - entry.normalizedScore) < 1e-9).length > 1;
+                              return ({
                               id: entry.modelId,
                               modelName: entry.modelName,
-                              rankLabel: `#${index + 1}`,
-                              metaLabel: `avg ${entry.averageRank.toFixed(2)}`,
+                              rankLabel: tied ? `并列 #${consensusRank}` : `#${consensusRank}`,
+                              metaLabel: `Borda ${(entry.normalizedScore * 100).toFixed(1)} / mid-rank ${entry.averageRank.toFixed(2)}`,
                               videoUrl: getArenaRankModelOutputUrl(sourceItem, entry)
-                            }))}
+                            });})}
                           />
                         </td>
                       </tr>

@@ -1,5 +1,5 @@
 import { AggregatedResult, EvaluationItem, VoteRecord, VoteType } from './types';
-import { calculateArenaRankModelStats, isArenaRankVote } from './rankingUtils';
+import { calculateArenaRankModelStats, calculateRankingAgreement, getRankingTieSummary, isArenaRankVote, normalizeRanking } from './rankingUtils';
 
 export type DimensionValues = Record<string, string>;
 
@@ -24,6 +24,11 @@ export interface RankDimensionSummary {
   itemCount: number;
   rankingRecords: number;
   modelStats: ReturnType<typeof calculateArenaRankModelStats>;
+  relationAgreement: number | null;
+  kendallTauB: number | null;
+  distinctionRate: number;
+  tieBallotRate: number;
+  allTieBallotRate: number;
 }
 
 const DIMENSION_PREFIXES = ['dimension_', 'dimension:', '评测维度_', '评测维度:', '维度_', '维度:'];
@@ -187,13 +192,29 @@ export const calculateRankDimensionSummaries = (
   });
 
   return Array.from(grouped.values())
-    .map(group => ({
-      dimensionKey: group.dimensionKey,
-      dimensionValue: group.dimensionValue,
-      itemCount: group.itemIds.size,
-      rankingRecords: group.votes.length,
-      modelStats: calculateArenaRankModelStats(group.votes)
-    }))
+    .map(group => {
+      const votesByItem = new Map<string, VoteRecord[]>();
+      group.votes.forEach(vote => votesByItem.set(vote.itemId, [...(votesByItem.get(vote.itemId) || []), vote]));
+      const agreements = Array.from(votesByItem.values()).map(itemVotes =>
+        calculateRankingAgreement(itemVotes.map(vote => normalizeRanking(vote.ranking)))
+      );
+      const relations = agreements.map(item => item.relationAgreement).filter((value): value is number => value !== null);
+      const taus = agreements.map(item => item.kendallTauB).filter((value): value is number => value !== null);
+      const tieSummaries = group.votes.map(vote => getRankingTieSummary(vote.ranking));
+
+      return {
+        dimensionKey: group.dimensionKey,
+        dimensionValue: group.dimensionValue,
+        itemCount: group.itemIds.size,
+        rankingRecords: group.votes.length,
+        modelStats: calculateArenaRankModelStats(group.votes),
+        relationAgreement: relations.length ? relations.reduce((sum, value) => sum + value, 0) / relations.length : null,
+        kendallTauB: taus.length ? taus.reduce((sum, value) => sum + value, 0) / taus.length : null,
+        distinctionRate: agreements.length ? agreements.reduce((sum, value) => sum + value.distinctionRate, 0) / agreements.length : 0,
+        tieBallotRate: group.votes.length ? tieSummaries.filter(summary => summary.hasTie).length / group.votes.length : 0,
+        allTieBallotRate: group.votes.length ? tieSummaries.filter(summary => summary.allTied).length / group.votes.length : 0
+      };
+    })
     .sort((a, b) => a.dimensionKey.localeCompare(b.dimensionKey) || b.rankingRecords - a.rankingRecords || a.dimensionValue.localeCompare(b.dimensionValue));
 };
 

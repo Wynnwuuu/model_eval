@@ -45,9 +45,9 @@ export const EVALUATION_METHOD_OPTIONS: Array<{
   },
   {
     method: 'rank_order',
-    title: '全量排序 / Arena-rank',
+    title: '梯队排序 / Arena-rank',
     shortLabel: 'Arena-rank',
-    description: '三个及以上候选产物拖拽排序，使用 Borda 与名次统计。',
+    description: '三个及以上候选产物按梯队排序，支持多个并列组，使用并列校正 Borda 与名次统计。',
     minModels: 3
   },
   {
@@ -147,7 +147,7 @@ export const buildDefaultDimensionsForMethod = (method: EvaluationMethod): EvalD
 export const getDefaultEvaluationConfig = (method: EvaluationMethod): EvaluationConfig => ({
   method,
   blind: method === 'ab_preference' || method === 'pairwise' || method === 'rank_order',
-  tiePolicy: method === 'direct_score' || method === 'rubric_score' || method === 'rank_order' ? 'disallow' : 'allow',
+  tiePolicy: method === 'direct_score' || method === 'rubric_score' ? 'disallow' : 'allow',
   pairwiseMode: method === 'pairwise' ? 'arena_sampled' : undefined,
   arenaSampling: method === 'pairwise' ? {
     // Zero is the draft-only "auto" sentinel. Task creation resolves it from
@@ -203,6 +203,12 @@ export const normalizeEvaluationConfig = (task?: EvalTask, template?: EvalTempla
     merged.scale = undefined;
   } else if (!merged.scale) {
     merged.scale = defaults.scale;
+  }
+
+  // Arena-rank uses a complete weak order. Persisted legacy tasks may still
+  // carry `disallow`, but repeated ranks are valid for every rank task now.
+  if (method === 'rank_order') {
+    merged.tiePolicy = 'allow';
   }
 
   return merged;

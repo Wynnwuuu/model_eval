@@ -1,7 +1,7 @@
 import React from 'react';
 import { Download, Trash2, Calendar, User, ArrowLeft, BarChart3 } from 'lucide-react';
 import { HistorySession, VotingStats } from '../types';
-import { calculateArenaRankModelStats, getArenaRankModelOutputUrl, getBordaScore, isArenaRankVote, resolveEvaluationItemPrompt, sortRanking } from '../rankingUtils';
+import { calculateArenaRankModelStats, formatRanking, getArenaRankModelOutputUrl, getRankingEntryMetrics, getRankingTieSummary, isArenaRankVote, resolveEvaluationItemPrompt, sortRanking } from '../rankingUtils';
 import { getEffectiveVotes, getSkippedVoteCount, isSkippedVote } from '../voteUtils';
 
 interface HistoryScreenProps {
@@ -36,11 +36,18 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ history, onBack, onClearH
       const maxRankCount = Math.max(0, ...rankVotes.map(v => v.ranking?.length || 0));
       const rankHeaders = Array.from({ length: maxRankCount }, (_, idx) => `rank_${idx + 1}`);
       const rankVideoHeaders = Array.from({ length: maxRankCount }, (_, idx) => `排名${idx + 1}视频链接`);
-      const modelHeaders = modelList.flatMap(model => [`${model.name}_rank`, `${model.name}_score`]);
-      const headers = ['ItemID', 'Prompt', 'Status', 'Timestamp', 'User', ...rankHeaders, ...rankVideoHeaders, ...modelHeaders, 'ranking_json'];
+      const modelHeaders = modelList.flatMap(model => [
+        `${model.name}_rank`,
+        `${model.name}_score`,
+        `${model.name}_midrank`,
+        `${model.name}_borda_score`,
+        `${model.name}_normalized_borda`
+      ]);
+      const headers = ['ItemID', 'Prompt', 'Status', 'Timestamp', 'User', 'RankingDisplay', 'HasTie', 'AllTied', 'TieGroupCount', 'TopTieSize', ...rankHeaders, ...rankVideoHeaders, ...modelHeaders, 'ranking_json'];
       const rows = session.votes.filter(v => isArenaRankVote(v) || isSkippedVote(v)).map(v => {
         const item = session.items.find(candidate => candidate.id === v.itemId);
         const ranking = sortRanking(v.ranking);
+        const tieSummary = getRankingTieSummary(ranking);
         const rankValues = rankHeaders.map((_, idx) => {
           const entry = ranking[idx];
           return entry ? `${entry.modelName} (${entry.modelId})` : '';
@@ -51,7 +58,10 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ history, onBack, onClearH
         });
         const modelValues = modelList.flatMap(model => {
           const entry = ranking.find(candidate => candidate.modelId === model.id);
-          return [entry?.rank || '', entry ? getBordaScore(entry.rank, ranking.length) : ''];
+          const metrics = entry ? getRankingEntryMetrics(ranking, entry.modelId) : null;
+          return metrics
+            ? [String(entry!.rank), String(metrics.bordaScore), String(metrics.midRank), String(metrics.bordaScore), String(metrics.normalizedBorda)]
+            : ['', '', '', '', ''];
         });
         return [
           v.itemId,
@@ -59,6 +69,11 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ history, onBack, onClearH
           isSkippedVote(v) ? 'skipped' : 'ranked',
           new Date(v.timestamp).toISOString(),
           session.userName || 'Anonymous',
+          formatRanking(ranking),
+          tieSummary.hasTie ? 'true' : 'false',
+          tieSummary.allTied ? 'true' : 'false',
+          tieSummary.tieGroupCount,
+          tieSummary.topTieSize,
           ...rankValues,
           ...rankVideoValues,
           ...modelValues,
@@ -151,7 +166,14 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ history, onBack, onClearH
         <div className="space-y-4">
           {history.sort((a, b) => b.timestamp - a.timestamp).map((session) => {
             const isRankSession = session.paradigm === 'Arena-rank';
-            const rankStats = calculateArenaRankModelStats(getEffectiveVotes(session.votes).filter(isArenaRankVote));
+            const effectiveRankVotes = getEffectiveVotes(session.votes).filter(isArenaRankVote);
+            const rankStats = calculateArenaRankModelStats(effectiveRankVotes);
+            const leadingRankModels = rankStats.length
+              ? rankStats.filter(model => Math.abs(model.normalizedScore - rankStats[0].normalizedScore) < 1e-9)
+              : [];
+            const rankTieRate = effectiveRankVotes.length
+              ? effectiveRankVotes.filter(vote => getRankingTieSummary(vote.ranking).hasTie).length / effectiveRankVotes.length
+              : 0;
             const stats = calculateStats(session.votes);
             const skippedCount = getSkippedVoteCount(session.votes);
             const aPercent = stats.total ? Math.round((stats.aCount / stats.total) * 100) : 0;
@@ -173,8 +195,8 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ history, onBack, onClearH
                       {isRankSession ? (
                         <>
                           <span className="text-amber-400">Arena-rank</span>
-                          <span className="text-slate-400">top:</span>
-                          <span className="text-slate-200">{rankStats[0]?.modelName || '-'}</span>
+                          <span className="text-slate-400">领先:</span>
+                          <span className="text-slate-200">{leadingRankModels.map(model => model.modelName).join(' = ') || '-'}</span>
                         </>
                       ) : (
                         <>
@@ -191,19 +213,37 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ history, onBack, onClearH
 
                   {/* Mini Charts */}
                   <div className="flex-1 min-w-[200px]">
-                    <div className="flex items-center justify-between text-xs font-medium text-slate-400 mb-1">
-                      <span>胜率分布</span>
-                    </div>
-                    <div className="h-4 rounded-full overflow-hidden flex w-full bg-white/10">
-                      <div style={{ width: `${aPercent}%` }} className="bg-blue-500 h-full" title={`${session.modelNames.a}: ${aPercent}%`} />
-                      <div style={{ width: `${tiePercent}%` }} className="bg-slate-400 h-full" title={`平局: ${tiePercent}%`} />
-                      <div style={{ width: `${bPercent}%` }} className="bg-indigo-500 h-full" title={`${session.modelNames.b}: ${bPercent}%`} />
-                    </div>
-                    <div className="flex justify-between text-xs mt-1 text-slate-500">
-                      <span>A: {aPercent}%</span>
-                      <span>平局: {tiePercent}%</span>
-                      <span>B: {bPercent}%</span>
-                    </div>
+                    {isRankSession ? (
+                      <>
+                        <div className="flex items-center justify-between text-xs font-medium text-slate-400 mb-1">
+                          <span>领先模型归一化 Borda</span>
+                          <span>{((rankStats[0]?.normalizedScore || 0) * 100).toFixed(1)}%</span>
+                        </div>
+                        <div className="h-4 overflow-hidden bg-white/10">
+                          <div style={{ width: `${(rankStats[0]?.normalizedScore || 0) * 100}%` }} className="h-full bg-amber-400" />
+                        </div>
+                        <div className="mt-1 flex justify-between text-xs text-slate-500">
+                          <span>含并列票 {Math.round(rankTieRate * 100)}%</span>
+                          <span>{effectiveRankVotes.length} 条排名</span>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="flex items-center justify-between text-xs font-medium text-slate-400 mb-1">
+                          <span>胜率分布</span>
+                        </div>
+                        <div className="h-4 rounded-full overflow-hidden flex w-full bg-white/10">
+                          <div style={{ width: `${aPercent}%` }} className="bg-blue-500 h-full" title={`${session.modelNames.a}: ${aPercent}%`} />
+                          <div style={{ width: `${tiePercent}%` }} className="bg-slate-400 h-full" title={`平局: ${tiePercent}%`} />
+                          <div style={{ width: `${bPercent}%` }} className="bg-indigo-500 h-full" title={`${session.modelNames.b}: ${bPercent}%`} />
+                        </div>
+                        <div className="flex justify-between text-xs mt-1 text-slate-500">
+                          <span>A: {aPercent}%</span>
+                          <span>平局: {tiePercent}%</span>
+                          <span>B: {bPercent}%</span>
+                        </div>
+                      </>
+                    )}
                   </div>
 
                   {/* Actions */}

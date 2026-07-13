@@ -168,7 +168,7 @@ const TemplateRepositoryScreen: React.FC<TemplateRepositoryScreenProps> = ({ onB
                   <option value="Pairwise" className="bg-black/40">Pairwise 对战 - 多模型两两比较</option>
                   <option value="MOS" className="bg-black/40">直接评分 / MOS - 1-5 分</option>
                   <option value="RubricScore" className="bg-black/40">Rubric 多维评分</option>
-                  <option value="Arena-rank" className="bg-black/40">全量排序 / Arena-rank</option>
+                  <option value="Arena-rank" className="bg-black/40">梯队排序 / Arena-rank</option>
                 </select>
               </div>
             </div>

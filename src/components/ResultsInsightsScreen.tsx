@@ -27,6 +27,7 @@ import {
   buildEvidenceJson,
   buildInsightDimensionCsv,
   buildInsightSummaryCsv,
+  buildRankPairwiseCsv,
   buildRankInsights,
   formatNumber,
   formatPValue,
@@ -58,6 +59,8 @@ interface ResultsInsightsScreenProps {
 type CaseFilter =
   | { type: 'all' }
   | { type: 'lowConsensus' }
+  | { type: 'lowDistinction' }
+  | { type: 'hasTie' }
   | { type: 'winner'; winner: VoteType }
   | { type: 'dimension'; key: string; value: string }
   | { type: 'pairwise'; a: string; b: string };
@@ -229,14 +232,17 @@ const AbConclusion: React.FC<{ bundle: AbInsightBundle }> = ({ bundle }) => {
 
 const RankConclusion: React.FC<{ bundle: Extract<InsightBundle, { mode: 'rank' }> }> = ({ bundle }) => {
   const champion = bundle.models[0];
+  const leaderLabel = bundle.summary.bestModels.length > 1
+    ? bundle.summary.bestModels.join(' = ')
+    : champion?.modelName;
   return (
     <ConclusionPanel
       eyebrow="Arena-rank 排名结论"
-      title={champion?.modelName || '暂无冠军模型'}
+      title={leaderLabel || '暂无领先模型'}
       subtitle={
         champion
-          ? `${champion.modelName} 当前 Borda 总分最高，平均名次 ${formatNumber(champion.averageRank, 2)}，第一名率 ${formatPercent(champion.firstPlaceRate, 1)}。排序一致性为 ${formatNumber(bundle.summary.averageKendallTau, 2)}，请结合 pairwise 矩阵和低共识 case 判断稳定性。`
-          : '当前没有足够的有效排序记录生成冠军结论。'
+          ? `${bundle.summary.bestModels.length > 1 ? '多个模型当前并列领先' : `${champion.modelName} 当前领先`}，归一化 Borda 为 ${formatPercent(champion.normalizedScore, 1)}，平均 mid-rank ${formatNumber(champion.averageRank, 2)}。成对关系一致率 ${formatPercent(bundle.summary.averageRelationAgreement, 1)}，区分度 ${formatPercent(bundle.summary.averageDistinctionRate, 1)}；需结合并列率与 pairwise 的非平局样本判断结论强度。`
+          : '当前没有足够的有效排序记录生成领先结论。'
       }
       meta={
         <>
@@ -246,6 +252,8 @@ const RankConclusion: React.FC<{ bundle: Extract<InsightBundle, { mode: 'rank' }
             {bundle.summary.smallSample ? '样本不足' : '样本量可读'}
           </Chip>
           <Chip>低共识 case: {bundle.summary.lowConsensusCount}</Chip>
+          <Chip tone={bundle.summary.tieBallotRate > 0 ? 'amber' : 'slate'}>含并列票: {formatPercent(bundle.summary.tieBallotRate, 0)}</Chip>
+          <Chip>全部并列票: {formatPercent(bundle.summary.allTieBallotRate, 0)}</Chip>
         </>
       }
       tone={bundle.summary.smallSample ? 'amber' : 'green'}
@@ -388,38 +396,43 @@ const AbCharts: React.FC<{ bundle: AbInsightBundle; setFilter: (filter: CaseFilt
 );
 
 const RankLeaderboard: React.FC<{ bundle: Extract<InsightBundle, { mode: 'rank' }> }> = ({ bundle }) => {
-  const maxScore = Math.max(...bundle.models.map(model => model.totalScore), 1);
   return (
-    <section className="rounded-xl border border-white/10 bg-white/5">
+    <section className="min-w-0 overflow-hidden rounded-xl border border-white/10 bg-white/5">
       <div className="border-b border-white/10 p-4">
         <h3 className="text-sm font-semibold text-slate-100">模型排名榜单</h3>
-        <p className="mt-1 text-xs text-slate-500">Borda 总分越高越好，平均名次越低越好。</p>
+        <p className="mt-1 text-xs text-slate-500">归一化 Borda 用于跨不同候选数比较；第一名份额会在并列第一模型间均分。</p>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[760px] text-left text-sm">
+        <table className="w-full min-w-[1120px] text-left text-sm">
           <thead className="bg-white/5 text-xs uppercase text-slate-400">
             <tr>
               <th className="p-3">排名</th>
               <th className="p-3">模型名</th>
-              <th className="p-3">Borda 总分</th>
-              <th className="p-3">平均名次</th>
-              <th className="p-3">第一名次数</th>
-              <th className="p-3">第一名率</th>
+              <th className="p-3">归一化 Borda</th>
+              <th className="p-3">原始 Borda</th>
+              <th className="p-3">平均 mid-rank</th>
+              <th className="p-3">独占第一</th>
+              <th className="p-3">并列第一</th>
+              <th className="p-3">第一名份额</th>
+              <th className="p-3">并列参与率</th>
               <th className="p-3">参与排名数</th>
             </tr>
           </thead>
           <tbody>
-            {bundle.models.map((model, index) => (
+            {bundle.models.map(model => (
               <tr key={model.modelId} className="border-t border-white/10 hover:bg-white/5">
-                <td className="p-3 font-mono text-amber-300">#{index + 1}</td>
+                <td className="p-3 font-mono text-amber-300">#{bundle.models.findIndex(candidate => Math.abs(candidate.normalizedScore - model.normalizedScore) < 1e-9) + 1}</td>
                 <td className="p-3 font-bold text-slate-100">{model.modelName}</td>
                 <td className="p-3">
-                  <div className="mb-1 font-semibold text-slate-200">{model.totalScore}</div>
-                  <Meter value={safeDivide(model.totalScore, maxScore)} className="bg-amber-400" />
+                  <div className="mb-1 font-semibold text-slate-200">{formatPercent(model.normalizedScore, 1)}</div>
+                  <Meter value={model.normalizedScore} className="bg-amber-400" />
                 </td>
+                <td className="p-3 text-slate-300">{formatNumber(model.totalScore, 2)}</td>
                 <td className="p-3 text-slate-300">{formatNumber(model.averageRank, 2)}</td>
-                <td className="p-3 text-slate-300">{model.firstPlaceCount}</td>
-                <td className="p-3 text-slate-300">{formatPercent(model.firstPlaceRate, 1)}</td>
+                <td className="p-3 text-slate-300">{model.outrightFirstCount}</td>
+                <td className="p-3 text-slate-300">{model.coFirstCount}</td>
+                <td className="p-3 text-slate-300">{formatNumber(model.firstPlaceCredit, 2)} / {formatPercent(model.firstPlaceRate, 1)}</td>
+                <td className="p-3 text-slate-300">{formatPercent(model.tieRate, 1)}</td>
                 <td className="p-3 text-slate-300">{model.rankedCount}</td>
               </tr>
             ))}
@@ -438,17 +451,37 @@ const PairwiseHeatmap: React.FC<{
   const getCell = (rowId: string, colId: string) => {
     if (rowId === colId) return null;
     const direct = stats.find(item => item.modelAId === rowId && item.modelBId === colId);
-    if (direct) return { share: direct.aShare, total: direct.total, pValue: direct.pValue };
+    if (direct) return {
+      share: direct.aShare,
+      decisiveShare: direct.decisiveAShare,
+      wins: direct.aWins,
+      losses: direct.bWins,
+      ties: direct.ties,
+      total: direct.total,
+      decisiveTotal: direct.decisiveTotal,
+      tieRate: direct.tieRate,
+      pValue: direct.pValue
+    };
     const reverse = stats.find(item => item.modelAId === colId && item.modelBId === rowId);
-    if (reverse) return { share: 1 - reverse.aShare, total: reverse.total, pValue: reverse.pValue };
+    if (reverse) return {
+      share: 1 - reverse.aShare,
+      decisiveShare: 1 - reverse.decisiveAShare,
+      wins: reverse.bWins,
+      losses: reverse.aWins,
+      ties: reverse.ties,
+      total: reverse.total,
+      decisiveTotal: reverse.decisiveTotal,
+      tieRate: reverse.tieRate,
+      pValue: reverse.pValue
+    };
     return null;
   };
 
   return (
-    <section className="rounded-xl border border-white/10 bg-white/5 p-4">
+    <section className="min-w-0 overflow-hidden rounded-xl border border-white/10 bg-white/5 p-4">
       <div className="mb-3">
         <h3 className="text-sm font-semibold text-slate-100">Pairwise dominance 热力矩阵</h3>
-        <p className="mt-1 text-xs text-slate-500">每个单元格表示“行模型排在列模型前”的比例。</p>
+        <p className="mt-1 text-xs text-slate-500">Dominance：高于计 1，并列计 0.5；显著性仅使用非平局关系。</p>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[520px] border-collapse text-left text-xs">
@@ -474,10 +507,10 @@ const PairwiseHeatmap: React.FC<{
                           onClick={() => onSelect(row.modelId, col.modelId)}
                           className="h-12 w-full rounded-lg border border-white/10 text-center hover:ring-1 hover:ring-amber-300"
                           style={{ background: `rgba(251, 191, 36, ${0.08 + (intensity / 100) * 0.5})` }}
-                          title={`p=${formatPValue(cell?.pValue)} / n=${cell?.total || 0}`}
+                          title={cell ? `胜/平/负 ${cell.wins}/${cell.ties}/${cell.losses}；非平局 n=${cell.decisiveTotal}；非平局胜率 ${formatPercent(cell.decisiveShare, 1)}；p=${formatPValue(cell.pValue)}` : '暂无关系记录'}
                         >
                           <div className="font-semibold text-slate-100">{cell ? `${intensity}%` : '-'}</div>
-                          <div className="text-[10px] text-slate-400">n={cell?.total || 0}</div>
+                          <div className="text-[10px] text-slate-400">n={cell?.total || 0} / 并 {cell?.ties || 0}</div>
                         </button>
                       )}
                     </td>
@@ -519,7 +552,8 @@ const DimensionTable: React.FC<{ bundle: InsightBundle; onSelect: (key: string, 
               <th className="p-3">Case</th>
               <th className="p-3">{bundle.mode === 'rank' ? '排名记录' : '投票数'}</th>
               <th className="p-3">{bundle.mode === 'rank' ? '领先模型' : '胜出模型'}</th>
-              <th className="p-3">{bundle.mode === 'rank' ? '一致性' : '共识度'}</th>
+              <th className="p-3">{bundle.mode === 'rank' ? '关系一致率' : '共识度'}</th>
+              {bundle.mode === 'rank' && <th className="p-3">区分度 / 并列票</th>}
               <th className="p-3">样本提示</th>
             </tr>
           </thead>
@@ -528,7 +562,7 @@ const DimensionTable: React.FC<{ bundle: InsightBundle; onSelect: (key: string, 
               const isRank = bundle.mode === 'rank';
               const score = isRank ? (item as any).agreement : (item as any).agreementRate;
               const records = isRank ? (item as any).rankingRecords : (item as any).totalVotes;
-              const winner = isRank ? (item as any).leadingModel : (item as any).winnerLabel;
+              const winner = isRank ? (item as any).leadingModels?.join(' = ') || (item as any).leadingModel : (item as any).winnerLabel;
               return (
                 <tr key={`${item.dimensionKey}-${item.dimensionValue}`} className="border-t border-white/10 hover:bg-white/5">
                   <td className="p-3 text-slate-300">{item.dimensionKey}</td>
@@ -541,6 +575,11 @@ const DimensionTable: React.FC<{ bundle: InsightBundle; onSelect: (key: string, 
                   <td className="p-3 text-slate-300">{records}</td>
                   <td className="p-3 font-semibold text-slate-100">{winner || '-'}</td>
                   <td className="p-3 text-slate-300">{score === null || score === undefined ? '-' : formatPercent(score, 0)}</td>
+                  {isRank && (
+                    <td className="p-3 text-slate-300">
+                      {formatPercent((item as any).distinctionRate, 0)} / {formatPercent((item as any).tieBallotRate, 0)}
+                    </td>
+                  )}
                   <td className="p-3">
                     {item.smallSample ? <Chip tone="amber">样本不足</Chip> : <Chip tone="green">可读</Chip>}
                   </td>
@@ -557,11 +596,19 @@ const DimensionTable: React.FC<{ bundle: InsightBundle; onSelect: (key: string, 
 );
 
 const EvidenceMediaStrip: React.FC<{ caseItem: AbCaseInsight | RankCaseInsight }> = ({ caseItem }) => {
-  const outputs = caseItem.representativeOutputs.length
+  const baseOutputs = caseItem.representativeOutputs.length
     ? caseItem.representativeOutputs
     : 'modelA' in caseItem
       ? [caseItem.modelA, caseItem.modelB].filter(output => output.url)
       : [];
+  const rankCase = 'consensusRanking' in caseItem ? caseItem : null;
+  const outputs = rankCase
+    ? [...baseOutputs].sort((a, b) => {
+        const aIndex = rankCase.consensusRanking.findIndex(model => model.modelId === a.modelId || model.modelName === a.modelName);
+        const bIndex = rankCase.consensusRanking.findIndex(model => model.modelId === b.modelId || model.modelName === b.modelName);
+        return (aIndex < 0 ? Number.MAX_SAFE_INTEGER : aIndex) - (bIndex < 0 ? Number.MAX_SAFE_INTEGER : bIndex);
+      })
+    : baseOutputs;
 
   if (!outputs.length) {
     return <div className="rounded-lg border border-white/10 bg-black/20 p-4 text-center text-xs text-slate-500">暂无可预览产物链接</div>;
@@ -572,10 +619,21 @@ const EvidenceMediaStrip: React.FC<{ caseItem: AbCaseInsight | RankCaseInsight }
       className="grid gap-4"
       style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 360px), 1fr))' }}
     >
-      {outputs.map(output => (
-        <div key={`${caseItem.itemId}-${output.modelId}-${output.modelName}`} className="min-w-0 overflow-hidden rounded-xl border border-white/10 bg-white/5">
+      {outputs.map(output => {
+        const model = rankCase?.consensusRanking.find(candidate => candidate.modelId === output.modelId || candidate.modelName === output.modelName);
+        const rank = model && rankCase
+          ? rankCase.consensusRanking.findIndex(candidate => Math.abs(candidate.normalizedScore - model.normalizedScore) < 1e-9) + 1
+          : null;
+        const tiedAtRank = model && rankCase
+          ? rankCase.consensusRanking.filter(candidate => Math.abs(candidate.normalizedScore - model.normalizedScore) < 1e-9).length > 1
+          : false;
+        return (
+        <div key={`${caseItem.itemId}-${output.modelId}-${output.modelName}`} className={`min-w-0 overflow-hidden rounded-xl border bg-white/5 ${tiedAtRank ? 'border-amber-400/35' : 'border-white/10'}`}>
           <div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2.5">
-            <span className="truncate text-sm font-semibold text-slate-100" title={output.modelName}>{output.modelName}</span>
+            <div className="flex min-w-0 items-center gap-2">
+              {rank && <span className="shrink-0 bg-amber-400/15 px-1.5 py-0.5 font-mono text-[10px] font-bold text-amber-200">{tiedAtRank ? `并列 #${rank}` : `#${rank}`}</span>}
+              <span className="truncate text-sm font-semibold text-slate-100" title={output.modelName}>{output.modelName}</span>
+            </div>
             {output.url && (
               <a href={output.url} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-white" title="打开产物链接">
                 <ExternalLink size={15} />
@@ -595,7 +653,7 @@ const EvidenceMediaStrip: React.FC<{ caseItem: AbCaseInsight | RankCaseInsight }
             />
           </div>
         </div>
-      ))}
+      );})}
     </div>
   );
 };
@@ -637,8 +695,10 @@ const EvidenceGallery: React.FC<{
                     </>
                   ) : (
                     <>
-                      <div>共识第一：<span className="font-semibold text-slate-100">{item.consensusRanking[0]?.modelName || '-'}</span></div>
-                      <div>Kendall tau：{formatNumber(item.kendallTau, 2)}</div>
+                      <div>共识领先：<span className="font-semibold text-slate-100">{item.consensusLeaders.join(' = ') || '-'}</span></div>
+                      <div>关系一致率：{formatPercent(item.relationAgreement, 0)}</div>
+                      <div>区分度：{formatPercent(item.distinctionRate, 0)} / tau-b：{formatNumber(item.kendallTau, 2)}</div>
+                      <div className="mt-1 text-slate-500">含并列票 {item.tieBallots} / 全部并列 {item.allTieBallots}</div>
                     </>
                   )}
                 </div>
@@ -678,6 +738,8 @@ const EvidenceGallery: React.FC<{
 const getFilterLabel = (filter: CaseFilter, bundle: InsightBundle) => {
   if (filter.type === 'all') return '全部 case';
   if (filter.type === 'lowConsensus') return '低共识 / 高分歧 case';
+  if (filter.type === 'lowDistinction') return '低区分 case';
+  if (filter.type === 'hasTie') return '含并列判断的 case';
   if (filter.type === 'winner' && bundle.mode === 'ab') {
     if (filter.winner === 'A') return `${bundle.models.a} 胜出的 case`;
     if (filter.winner === 'B') return `${bundle.models.b} 胜出的 case`;
@@ -697,7 +759,9 @@ const filterCases = (bundle: InsightBundle, filter: CaseFilter) => {
     if (filter.type === 'winner') return bundle.cases.filter(item => item.winnerSide === filter.winner);
     return bundle.cases;
   }
-  if (filter.type === 'lowConsensus') return bundle.cases.filter(item => item.kendallTau !== null && item.kendallTau < 0.3);
+  if (filter.type === 'lowConsensus') return bundle.cases.filter(item => item.relationAgreement !== null && item.relationAgreement < 0.6);
+  if (filter.type === 'lowDistinction') return bundle.cases.filter(item => item.distinctionRate < 0.5);
+  if (filter.type === 'hasTie') return bundle.cases.filter(item => item.tieBallots > 0);
   if (filter.type === 'pairwise') {
     return bundle.cases.filter(item => item.rankings.some(ranking => {
       const a = ranking.find(entry => entry.modelId === filter.a);
@@ -760,6 +824,11 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
   const exportDimensions = () => downloadTextFile(`insights_dimensions_${bundle.mode}_${dateTag}.csv`, buildInsightDimensionCsv(bundle), 'text/csv;charset=utf-8;');
   const exportEvidence = () => downloadTextFile(`case_evidence_${bundle.mode}_${dateTag}.json`, buildEvidenceJson(bundle), 'application/json;charset=utf-8;');
   const exportHtml = () => downloadTextFile(`insights_snapshot_${bundle.mode}_${dateTag}.html`, buildHtmlSnapshot(bundle), 'text/html;charset=utf-8;');
+  const exportPairwise = () => {
+    if (bundle.mode === 'rank') {
+      downloadTextFile(`insights_pairwise_rank_${dateTag}.csv`, buildRankPairwiseCsv(bundle), 'text/csv;charset=utf-8;');
+    }
+  };
 
   return (
     <div className="mx-auto max-w-7xl space-y-6 p-6 animate-in fade-in duration-500">
@@ -783,6 +852,11 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
           <button onClick={exportDimensions} className="inline-flex items-center gap-2 rounded-lg bg-black/40 px-3 py-2 text-xs font-medium text-white hover:bg-white/10">
             <Download size={14} /> 维度 CSV
           </button>
+          {bundle.mode === 'rank' && (
+            <button onClick={exportPairwise} className="inline-flex items-center gap-2 rounded-lg bg-black/40 px-3 py-2 text-xs font-medium text-white hover:bg-white/10">
+              <Download size={14} /> Pairwise CSV
+            </button>
+          )}
           <button onClick={exportEvidence} className="inline-flex items-center gap-2 rounded-lg bg-black/40 px-3 py-2 text-xs font-medium text-white hover:bg-white/10">
             <FileJson size={14} /> 证据 JSON
           </button>
@@ -821,18 +895,25 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
           <StatCard title="平局比例" value={formatPercent(bundle.summary.tieRate, 0)} subtitle={`Margin ${bundle.summary.marginVotes} 票 / ${formatPercent(bundle.summary.marginRate, 0)}`} icon={<Gauge size={18} />} tone="slate" />
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
-          <StatCard title="总冠军" value={bundle.summary.bestModel || '-'} subtitle="按 Borda 总分排序" icon={<Trophy size={18} />} tone="amber" />
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+          <StatCard title={bundle.summary.bestModels.length > 1 ? '并列领先模型' : '领先模型'} value={bundle.summary.bestModel || '-'} subtitle="按归一化 Borda 排序" icon={<Trophy size={18} />} tone="amber" />
           <StatCard title="样本量" value={bundle.summary.itemCount} subtitle={`${bundle.summary.rankingRecords} 条排序 / ${bundle.summary.voterCount} 位评委`} icon={<FileText size={18} />} tone="blue" />
-          <StatCard title="排序一致性" value={formatNumber(bundle.summary.averageKendallTau, 2)} subtitle="平均 pairwise Kendall tau" icon={<Users size={18} />} tone="purple" />
-          <StatCard title="低共识 case" value={bundle.summary.lowConsensusCount} subtitle="Kendall tau < 0.3" icon={<AlertTriangle size={18} />} tone={bundle.summary.lowConsensusCount ? 'amber' : 'green'} />
-          <StatCard title="模型对比" value={bundle.pairwise.length} subtitle="两两 dominance 统计" icon={<Target size={18} />} tone="slate" />
+          <StatCard title="关系一致率" value={formatPercent(bundle.summary.averageRelationAgreement, 0)} subtitle={`tau-b ${formatNumber(bundle.summary.averageKendallTau, 2)} / 低共识 ${bundle.summary.lowConsensusCount}`} icon={<Users size={18} />} tone="purple" />
+          <StatCard title="排序区分度" value={formatPercent(bundle.summary.averageDistinctionRate, 0)} subtitle={`低区分 case ${bundle.summary.lowDistinctionCount} 个`} icon={<Target size={18} />} tone={bundle.summary.lowDistinctionCount ? 'amber' : 'green'} />
+          <StatCard title="含并列票" value={formatPercent(bundle.summary.tieBallotRate, 0)} subtitle={`${bundle.summary.tieBallots} 票 / 平均并列组 ${formatNumber(bundle.summary.averageTieGroupSize, 2)}`} icon={<Gauge size={18} />} tone="slate" />
+          <StatCard title="全部并列票" value={formatPercent(bundle.summary.allTieBallotRate, 0)} subtitle={`${bundle.summary.allTieBallots} 票 / 无可检验胜负关系`} icon={<AlertTriangle size={18} />} tone={bundle.summary.allTieBallots ? 'amber' : 'green'} />
         </div>
       )}
 
       <div className="flex flex-wrap gap-2">
         <button onClick={() => setFilter({ type: 'all' })} className="rounded-lg bg-white/10 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-white/15">全部 case</button>
         <button onClick={() => setFilter({ type: 'lowConsensus' })} className="rounded-lg bg-orange-500/10 px-3 py-2 text-xs font-medium text-orange-300 hover:bg-orange-500/20">低共识 / 高分歧</button>
+        {bundle.mode === 'rank' && (
+          <>
+            <button onClick={() => setFilter({ type: 'lowDistinction' })} className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs font-medium text-amber-200 hover:bg-amber-500/20">低区分</button>
+            <button onClick={() => setFilter({ type: 'hasTie' })} className="rounded-lg bg-white/10 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-white/15">含并列</button>
+          </>
+        )}
         {bundle.mode === 'ab' && (
           <>
             <button onClick={() => setFilter({ type: 'winner', winner: 'A' })} className="rounded-lg bg-blue-500/10 px-3 py-2 text-xs font-medium text-blue-200 hover:bg-blue-500/20">看 {bundle.models.a} 胜</button>

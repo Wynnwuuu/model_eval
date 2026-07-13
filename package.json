@@ -21,6 +21,7 @@
     "dev:full": "tsx scripts/dev-full.ts",
     "test:api:smoke": "tsx scripts/smoke-postgres-api.ts",
     "test:arena": "tsx scripts/test-arena.ts",
+    "test:rank-ties": "tsx scripts/test-rank-ties.ts",
     "migrate:postgres": "tsx scripts/migrate-to-postgres.ts",
     "build": "vite build",
     "preview": "vite preview",
