@@ -56,3 +56,16 @@
 - `npm.cmd run build`: passed; only the existing Vite dynamic-import and chunk-size warnings remain.
 - Browser: passed desktop card move, merge, split, standard drag/drop event dispatch, mobile viewport, bottom drawer, tied submission, and result insight rendering. Temporary localStorage test session/history were removed.
 - `npm.cmd run local:check`: web app passed at `http://localhost:3000/`; API failed because no process is listening on `http://localhost:8787` and Docker Desktop daemon is not running locally.
+
+## Arena-rank Responsive Media Grid
+
+### Completed
+
+- Replaced the full-width per-tier media sections with a single rank-ordered responsive media grid.
+- Preserved the current card/media size while allowing the number of cards per row to adapt to available browser width.
+- Kept tied candidates adjacent in rank order with shared "并列第 N 名" labels and tie-group context.
+
+### Validation
+
+- `npm.cmd run lint`, `npm.cmd run test:rank-ties`, `npm.cmd run test:arena`, and `npm.cmd run build`: passed.
+- Browser: at 1920px width, five test candidates rendered as four cards on the first row and one on the second, with cards around 360x360; at 390px width, cards rendered as a single-column stack. Tied candidates remained adjacent in the same row when width allowed.
