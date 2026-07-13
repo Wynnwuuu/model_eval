@@ -32,6 +32,10 @@ Every rank ballot contains each eligible model exactly once, while repeated rank
 
 The randomized anonymous media cards never move while a reviewer edits the ranking. Ordering happens in a separate tier editor so reviewers do not need to visually reacquire moving videos or images.
 
+## 2026-07-13: Arena-rank media order follows rank order
+
+The stable-media decision above is superseded for reviewer usability. Arena-rank now uses the ranking tiers as the single source of truth for both media order and the side editor. Media cards move with rank changes, while anonymous Option labels remain stable so blindness is preserved.
+
 ## 2026-07-13: Ties share occupied rank value
 
 A tie tier receives the average of its occupied ranks for both mid-rank and Borda. This preserves the total Borda mass of every ballot. Normalized Borda is averaged per ballot so cases with different candidate counts remain comparable.

@@ -49,6 +49,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
   const [currentRefIndex, setCurrentRefIndex] = useState(0);
   const [showRankDrawer, setShowRankDrawer] = useState(false);
   const [rankAnnouncement, setRankAnnouncement] = useState('');
+  const draggedTierIndexRef = useRef<number | null>(null);
 
   const sourceOutputs = useMemo(() => getModelOutputsForItem(item, models), [item, models]);
   const mediaCycleKey = useMemo(
@@ -70,6 +71,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
     setRankTiers(shuffled.map(modelId => [modelId]));
     setLoaded({});
     setMediaWaitTimedOut(false);
+    draggedTierIndexRef.current = null;
     setDraggedTierIndex(null);
     setShowFullPrompt(false);
     setShowReference(false);
@@ -82,13 +84,21 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
   }, [mediaCycleKey, sourceOutputs]);
 
   const outputsById = new Map(sourceOutputs.map(output => [output.modelId, output]));
-  const displayOutputs = optionOrder
-    .map(id => outputsById.get(id))
-    .filter(Boolean) as typeof sourceOutputs;
   const optionLabels = new Map(optionOrder.map((modelId, index) => [
     modelId,
     index < 26 ? `Option ${String.fromCharCode(65 + index)}` : `Option ${index + 1}`,
   ]));
+  const rankedOutputTiers = rankTiers
+    .map((tier, tierIndex) => ({
+      tier,
+      tierIndex,
+      rank: rankTiers.slice(0, tierIndex).reduce((sum, candidate) => sum + candidate.length, 0) + 1,
+      outputs: tier
+        .map(modelId => outputsById.get(modelId))
+        .filter(Boolean) as typeof sourceOutputs,
+    }))
+    .filter(entry => entry.outputs.length > 0);
+  const displayOutputs = rankedOutputTiers.flatMap(entry => entry.outputs);
   const rankMetaById = new Map<string, { rank: number; tied: boolean }>();
   let rankedPosition = 0;
   rankTiers.forEach(tier => {
@@ -256,16 +266,40 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
     setRankAnnouncement(`${optionLabels.get(modelId) || modelId} 已从并列组拆分`);
   };
 
-  const handleTierDrop = (targetIndex: number) => {
-    if (draggedTierIndex === null || draggedTierIndex === targetIndex) return;
-    const movedLabel = getTierLabel(rankTiers[draggedTierIndex]);
+  const handleTierDragStart = (event: React.DragEvent, tierIndex: number) => {
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', String(tierIndex));
+    draggedTierIndexRef.current = tierIndex;
+    setDraggedTierIndex(tierIndex);
+  };
+
+  const clearTierDrag = () => {
+    draggedTierIndexRef.current = null;
+    setDraggedTierIndex(null);
+  };
+
+  const handleTierDragOver = (event: React.DragEvent) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+  };
+
+  const getDraggedTierIndex = (event?: React.DragEvent) => {
+    const rawIndex = event?.dataTransfer.getData('text/plain');
+    const parsedIndex = rawIndex === undefined || rawIndex === '' ? NaN : Number(rawIndex);
+    return Number.isInteger(parsedIndex) ? parsedIndex : (draggedTierIndexRef.current ?? draggedTierIndex);
+  };
+
+  const handleTierDrop = (targetIndex: number, event?: React.DragEvent) => {
+    const sourceIndex = getDraggedTierIndex(event);
+    if (sourceIndex === null || sourceIndex < 0 || sourceIndex >= rankTiers.length || sourceIndex === targetIndex) return;
+    const movedLabel = getTierLabel(rankTiers[sourceIndex]);
     setRankTiers(previous => {
       const next = previous.map(tier => [...tier]);
-      const [moved] = next.splice(draggedTierIndex, 1);
+      const [moved] = next.splice(sourceIndex, 1);
       next.splice(targetIndex, 0, moved);
       return next;
     });
-    setDraggedTierIndex(null);
+    clearTierDrag();
     setRankAnnouncement(`${movedLabel} 已移动到第 ${targetIndex + 1} 个梯队`);
   };
 
@@ -349,10 +383,10 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
               )}
               <div
                 draggable
-                onDragStart={() => setDraggedTierIndex(tierIndex)}
-                onDragOver={event => event.preventDefault()}
-                onDrop={() => handleTierDrop(tierIndex)}
-                onDragEnd={() => setDraggedTierIndex(null)}
+                onDragStart={event => handleTierDragStart(event, tierIndex)}
+                onDragOver={handleTierDragOver}
+                onDrop={event => handleTierDrop(tierIndex, event)}
+                onDragEnd={clearTierDrag}
                 className={`border px-3 py-2.5 transition-colors ${
                   draggedTierIndex === tierIndex
                     ? 'border-[var(--accent)] bg-[var(--accent)]/10 opacity-70'
@@ -442,7 +476,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
         <div className="flex items-center gap-4">
           <div className="hidden items-center gap-2 text-xs text-slate-300 lg:flex">
             <GripVertical size={14} />
-            <span>在排名梯队中调整顺序或合并并列项</span>
+            <span>拖拽图片调整排名；可将相邻名次合并为并列</span>
           </div>
           {onGoBack && (
             <button onClick={onGoBack} className="border-l border-white/10 pl-4 text-sm font-medium text-slate-200 transition-colors hover:text-white">
@@ -507,31 +541,141 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
           </div>
         ) : (
           <div className="grid min-h-[640px] grid-cols-1 gap-6 xl:min-h-full xl:grid-cols-[minmax(0,1fr)_360px]">
-            <div className="grid min-w-0 grid-cols-1 content-start gap-4 md:grid-cols-2 2xl:grid-cols-3">
-              {displayOutputs.map((output) => {
-                const optionLabel = optionLabels.get(output.modelId) || output.modelId;
-                const rankMeta = rankMetaById.get(output.modelId);
-                return (
-                <div key={`${mediaCycleKey}-${output.modelId}-${output.url}`} className="ark-rank-card flex min-h-[360px] min-w-0 flex-col overflow-hidden transition-colors hover:border-[var(--accent)]">
-                  <div className="ark-rank-head flex items-center justify-between px-3 py-2">
-                    <div className="flex items-center gap-2 text-sm font-black">
-                      <span>{rankMeta?.tied ? `并列第 ${rankMeta.rank} 名` : `第 ${rankMeta?.rank || '-'} 名`}</span>
-                      <span className="font-mono text-xs opacity-65">{optionLabel}</span>
+            <div className="min-w-0 space-y-4">
+              {rankedOutputTiers.map(({ tier, tierIndex, rank, outputs }) => (
+                <section
+                  key={tier.join('|')}
+                  onDragOver={handleTierDragOver}
+                  onDrop={event => {
+                    event.preventDefault();
+                    handleTierDrop(tierIndex, event);
+                  }}
+                  className={`border p-3 transition-colors ${
+                    draggedTierIndex === tierIndex
+                      ? 'border-[var(--accent)] bg-[var(--accent)]/10 opacity-80'
+                      : tier.length > 1
+                        ? 'border-[var(--accent)]/45 bg-[var(--accent)]/8'
+                        : 'border-white/10 bg-black/20'
+                  }`}
+                >
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                    <div
+                      draggable
+                      onDragStart={event => handleTierDragStart(event, tierIndex)}
+                      onDragEnd={clearTierDrag}
+                      className="flex min-w-0 cursor-grab items-center gap-2 text-slate-100"
+                      title="拖拽此区域可移动整个排名梯队"
+                    >
+                      <GripVertical size={16} className="shrink-0 text-slate-500" />
+                      <span className="flex h-8 min-w-8 shrink-0 items-center justify-center bg-[var(--accent)] px-2 font-mono text-sm font-black text-black">
+                        {rank}
+                      </span>
+                      <div className="min-w-0">
+                        <div className="text-sm font-black">{tier.length > 1 ? `并列第 ${rank} 名` : `第 ${rank} 名`}</div>
+                        <div className="truncate font-mono text-[11px] text-slate-400">
+                          {tier.map(modelId => optionLabels.get(modelId) || modelId).join(' = ')}
+                        </div>
+                      </div>
                     </div>
-                    {rankMeta?.tied && <Equal size={16} aria-label="当前为并列排名" />}
+                    <div className="flex shrink-0 items-center gap-1">
+                      <button onClick={() => moveTier(tierIndex, -1)} disabled={tierIndex === 0} className="p-1.5 text-slate-300 hover:bg-white/10 hover:text-white disabled:opacity-25" title="梯队上移" aria-label={`将第 ${rank} 名梯队上移`}>
+                        <ArrowUp size={14} />
+                      </button>
+                      <button onClick={() => moveTier(tierIndex, 1)} disabled={tierIndex === rankTiers.length - 1} className="p-1.5 text-slate-300 hover:bg-white/10 hover:text-white disabled:opacity-25" title="梯队下移" aria-label={`将第 ${rank} 名梯队下移`}>
+                        <ArrowDown size={14} />
+                      </button>
+                      <button onClick={() => mergeTierWithPrevious(tierIndex)} disabled={tierIndex === 0} className="p-1.5 text-slate-300 hover:bg-white/10 hover:text-white disabled:opacity-25" title="与上一名并列" aria-label={`将第 ${rank} 名与上一名合并为并列`}>
+                        <Equal size={14} />
+                      </button>
+                    </div>
                   </div>
-                  <div className="min-h-[280px] flex-1 overflow-hidden bg-black/55 p-1">
-                    <MediaRenderer
-                      key={`${mediaCycleKey}-${output.modelId}-${output.url}-media`}
-                      url={output.url}
-                      label={optionLabel}
-                      isActive={true}
-                      forceType={item.type}
-                      onLoadStatusChange={(isLoaded) => handleLoadStatusChange(output.modelId, isLoaded)}
-                    />
+                  <div className="grid min-w-0 grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-3">
+                    {outputs.map(output => {
+                      const optionLabel = optionLabels.get(output.modelId) || output.modelId;
+                      const rankMeta = rankMetaById.get(output.modelId);
+                      return (
+                        <div
+                          key={`${mediaCycleKey}-${output.modelId}-${output.url}`}
+                          draggable
+                          onDragStart={event => handleTierDragStart(event, tierIndex)}
+                          onDragOver={handleTierDragOver}
+                          onDrop={event => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            handleTierDrop(tierIndex, event);
+                          }}
+                          onDragEnd={clearTierDrag}
+                          className={`ark-rank-card flex min-h-[360px] min-w-0 flex-col overflow-hidden transition-colors ${
+                            draggedTierIndex === tierIndex ? 'opacity-70' : 'hover:border-[var(--accent)]'
+                          }`}
+                          title="拖拽此卡片可移动整个排名梯队"
+                        >
+                          <div className="ark-rank-head flex items-center justify-between gap-2 px-3 py-2">
+                            <div className="flex min-w-0 items-center gap-2 text-sm font-black">
+                              <GripVertical size={15} className="shrink-0 text-black/55" />
+                              <span className="truncate">{rankMeta?.tied ? `并列第 ${rankMeta.rank} 名` : `第 ${rankMeta?.rank || '-'} 名`}</span>
+                              <span className="shrink-0 font-mono text-xs opacity-65">{optionLabel}</span>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => moveTier(tierIndex, -1)}
+                                disabled={tierIndex === 0}
+                                className="p-1 text-black/65 hover:bg-black hover:text-white disabled:opacity-25"
+                                title="上移"
+                                aria-label={`将 ${optionLabel} 所在梯队上移`}
+                              >
+                                <ArrowUp size={13} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => moveTier(tierIndex, 1)}
+                                disabled={tierIndex === rankTiers.length - 1}
+                                className="p-1 text-black/65 hover:bg-black hover:text-white disabled:opacity-25"
+                                title="下移"
+                                aria-label={`将 ${optionLabel} 所在梯队下移`}
+                              >
+                                <ArrowDown size={13} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => mergeTierWithPrevious(tierIndex)}
+                                disabled={tierIndex === 0}
+                                className="p-1 text-black/65 hover:bg-black hover:text-white disabled:opacity-25"
+                                title="与上一名并列"
+                                aria-label={`将 ${optionLabel} 与上一名合并为并列`}
+                              >
+                                <Equal size={13} />
+                              </button>
+                              {tier.length > 1 && (
+                                <button
+                                  type="button"
+                                  onClick={() => splitModelFromTier(tierIndex, output.modelId)}
+                                  className="p-1 text-black/65 hover:bg-black hover:text-white"
+                                  title="从并列组拆分为下一名"
+                                  aria-label={`将 ${optionLabel} 从并列组拆分为下一名`}
+                                >
+                                  <Unlink size={13} />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                          <div className="min-h-[280px] flex-1 overflow-hidden bg-black/55 p-1">
+                            <MediaRenderer
+                              key={`${mediaCycleKey}-${output.modelId}-${output.url}-media`}
+                              url={output.url}
+                              label={optionLabel}
+                              isActive={true}
+                              forceType={item.type}
+                              onLoadStatusChange={(isLoaded) => handleLoadStatusChange(output.modelId, isLoaded)}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-                </div>
-              );})}
+                </section>
+              ))}
             </div>
 
             <aside className="ark-panel h-fit p-4 xl:sticky xl:top-4">

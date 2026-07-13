@@ -38,3 +38,21 @@
 - Browser: passed mobile drawer and desktop tier editor flows, merge/split/all-tied/drag, direct all-tied submission, full-media contain, and tie-aware insight rendering. Temporary browser data was removed after the run.
 - `npm.cmd run local:check`: web app passed at `http://localhost:3000/`; API remains unavailable because Docker Desktop/PostgreSQL is not running locally.
 - `npm.cmd run test:api:smoke`: attempted and failed with `ECONNREFUSED` for the same unavailable API; no rank-specific API or schema migration is required.
+
+## Arena-rank Rank-sorted Media Interaction
+
+### Completed
+
+- Changed Arena-rank media display to use `rankTiers` as the single source of truth, so the image/video order now follows the current rank order.
+- Restored direct media-card controls for moving a candidate up/down, merging with the previous rank, and splitting an item out of a tie group.
+- Kept the desktop side tier editor and mobile bottom drawer synchronized with the media board.
+- Added drag/drop source tracking through `dataTransfer` plus a ref fallback so card/tier drag operations update the same rank state as the buttons.
+
+### Validation
+
+- `npm.cmd run test:rank-ties`: passed.
+- `npm.cmd run test:arena`: passed.
+- `npm.cmd run lint`: passed.
+- `npm.cmd run build`: passed; only the existing Vite dynamic-import and chunk-size warnings remain.
+- Browser: passed desktop card move, merge, split, standard drag/drop event dispatch, mobile viewport, bottom drawer, tied submission, and result insight rendering. Temporary localStorage test session/history were removed.
+- `npm.cmd run local:check`: web app passed at `http://localhost:3000/`; API failed because no process is listening on `http://localhost:8787` and Docker Desktop daemon is not running locally.
