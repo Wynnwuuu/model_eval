@@ -60,10 +60,10 @@ export async function loadTaskItems(task: EvalTask, options: LoadTaskItemsOption
           : idx === 1
             ? data.modelB_Url
             : originalData[model.name] || originalData[model.id] || ''
-      })).filter(output => output.url);
+      }));
     }
     return data;
-  }).sort((a: any, b: any) => {
+  }).filter((item: EvaluationItem) => !item.archivedAt).sort((a: any, b: any) => {
     const leftOrder = Number(a.itemOrder ?? 0);
     const rightOrder = Number(b.itemOrder ?? 0);
     if (leftOrder !== rightOrder) return leftOrder - rightOrder;
@@ -123,7 +123,7 @@ export async function loadTaskItems(task: EvalTask, options: LoadTaskItemsOption
               modelId: model.id || `model-${modelIdx}`,
               modelName: model.name || `Model ${modelIdx + 1}`,
               url: row[modelKeys[modelIdx]] || ''
-            })).filter(output => output.url),
+            })),
             inputs,
             dimensionValues: getDimensionValuesFromRecord(row, task.dimensionColumns || []),
             prompt: inputs['prompt'] || inputs['提示词'] || Object.values(inputs)[0] || '',

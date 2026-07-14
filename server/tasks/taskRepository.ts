@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 
 import type { EvalTask, EvaluationItem, VoteRecord } from '../../src/types.ts';
+import { createVoteItemSnapshot } from '../../src/taskItemSnapshot.ts';
 import type { RequestUser } from '../auth/context.ts';
 import { dbPool } from '../db/client.ts';
+import { conflict } from '../http/errors.ts';
 
 type TaskRow = {
   id: string;
@@ -39,6 +41,10 @@ type TaskItemRow = {
   payload_json: Record<string, any>;
   original_data_json: Record<string, any>;
   dimension_values_json: Record<string, any>;
+  source_dataset_item_id: string | null;
+  source_dataset_version: number | null;
+  archived_at: Date | null;
+  archived_reason: string | null;
 };
 
 type VoteRow = {
@@ -54,6 +60,12 @@ type VoteRow = {
   rubric_responses_json: VoteRecord['rubricResponses'] | null;
   pair_context_json: VoteRecord['pairContext'] | null;
   item_snapshot_json: VoteRecord['itemSnapshot'] | null;
+  evaluated_item_snapshot_json: VoteRecord['evaluatedItemSnapshot'] | null;
+  dataset_version_evaluated: number | null;
+  dataset_version_current: number | null;
+  content_updated_after_vote: boolean;
+  archived_at: Date | null;
+  archived_reason: string | null;
   reason: string | null;
   submitted_at: Date;
 };
@@ -70,6 +82,7 @@ const mapTask = (row: TaskRow, models: TaskModelRow[], reviewerNames?: Record<st
     name: row.name,
     projectId: row.project_id || undefined,
     datasetId: row.dataset_id || '',
+    datasetBinding: source.datasetBinding,
     templateId: row.template_id || '',
     evaluationConfig: row.evaluation_config_json || undefined,
     models: models
@@ -183,26 +196,31 @@ export const getTask = async (taskId: string): Promise<EvalTask | null> => {
   return task ? mapTask(task, rows.models, rows.reviewerNames.get(task.id)) : null;
 };
 
+const mapTaskItemRow = (row: TaskItemRow): EvaluationItem => ({
+  id: row.id,
+  ...row.payload_json,
+  originalData: row.original_data_json,
+  dimensionValues: {
+    ...(row.payload_json.dimensionValues || {}),
+    ...(row.dimension_values_json || {}),
+  },
+  sourceDatasetItemId: row.source_dataset_item_id || row.payload_json.sourceDatasetItemId,
+  sourceDatasetVersion: row.source_dataset_version || row.payload_json.sourceDatasetVersion,
+} as unknown as EvaluationItem);
+
 export const listTaskItems = async (taskId: string): Promise<EvaluationItem[]> => {
   const result = await dbPool.query<TaskItemRow>(
     `
       SELECT *
       FROM eval_task_items
       WHERE task_id = $1
+        AND archived_at IS NULL
       ORDER BY row_index, id
     `,
     [taskId]
   );
 
-  return result.rows.map(row => ({
-    id: row.id,
-    ...row.payload_json,
-    originalData: row.original_data_json,
-    dimensionValues: {
-      ...(row.payload_json.dimensionValues || {}),
-      ...(row.dimension_values_json || {}),
-    },
-  } as unknown as EvaluationItem));
+  return result.rows.map(mapTaskItemRow);
 };
 
 const replaceModels = async (client: any, taskId: string, models: EvalTask['models'] = []) => {
@@ -260,9 +278,11 @@ const replaceItems = async (client: any, taskId: string, items: EvaluationItem[]
           row_index,
           payload_json,
           original_data_json,
-          dimension_values_json
+          dimension_values_json,
+          source_dataset_item_id,
+          source_dataset_version
         )
-        VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb)
+        VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7, $8)
       `,
       [
         itemId,
@@ -271,6 +291,8 @@ const replaceItems = async (client: any, taskId: string, items: EvaluationItem[]
         JSON.stringify({ ...item, id: itemId }),
         JSON.stringify((item as any).originalData || {}),
         JSON.stringify(item.dimensionValues || {}),
+        item.sourceDatasetItemId || null,
+        item.sourceDatasetVersion || null,
       ]
     );
   }
@@ -285,6 +307,7 @@ export const createTask = async (
   const sourceJson = {
     creatorUid: task.creatorUid,
     creatorName: task.creatorName,
+    datasetBinding: task.datasetBinding,
   };
 
   const client = await dbPool.connect();
@@ -478,7 +501,7 @@ export const updateTaskItem = async (
 
 const syncTaskItemCounts = async (client: any, taskId: string) => {
   const itemCountResult = await client.query(
-    'SELECT COUNT(*)::int AS count FROM eval_task_items WHERE task_id = $1',
+    'SELECT COUNT(*)::int AS count FROM eval_task_items WHERE task_id = $1 AND archived_at IS NULL',
     [taskId]
   ) as { rows: Array<{ count: string }> };
   const totalItems = Number(itemCountResult.rows[0]?.count || 0);
@@ -491,10 +514,13 @@ const syncTaskItemCounts = async (client: any, taskId: string) => {
 
   const voteCountResult = await client.query(
     `
-      SELECT user_id, COUNT(*)::int AS count
-      FROM evaluation_votes
-      WHERE task_id = $1
-      GROUP BY user_id
+      SELECT vote.user_id, COUNT(*)::int AS count
+      FROM evaluation_votes vote
+      JOIN eval_task_items item ON item.id = vote.task_item_id
+      WHERE vote.task_id = $1
+        AND vote.archived_at IS NULL
+        AND item.archived_at IS NULL
+      GROUP BY vote.user_id
     `,
     [taskId]
   ) as { rows: Array<{ user_id: string; count: string }> };
@@ -547,6 +573,14 @@ const mapVote = (row: VoteRow): VoteRecord => ({
   rubricResponses: row.rubric_responses_json || undefined,
   pairContext: row.pair_context_json || undefined,
   itemSnapshot: row.item_snapshot_json && Object.keys(row.item_snapshot_json).length ? row.item_snapshot_json : undefined,
+  evaluatedItemSnapshot: row.evaluated_item_snapshot_json && Object.keys(row.evaluated_item_snapshot_json).length
+    ? row.evaluated_item_snapshot_json
+    : undefined,
+  datasetVersionEvaluated: row.dataset_version_evaluated || undefined,
+  datasetVersionCurrent: row.dataset_version_current || undefined,
+  contentUpdatedAfterVote: row.content_updated_after_vote ?? undefined,
+  archivedAt: row.archived_at ? toTimestamp(row.archived_at) : undefined,
+  archivedReason: row.archived_reason || undefined,
   reason: row.reason || undefined,
   timestamp: toTimestamp(row.submitted_at),
   user: getVoteUserLabel(row),
@@ -558,6 +592,7 @@ export const listTaskVotes = async (taskId: string): Promise<Array<{
   displayName?: string;
   email?: string;
   votes: VoteRecord[];
+  archivedVotes: VoteRecord[];
 }>> => {
   const result = await dbPool.query<VoteRow>(
     `
@@ -579,6 +614,7 @@ export const listTaskVotes = async (taskId: string): Promise<Array<{
     displayName?: string;
     email?: string;
     votes: VoteRecord[];
+    archivedVotes: VoteRecord[];
   }>();
   result.rows.forEach(row => {
     const existing = grouped.get(row.user_id) || {
@@ -587,8 +623,10 @@ export const listTaskVotes = async (taskId: string): Promise<Array<{
       displayName: row.user_display_name || undefined,
       email: row.user_email || undefined,
       votes: [],
+      archivedVotes: [],
     };
-    existing.votes.push(mapVote(row));
+    if (row.archived_at) existing.archivedVotes.push(mapVote(row));
+    else existing.votes.push(mapVote(row));
     grouped.set(row.user_id, existing);
   });
   return Array.from(grouped.values());
@@ -604,6 +642,7 @@ export const getTaskUserVotes = async (taskId: string, userName: string): Promis
       FROM evaluation_votes ev
       LEFT JOIN users u ON u.id = ev.user_id
       WHERE ev.task_id = $1
+        AND ev.archived_at IS NULL
         AND (
           ev.user_id = $2
           OR u.email = $2
@@ -627,6 +666,7 @@ export const getTaskCurrentUserVotes = async (taskId: string, user: RequestUser)
       FROM evaluation_votes ev
       LEFT JOIN users u ON u.id = ev.user_id
       WHERE ev.task_id = $1
+        AND ev.archived_at IS NULL
         AND (
           ev.user_id = ANY($2)
           OR u.email = ANY($2)
@@ -651,6 +691,7 @@ export const getTaskCurrentUserVotes = async (taskId: string, user: RequestUser)
       FROM evaluation_votes ev
       LEFT JOIN users u ON u.id = ev.user_id
       WHERE ev.task_id = $1
+        AND ev.archived_at IS NULL
         AND (
           ev.user_id = ANY($2)
           OR u.display_name = ANY($2)
@@ -698,6 +739,7 @@ const deleteAuthenticatedVoteAliases = async (client: any, taskId: string, user:
     `
       DELETE FROM evaluation_votes
       WHERE task_id = $1
+        AND archived_at IS NULL
         AND (
           user_id = ANY($2)
           OR user_id IN (
@@ -713,7 +755,34 @@ const deleteAuthenticatedVoteAliases = async (client: any, taskId: string, user:
 };
 
 const insertVoteRows = async (client: any, taskId: string, userId: string, votes: VoteRecord[]) => {
-  for (const [index, vote] of votes.entries()) {
+  const itemIds = Array.from(new Set(votes.map(vote => vote.itemId).filter(Boolean)));
+  const itemResult = itemIds.length
+    ? await client.query(
+      `
+        SELECT id, task_id, row_index, payload_json, original_data_json,
+               dimension_values_json, source_dataset_item_id, source_dataset_version
+        FROM eval_task_items
+        WHERE task_id = $1 AND id = ANY($2) AND archived_at IS NULL
+      `,
+      [taskId, itemIds]
+    )
+    : { rows: [] };
+  const itemById = new Map<string, EvaluationItem>(
+    itemResult.rows.map((row: TaskItemRow) => [row.id, mapTaskItemRow(row)])
+  );
+  const unavailableItemIds = itemIds.filter(itemId => !itemById.has(itemId));
+  if (unavailableItemIds.length) {
+    throw conflict('部分评测 case 已更新或归档，请刷新任务后重新提交。', {
+      taskId,
+      itemIds: unavailableItemIds,
+    });
+  }
+
+  for (const vote of votes) {
+    const currentSnapshot = vote.itemSnapshot || createVoteItemSnapshot(itemById.get(vote.itemId));
+    const evaluatedSnapshot = vote.evaluatedItemSnapshot || currentSnapshot;
+    const currentVersion = vote.datasetVersionCurrent ?? currentSnapshot?.sourceDatasetVersion;
+    const evaluatedVersion = vote.datasetVersionEvaluated ?? evaluatedSnapshot?.sourceDatasetVersion ?? currentVersion;
     await client.query(
       `
         INSERT INTO evaluation_votes (
@@ -728,13 +797,20 @@ const insertVoteRows = async (client: any, taskId: string, userId: string, votes
           rubric_responses_json,
           pair_context_json,
           item_snapshot_json,
+          evaluated_item_snapshot_json,
+          dataset_version_evaluated,
+          dataset_version_current,
+          content_updated_after_vote,
           reason,
           submitted_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10::jsonb, $11::jsonb, $12, to_timestamp($13 / 1000.0))
+        VALUES (
+          $1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10::jsonb,
+          $11::jsonb, $12::jsonb, $13, $14, $15, $16, to_timestamp($17 / 1000.0)
+        )
       `,
       [
-        `${taskId}:${userId}:${vote.itemId}:${index}`,
+        `${taskId}:${userId}:${vote.itemId}:${randomUUID()}`,
         taskId,
         vote.itemId,
         userId,
@@ -743,10 +819,14 @@ const insertVoteRows = async (client: any, taskId: string, userId: string, votes
         JSON.stringify(vote.ranking || []),
         JSON.stringify(vote.scores || {}),
         JSON.stringify(vote.rubricResponses || {}),
-        JSON.stringify(vote.pairContext || {}),
-        JSON.stringify(vote.itemSnapshot || {}),
-        vote.reason || null,
-        vote.timestamp || Date.now(),
+          JSON.stringify(vote.pairContext || {}),
+          JSON.stringify(currentSnapshot || {}),
+          JSON.stringify(evaluatedSnapshot || {}),
+          evaluatedVersion ?? null,
+          currentVersion ?? null,
+          vote.contentUpdatedAfterVote ?? false,
+          vote.reason || null,
+          vote.timestamp || Date.now(),
       ]
     );
   }
@@ -777,7 +857,7 @@ export const saveTaskUserVotes = async (
   try {
     await client.query('BEGIN');
     await ensureVoteUser(client, userName);
-    await client.query('DELETE FROM evaluation_votes WHERE task_id = $1 AND user_id = $2', [taskId, userName]);
+    await client.query('DELETE FROM evaluation_votes WHERE task_id = $1 AND user_id = $2 AND archived_at IS NULL', [taskId, userName]);
     await insertVoteRows(client, taskId, userName, votes);
     await updateTaskProgress(client, taskId, userName, progress);
     await client.query('COMMIT');

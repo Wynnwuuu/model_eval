@@ -117,6 +117,10 @@ export interface EvaluationItem {
   originalItemId?: string;
   originalData?: Record<string, any>;
   itemOrder?: number;
+  sourceDatasetItemId?: string;
+  sourceDatasetVersion?: number;
+  archivedAt?: number;
+  archivedReason?: string;
 }
 
 export interface VoteItemSnapshot {
@@ -131,6 +135,10 @@ export interface VoteItemSnapshot {
   referenceUrls?: string[];
   type?: EvaluationItem['type'];
   pairContext?: PairwiseVoteContext;
+  originalItemId?: string;
+  originalData?: Record<string, any>;
+  sourceDatasetItemId?: string;
+  sourceDatasetVersion?: number;
 }
 
 export type EvalParadigm = 'GSB' | 'MOS' | 'Arena' | 'Arena-rank' | 'Pairwise' | 'RubricScore' | 'BenchmarkPreview';
@@ -182,6 +190,12 @@ export interface RankingEntry {
 export interface VoteRecord {
   itemId: string;
   itemSnapshot?: VoteItemSnapshot;
+  evaluatedItemSnapshot?: VoteItemSnapshot;
+  datasetVersionEvaluated?: number;
+  datasetVersionCurrent?: number;
+  contentUpdatedAfterVote?: boolean;
+  archivedAt?: number;
+  archivedReason?: string;
   vote?: VoteType;
   ranking?: RankingEntry[];
   method?: EvaluationMethod;
@@ -206,6 +220,7 @@ export interface TaskVoteGroup {
   displayName?: string;
   email?: string;
   votes: VoteRecord[];
+  archivedVotes?: VoteRecord[];
 }
 
 export type ResultsVoteScope = 'mine' | 'all';
@@ -338,6 +353,27 @@ export interface DatasetVersionEntry {
   changeSummary: string;
   itemCountBefore: number;
   itemCountAfter: number;
+  syncSummary?: DatasetSyncSummary;
+}
+
+export interface DatasetSyncSummary {
+  projects: number;
+  tasks: number;
+  taskItemsUpdated: number;
+  taskItemsAdded: number;
+  taskItemsArchived: number;
+  votesUpdated: number;
+  votesArchived: number;
+  warnings: string[];
+}
+
+export interface DatasetTaskBinding {
+  datasetId: string;
+  datasetVersion: number;
+  inputColumns: string[];
+  dimensionColumns: string[];
+  referenceColumns: string[];
+  modelColumns: Record<string, string>;
 }
 
 export interface DatasetValidationSummary {
@@ -361,6 +397,9 @@ export interface ArenaSamplingConfig {
 
 export interface DatasetVersionSnapshot {
   version: number;
+  name?: string;
+  description?: string;
+  tags?: string[];
   inputSchema: DatasetSchemaField[];
   items: Record<string, any>[];
   inputType?: 'text' | 'text_image' | 'text_audio' | 'multi_turn' | 'other';
@@ -369,6 +408,8 @@ export interface DatasetVersionSnapshot {
   columnMappings?: DatasetColumnMappings;
   datasetCard?: DatasetCard;
   validationSummary?: DatasetValidationSummary;
+  standardFields?: DatasetStandardFieldDefinition[];
+  syncSummary?: DatasetSyncSummary;
   updatedAt: number;
 }
 
@@ -389,6 +430,7 @@ export interface EvalDataset {
   versionHistory?: DatasetVersionEntry[];
   versionSnapshots?: Record<string, DatasetVersionSnapshot>;
   validationSummary?: DatasetValidationSummary;
+  syncSummary?: DatasetSyncSummary;
   creatorUid?: string;
   creatorName?: string;
   createdAt: number;
@@ -507,6 +549,7 @@ export interface EvalTask {
   name: string;
   projectId?: string;
   datasetId: string;
+  datasetBinding?: DatasetTaskBinding;
   templateId: string;
   evaluationConfig?: EvaluationConfig;
   models: { id: string; name: string }[];

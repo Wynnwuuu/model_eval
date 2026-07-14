@@ -18,7 +18,7 @@ import HistoryPage from '../pages/history/HistoryPage';
 import { AppRoute, EvalParadigm, EvaluationConfig, EvaluationItem, HistorySession, RankingEntry, RouteContext, TaskVoteGroup, VoteRecord, VoteType, EvaluationProject } from '../types';
 import { auth, getCurrentReviewerIdentity, getCurrentUserDisplayName, signInWithGoogle, logout, shouldUseCloudAuth } from '../auth';
 import { getDefaultEvaluationConfig, getMethodFromParadigm, getParadigmFromMethod, isPairwiseMethod, isPreviewMethod, isRankMethod, isScoreMethod } from '../evaluationMethods';
-import { saveTaskUserVotes, loadTaskEvaluation, loadTaskVoteGroups, USE_TASK_API_BACKEND } from '../features/tasks/api';
+import { saveTaskUserVotes, loadTaskEvaluation, loadTaskVoteGroups } from '../features/tasks/api';
 import { createVoteItemSnapshot } from '../taskItemSnapshot';
 import { applyArenaAssignmentToItem, assignArenaBattle, buildArenaSessionItems } from '../arenaSampling';
 
@@ -464,9 +464,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
       }
     } catch (e) {
       console.error("Failed to initialize vote persistence", e);
-      if (USE_TASK_API_BACKEND) {
-        throw e;
-      }
+      throw e;
     }
   };
 
@@ -608,9 +606,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
           setCurrentIndex(prev => prev - 1);
         } catch (e) {
           console.error("Failed to initialize go back persistence", e);
-          if (USE_TASK_API_BACKEND) {
-            setVoteSaveError(formatSaveError(e));
-          }
+          setVoteSaveError(formatSaveError(e));
         } finally {
           setVoteSaving(false);
         }

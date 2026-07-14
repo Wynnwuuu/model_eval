@@ -133,7 +133,29 @@ export async function saveTaskUserVotes(taskId: string, userName: string, votes:
     return saveMyTaskVotes(taskId, votes, progress);
   }
 
-  return null;
+  const itemsSnapshot = await getDocs(collection(db, 'evalTasks', taskId, 'items'));
+  let activeItemIds = new Set(itemsSnapshot.docs
+    .filter((itemDoc: any) => !itemDoc.data()?.archivedAt)
+    .flatMap((itemDoc: any) => [itemDoc.id, itemDoc.data()?.id].filter(Boolean)));
+  if (!itemsSnapshot.docs.length) {
+    const taskSnapshot = await getDoc(doc(db, 'evalTasks', taskId));
+    if (snapshotExists(taskSnapshot)) {
+      const task = { id: taskId, ...taskSnapshot.data() } as EvalTask;
+      activeItemIds = new Set((await loadTaskItems(task)).map(item => item.id));
+    }
+  }
+  const unavailableItemIds = votes.map(vote => vote.itemId).filter(itemId => !activeItemIds.has(itemId));
+  if (unavailableItemIds.length) {
+    throw new Error('部分评测 case 已更新或归档，请刷新任务后重新提交。');
+  }
+
+  const taskSnapshot = await getDoc(doc(db, 'evalTasks', taskId));
+  const taskData = snapshotExists(taskSnapshot) ? taskSnapshot.data() as EvalTask : undefined;
+  await setDoc(doc(db, 'evalTasks', taskId), {
+    progress: { ...(taskData?.progress || {}), [userName]: progress },
+  }, { merge: true });
+  await setDoc(doc(db, 'evalTasks', taskId, 'userVotes', userName), { votes }, { merge: true });
+  return votes;
 }
 
 export function subscribeTasks(

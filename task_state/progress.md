@@ -1,5 +1,26 @@
 # Arena Implementation Progress
 
+## Dataset live editing and propagation (complete)
+
+- Baseline confirmed at `c1d3f4f`, matching `origin/main`.
+- Scope locked: per-field immediate versions, editable case data and Dataset Card, forced latest-content propagation with immutable evaluated snapshots.
+- Validation gate: deterministic dataset sync tests first, followed by API, TypeScript, build, existing Arena suites, and browser regression.
+
+### Completed
+
+- Added stable dataset item identities, explicit task bindings, lifecycle-aware draft/active/completed synchronization, conservative legacy matching, and column-rename detection.
+- Added typed double-click editing for all visible and inspector case fields plus editable Dataset Card fields. Every real change creates a version; stale edits and rollbacks return `409`.
+- Added full version manifests, rollback propagation, archived task items/votes, progress recomputation, restored-case re-voting, immutable evaluated snapshots, and latest-content result projection.
+- Added separate archived evidence export so deleted cases remain auditable without entering current statistics.
+- Added PostgreSQL migrations `006` and `007`, shared/offline parity, deterministic synchronization tests, and expanded API smoke coverage.
+
+### Final validation
+
+- `npm.cmd run test:dataset-sync`, `test:arena`, `test:rank-ties`, `lint`, `build`, `server:build`, `test:api:smoke`, and `local:check`: passed.
+- PostgreSQL migrations `006` and `007`: applied successfully against the local shared database.
+- Browser: desktop double-click edit/version creation, JSON validation/cancel, rollback/sync summary, internal-ID hiding, and 390x844 responsive layout passed. Temporary data and Playwright artifacts were removed.
+- Remaining build output is limited to the pre-existing Vite mixed-import and chunk-size warnings.
+
 ## Completed
 
 - Added `arena_sampled` while retaining `all_pairs` and `adjacent_pairs` compatibility.

@@ -4,7 +4,7 @@ import { getModelOutputsForItem, resolveEvaluationItemPrompt } from './rankingUt
 import { normalizeDimensions, scoreDimensionWeightTotal } from './evaluationMethods';
 import { getEffectiveVotes } from './voteUtils';
 import { calculateBradleyTerry, getBradleyTerryAnalysisWeight, type BradleyTerryResult } from './bradleyTerry';
-import { itemFromVoteSnapshot } from './taskItemSnapshot';
+import { getVoteAuditCsvValues, itemFromVoteSnapshot, VOTE_AUDIT_CSV_HEADERS } from './taskItemSnapshot';
 
 const escapeCsv = (value: any) => `"${String(value ?? '').replace(/"/g, '""')}"`;
 
@@ -148,6 +148,7 @@ export interface PairwiseInsightBundle {
     analysisWeight: number;
     eligiblePairCount: number;
     schedulerVersion: string;
+    voteAudit: ReturnType<typeof getVoteAuditCsvValues>;
   }>;
   dimensions: Array<{
     dimension: string;
@@ -573,6 +574,7 @@ export const buildPairwiseInsights = ({
       analysisWeight: getBradleyTerryAnalysisWeight(vote),
       eligiblePairCount: pair.eligiblePairCount || 0,
       schedulerVersion: pair.schedulerVersion || 'legacy',
+      voteAudit: getVoteAuditCsvValues(vote),
     });
 
     Object.entries(dimensionValues).forEach(([dimension, value]) => {
@@ -780,6 +782,7 @@ export const buildPairwiseBattleCsv = (bundle: PairwiseInsightBundle) => {
       'User', 'Timestamp', 'ModelA_ID', 'ModelA_Name', 'ModelA_URL', 'ModelB_ID', 'ModelB_Name', 'ModelB_URL',
       'LeftModelID', 'RightModelID', 'VoteSide', 'WinnerModelName', 'SamplingPhase', 'SamplingProbability',
       'UniformProbability', 'AnalysisWeight', 'EligiblePairCount', 'SchedulerVersion',
+      ...VOTE_AUDIT_CSV_HEADERS,
       'ModelA_ArenaScore', 'ModelA_CI95_Lower', 'ModelA_CI95_Upper', 'ModelA_RankRange',
       'ModelB_ArenaScore', 'ModelB_CI95_Lower', 'ModelB_CI95_Upper', 'ModelB_RankRange', 'GraphConnected',
     ],
@@ -812,6 +815,7 @@ export const buildPairwiseBattleCsv = (bundle: PairwiseInsightBundle) => {
         battle.analysisWeight.toFixed(8),
         battle.eligiblePairCount,
         battle.schedulerVersion,
+        ...battle.voteAudit,
         comparable && modelA ? modelA.rating.toFixed(4) : '',
         comparable && modelA ? modelA.ratingLower.toFixed(4) : '',
         comparable && modelA ? modelA.ratingUpper.toFixed(4) : '',

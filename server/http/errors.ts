@@ -22,6 +22,9 @@ export const notFound = (resource: string) =>
 export const forbidden = (message = 'Forbidden') =>
   new ApiError(403, 'FORBIDDEN', message);
 
+export const conflict = (message: string, details?: unknown) =>
+  new ApiError(409, 'VERSION_CONFLICT', message, details);
+
 export const sendError = (res: Response, error: unknown, fallbackMessage = 'Internal server error') => {
   if (error instanceof ApiError) {
     res.status(error.statusCode).json({

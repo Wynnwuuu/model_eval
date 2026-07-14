@@ -11,6 +11,7 @@ import { getDimensionValuesForItem, getDimensionValuesFromRecord, isLikelyDimens
 import { extractMediaUrls, resolvePlaybackUrl } from '../mediaUrlUtils';
 import { sortReferenceUrls } from '../mediaTypeUtils';
 import { normalizeArenaSamplingConfig } from '../arenaSampling';
+import { ensureStableDatasetItemIds, getDatasetItemStableId, stripDatasetInternalFields } from '../datasetSync';
 import { createTaskWithItems, deleteTask, deleteTaskItem, loadTaskItems, subscribeTasks, updateTask, updateTaskItem } from '../features/tasks/api';
 import { createDataset, subscribeDatasets } from '../features/datasets/api';
 import { saveTemplate, subscribeTemplates } from '../features/templates/api';
@@ -513,6 +514,14 @@ export default function TaskBuilderScreen({
         templateId: finalTemplateId,
         projectId: newTask.projectId || '',
         datasetId: finalDatasetId || 'external-csv',
+        datasetBinding: finalDatasetId ? {
+          datasetId: finalDatasetId,
+          datasetVersion: datasets.find(dataset => dataset.id === finalDatasetId)?.version || 1,
+          inputColumns: [...inputColumns],
+          dimensionColumns: [...dimensionColumns],
+          referenceColumns: datasets.find(dataset => dataset.id === finalDatasetId)?.columnMappings?.referenceColumns || [],
+          modelColumns: Object.fromEntries(taskModels.map((model, index) => [model.id, modelColumns[index] || model.name])),
+        } : undefined,
         models: taskModels,
         evaluationConfig: finalEvaluationConfig,
         paradigm: getParadigmFromMethod(evaluationConfig.method),
@@ -526,7 +535,10 @@ export default function TaskBuilderScreen({
         progress: {}
       };
 
-      const dataToSave = csvData.length > 0 ? csvData : (datasets.find(d => d.id === finalDatasetId)?.items || []);
+      const sourceRows = csvData.length > 0 ? csvData : (datasets.find(d => d.id === finalDatasetId)?.items || []);
+      const dataToSave = finalDatasetId
+        ? ensureStableDatasetItemIds(finalDatasetId, sourceRows)
+        : sourceRows;
       const taskItemsToSave: EvaluationItem[] = [];
 
       if (dataToSave.length > 0) {
@@ -568,7 +580,7 @@ export default function TaskBuilderScreen({
                 modelId: model.id,
                 modelName: model.name,
                 url: modelColumns[idx] ? resolvePlaybackUrl(row[modelColumns[idx]]) : ''
-              })).filter(output => output.url),
+              })),
               dimensionValues: getDimensionValuesFromRecord(row, dimensionColumns),
               type: newTask.outputType || 'text',
               originalData: row,
@@ -579,6 +591,9 @@ export default function TaskBuilderScreen({
                 ? Math.random() > 0.5
                 : false
             };
+            baseItemData.originalData = stripDatasetInternalFields(row);
+            baseItemData.sourceDatasetItemId = getDatasetItemStableId(row) || undefined;
+            baseItemData.sourceDatasetVersion = taskData.datasetBinding?.datasetVersion;
             
             if (startImageUrl) baseItemData.startImageUrl = startImageUrl;
             if (referenceUrls.length > 0) baseItemData.referenceUrls = sortReferenceUrls(referenceUrls);
@@ -604,7 +619,7 @@ export default function TaskBuilderScreen({
                       modelName: pair.modelB.name,
                       url: rightIndex >= 0 ? resolvePlaybackUrl(row[modelColumns[rightIndex]]) : ''
                     }
-                  ].filter(output => output.url),
+                  ],
                   pairContext: {
                     pairId: pair.pairId,
                     originalItemId: baseItemData.originalItemId,

@@ -34,7 +34,16 @@ import { ConfirmModal } from './ConfirmModal';
 import MediaRenderer from './MediaRenderer';
 import DatasetGenerationModal from './DatasetGenerationModal';
 import { normalizeUrl } from '../utils';
-import { deleteDataset, loadDatasetVersion, rollbackDataset, saveDataset, subscribeDatasets } from '../features/datasets/api';
+import {
+  deleteDataset,
+  loadDatasetVersion,
+  rollbackDataset,
+  saveDataset,
+  subscribeDatasets,
+  updateDatasetItem as persistDatasetItemEdit,
+  updateDatasetManifest as persistDatasetManifestEdit,
+} from '../features/datasets/api';
+import { DATASET_ITEM_ID_KEY, getDatasetItemStableId } from '../datasetSync';
 import { subscribeGenerationJobs } from '../features/generation/api';
 import {
   DATASET_MODALITIES,
@@ -62,6 +71,20 @@ interface DatasetRepositoryScreenProps {
 
 type WizardMode = 'create' | 'append';
 type WizardStep = 1 | 2 | 3;
+
+type DatasetValueEditor = 'text' | 'number' | 'boolean' | 'json' | 'list' | 'modality';
+
+interface DatasetEditTarget {
+  scope: 'case' | 'manifest';
+  label: string;
+  fieldKey: string;
+  stableItemId?: string;
+  rowIndex?: number;
+  manifestPath?: string;
+  editor: DatasetValueEditor;
+  previewType?: DatasetPreviewType;
+  originalValue: unknown;
+}
 
 interface DatasetFormState {
   name: string;
@@ -219,8 +242,8 @@ const getDatasetColumnKeys = (dataset?: EvalDataset) => {
   if (!dataset) return [];
   const schemaKeys = dataset.inputSchema?.map(field => field.key).filter(Boolean) || [];
   const sourceKeys = dataset.inputSchema?.map(field => field.sourceKey).filter(Boolean) || [];
-  const rowKeys = (dataset.items || []).flatMap(row => Object.keys(row).filter(key => key !== '_originalData'));
-  return Array.from(new Set([...schemaKeys, ...sourceKeys, ...rowKeys]));
+  const rowKeys = (dataset.items || []).flatMap(row => Object.keys(row).filter(key => key !== '_originalData' && !key.startsWith('__')));
+  return Array.from(new Set([...schemaKeys, ...sourceKeys, ...rowKeys])).filter(key => !key.startsWith('__'));
 };
 
 const applyRenameMapToMappings = (mappings: DatasetColumnMappings, renameMap: Map<string, string>): DatasetColumnMappings => {
@@ -376,7 +399,7 @@ const downloadCsv = (filename: string, rows: Record<string, any>[] | string[]) =
   const csvContent = Array.isArray(rows) && typeof rows[0] === 'string'
     ? (rows as string[]).join(',') + '\n'
     : Papa.unparse((rows as Record<string, any>[]).map(row => {
-      const { _originalData, ...rest } = row;
+      const { _originalData, [DATASET_ITEM_ID_KEY]: _stableItemId, ...rest } = row;
       return rest;
     }));
   const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
@@ -493,6 +516,11 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
   const [versionError, setVersionError] = useState('');
   const [versionToRollback, setVersionToRollback] = useState<number | null>(null);
   const [isRollingBackVersion, setIsRollingBackVersion] = useState(false);
+  const [editTarget, setEditTarget] = useState<DatasetEditTarget | null>(null);
+  const [editDraft, setEditDraft] = useState('');
+  const [editError, setEditError] = useState('');
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [syncNotice, setSyncNotice] = useState('');
 
   const [wizardOpen, setWizardOpen] = useState(false);
   const [wizardMode, setWizardMode] = useState<WizardMode>('create');
@@ -627,7 +655,8 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
     'prompt',
     'Prompt'
   ].filter(Boolean) as string[];
-  const idKeys = [selectedMappings.standard.case_id, selectedMappings.caseId, '用例ID', 'id', 'Case_ID'].filter(Boolean) as string[];
+  const idKeys = [selectedMappings.standard.case_id, selectedMappings.caseId, '用例ID', 'id', 'Case_ID']
+    .filter((key): key is string => Boolean(key) && key !== DATASET_ITEM_ID_KEY && !key.startsWith('__'));
   const tagKeys = [selectedMappings.standard.tags, '标签', 'tags'].filter(Boolean) as string[];
 
   useEffect(() => {
@@ -644,6 +673,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
     return () => unsubscribe();
   }, [selectedDataset?.id]);
 
+
   const isGenerationMode = mode === 'generation';
   const runningGenerationJobs = generationJobs.filter(job => job.status === 'running' || job.status === 'queued' || job.status === 'partial');
   const latestGenerationJob = generationJobs[0];
@@ -651,10 +681,137 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
   useEffect(() => {
     setViewingVersionDataset(null);
     setVersionError('');
+    setSyncNotice('');
     setVersionLoading(null);
     setVersionToRollback(null);
     setSelectedRowIndex(0);
   }, [selectedDatasetId]);
+
+  const formatEditDraft = (value: unknown, editor: DatasetValueEditor) => {
+    if (editor === 'json') return JSON.stringify(value ?? null, null, 2);
+    if (editor === 'list') return Array.isArray(value) ? value.join('\n') : String(value ?? '');
+    if (editor === 'boolean') return value ? 'true' : 'false';
+    return String(value ?? '');
+  };
+
+  const openCaseEditor = (rowIndex: number, fieldKey: string) => {
+    if (!selectedDataset || isViewingHistoricalVersion || fieldKey === DATASET_ITEM_ID_KEY || fieldKey.startsWith('__')) return;
+    const row = selectedRows[rowIndex];
+    if (!row) return;
+    const stableItemId = getDatasetItemStableId(row);
+    if (!stableItemId) {
+      setVersionError('这个旧 case 尚未建立稳定来源 ID，请刷新页面后重试。');
+      return;
+    }
+    const value = row[fieldKey];
+    const schemaField = tableDataset?.inputSchema.find(field => field.key === fieldKey);
+    const editor: DatasetValueEditor = typeof value === 'number'
+      ? 'number'
+      : typeof value === 'boolean'
+        ? 'boolean'
+        : value && typeof value === 'object'
+          ? 'json'
+          : 'text';
+    const target: DatasetEditTarget = {
+      scope: 'case',
+      label: `${getDatasetDisplayValue(row, idKeys) || `case-${rowIndex + 1}`} / ${fieldKey}`,
+      fieldKey,
+      stableItemId,
+      rowIndex,
+      editor,
+      previewType: schemaField?.previewType,
+      originalValue: value,
+    };
+    setEditTarget(target);
+    setEditDraft(formatEditDraft(value, editor));
+    setEditError('');
+  };
+
+  const openManifestEditor = (
+    manifestPath: string,
+    label: string,
+    value: unknown,
+    editor: DatasetValueEditor = 'text'
+  ) => {
+    if (!selectedDataset || isViewingHistoricalVersion) return;
+    const target: DatasetEditTarget = {
+      scope: 'manifest',
+      label,
+      fieldKey: manifestPath.split('.').at(-1) || manifestPath,
+      manifestPath,
+      editor,
+      originalValue: value,
+    };
+    setEditTarget(target);
+    setEditDraft(formatEditDraft(value, editor));
+    setEditError('');
+  };
+
+  const closeValueEditor = () => {
+    if (isSavingEdit) return;
+    setEditTarget(null);
+    setEditDraft('');
+    setEditError('');
+  };
+
+  const parseEditDraft = () => {
+    if (!editTarget) return editDraft;
+    if (editTarget.editor === 'number') {
+      const number = Number(editDraft);
+      if (!Number.isFinite(number)) throw new Error('请输入有效数字。');
+      return number;
+    }
+    if (editTarget.editor === 'boolean') return editDraft === 'true';
+    if (editTarget.editor === 'json') {
+      try {
+        return JSON.parse(editDraft);
+      } catch {
+        throw new Error('JSON 格式不正确，请检查括号、引号和逗号。');
+      }
+    }
+    if (editTarget.editor === 'list') {
+      return editDraft.split(/[\n,，]/).map(value => value.trim()).filter(Boolean);
+    }
+    return editDraft;
+  };
+
+  const commitValueEdit = async () => {
+    if (!selectedDataset || !editTarget || isSavingEdit) return;
+    try {
+      const value = parseEditDraft();
+      setIsSavingEdit(true);
+      setEditError('');
+      let saved: EvalDataset;
+      if (editTarget.scope === 'case') {
+        saved = await persistDatasetItemEdit(
+          selectedDataset,
+          editTarget.stableItemId || '',
+          editTarget.fieldKey,
+          value
+        );
+      } else {
+        const path = editTarget.manifestPath || editTarget.fieldKey;
+        const patch = path.startsWith('datasetCard.')
+          ? { datasetCard: { [path.slice('datasetCard.'.length)]: value } }
+          : { [path]: value };
+        saved = await persistDatasetManifestEdit(selectedDataset, patch as Partial<EvalDataset>);
+      }
+      setDatasets(current => current.map(dataset => dataset.id === saved.id ? saved : dataset));
+      setSelectedDatasetId(saved.id);
+      setViewingVersionDataset(null);
+      setEditTarget(null);
+      setEditDraft('');
+      if (saved.syncSummary) {
+        const sync = saved.syncSummary;
+        setSyncNotice(`已生成 v${saved.version}；同步 ${sync.tasks} 个任务、${sync.votesUpdated} 条结果记录。`);
+      }
+    } catch (error: any) {
+      const isConflict = error?.status === 409 || error?.code === 'VERSION_CONFLICT';
+      setEditError(isConflict ? '评测集刚刚被其他人更新，请关闭编辑器、刷新后重试。' : (error?.message || String(error)));
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
 
   const beginPaneResize = (pane: 'left' | 'right', event: React.PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -758,7 +915,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
 
     try {
       options.setSaving(true);
-      const savedDataset = await saveDataset(nextDataset);
+      const savedDataset = await saveDataset(nextDataset, { expectedVersion: selectedDataset.version || 1 });
       setDatasets(prev => prev.map(dataset => dataset.id === savedDataset.id ? savedDataset : dataset));
       setSelectedDatasetId(savedDataset.id);
       setSelectedRowIndex(0);
@@ -1060,7 +1217,13 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
     };
 
     try {
-      await saveDataset(datasetBase);
+      const savedDataset = await saveDataset(datasetBase, wizardTarget ? { expectedVersion: wizardTarget.version || 1 } : {});
+      setDatasets(current => {
+        const exists = current.some(dataset => dataset.id === savedDataset.id);
+        return exists
+          ? current.map(dataset => dataset.id === savedDataset.id ? savedDataset : dataset)
+          : [savedDataset, ...current];
+      });
       setSelectedDatasetId(datasetBase.id);
       setSelectedRowIndex(0);
       closeWizard();
@@ -1130,7 +1293,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
 
     try {
       setIsDeletingRow(true);
-      const savedDataset = await saveDataset(nextDataset);
+      const savedDataset = await saveDataset(nextDataset, { expectedVersion: selectedDataset.version || 1 });
       setDatasets(prev => prev.map(dataset => dataset.id === savedDataset.id ? savedDataset : dataset));
       setSelectedDatasetId(savedDataset.id);
       setSelectedRowIndex(Math.max(0, Math.min(rowToDelete, nextItems.length - 1)));
@@ -1173,13 +1336,17 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
       const savedDataset = await rollbackDataset(
         selectedDataset.id,
         versionToRollback,
-        `从 v${versionToRollback} 回退生成新版本`
+        `从 v${versionToRollback} 回退生成新版本`,
+        selectedDataset.version || 1
       );
       setDatasets(prev => prev.map(dataset => dataset.id === savedDataset.id ? savedDataset : dataset));
       setSelectedDatasetId(savedDataset.id);
       setViewingVersionDataset(null);
       setSelectedRowIndex(0);
       setVersionToRollback(null);
+      if (savedDataset.syncSummary) {
+        setSyncNotice(`回退已生成 v${savedDataset.version}；同步 ${savedDataset.syncSummary.tasks} 个任务、${savedDataset.syncSummary.votesUpdated} 条结果记录。`);
+      }
     } catch (error: any) {
       console.error('Error rolling back dataset version:', error);
       setVersionError(`回退失败：${error.message || error}`);
@@ -1851,8 +2018,16 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
               <div className="p-5 border-b border-white/10 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="text-xl font-bold text-slate-100">{selectedDataset.name}</h2>
-                    <span className="px-2 py-1 rounded-md bg-white/10 text-xs text-slate-300">产物：{DATASET_MODALITIES.find(item => item.key === selectedDataset.modality)?.label || '未分类'}</span>
+                    <h2
+                      className="text-xl font-bold text-slate-100"
+                      onDoubleClick={() => openManifestEditor('name', '评测集名称', selectedDataset.name)}
+                      title={isViewingHistoricalVersion ? '历史版本只读' : '双击编辑评测集名称'}
+                    >{selectedDataset.name}</h2>
+                    <span
+                      className="px-2 py-1 rounded-md bg-white/10 text-xs text-slate-300"
+                      onDoubleClick={() => openManifestEditor('modality', '评测产物模态', selectedDataset.modality || 'other', 'modality')}
+                      title={isViewingHistoricalVersion ? '历史版本只读' : '双击编辑评测产物模态'}
+                    >产物：{DATASET_MODALITIES.find(item => item.key === selectedDataset.modality)?.label || '未分类'}</span>
                     {isViewingHistoricalVersion && (
                       <span className="px-2 py-1 rounded-md bg-purple-500/15 text-xs text-purple-200 border border-purple-400/20">
                         正在查看历史 v{tableDataset?.version}
@@ -1862,7 +2037,11 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
                       {selectedDataset.validationSummary?.status === 'ok' ? '校验通过' : '有警告'}
                     </span>
                   </div>
-                  <p className="text-sm text-slate-400 mt-1 line-clamp-2">{selectedDataset.description || '暂无描述'}</p>
+                  <p
+                    className="text-sm text-slate-400 mt-1 line-clamp-2"
+                    onDoubleClick={() => openManifestEditor('description', '评测集描述', selectedDataset.description)}
+                    title={isViewingHistoricalVersion ? '历史版本只读' : '双击编辑评测集描述'}
+                  >{selectedDataset.description || '暂无描述'}</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <div className="flex items-center rounded-xl border border-white/10 bg-black/20 p-1">
@@ -1925,28 +2104,55 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
                       const rowSelected = index === selectedRowIndex;
                       return (
                         <tr key={`${getDatasetDisplayValue(row, idKeys) || index}-${index}`} onClick={() => setSelectedRowIndex(index)} className={`cursor-pointer ${rowSelected ? 'bg-amber-500/10' : 'hover:bg-white/[0.04]'}`}>
-                          <td className="px-4 py-3 sticky left-0 bg-slate-950/95 z-10 text-sm font-mono text-slate-200">{getDatasetDisplayValue(row, idKeys) || `case-${index + 1}`}</td>
-                          <td className="px-4 py-3 text-sm text-slate-200">
+                          <td
+                            className="px-4 py-3 sticky left-0 bg-slate-950/95 z-10 text-sm font-mono text-slate-200"
+                            onDoubleClick={() => openCaseEditor(index, idKeys.find(key => row[key] !== undefined) || '用例ID')}
+                            title={isViewingHistoricalVersion ? '历史版本只读' : '双击编辑用例 ID'}
+                          >{getDatasetDisplayValue(row, idKeys) || `case-${index + 1}`}</td>
+                          <td
+                            className="px-4 py-3 text-sm text-slate-200"
+                            onDoubleClick={() => openCaseEditor(index, promptKeys.find(key => row[key] !== undefined) || '完整Prompt')}
+                            title={isViewingHistoricalVersion ? '历史版本只读' : '双击编辑 Prompt'}
+                          >
                             <div className="line-clamp-4 whitespace-pre-wrap max-w-[360px]">{getDatasetDisplayValue(row, promptKeys) || '无 Prompt'}</div>
                           </td>
                           <td className="px-4 py-3">
                             <div className="flex flex-wrap gap-1.5">
                               {dimensions.length ? dimensions.map(([key, value]) => (
-                                <span key={`${key}-${value}`} className="text-[11px] bg-blue-500/10 text-blue-200 border border-blue-500/20 px-2 py-1 rounded-md">{key}: {String(value)}</span>
+                                <span
+                                  key={`${key}-${value}`}
+                                  onDoubleClick={event => { event.stopPropagation(); openCaseEditor(index, String(key)); }}
+                                  title={isViewingHistoricalVersion ? '历史版本只读' : `双击编辑 ${key}`}
+                                  className="text-[11px] bg-blue-500/10 text-blue-200 border border-blue-500/20 px-2 py-1 rounded-md"
+                                >{key}: {String(value)}</span>
                               )) : <span className="text-xs text-slate-500">无</span>}
                             </div>
                           </td>
                           {outputColumns.map(column => (
-                            <td key={column} className="px-4 py-3 align-top">
+                            <td
+                              key={column}
+                              className="px-4 py-3 align-top"
+                              onDoubleClick={() => openCaseEditor(index, column)}
+                              title={isViewingHistoricalVersion ? '历史版本只读' : `双击编辑 ${column}`}
+                            >
                               <MediaCell value={row[column]} previewType={tableDataset?.inputSchema.find(field => field.key === column)?.previewType} previewSize={previewSize} />
                             </td>
                           ))}
                           {referenceColumns.slice(0, 2).map(column => (
-                            <td key={column} className="px-4 py-3 align-top">
+                            <td
+                              key={column}
+                              className="px-4 py-3 align-top"
+                              onDoubleClick={() => openCaseEditor(index, column)}
+                              title={isViewingHistoricalVersion ? '历史版本只读' : `双击编辑 ${column}`}
+                            >
                               <MediaCell value={row[column]} previewType={tableDataset?.inputSchema.find(field => field.key === column)?.previewType} previewSize={previewSize} />
                             </td>
                           ))}
-                          <td className="px-4 py-3 text-xs text-slate-300">{getDatasetDisplayValue(row, tagKeys) || '-'}</td>
+                          <td
+                            className="px-4 py-3 text-xs text-slate-300"
+                            onDoubleClick={() => openCaseEditor(index, tagKeys.find(key => row[key] !== undefined) || '标签')}
+                            title={isViewingHistoricalVersion ? '历史版本只读' : '双击编辑标签'}
+                          >{getDatasetDisplayValue(row, tagKeys) || '-'}</td>
                           <td className="px-4 py-3">
                             <CheckCircle2 size={16} className="text-emerald-400" />
                           </td>
@@ -2017,13 +2223,20 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
                   </div>
                 </div>
                 <dl className="mt-4 space-y-2 text-sm">
-                  <div><dt className="text-slate-400">来源</dt><dd className="text-slate-200 break-words">{tableDataset?.datasetCard?.source || '-'}</dd></div>
-                  <div><dt className="text-slate-400">Rubric</dt><dd className="text-slate-200 break-words">{tableDataset?.datasetCard?.rubricBinding || '-'}</dd></div>
+                  <div onDoubleClick={() => openManifestEditor('datasetCard.source', '样本来源', tableDataset?.datasetCard?.source || '')} title={isViewingHistoricalVersion ? '历史版本只读' : '双击编辑'}><dt className="text-slate-400">来源</dt><dd className="text-slate-200 break-words">{tableDataset?.datasetCard?.source || '-'}</dd></div>
+                  <div onDoubleClick={() => openManifestEditor('datasetCard.rubricBinding', 'Rubric 绑定', tableDataset?.datasetCard?.rubricBinding || '')} title={isViewingHistoricalVersion ? '历史版本只读' : '双击编辑'}><dt className="text-slate-400">Rubric</dt><dd className="text-slate-200 break-words">{tableDataset?.datasetCard?.rubricBinding || '-'}</dd></div>
+                  <div onDoubleClick={() => openManifestEditor('categoryPath', '分类路径', tableDataset?.categoryPath || [], 'list')} title={isViewingHistoricalVersion ? '历史版本只读' : '双击编辑'}><dt className="text-slate-400">分类路径</dt><dd className="text-slate-200 break-words">{tableDataset?.categoryPath?.join(' / ') || '-'}</dd></div>
+                  <div onDoubleClick={() => openManifestEditor('datasetCard.applicableTasks', '适用任务', tableDataset?.datasetCard?.applicableTasks || [], 'list')} title={isViewingHistoricalVersion ? '历史版本只读' : '双击编辑'}><dt className="text-slate-400">适用任务</dt><dd className="text-slate-200 break-words">{tableDataset?.datasetCard?.applicableTasks?.join('、') || '-'}</dd></div>
+                  <div onDoubleClick={() => openManifestEditor('datasetCard.applicableStages', '适用阶段', tableDataset?.datasetCard?.applicableStages || [], 'list')} title={isViewingHistoricalVersion ? '历史版本只读' : '双击编辑'}><dt className="text-slate-400">适用阶段</dt><dd className="text-slate-200 break-words">{tableDataset?.datasetCard?.applicableStages?.join('、') || '-'}</dd></div>
+                  <div onDoubleClick={() => openManifestEditor('datasetCard.coverageGaps', '覆盖缺口', tableDataset?.datasetCard?.coverageGaps || [], 'list')} title={isViewingHistoricalVersion ? '历史版本只读' : '双击编辑'}><dt className="text-slate-400">覆盖缺口</dt><dd className="text-slate-200 break-words">{tableDataset?.datasetCard?.coverageGaps?.join('、') || '-'}</dd></div>
                   <div><dt className="text-slate-400">最近变更</dt><dd className="text-slate-200">{tableDataset?.datasetCard?.latestChange || '-'}</dd></div>
                   <div><dt className="text-slate-400">更新时间</dt><dd className="text-slate-200">{formatDate(tableDataset?.updatedAt)}</dd></div>
                 </dl>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  {tableDataset?.tags?.map(tag => <span key={tag} className="text-xs bg-amber-500/10 text-amber-300 border border-amber-500/20 px-2 py-1 rounded-md">{tag}</span>)}
+                  <div className="flex flex-wrap gap-2" onDoubleClick={() => openManifestEditor('tags', '评测集标签', tableDataset?.tags || [], 'list')} title={isViewingHistoricalVersion ? '历史版本只读' : '双击编辑标签'}>
+                    {tableDataset?.tags?.map(tag => <span key={tag} className="text-xs bg-amber-500/10 text-amber-300 border border-amber-500/20 px-2 py-1 rounded-md">{tag}</span>)}
+                    {!tableDataset?.tags?.length && <span className="text-xs text-slate-500">双击添加标签</span>}
+                  </div>
                 </div>
               </section>
 
@@ -2068,11 +2281,22 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
                     {versionError}
                   </div>
                 )}
+                {syncNotice && (
+                  <div className="mb-2 rounded-lg border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">
+                    {syncNotice}
+                  </div>
+                )}
                 <div className="space-y-2 max-h-64 overflow-auto">
                   {(selectedDataset.versionHistory || []).slice().reverse().map(entry => (
                     <div key={`${entry.version}-${entry.changedAt}`} className="bg-white/5 rounded-xl p-3 text-xs">
                       <div className="flex justify-between text-slate-200"><span>v{entry.version}</span><span>{entry.itemCountBefore} {'->'} {entry.itemCountAfter}</span></div>
                       <div className="text-slate-400 mt-1">{entry.changeSummary}</div>
+                      {entry.syncSummary && (
+                        <div className="mt-2 text-[11px] text-slate-400">
+                          同步 {entry.syncSummary.tasks} 个任务 / 更新 {entry.syncSummary.taskItemsUpdated} 个 case / {entry.syncSummary.votesUpdated} 条结果
+                          {entry.syncSummary.taskItemsArchived > 0 ? ` / 归档 ${entry.syncSummary.taskItemsArchived} 个 case` : ''}
+                        </div>
+                      )}
                       <div className="text-slate-500 mt-1">{formatDate(entry.changedAt)}</div>
                       <div className="mt-3 flex flex-wrap gap-2">
                         <button
@@ -2102,10 +2326,15 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
                 <h3 className="font-semibold text-slate-100 mb-3 flex items-center gap-2"><FileText size={18} className="text-emerald-400" /> 当前 Case</h3>
                 {selectedRow ? (
                   <div className="space-y-2 max-h-[360px] overflow-auto pr-1">
-                    {Object.entries(selectedRow).filter(([key]) => key !== '_originalData').map(([key, value]) => (
-                      <div key={key} className="bg-white/5 rounded-lg p-2">
+                    {Object.entries(selectedRow).filter(([key]) => key !== '_originalData' && key !== DATASET_ITEM_ID_KEY && !key.startsWith('__')).map(([key, value]) => (
+                      <div
+                        key={key}
+                        className="bg-white/5 rounded-lg p-2 hover:bg-white/10 cursor-text"
+                        onDoubleClick={() => openCaseEditor(selectedRowIndex, key)}
+                        title={isViewingHistoricalVersion ? '历史版本只读' : `双击编辑 ${key}`}
+                      >
                         <div className="text-[11px] text-slate-400 mb-1">{key}</div>
-                        <div className="text-xs text-slate-200 break-words whitespace-pre-wrap">{String(value || '-')}</div>
+                        <div className="text-xs text-slate-200 break-words whitespace-pre-wrap">{value && typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value ?? '-')}</div>
                       </div>
                     ))}
                   </div>
@@ -2127,6 +2356,76 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
           dataset={selectedDataset}
           onClose={() => setGenerationModalOpen(false)}
         />
+      )}
+
+      {editTarget && (
+        <div
+          className="fixed inset-0 z-[120] flex items-center justify-center bg-black/75 p-4"
+          onMouseDown={event => { if (event.target === event.currentTarget) closeValueEditor(); }}
+          onKeyDown={event => {
+            if (event.key === 'Escape') closeValueEditor();
+            if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') commitValueEdit();
+          }}
+        >
+          <div className="w-full max-w-2xl border border-white/15 bg-slate-950 shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-white/10 px-5 py-4">
+              <div>
+                <div className="text-xs uppercase text-amber-300">{editTarget.scope === 'case' ? 'Case 字段编辑' : 'Dataset Card 编辑'}</div>
+                <h3 className="mt-1 text-lg font-semibold text-slate-100">{editTarget.label}</h3>
+                <p className="mt-1 text-xs text-slate-400">保存后立即生成一个新版本，并同步关联任务与结果。</p>
+              </div>
+              <button type="button" onClick={closeValueEditor} disabled={isSavingEdit} aria-label="关闭编辑器" className="p-2 text-slate-400 hover:text-white disabled:opacity-40"><X size={18} /></button>
+            </div>
+            <div className="space-y-4 p-5">
+              {editTarget.editor === 'boolean' ? (
+                <select autoFocus value={editDraft} onChange={event => setEditDraft(event.target.value)} className="glass-input w-full px-3 py-3 text-sm">
+                  <option value="true">是 / true</option>
+                  <option value="false">否 / false</option>
+                </select>
+              ) : editTarget.editor === 'modality' ? (
+                <select autoFocus value={editDraft} onChange={event => setEditDraft(event.target.value)} className="glass-input w-full px-3 py-3 text-sm">
+                  {DATASET_MODALITIES.map(option => <option key={option.key} value={option.key}>{option.label}</option>)}
+                </select>
+              ) : editTarget.editor === 'json' || editTarget.editor === 'list' || (editTarget.editor === 'text' && editDraft.length > 100) ? (
+                <textarea
+                  autoFocus
+                  value={editDraft}
+                  onChange={event => setEditDraft(event.target.value)}
+                  rows={editTarget.editor === 'json' ? 14 : 8}
+                  className="glass-input w-full resize-y px-3 py-3 font-mono text-sm"
+                  placeholder={editTarget.editor === 'list' ? '每行一个值，也可以使用逗号分隔' : undefined}
+                />
+              ) : (
+                <input
+                  autoFocus
+                  type={editTarget.editor === 'number' ? 'number' : 'text'}
+                  value={editDraft}
+                  onChange={event => setEditDraft(event.target.value)}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter') commitValueEdit();
+                  }}
+                  className="glass-input w-full px-3 py-3 text-sm"
+                />
+              )}
+
+              {editTarget.previewType && ['image', 'video', 'audio'].includes(editTarget.previewType) && editDraft.trim() && (
+                <div className="border border-white/10 bg-black/30 p-3">
+                  <div className="mb-2 text-xs text-slate-400">修改后预览</div>
+                  <MediaCell value={editDraft} previewType={editTarget.previewType} previewSize="medium" />
+                </div>
+              )}
+
+              {editError && <div className="border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">{editError}</div>}
+              <div className="text-xs text-slate-500">快捷键：Enter 保存单行字段，Ctrl/Cmd + Enter 保存多行字段，Esc 取消。</div>
+            </div>
+            <div className="flex justify-end gap-3 border-t border-white/10 px-5 py-4">
+              <button type="button" onClick={closeValueEditor} disabled={isSavingEdit} className="btn-secondary px-4 py-2 text-sm">取消</button>
+              <button type="button" onClick={commitValueEdit} disabled={isSavingEdit} className="btn-primary inline-flex items-center gap-2 px-4 py-2 text-sm">
+                {isSavingEdit ? <><span className="h-4 w-4 animate-spin rounded-full border-2 border-black/30 border-t-black" /> 保存中</> : <><Save size={16} /> 保存并生成版本</>}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       <ConfirmModal

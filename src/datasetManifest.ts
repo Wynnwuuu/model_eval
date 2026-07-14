@@ -116,6 +116,7 @@ export const inferFieldRole = (column: string, sampleValues: any[] = []): Datase
 };
 
 export const inferDatasetMappings = (headers: string[], rows: Record<string, any>[] = []): DatasetColumnMappings => {
+  const visibleHeaders = headers.filter(header => header !== '_originalData' && !header.startsWith('__'));
   const mappings: DatasetColumnMappings = {
     inputColumns: [],
     outputColumns: [],
@@ -124,7 +125,7 @@ export const inferDatasetMappings = (headers: string[], rows: Record<string, any
     standard: {}
   };
 
-  headers.forEach(header => {
+  visibleHeaders.forEach(header => {
     const samples = rows.slice(0, 5).map(row => row?.[header]);
     const standard = getStandardFieldForColumn(header);
     const role = inferFieldRole(header, samples);
@@ -140,7 +141,7 @@ export const inferDatasetMappings = (headers: string[], rows: Record<string, any
   });
 
   if (!mappings.inputColumns.length) {
-    const prompt = headers.find(header => getStandardFieldForColumn(header)?.canonicalKey === 'full_prompt') || headers.find(header => !mappings.outputColumns.includes(header) && header !== mappings.caseId);
+    const prompt = visibleHeaders.find(header => getStandardFieldForColumn(header)?.canonicalKey === 'full_prompt') || visibleHeaders.find(header => !mappings.outputColumns.includes(header) && header !== mappings.caseId);
     if (prompt) mappings.inputColumns = [prompt];
   }
 
@@ -157,7 +158,7 @@ export const getDatasetColumnMappings = (dataset?: EvalDataset, headers?: string
   const inferredHeaders = headers && headers.length
     ? headers
     : dataset?.items?.[0]
-      ? Object.keys(dataset.items[0]).filter(key => key !== '_originalData')
+      ? Object.keys(dataset.items[0]).filter(key => key !== '_originalData' && !key.startsWith('__'))
       : dataset?.inputSchema?.map(field => field.key) || [];
   const inferred = inferDatasetMappings(inferredHeaders, dataset?.items || []);
   return {
@@ -183,7 +184,7 @@ export const buildDatasetSchema = (
     ...overrides.map(field => field.key),
     ...(headers.length ? headers : STANDARD_DATASET_FIELDS.map(field => field.label))
   ]));
-  return allHeaders.filter(key => key !== '_originalData').map(key => {
+  return allHeaders.filter(key => key !== '_originalData' && !key.startsWith('__')).map(key => {
     const override = overrideByKey.get(key);
     const canonicalKey = standardSources.get(key);
     const standard = canonicalKey ? STANDARD_FIELD_BY_CANONICAL[canonicalKey] : getStandardFieldForColumn(key);
@@ -209,7 +210,7 @@ export const normalizeDatasetRows = (
   mappings: DatasetColumnMappings,
   schemaFields: DatasetSchemaField[] = []
 ) => rows.map((row, index) => {
-  const original = { ...row };
+  const original = Object.fromEntries(Object.entries(row).filter(([key]) => key !== '_originalData' && !key.startsWith('__')));
   const next: Record<string, any> = { ...row, _originalData: original };
 
   if (schemaFields.length) {
@@ -421,7 +422,7 @@ export const appendDatasetVersion = (
   };
   return {
     version: nextVersion,
-    versionHistory: [...(dataset.versionHistory || []), entry].slice(-30)
+    versionHistory: [...(dataset.versionHistory || []), entry]
   };
 };
 

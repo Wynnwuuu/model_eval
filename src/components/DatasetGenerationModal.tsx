@@ -297,7 +297,8 @@ const DatasetGenerationModal: React.FC<DatasetGenerationModalProps> = ({ dataset
   const saveDatasetSnapshot = async (
     job: DatasetGenerationJob,
     items: Record<string, any>[],
-    previewType: DatasetPreviewType
+    previewType: DatasetPreviewType,
+    forcePropagation = false
   ) => {
     const baseDataset = datasetSnapshotRef.current || dataset;
     const schemaMeta = ensureGenerationSchema(baseDataset, targetColumn, previewType);
@@ -325,7 +326,10 @@ const DatasetGenerationModal: React.FC<DatasetGenerationModalProps> = ({ dataset
       updatedAt: Date.now()
     };
     datasetSnapshotRef.current = updatedDataset;
-    await saveDataset(updatedDataset);
+    await saveDataset(updatedDataset, {
+      expectedVersion: baseDataset.version || 1,
+      forcePropagation,
+    });
   };
 
   const persistJob = async (job: DatasetGenerationJob) => {
@@ -485,7 +489,10 @@ const DatasetGenerationModal: React.FC<DatasetGenerationModalProps> = ({ dataset
     };
 
     datasetSnapshotRef.current = initializedDataset;
-    await saveDataset(initializedDataset);
+    await saveDataset(initializedDataset, {
+      expectedVersion: dataset.version || 1,
+      deferPropagation: true,
+    });
     await persistJob(job);
 
     const payload: GenerationBatchPayload = {
@@ -526,7 +533,16 @@ const DatasetGenerationModal: React.FC<DatasetGenerationModalProps> = ({ dataset
       await persistJob(failedJob);
       setError(runError?.message || String(runError));
     } finally {
-      setRunning(false);
+      const finalJob = currentJobRef.current;
+      try {
+        if (finalJob && selectedModel && datasetSnapshotRef.current) {
+          await saveDatasetSnapshot(finalJob, workingItemsRef.current, selectedModel.previewType, true);
+        }
+      } catch (persistError: any) {
+        setError(persistError?.message || String(persistError));
+      } finally {
+        setRunning(false);
+      }
     }
   };
 

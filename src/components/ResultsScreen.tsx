@@ -11,7 +11,7 @@ import { getDefaultEvaluationConfig, getMethodFromParadigm, isPairwiseMethod, is
 import { buildScoreCaseCsv, buildPairwiseCaseCsv, buildScoreInsights, buildPairwiseInsights } from '../scoringInsights';
 import { getEffectiveVotes, getSkippedVoteCount, isSkippedVote } from '../voteUtils';
 import { DATA_SOURCE_LABEL, IS_OFFLINE_LOCAL_DEMO } from '../runtimeConfig';
-import { itemFromVoteSnapshot, resolveVoteDisplayItem } from '../taskItemSnapshot';
+import { getVoteAuditCsvValues, itemFromVoteSnapshot, resolveVoteDisplayItem, VOTE_AUDIT_CSV_HEADERS } from '../taskItemSnapshot';
 
 interface ResultsScreenProps {
   votes: VoteRecord[];
@@ -470,7 +470,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
         `${model.name}_borda_score`,
         `${model.name}_normalized_borda`
       ]);
-      const headers = ['ItemID', 'Prompt', ...dimensionColumns.map(col => col.header), 'Status', 'Timestamp', 'User', 'RankingDisplay', 'HasTie', 'AllTied', 'TieGroupCount', 'TopTieSize', ...rankHeaders, ...rankVideoHeaders, ...modelHeaders, 'ranking_json'];
+      const headers = ['ItemID', 'Prompt', ...dimensionColumns.map(col => col.header), 'Status', 'Timestamp', 'User', ...VOTE_AUDIT_CSV_HEADERS, 'RankingDisplay', 'HasTie', 'AllTied', 'TieGroupCount', 'TopTieSize', ...rankHeaders, ...rankVideoHeaders, ...modelHeaders, 'ranking_json'];
       const rows = scopedVotes.filter(v => isArenaRankVote(v) || isSkippedVote(v)).map(v => {
         const item = getDisplayItemForVote(v);
         const ranking = sortRanking(v.ranking);
@@ -498,6 +498,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
           isSkippedVote(v) ? 'skipped' : 'ranked',
           new Date(v.timestamp).toISOString(),
           v.user || userName || 'Anonymous',
+          ...getVoteAuditCsvValues(v),
           formatRanking(ranking),
           tieSummary.hasTie ? 'true' : 'false',
           tieSummary.allTied ? 'true' : 'false',
@@ -523,7 +524,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
     }
 
     // Standard cols: ItemID, Prompt, dimensions, model urls, winner, timestamp, user, model names, references
-    const headers = ['ItemID', 'Prompt', ...dimensionColumns.map(col => col.header), 'Status', 'ModelA_URL', 'ModelB_URL', 'Winner', 'Timestamp', 'User', 'ModelA_Name', 'ModelB_Name', 'References'];
+    const headers = ['ItemID', 'Prompt', ...dimensionColumns.map(col => col.header), 'Status', 'ModelA_URL', 'ModelB_URL', 'Winner', 'Timestamp', 'User', ...VOTE_AUDIT_CSV_HEADERS, 'ModelA_Name', 'ModelB_Name', 'References'];
     const rows = scopedVotes.map(v => {
       const item = getDisplayItemForVote(v);
       const dimensionValues = getDimensionValuesForItem(item);
@@ -537,6 +538,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
         isSkippedVote(v) ? '' : v.vote,
         new Date(v.timestamp).toISOString(),
         v.user || userName || 'Anonymous',
+        ...getVoteAuditCsvValues(v),
         modelNames.a,
         modelNames.b,
         item?.referenceUrls ? item.referenceUrls.join(' | ') : ''

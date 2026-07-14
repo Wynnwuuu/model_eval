@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Upload, FileText, BarChart3, Users, AlertCircle, PlusCircle, Download, ArrowRight, Database, Loader2, ExternalLink, Layers } from 'lucide-react';
-import { AggregatedResult, EvalParadigm, EvaluationConfig, EvalTask, EvalTemplate, EvaluationItem, EvaluationProject, ModelOutput, RankingEntry, VoteRecord, VoteType } from '../types';
+import { AggregatedResult, EvalParadigm, EvaluationConfig, EvalTask, EvalTemplate, EvaluationItem, EvaluationProject, ModelOutput, RankingEntry, TaskVoteGroup, VoteRecord, VoteType } from '../types';
 import { ArenaRankPromptItem, calculateArenaRankCaseSummaries, calculateArenaRankModelStats, formatConsensusRanking, formatRanking, getArenaRankModelOutputUrl, getModelOutputsForItem, getRankingTieSummary, isArenaRankVote, normalizeRanking, resolveEvaluationItemPrompt, sortRanking, validateRanking } from '../rankingUtils';
 import { VIDEO_EXTENSIONS } from '../constants';
 import { db, handlePersistenceError } from '../auth';
@@ -17,6 +17,7 @@ import { subscribeProjects } from '../features/projects/api';
 import { subscribeTemplates } from '../features/templates/api';
 import { loadTaskItems, loadTaskVotes, USE_TASK_API_BACKEND } from '../features/tasks/api';
 import { subscribeTasks } from '../features/tasks/api';
+import { getVoteAuditCsvValues, VOTE_AUDIT_CSV_HEADERS } from '../taskItemSnapshot';
 
 interface AnalysisScreenProps {
   onBack: () => void;
@@ -38,6 +39,7 @@ interface AnalysisVoteRow {
   vote: VoteType;
   timestamp: number;
   user: string;
+  auditVote?: VoteRecord;
 }
 
 interface CsvModelData {
@@ -57,7 +59,15 @@ interface ImportedMaterialResult {
   rankVotes: VoteRecord[];
   rankItems: ArenaRankPromptItem[];
   methodVotes: VoteRecord[];
+  archivedVoteRows: ArchivedVoteRow[];
   voters: Set<string>;
+}
+
+interface ArchivedVoteRow {
+  taskId: string;
+  taskName: string;
+  user: string;
+  vote: VoteRecord;
 }
 
 const DEFAULT_ANALYSIS_MODELS: AnalysisModelNames = { a: 'Model A', b: 'Model B' };
@@ -380,6 +390,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   const [analysisEvaluationConfig, setAnalysisEvaluationConfig] = useState<EvaluationConfig | null>(null);
   const [methodVotes, setMethodVotes] = useState<VoteRecord[]>([]);
   const [analysisVoteRows, setAnalysisVoteRows] = useState<AnalysisVoteRow[]>([]);
+  const [archivedVoteRows, setArchivedVoteRows] = useState<ArchivedVoteRow[]>([]);
   const [showInsights, setShowInsights] = useState(true);
 
   useEffect(() => {
@@ -541,17 +552,35 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         type: normalizeOutputMediaType(selectedTask.outputType, [item.modelA_Url, item.modelB_Url, ...modelOutputs.map(output => output.url)])
       } as EvaluationItem;
     });
+    const voteGroups: TaskVoteGroup[] = (userVoteGroups || []).map(group => ({
+      ...group,
+      votes: [...(group.votes || [])],
+      archivedVotes: [...(group.archivedVotes || [])],
+    }));
+    if (!USE_TASK_API_BACKEND) {
+      const votesRef = collection(db, 'evalTasks', materialId, 'userVotes');
+      const snapshot = await getDocs(votesRef);
+      snapshot.forEach(docSnap => {
+        const data = docSnap.data();
+        voteGroups.push({
+          user: docSnap.id,
+          votes: data.votes || [],
+          archivedVotes: data.archivedVotes || [],
+        });
+      });
+    }
+    const archivedVoteRows: ArchivedVoteRow[] = voteGroups.flatMap(group =>
+      (group.archivedVotes || []).map(vote => ({
+        taskId: selectedTask.id,
+        taskName: selectedTask.name,
+        user: vote.user || group.user,
+        vote,
+      }))
+    );
 
     if (selectedParadigm === 'Arena-rank') {
       const importedRankVotes: VoteRecord[] = [];
       const voters = new Set<string>();
-
-      const voteGroups = userVoteGroups || [];
-      if (!USE_TASK_API_BACKEND) {
-        const votesRef = collection(db, 'evalTasks', materialId, 'userVotes');
-        const snapshot = await getDocs(votesRef);
-        snapshot.forEach(docSnap => voteGroups.push({ user: docSnap.id, votes: docSnap.data().votes || [] }));
-      }
 
       voteGroups.forEach(({ user, votes: userVotes }) => {
 
@@ -574,6 +603,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         rankVotes: importedRankVotes,
         rankItems: importedAnalysisItems as ArenaRankPromptItem[],
         methodVotes: [],
+        archivedVoteRows,
         voters
       };
     }
@@ -581,13 +611,6 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     if (isScoreMethod(selectedEvaluationConfig) || isPairwiseMethod(selectedEvaluationConfig)) {
       const importedMethodVotes: VoteRecord[] = [];
       const voters = new Set<string>();
-
-      const voteGroups = userVoteGroups || [];
-      if (!USE_TASK_API_BACKEND) {
-        const votesRef = collection(db, 'evalTasks', materialId, 'userVotes');
-        const snapshot = await getDocs(votesRef);
-        snapshot.forEach(docSnap => voteGroups.push({ user: docSnap.id, votes: docSnap.data().votes || [] }));
-      }
 
       voteGroups.forEach(({ user, votes: userVotes }) => {
 
@@ -612,6 +635,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         rankVotes: [],
         rankItems: [],
         methodVotes: importedMethodVotes,
+        archivedVoteRows,
         voters
       };
     }
@@ -620,13 +644,6 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     const importedVoteRows: AnalysisVoteRow[] = [];
     const itemById = new Map(importedAnalysisItems.map(item => [item.id, item]));
     const voters = new Set<string>();
-
-    const voteGroups = userVoteGroups || [];
-    if (!USE_TASK_API_BACKEND) {
-      const votesRef = collection(db, 'evalTasks', materialId, 'userVotes');
-      const snapshot = await getDocs(votesRef);
-      snapshot.forEach(docSnap => voteGroups.push({ user: docSnap.id, votes: docSnap.data().votes || [] }));
-    }
 
     voteGroups.forEach(({ user, votes: userVotes }) => {
 
@@ -661,7 +678,8 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
           itemId,
           vote: winner,
           timestamp: Number(v.timestamp) || Date.now(),
-          user: v.user || user
+          user: v.user || user,
+          auditVote: v
         });
       });
     });
@@ -678,11 +696,13 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
       rankVotes: [],
       rankItems: [],
       methodVotes: [],
+      archivedVoteRows,
       voters
     };
   };
 
   const hasAnalyzableMaterialResult = (result: ImportedMaterialResult) => {
+    if (result.archivedVoteRows.length > 0) return true;
     if (result.paradigm === 'Arena-rank') return result.rankVotes.length > 0;
     if (isScoreMethod(result.evaluationConfig) || isPairwiseMethod(result.evaluationConfig)) {
       return result.methodVotes.length > 0;
@@ -696,12 +716,14 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     setRankItems([]);
     setAnalysisItems([]);
     setAnalysisVoteRows([]);
+    setArchivedVoteRows(results.flatMap(result => result.archivedVoteRows));
     setMethodVotes([]);
     setAnalysisModelList([]);
     setAnalysisEvaluationConfig(null);
     setAnalysisMode(null);
 
     if (results.length === 0) {
+      setArchivedVoteRows([]);
       setError('请选择至少一份评测物料。');
       return;
     }
@@ -911,6 +933,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     setError(null);
+    setArchivedVoteRows([]);
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
@@ -1510,7 +1533,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
       const maxRankCount = Math.max(0, ...rankVotes.map(vote => vote.ranking?.length || 0));
       const rankHeaders = Array.from({ length: maxRankCount }, (_, index) => `rank_${index + 1}`);
       const rankVideoHeaders = Array.from({ length: maxRankCount }, (_, index) => `排名${index + 1}视频链接`);
-      const headers = ['ItemID', 'Prompt', ...rankDimensionColumns.map(col => col.header), 'User', 'Timestamp', 'RankingDisplay', 'HasTie', 'AllTied', 'TieGroupCount', 'TopTieSize', ...rankHeaders, ...rankVideoHeaders, 'ranking_json'];
+      const headers = ['ItemID', 'Prompt', ...rankDimensionColumns.map(col => col.header), 'User', 'Timestamp', ...VOTE_AUDIT_CSV_HEADERS, 'RankingDisplay', 'HasTie', 'AllTied', 'TieGroupCount', 'TopTieSize', ...rankHeaders, ...rankVideoHeaders, 'ranking_json'];
       const rows = rankVotes.map(vote => {
         const sourceItem = rankItems.find(item => item.id === vote.itemId);
         const ranking = normalizeRanking(vote.ranking);
@@ -1521,6 +1544,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
           ...getDimensionCsvValues(getDimensionValuesForItem(sourceItem as any), rankDimensionColumns.map(col => col.key)),
           vote.user || 'Anonymous',
           new Date(vote.timestamp).toISOString(),
+          ...getVoteAuditCsvValues(vote),
           formatRanking(ranking),
           tieSummary.hasTie ? 'true' : 'false',
           tieSummary.allTied ? 'true' : 'false',
@@ -1549,6 +1573,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
       ...analysisDimensionColumns.map(col => col.header),
       'User',
       'Timestamp',
+      ...VOTE_AUDIT_CSV_HEADERS,
       'VoteSide',
       'VoteModelName',
       'ModelA_Name',
@@ -1568,6 +1593,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         ...getDimensionCsvValues(getDimensionValuesForItem(sourceItem as any), analysisDimensionColumns.map(col => col.key)),
         vote.user,
         new Date(vote.timestamp).toISOString(),
+        ...getVoteAuditCsvValues(vote.auditVote || {}),
         vote.vote,
         getWinnerLabel(vote.vote, modelNamesForVote),
         outputs.a.modelName,
@@ -1587,6 +1613,54 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+  };
+
+  const downloadArchivedVotesCsv = () => {
+    if (!archivedVoteRows.length) return;
+    const headers = [
+      'TaskID',
+      'TaskName',
+      'ArchiveStatus',
+      'ArchiveReason',
+      'ItemID',
+      'User',
+      'Timestamp',
+      'Method',
+      'VoteOrChoice',
+      'Ranking_JSON',
+      'Scores_JSON',
+      'RubricResponses_JSON',
+      'PairContext_JSON',
+      'Reason',
+      ...VOTE_AUDIT_CSV_HEADERS,
+    ];
+    const rows = archivedVoteRows.map(({ taskId, taskName, user, vote }) => [
+      taskId,
+      taskName,
+      'archived',
+      vote.archivedReason || '',
+      vote.itemId,
+      vote.user || user,
+      new Date(vote.timestamp).toISOString(),
+      vote.method || '',
+      vote.vote || vote.choice || '',
+      vote.ranking ? JSON.stringify(vote.ranking) : '',
+      vote.scores ? JSON.stringify(vote.scores) : '',
+      vote.rubricResponses ? JSON.stringify(vote.rubricResponses) : '',
+      vote.pairContext ? JSON.stringify(vote.pairContext) : '',
+      vote.reason || '',
+      ...getVoteAuditCsvValues(vote),
+    ].map(escapeCsvField).join(','));
+    const csvContent = [headers.join(','), ...rows].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `archived_vote_evidence_${new Date().toISOString().slice(0,10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const downloadDimensionAnalysisCsv = () => {
@@ -1702,6 +1776,18 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
       )}
 
       <div className="mb-6">{insightControls}</div>
+
+      {archivedVoteRows.length > 0 && (
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+          <div>
+            <div className="font-semibold">已保留 {archivedVoteRows.length} 条归档评审证据</div>
+            <div className="mt-1 text-xs text-amber-100/70">归档票不参与当前统计，可单独下载评测时快照、当前版本与归档原因。</div>
+          </div>
+          <button type="button" onClick={downloadArchivedVotesCsv} className="btn-secondary inline-flex items-center gap-2 px-3 py-2 text-xs">
+            <Download size={14} /> 导出归档审计 CSV
+          </button>
+        </div>
+      )}
 
       {aggregatedData.length === 0 && rankVotes.length === 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">

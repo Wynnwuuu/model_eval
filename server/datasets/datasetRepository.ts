@@ -2,8 +2,17 @@ import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 
 import type { EvalDataset } from '../../src/types.ts';
+import {
+  DATASET_ITEM_ID_KEY,
+  ensureStableDatasetItemIds,
+  getDatasetItemStableId,
+  getDatasetRowCaseId,
+  stripDatasetInternalFields,
+} from '../../src/datasetSync.ts';
 import type { RequestUser } from '../auth/context.ts';
 import { dbPool } from '../db/client.ts';
+import { conflict } from '../http/errors.ts';
+import { propagateDatasetVersion } from './datasetPropagation.ts';
 
 type DatasetRow = {
   id: string;
@@ -32,6 +41,8 @@ type DatasetVersionRow = {
   item_count_after: number;
   changed_by: string | null;
   created_at: Date;
+  manifest_json: Partial<EvalDataset> | null;
+  sync_summary_json: EvalDataset['syncSummary'] | null;
 };
 
 type DatasetItemRow = {
@@ -40,6 +51,7 @@ type DatasetItemRow = {
   row_index: number;
   payload_json: Record<string, any>;
   dimension_values_json: Record<string, any> | null;
+  stable_item_id: string;
 };
 
 const toTimestamp = (date: Date | string | number | null | undefined) => {
@@ -57,6 +69,9 @@ const toVersionHistory = (versions: DatasetVersionRow[]) =>
       changeSummary: version.change_summary || '',
       itemCountBefore: version.item_count_before,
       itemCountAfter: version.item_count_after,
+      syncSummary: version.sync_summary_json && Object.keys(version.sync_summary_json).length
+        ? version.sync_summary_json
+        : undefined,
     }));
 
 const mapDataset = (
@@ -72,30 +87,42 @@ const mapDataset = (
     ? items
       .filter(item => item.dataset_id === row.id && item.version_id === currentVersion.id)
       .sort((a, b) => a.row_index - b.row_index)
-      .map(item => item.payload_json)
+      .map(item => ({ ...item.payload_json, [DATASET_ITEM_ID_KEY]: item.stable_item_id }))
     : [];
+
+  const manifest = currentVersion?.manifest_json || {};
+  const hasVersionedDatasetCard = Object.prototype.hasOwnProperty.call(manifest, 'datasetCard');
+  const versionedDatasetCard = manifest.datasetCard;
 
   return {
     id: row.id,
-    name: row.name,
-    description: row.description || '',
-    tags: row.tags_json || [],
+    name: manifest.name || row.name,
+    description: manifest.description ?? row.description ?? '',
+    tags: manifest.tags || row.tags_json || [],
     inputSchema: currentVersion?.schema_json || [],
     items: currentItems,
-    inputType: row.input_type || undefined,
-    modality: row.modality || undefined,
-    categoryPath: row.category_path_json || [],
+    inputType: manifest.inputType || row.input_type || undefined,
+    modality: manifest.modality || row.modality || undefined,
+    categoryPath: manifest.categoryPath || row.category_path_json || [],
+    standardFields: manifest.standardFields,
     columnMappings: currentVersion?.column_mappings_json || undefined,
-    datasetCard: row.dataset_card_json
-      ? {
+    datasetCard: hasVersionedDatasetCard
+      ? (versionedDatasetCard ? {
+        ...versionedDatasetCard,
+        sampleSize: currentItems.length,
+        updatedAt: currentVersion ? toTimestamp(currentVersion.created_at) : toTimestamp(row.updated_at),
+      } : undefined)
+      : (row.dataset_card_json ? {
         ...row.dataset_card_json,
         sampleSize: currentItems.length,
         updatedAt: currentVersion ? toTimestamp(currentVersion.created_at) : toTimestamp(row.updated_at),
-      }
-      : undefined,
+      } : undefined),
     version: currentVersion?.version || row.current_version,
     versionHistory: toVersionHistory(datasetVersions),
     validationSummary: currentVersion?.validation_summary_json || row.validation_summary_json || undefined,
+    syncSummary: currentVersion?.sync_summary_json && Object.keys(currentVersion.sync_summary_json).length
+      ? currentVersion.sync_summary_json
+      : undefined,
     createdAt: toTimestamp(row.created_at),
     updatedAt: targetVersionNumber && currentVersion ? toTimestamp(currentVersion.created_at) : toTimestamp(row.updated_at),
   };
@@ -129,7 +156,7 @@ const loadDatasetRows = async (datasetId?: string) => {
     ),
     dbPool.query<DatasetItemRow>(
       `
-        SELECT dataset_id, version_id, row_index, payload_json, dimension_values_json
+        SELECT dataset_id, version_id, row_index, payload_json, dimension_values_json, stable_item_id
         FROM dataset_items
         WHERE dataset_id = ANY($1)
         ORDER BY dataset_id, version_id, row_index
@@ -184,17 +211,21 @@ const persistVersionSnapshot = async (client: PoolClient, dataset: EvalDataset, 
         schema_json,
         column_mappings_json,
         validation_summary_json,
+        manifest_json,
+        sync_summary_json,
         change_summary,
         item_count_before,
         item_count_after,
         changed_by,
         created_at
       )
-      VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7, $8, $9, $10, to_timestamp($11 / 1000.0))
+      VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10, $11, $12, to_timestamp($13 / 1000.0))
       ON CONFLICT (dataset_id, version) DO UPDATE SET
         schema_json = EXCLUDED.schema_json,
         column_mappings_json = EXCLUDED.column_mappings_json,
         validation_summary_json = EXCLUDED.validation_summary_json,
+        manifest_json = EXCLUDED.manifest_json,
+        sync_summary_json = EXCLUDED.sync_summary_json,
         change_summary = EXCLUDED.change_summary,
         item_count_before = EXCLUDED.item_count_before,
         item_count_after = EXCLUDED.item_count_after,
@@ -208,6 +239,17 @@ const persistVersionSnapshot = async (client: PoolClient, dataset: EvalDataset, 
       JSON.stringify(dataset.inputSchema || []),
       JSON.stringify(dataset.columnMappings || {}),
       JSON.stringify(dataset.validationSummary || {}),
+      JSON.stringify({
+        name: dataset.name,
+        description: dataset.description,
+        tags: dataset.tags || [],
+        inputType: dataset.inputType,
+        modality: dataset.modality,
+        categoryPath: dataset.categoryPath || [],
+        standardFields: dataset.standardFields || [],
+        datasetCard: dataset.datasetCard ?? null,
+      }),
+      JSON.stringify(dataset.syncSummary || {}),
       latestHistory?.changeSummary || '',
       latestHistory?.itemCountBefore || 0,
       latestHistory?.itemCountAfter || dataset.items.length,
@@ -230,13 +272,15 @@ const persistVersionSnapshot = async (client: PoolClient, dataset: EvalDataset, 
           version_id,
           case_key,
           row_index,
+          stable_item_id,
           payload_json,
           dimension_values_json
         )
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)
         ON CONFLICT (id) DO UPDATE SET
           case_key = EXCLUDED.case_key,
           row_index = EXCLUDED.row_index,
+          stable_item_id = EXCLUDED.stable_item_id,
           payload_json = EXCLUDED.payload_json,
           dimension_values_json = EXCLUDED.dimension_values_json,
           updated_at = now()
@@ -245,20 +289,28 @@ const persistVersionSnapshot = async (client: PoolClient, dataset: EvalDataset, 
         `${dataset.id}:v${version}:row${index}`,
         dataset.id,
         versionId,
-        item.case_id || item.caseId || item.id || null,
+        getDatasetRowCaseId(item, index),
         index,
-        JSON.stringify(item),
+        getDatasetItemStableId(item),
+        JSON.stringify(stripDatasetInternalFields(item)),
         JSON.stringify({}),
       ]
     );
   }
 };
 
-export const saveDataset = async (dataset: EvalDataset, changedByUserId?: string | null): Promise<EvalDataset> => {
+export const saveDataset = async (
+  dataset: EvalDataset,
+  changedByUserId?: string | null,
+  options: { expectedVersion?: number; forcePropagation?: boolean; deferPropagation?: boolean } = {}
+): Promise<EvalDataset> => {
   const now = Date.now();
-  const nextDataset = {
+  const datasetId = dataset.id || `ds-${randomUUID()}`;
+  const existing = dataset.id ? await getDataset(dataset.id) : null;
+  const nextDataset: EvalDataset = {
     ...dataset,
-    id: dataset.id || `ds-${randomUUID()}`,
+    id: datasetId,
+    items: ensureStableDatasetItemIds(datasetId, dataset.items || []),
     createdAt: dataset.createdAt || now,
     updatedAt: dataset.updatedAt || now,
   };
@@ -266,6 +318,17 @@ export const saveDataset = async (dataset: EvalDataset, changedByUserId?: string
   const client = await dbPool.connect();
   try {
     await client.query('BEGIN');
+    const lockResult = await client.query<{ current_version: number }>(
+      'SELECT current_version FROM datasets WHERE id = $1 AND deleted_at IS NULL FOR UPDATE',
+      [nextDataset.id]
+    );
+    const persistedVersion = lockResult.rows[0]?.current_version;
+    if (options.expectedVersion !== undefined && persistedVersion !== options.expectedVersion) {
+      throw conflict('评测集已被其他人更新，请刷新后重试。', {
+        expectedVersion: options.expectedVersion,
+        currentVersion: persistedVersion,
+      });
+    }
     await client.query(
       `
         INSERT INTO datasets (
@@ -316,6 +379,18 @@ export const saveDataset = async (dataset: EvalDataset, changedByUserId?: string
       ]
     );
     await persistVersionSnapshot(client, nextDataset, changedByUserId);
+    const shouldPropagate = !options.deferPropagation && Boolean(existing) && (
+      options.forcePropagation
+      || (nextDataset.version || 1) > (existing?.version || 0)
+    );
+    if (shouldPropagate) {
+      const syncSummary = await propagateDatasetVersion(client, existing, nextDataset);
+      nextDataset.syncSummary = syncSummary;
+      await client.query(
+        'UPDATE dataset_versions SET sync_summary_json = $3::jsonb WHERE dataset_id = $1 AND version = $2',
+        [nextDataset.id, nextDataset.version || 1, JSON.stringify(syncSummary)]
+      );
+    }
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK');
@@ -329,11 +404,137 @@ export const saveDataset = async (dataset: EvalDataset, changedByUserId?: string
   return saved;
 };
 
+const summarizeValue = (value: unknown) => {
+  const serialized = typeof value === 'string' ? value : JSON.stringify(value);
+  const text = serialized ?? '';
+  return text.length > 80 ? `${text.slice(0, 77)}...` : text;
+};
+
+const nextVersionDataset = (
+  current: EvalDataset,
+  user: RequestUser,
+  changeSummary: string,
+  patch: Partial<EvalDataset>
+): EvalDataset => {
+  const now = Date.now();
+  const version = (current.version || 0) + 1;
+  const items = ensureStableDatasetItemIds(current.id, patch.items || current.items || []);
+  const mappings = patch.columnMappings || current.columnMappings || {
+    inputColumns: [],
+    outputColumns: [],
+    dimensionColumns: [],
+    referenceColumns: [],
+    standard: {},
+  };
+  const inputSchema = patch.inputSchema || current.inputSchema || [];
+  const merged = { ...current, ...patch, items, inputSchema, columnMappings: mappings } as EvalDataset;
+  const modality = merged.modality || 'other';
+  const inputType = merged.inputType || 'text';
+  const datasetCard = merged.datasetCard ? {
+    ...merged.datasetCard,
+    sampleSize: items.length,
+    modality,
+    latestChange: changeSummary,
+    updatedAt: now,
+  } : merged.datasetCard;
+  return {
+    ...merged,
+    inputType,
+    modality,
+    datasetCard,
+    validationSummary: patch.validationSummary || current.validationSummary,
+    version,
+    versionHistory: [
+      ...(current.versionHistory || []),
+      {
+        version,
+        changedAt: now,
+        changedBy: user.displayName || user.email || user.id,
+        changeSummary,
+        itemCountBefore: current.items?.length || 0,
+        itemCountAfter: items.length,
+      },
+    ],
+    updatedAt: now,
+  };
+};
+
+export const updateDatasetItem = async (
+  datasetId: string,
+  stableItemId: string,
+  fieldKey: string,
+  value: unknown,
+  expectedVersion: number,
+  user: RequestUser
+) => {
+  if (!fieldKey.trim() || fieldKey === '_originalData' || fieldKey === DATASET_ITEM_ID_KEY || fieldKey.startsWith('__')) {
+    throw new Error('这个字段不可编辑');
+  }
+  const current = await getDataset(datasetId);
+  if (!current) return null;
+  const rowIndex = current.items.findIndex(item => getDatasetItemStableId(item) === stableItemId);
+  if (rowIndex < 0) return null;
+  const previousValue = current.items[rowIndex][fieldKey];
+  const nextRow = { ...current.items[rowIndex], [fieldKey]: value };
+  const schemaField = current.inputSchema.find(field => field.key === fieldKey);
+  if (nextRow._originalData && schemaField?.sourceKey) {
+    nextRow._originalData = { ...nextRow._originalData, [schemaField.sourceKey]: value };
+  }
+  const nextItems = current.items.map((item, index) => index === rowIndex ? nextRow : item);
+  const changeSummary = `修改 ${getDatasetRowCaseId(current.items[rowIndex], rowIndex)} / ${fieldKey}：${summarizeValue(previousValue)} -> ${summarizeValue(value)}`;
+  const next = nextVersionDataset(current, user, changeSummary, { items: nextItems });
+  return saveDataset(next, user.id, { expectedVersion });
+};
+
+export const updateDatasetManifest = async (
+  datasetId: string,
+  patch: Partial<EvalDataset>,
+  expectedVersion: number,
+  user: RequestUser
+) => {
+  const current = await getDataset(datasetId);
+  if (!current) return null;
+  if ((current.version || 1) !== expectedVersion) {
+    throw conflict('评测集已被其他人更新，请刷新后重试。', {
+      expectedVersion,
+      currentVersion: current.version || 1,
+    });
+  }
+  const allowedPatch: Partial<EvalDataset> = {};
+  (['name', 'description', 'tags', 'modality', 'categoryPath'] as const).forEach(key => {
+    if (patch[key] !== undefined) (allowedPatch as any)[key] = patch[key];
+  });
+  if (patch.datasetCard) {
+    const editableDatasetCardPatch: Partial<NonNullable<EvalDataset['datasetCard']>> = {};
+    (['source', 'applicableTasks', 'applicableStages', 'rubricBinding', 'coverageGaps'] as const).forEach(key => {
+      if (patch.datasetCard?.[key] !== undefined) (editableDatasetCardPatch as any)[key] = patch.datasetCard[key];
+    });
+    if (Object.keys(editableDatasetCardPatch).length) {
+      allowedPatch.datasetCard = { ...current.datasetCard, ...editableDatasetCardPatch } as EvalDataset['datasetCard'];
+    }
+  }
+  const preciseChanges: string[] = [];
+  Object.entries(allowedPatch).forEach(([key, value]) => {
+    if (key === 'datasetCard' || JSON.stringify((current as any)[key]) === JSON.stringify(value)) return;
+    preciseChanges.push(`${key}: ${summarizeValue((current as any)[key])} -> ${summarizeValue(value)}`);
+  });
+  Object.entries(allowedPatch.datasetCard || {}).forEach(([key, value]) => {
+    const previousValue = (current.datasetCard as any)?.[key];
+    if (JSON.stringify(previousValue) === JSON.stringify(value)) return;
+    preciseChanges.push(`Dataset Card.${key}: ${summarizeValue(previousValue)} -> ${summarizeValue(value)}`);
+  });
+  if (!preciseChanges.length) return current;
+  const preciseSummary = `修改评测集资料：${preciseChanges.join('；')}`;
+  const next = nextVersionDataset(current, user, preciseSummary, allowedPatch);
+  return saveDataset(next, user.id, { expectedVersion });
+};
+
 export const rollbackDataset = async (
   datasetId: string,
   targetVersion: number,
   user: RequestUser,
-  changeSummary?: string
+  changeSummary?: string,
+  expectedVersion?: number
 ): Promise<EvalDataset | null> => {
   const [current, snapshot] = await Promise.all([
     getDataset(datasetId),
@@ -349,21 +550,25 @@ export const rollbackDataset = async (
   const itemCountAfter = snapshot.items?.length || 0;
   const nextDataset: EvalDataset = {
     ...current,
+    name: snapshot.name || current.name,
+    description: snapshot.description ?? current.description,
+    tags: snapshot.tags || current.tags,
     inputSchema: snapshot.inputSchema || [],
     items: snapshot.items || [],
     inputType: snapshot.inputType || current.inputType,
     modality: snapshot.modality || current.modality,
     categoryPath: snapshot.categoryPath || current.categoryPath,
+    standardFields: snapshot.standardFields || current.standardFields,
     columnMappings: snapshot.columnMappings,
     validationSummary: snapshot.validationSummary,
-    datasetCard: current.datasetCard
+    datasetCard: snapshot.datasetCard
       ? {
-        ...current.datasetCard,
+        ...snapshot.datasetCard,
         sampleSize: itemCountAfter,
         latestChange: summary,
         updatedAt: now,
       }
-      : current.datasetCard,
+      : undefined,
     version: nextVersion,
     versionHistory: [
       ...history,
@@ -375,11 +580,11 @@ export const rollbackDataset = async (
         itemCountBefore,
         itemCountAfter,
       },
-    ].slice(-30),
+    ],
     updatedAt: now,
   };
 
-  return saveDataset(nextDataset, user.id);
+  return saveDataset(nextDataset, user.id, { expectedVersion });
 };
 
 export const deleteDataset = async (datasetId: string): Promise<boolean> => {

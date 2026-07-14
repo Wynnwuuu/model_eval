@@ -1,7 +1,16 @@
 import { Router } from 'express';
 
-import { deleteDataset, getDataset, getDatasetVersion, listDatasets, rollbackDataset, saveDataset } from './datasetRepository.ts';
-import { notFound, sendError } from '../http/errors.ts';
+import {
+  deleteDataset,
+  getDataset,
+  getDatasetVersion,
+  listDatasets,
+  rollbackDataset,
+  saveDataset,
+  updateDatasetItem,
+  updateDatasetManifest,
+} from './datasetRepository.ts';
+import { badRequest, notFound, sendError } from '../http/errors.ts';
 import { requireBodyObject, validateDatasetPayload } from '../http/validation.ts';
 
 export const datasetRoutes = Router();
@@ -49,13 +58,81 @@ datasetRoutes.post('/:datasetId/rollback', async (req, res) => {
       throw notFound('Dataset version');
     }
     const changeSummary = typeof req.body?.changeSummary === 'string' ? req.body.changeSummary : undefined;
-    const dataset = await rollbackDataset(req.params.datasetId, version, req.user, changeSummary);
+    const expectedVersion = Number(req.body?.expectedVersion);
+    if (!Number.isInteger(expectedVersion)) {
+      throw badRequest('expectedVersion is required');
+    }
+    const dataset = await rollbackDataset(
+      req.params.datasetId,
+      version,
+      req.user,
+      changeSummary,
+      expectedVersion
+    );
     if (!dataset) {
       throw notFound('Dataset version');
     }
-    res.json({ dataset });
+    res.json({ dataset, syncSummary: dataset.syncSummary });
   } catch (error) {
     sendError(res, error, 'Failed to rollback dataset');
+  }
+});
+
+datasetRoutes.patch('/:datasetId/items/:stableItemId', async (req, res) => {
+  try {
+    const fieldKey = typeof req.body?.fieldKey === 'string' ? req.body.fieldKey : '';
+    const expectedVersion = Number(req.body?.expectedVersion);
+    if (!fieldKey || fieldKey === '_originalData' || fieldKey.startsWith('__') || !Number.isInteger(expectedVersion)) {
+      throw badRequest('fieldKey and expectedVersion are required');
+    }
+    const dataset = await updateDatasetItem(
+      req.params.datasetId,
+      req.params.stableItemId,
+      fieldKey,
+      req.body?.value,
+      expectedVersion,
+      req.user
+    );
+    if (!dataset) throw notFound('Dataset item');
+    res.json({ dataset, syncSummary: dataset.syncSummary });
+  } catch (error) {
+    sendError(res, error, 'Failed to update dataset item');
+  }
+});
+
+datasetRoutes.patch('/:datasetId/manifest', async (req, res) => {
+  try {
+    const patch = requireBodyObject(req.body, 'patch');
+    const expectedVersion = Number(req.body?.expectedVersion);
+    if (!Number.isInteger(expectedVersion)) {
+      throw badRequest('expectedVersion is required');
+    }
+    const isStringArray = (value: unknown) => Array.isArray(value) && value.every(item => typeof item === 'string');
+    if (patch.name !== undefined && (typeof patch.name !== 'string' || !patch.name.trim())) throw badRequest('name must be a non-empty string');
+    if (patch.description !== undefined && typeof patch.description !== 'string') throw badRequest('description must be a string');
+    if (patch.tags !== undefined && !isStringArray(patch.tags)) throw badRequest('tags must be a string array');
+    if (patch.categoryPath !== undefined && !isStringArray(patch.categoryPath)) throw badRequest('categoryPath must be a string array');
+    if (patch.modality !== undefined && !['image', 'video', 'audio', 'text', 'multimodal', 'other'].includes(patch.modality)) {
+      throw badRequest('modality is invalid');
+    }
+    if (patch.datasetCard !== undefined) {
+      if (!patch.datasetCard || typeof patch.datasetCard !== 'object' || Array.isArray(patch.datasetCard)) throw badRequest('datasetCard must be an object');
+      if (patch.datasetCard.source !== undefined && typeof patch.datasetCard.source !== 'string') throw badRequest('datasetCard.source must be a string');
+      if (patch.datasetCard.rubricBinding !== undefined && typeof patch.datasetCard.rubricBinding !== 'string') throw badRequest('datasetCard.rubricBinding must be a string');
+      for (const key of ['applicableTasks', 'applicableStages', 'coverageGaps']) {
+        if (patch.datasetCard[key] !== undefined && !isStringArray(patch.datasetCard[key])) throw badRequest(`datasetCard.${key} must be a string array`);
+      }
+    }
+    const dataset = await updateDatasetManifest(
+      req.params.datasetId,
+      patch,
+      expectedVersion,
+      req.user
+    );
+    if (!dataset) throw notFound('Dataset');
+    res.json({ dataset, syncSummary: dataset.syncSummary });
+  } catch (error) {
+    sendError(res, error, 'Failed to update dataset manifest');
   }
 });
 
@@ -64,7 +141,7 @@ datasetRoutes.post('/', async (req, res) => {
     const payload = requireBodyObject(req.body, 'dataset');
     validateDatasetPayload(payload);
     const dataset = await saveDataset(payload as any, req.user.id);
-    res.status(201).json({ dataset });
+    res.status(201).json({ dataset, syncSummary: dataset.syncSummary });
   } catch (error) {
     sendError(res, error, 'Failed to save dataset');
   }
@@ -74,8 +151,17 @@ datasetRoutes.put('/:datasetId', async (req, res) => {
   try {
     const payload = requireBodyObject(req.body, 'dataset');
     validateDatasetPayload(payload);
-    const dataset = await saveDataset({ ...payload, id: req.params.datasetId } as any, req.user.id);
-    res.json({ dataset });
+    const expectedVersion = Number(req.body?.expectedVersion);
+    const dataset = await saveDataset(
+      { ...payload, id: req.params.datasetId } as any,
+      req.user.id,
+      {
+        expectedVersion: Number.isInteger(expectedVersion) ? expectedVersion : undefined,
+        forcePropagation: req.body?.forcePropagation === true,
+        deferPropagation: req.body?.deferPropagation === true,
+      }
+    );
+    res.json({ dataset, syncSummary: dataset.syncSummary });
   } catch (error) {
     sendError(res, error, 'Failed to save dataset');
   }

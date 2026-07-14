@@ -210,9 +210,11 @@ const main = async () => {
     const datasetRollback = await sendJson<{ dataset: any }>(`/api/datasets/${ids.dataset}/rollback`, 'POST', {
       version: 1,
       changeSummary: 'rollback smoke to version 1',
+      expectedVersion: 2,
     });
     assert(datasetRollback.dataset.version === 3, 'dataset rollback did not create a new current version');
     assert(datasetRollback.dataset.items.length === 2, 'dataset rollback did not restore version 1 items');
+    const sourceRows = datasetRollback.dataset.items;
     const preservedVersionTwo = await request<{ dataset: any }>(`/api/datasets/${ids.dataset}/versions/2`);
     assert(preservedVersionTwo.dataset.items.length === 1, 'dataset version 2 snapshot was not preserved after rollback');
 
@@ -235,9 +237,17 @@ const main = async () => {
         name: `Smoke Task ${RUN_ID}`,
         projectId: project.project.id,
         datasetId: ids.dataset,
+        datasetBinding: {
+          datasetId: ids.dataset,
+          datasetVersion: 3,
+          inputColumns: ['prompt'],
+          dimensionColumns: [],
+          referenceColumns: [],
+          modelColumns: { 'model-a': 'model_a', 'model-b': 'model_b' },
+        },
         templateId: '',
         evaluationConfig: { method: 'ab_preference' },
-        models: [{ id: 'model-a', name: 'Model A' }, { id: 'model-b', name: 'Model B' }],
+        models: [{ id: 'model-a', name: 'model_a' }, { id: 'model-b', name: 'model_b' }],
         dimensionColumns: [],
         outputType: 'video',
         inputType: 'text',
@@ -251,8 +261,32 @@ const main = async () => {
         createdAt: Date.now(),
       },
       items: [
-        { id: `${RUN_ID}-item-1`, prompt: 'hello', modelA_Url: 'https://example.com/a.mp4', modelB_Url: 'https://example.com/b.mp4', type: 'video', itemOrder: 0 },
-        { id: `${RUN_ID}-item-2`, prompt: 'world', modelA_Url: 'https://example.com/c.mp4', modelB_Url: 'https://example.com/d.mp4', type: 'video', itemOrder: 1 },
+        {
+          id: `${RUN_ID}-item-1`,
+          prompt: 'hello',
+          inputs: { prompt: 'hello' },
+          modelA_Url: 'https://example.com/a.mp4',
+          modelB_Url: 'https://example.com/b.mp4',
+          type: 'video',
+          itemOrder: 0,
+          originalItemId: 'case-1',
+          originalData: sourceRows[0],
+          sourceDatasetItemId: sourceRows[0].__datasetItemId,
+          sourceDatasetVersion: 3,
+        },
+        {
+          id: `${RUN_ID}-item-2`,
+          prompt: 'world',
+          inputs: { prompt: 'world' },
+          modelA_Url: 'https://example.com/c.mp4',
+          modelB_Url: 'https://example.com/d.mp4',
+          type: 'video',
+          itemOrder: 1,
+          originalItemId: 'case-2',
+          originalData: sourceRows[1],
+          sourceDatasetItemId: sourceRows[1].__datasetItemId,
+          sourceDatasetVersion: 3,
+        },
       ],
     });
 
@@ -290,6 +324,97 @@ const main = async () => {
     assert(votes.userVotes.length === 2, 'shared task votes did not include both users');
     assert(new Set(votes.userVotes.map(group => group.userId)).size === 2, 'same display name reviewers were not kept separate by stable user id');
     assert(votes.userVotes.reduce((sum, group) => sum + group.votes.length, 0) === 3, 'shared task vote total was incorrect');
+
+    const editedDataset = await sendJson<{ dataset: any; syncSummary: any }>(
+      `/api/datasets/${ids.dataset}/items/${encodeURIComponent(sourceRows[0].__datasetItemId)}`,
+      'PATCH',
+      { fieldKey: 'prompt', value: 'hello updated', expectedVersion: 3 }
+    );
+    assert(editedDataset.dataset.version === 4, 'single-cell edit did not create exactly one dataset version');
+    assert(editedDataset.syncSummary.tasks >= 1, 'single-cell edit did not report linked task synchronization');
+    const synchronizedItems = await request<{ items: any[] }>(`/api/tasks/${ids.task}/items`);
+    assert(synchronizedItems.items[0]?.prompt === 'hello updated', 'linked task item did not receive the latest dataset prompt');
+    const synchronizedVotes = await request<{ userVotes: Array<{ votes: any[] }> }>(`/api/tasks/${ids.task}/votes`);
+    const synchronizedFirstVote = synchronizedVotes.userVotes.flatMap(group => group.votes).find(vote => vote.itemId === firstTaskItem.id);
+    assert(synchronizedFirstVote?.itemSnapshot?.prompt === 'hello updated', 'current vote snapshot did not advance to latest content');
+    assert(synchronizedFirstVote?.evaluatedItemSnapshot?.prompt === 'hello', 'vote-time snapshot was not kept immutable');
+    assert(synchronizedFirstVote?.contentUpdatedAfterVote === true, 'changed vote evidence was not marked as updated');
+
+    const conflictResponse = await expectJsonFailure(
+      `/api/datasets/${ids.dataset}/items/${encodeURIComponent(sourceRows[0].__datasetItemId)}`,
+      409,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ fieldKey: 'prompt', value: 'stale write', expectedVersion: 3 }),
+      }
+    );
+    assert(conflictResponse.error?.code === 'VERSION_CONFLICT', 'stale dataset edits did not return VERSION_CONFLICT');
+
+    const manifestEdit = await sendJson<{ dataset: any }>('/api/datasets/' + ids.dataset + '/manifest', 'PATCH', {
+      patch: { description: 'edited dataset card', datasetCard: { rubricBinding: 'smoke-rubric' } },
+      expectedVersion: 4,
+    });
+    assert(manifestEdit.dataset.version === 5, 'Dataset Card edit did not create one dataset version');
+    const derivedCardNoop = await sendJson<{ dataset: any }>('/api/datasets/' + ids.dataset + '/manifest', 'PATCH', {
+      patch: { datasetCard: { sampleSize: 999 } },
+      expectedVersion: 5,
+    });
+    assert(derivedCardNoop.dataset.version === 5, 'derived Dataset Card fields unexpectedly created a version');
+    assert(derivedCardNoop.dataset.datasetCard?.sampleSize === 2, 'derived Dataset Card sample size was editable');
+    const synchronizedRollback = await sendJson<{ dataset: any; syncSummary: any }>(`/api/datasets/${ids.dataset}/rollback`, 'POST', {
+      version: 2,
+      changeSummary: 'synchronization rollback smoke',
+      expectedVersion: 5,
+    });
+    assert(synchronizedRollback.dataset.version === 6, 'synchronized rollback did not create the next version');
+    assert(synchronizedRollback.syncSummary.taskItemsArchived >= 1, 'active-task removed case was not archived during rollback');
+    assert(synchronizedRollback.syncSummary.votesArchived >= 1, 'votes for removed active-task case were not archived');
+    const rollbackTaskItems = await request<{ items: any[] }>(`/api/tasks/${ids.task}/items`);
+    assert(rollbackTaskItems.items.length === 1, 'archived task items were not excluded from current task content');
+    const rollbackVotes = await request<{ userVotes: Array<{ votes: any[]; archivedVotes?: any[] }> }>(`/api/tasks/${ids.task}/votes`);
+    assert(rollbackVotes.userVotes.reduce((sum, group) => sum + group.votes.length, 0) === 2, 'archived votes were not excluded from current results');
+    const archivedVoteEvidence = rollbackVotes.userVotes.flatMap(group => group.archivedVotes || []);
+    assert(archivedVoteEvidence.length === 1, 'archived vote evidence was not exposed separately for audit export');
+    assert(archivedVoteEvidence[0].datasetVersionCurrent === 6, 'archived vote evidence did not record the removal version');
+    assert(archivedVoteEvidence[0].evaluatedItemSnapshot?.prompt === 'world', 'archived vote-time snapshot was not preserved');
+    const staleVoteResponse = await expectJsonFailure(`/api/tasks/${ids.task}/my-votes`, 409, {
+      method: 'PUT',
+      headers: sharedReviewerB,
+      body: JSON.stringify({
+        progress: 2,
+        votes: [
+          { itemId: firstTaskItem.id, method: 'ab_preference', vote: 'B', choice: 'B', timestamp: Date.now() },
+          { itemId: secondTaskItem.id, method: 'ab_preference', vote: 'A', choice: 'A', timestamp: Date.now() },
+        ],
+      }),
+    });
+    assert(staleVoteResponse.error?.code === 'VERSION_CONFLICT', 'stale votes for archived task items were not rejected');
+
+    const restoredDataset = await sendJson<{ dataset: any }>(`/api/datasets/${ids.dataset}/rollback`, 'POST', {
+      version: 1,
+      changeSummary: 'restore archived case for revote smoke',
+      expectedVersion: 6,
+    });
+    assert(restoredDataset.dataset.version === 7, 'restoring an archived case did not create the next version');
+    const restoredTaskItems = await request<{ items: any[] }>(`/api/tasks/${ids.task}/items`);
+    assert(restoredTaskItems.items.length === 2, 'rollback did not restore the archived active-task case');
+    await request(`/api/tasks/${ids.task}/my-votes`, {
+      method: 'PUT',
+      headers: sharedReviewerB,
+      body: JSON.stringify({
+        progress: 2,
+        votes: restoredTaskItems.items.map((item, index) => ({
+          itemId: item.id,
+          method: 'ab_preference',
+          vote: index === 0 ? 'B' : 'A',
+          choice: index === 0 ? 'B' : 'A',
+          timestamp: Date.now(),
+          user: 'Shared Reviewer',
+        })),
+      }),
+    });
+    const revotedResults = await request<{ userVotes: Array<{ votes: any[] }> }>(`/api/tasks/${ids.task}/votes`);
+    assert(revotedResults.userVotes.reduce((sum, group) => sum + group.votes.length, 0) === 3, 'restored case could not receive a new active vote alongside archived evidence');
 
     await sendJson<{ task: any }>('/api/tasks', 'POST', {
       task: {

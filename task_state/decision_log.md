@@ -1,5 +1,33 @@
 # Arena Decision Log
 
+## 2026-07-14: Dataset versions propagate while evaluated evidence remains immutable
+
+Every committed dataset version updates bound task content and the default result view. Votes keep their original `evaluatedItemSnapshot`; the current `itemSnapshot` may advance with the dataset so results can show the requested latest content without destroying audit evidence.
+
+## 2026-07-14: Dataset source fields win during propagation
+
+Dataset-bound prompt, inputs, dimensions, references, and selected model output columns overwrite task-local copies. Task identity, evaluation configuration, ordering, blind placement, and pair assignment metadata remain task-owned.
+
+## 2026-07-14: Structural sync depends on task lifecycle
+
+Draft and active tasks receive additions and archive removals. Removed active-task votes remain auditable but are excluded from current results. Completed tasks update common cases only and do not change their case set.
+
+## 2026-07-14: Each interactive field save is a version
+
+Case-cell and Dataset Card edits commit immediately as one new dataset version. Optimistic version checks reject stale writes rather than silently overwriting concurrent edits.
+
+## 2026-07-14: Missing columns never shift model identity
+
+Bound model outputs retain their model ID and position even when a source column is absent. A missing binding produces an empty artifact and warning; conservative value/role matching is used for real column renames instead of positional guessing.
+
+## 2026-07-14: Archived votes are evidence, not current statistics
+
+Votes for removed active-task cases are archived and excluded from progress, rankings, and current aggregates. They remain available through a separate audit export with removal version, reason, evaluated snapshot, and last current snapshot. Stale clients receive `409` if they submit against archived items.
+
+## 2026-07-14: Dataset Card derived fields stay read-only
+
+Only source, applicable tasks/stages, Rubric binding, and coverage gaps are editable inside Dataset Card. Sample size, modality/distributions, latest change, and timestamps remain derived from the committed dataset version.
+
 ## 2026-07-13: One battle per case per reviewer
 
 Each reviewer sees at most one model pair for a case. Different reviewers may receive different pairs for that case. This avoids repeat-exposure bias and fits the existing `(task_item_id, user_id)` vote uniqueness constraint without a database migration.
