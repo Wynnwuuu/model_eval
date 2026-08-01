@@ -99,6 +99,24 @@ interface DatasetFormState {
   coverageGaps: string;
 }
 
+type EditableDatasetSchemaField = DatasetSchemaField & { editorId: string };
+
+let schemaFieldEditorSequence = 0;
+
+const createSchemaFieldEditorId = (field?: DatasetSchemaField) =>
+  field?.canonicalKey
+    ? `standard:${field.canonicalKey}`
+    : `schema-field:${++schemaFieldEditorSequence}`;
+
+const attachSchemaFieldEditorIds = (fields: DatasetSchemaField[]): EditableDatasetSchemaField[] =>
+  fields.map(field => ({
+    ...field,
+    editorId: createSchemaFieldEditorId(field)
+  }));
+
+const stripSchemaFieldEditorIds = (fields: EditableDatasetSchemaField[]): DatasetSchemaField[] =>
+  fields.map(({ editorId: _editorId, ...field }) => field);
+
 const ROLE_OPTIONS: Array<{ key: DatasetFieldRole; label: string }> = [
   { key: 'case_id', label: '用例ID' },
   { key: 'input', label: '输入列' },
@@ -530,8 +548,10 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
   const [parsedRows, setParsedRows] = useState<Record<string, any>[]>([]);
   const [parsedHeaders, setParsedHeaders] = useState<string[]>([]);
   const [pastedText, setPastedText] = useState('');
-  const [schemaFields, setSchemaFields] = useState<DatasetSchemaField[]>(() =>
-    createSchemaFieldsFromMappings(DEFAULT_TEMPLATE_HEADERS, [], inferDatasetMappings(DEFAULT_TEMPLATE_HEADERS, []))
+  const [schemaFields, setSchemaFields] = useState<EditableDatasetSchemaField[]>(() =>
+    attachSchemaFieldEditorIds(
+      createSchemaFieldsFromMappings(DEFAULT_TEMPLATE_HEADERS, [], inferDatasetMappings(DEFAULT_TEMPLATE_HEADERS, []))
+    )
   );
   const [wizardError, setWizardError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1019,7 +1039,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
       initialMappings,
       normalizedTarget?.inputSchema || []
     );
-    setSchemaFields(initialFields);
+    setSchemaFields(attachSchemaFieldEditorIds(initialFields));
     setForm({
       name: normalizedTarget?.name || '',
       description: normalizedTarget?.description || '',
@@ -1052,7 +1072,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
     const modality = inferDatasetModality(rows, derivedMappings, form.modality, fields);
     setParsedRows(rows);
     setParsedHeaders(headers);
-    setSchemaFields(fields);
+    setSchemaFields(attachSchemaFieldEditorIds(fields));
     setForm(prev => ({ ...prev, modality }));
     setWizardError('');
     setWizardStep(3);
@@ -1066,13 +1086,14 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
     event.target.value = '';
   };
 
-  const commitSchemaFields = (updater: (prev: DatasetSchemaField[]) => DatasetSchemaField[]) => {
+  const commitSchemaFields = (updater: (prev: EditableDatasetSchemaField[]) => EditableDatasetSchemaField[]) => {
     setSchemaFields(prev => {
       const next = updater(prev);
-      const nextMappings = deriveMappingsFromSchemaFields(next);
+      const persistedFields = stripSchemaFieldEditorIds(next);
+      const nextMappings = deriveMappingsFromSchemaFields(persistedFields);
       setForm(current => ({
         ...current,
-        modality: inferDatasetModality(parsedRows, nextMappings, current.modality, next)
+        modality: inferDatasetModality(parsedRows, nextMappings, current.modality, persistedFields)
       }));
       return next;
     });
@@ -1080,6 +1101,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
 
   const updateStandardSource = (standard: typeof STANDARD_DATASET_FIELDS[number], sourceKey: string) => {
     commitSchemaFields(prev => {
+      const existingField = prev.find(field => field.canonicalKey === standard.canonicalKey);
       const next = prev.filter(field => field.canonicalKey !== standard.canonicalKey);
       if (!sourceKey) return next;
       const previewType = standard.previewType || inferPreviewType(sourceKey, parsedRows.slice(0, 5).map(row => row[sourceKey]));
@@ -1093,18 +1115,24 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
           canonicalKey: standard.canonicalKey,
           sourceKey,
           previewType,
-          required: standard.required
+          required: standard.required,
+          editorId: existingField?.editorId || createSchemaFieldEditorId({
+            key: standard.label,
+            label: standard.label,
+            type: standard.type,
+            canonicalKey: standard.canonicalKey
+          })
         }
       ];
     });
   };
 
-  const updateField = (fieldKey: string, patch: Partial<DatasetSchemaField>) => {
+  const updateField = (editorId: string, patch: Partial<DatasetSchemaField>) => {
     commitSchemaFields(prev => prev.map(field => {
-      if (field.key !== fieldKey) return field;
+      if (field.editorId !== editorId) return field;
       const sourceKey = patch.sourceKey ?? field.sourceKey ?? field.key;
       const nextKey = patch.key
-        ? ensureUniqueFieldKey(patch.key, prev.filter(item => item.key !== fieldKey).map(item => item.key))
+        ? ensureUniqueFieldKey(patch.key, prev.filter(item => item.editorId !== editorId).map(item => item.key))
         : field.key;
       const previewType = patch.previewType || field.previewType || inferPreviewType(sourceKey, parsedRows.slice(0, 5).map(row => row[sourceKey]));
       return {
@@ -1119,8 +1147,8 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
     }));
   };
 
-  const removeField = (fieldKey: string) => {
-    commitSchemaFields(prev => prev.filter(field => field.key !== fieldKey));
+  const removeField = (editorId: string) => {
+    commitSchemaFields(prev => prev.filter(field => field.editorId !== editorId));
   };
 
   const addCustomField = (role: DatasetFieldRole = 'metadata') => {
@@ -1136,7 +1164,8 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
           type: inferSchemaType(previewType),
           role,
           sourceKey: preferredSource,
-          previewType
+          previewType,
+          editorId: createSchemaFieldEditorId()
         }
       ];
     });
@@ -1160,12 +1189,13 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
     const headers = parsedHeaders.length
       ? parsedHeaders
       : wizardTarget?.inputSchema?.map(field => field.key) || DEFAULT_TEMPLATE_HEADERS;
-    const activeMappings = deriveMappingsFromSchemaFields(schemaFields);
-    const normalizedRows = normalizeDatasetRows(parsedRows, activeMappings, schemaFields);
+    const persistedSchemaFields = stripSchemaFieldEditorIds(schemaFields);
+    const activeMappings = deriveMappingsFromSchemaFields(persistedSchemaFields);
+    const normalizedRows = normalizeDatasetRows(parsedRows, activeMappings, persistedSchemaFields);
     const previousItems = wizardMode === 'append' ? wizardTarget?.items || [] : [];
     const nextItems = wizardMode === 'append' ? [...previousItems, ...normalizedRows] : normalizedRows;
     const validationSummary = validateDatasetItems(nextItems, activeMappings);
-    const inputSchema = buildDatasetSchema(headers, normalizedRows.length ? normalizedRows : nextItems, activeMappings, schemaFields);
+    const inputSchema = buildDatasetSchema(headers, normalizedRows.length ? normalizedRows : nextItems, activeMappings, persistedSchemaFields);
     const inputType = inferInputTypeFromDataset({ inputSchema, items: nextItems, columnMappings: activeMappings } as EvalDataset);
     const categoryPath = form.categoryPath.split('/').map(part => part.trim()).filter(Boolean);
     const versionMeta = appendDatasetVersion(
@@ -1412,8 +1442,9 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
     if (!wizardOpen) return null;
     const headers = parsedHeaders.length ? parsedHeaders : wizardTarget?.inputSchema?.map(field => field.key) || DEFAULT_TEMPLATE_HEADERS;
     const previewRows = parsedRows.slice(0, 5);
-    const activeMappings = deriveMappingsFromSchemaFields(schemaFields);
-    const normalizedPreviewRows = normalizeDatasetRows(parsedRows, activeMappings, schemaFields);
+    const persistedSchemaFields = stripSchemaFieldEditorIds(schemaFields);
+    const activeMappings = deriveMappingsFromSchemaFields(persistedSchemaFields);
+    const normalizedPreviewRows = normalizeDatasetRows(parsedRows, activeMappings, persistedSchemaFields);
     const validation = validateDatasetItems(normalizedPreviewRows, activeMappings);
     const standardGroups = STANDARD_DATASET_FIELDS.reduce<Record<string, typeof STANDARD_DATASET_FIELDS>>((groups, field) => {
       const group = field.group || '其他';
@@ -1585,7 +1616,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
                                   <select
                                     value={previewType}
                                     disabled={!mappedField}
-                                    onChange={e => mappedField && updateField(mappedField.key, { previewType: e.target.value as DatasetPreviewType, type: inferSchemaType(e.target.value as DatasetPreviewType) })}
+                                    onChange={e => mappedField && updateField(mappedField.editorId, { previewType: e.target.value as DatasetPreviewType, type: inferSchemaType(e.target.value as DatasetPreviewType) })}
                                     className="px-2 py-1.5 glass-input rounded-lg text-xs text-slate-200 disabled:opacity-50"
                                   >
                                     {PREVIEW_OPTIONS.map(option => <option key={option.key} value={option.key}>{option.label}</option>)}
@@ -1615,16 +1646,16 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
                     </div>
                     <div className="p-4 space-y-2">
                       {outputFields.map(field => (
-                        <div key={field.key} className="grid grid-cols-1 lg:grid-cols-[minmax(160px,1fr)_minmax(180px,1fr)_120px_32px] gap-2 items-center rounded-lg bg-black/10 px-3 py-2">
+                        <div key={field.editorId} className="grid grid-cols-1 lg:grid-cols-[minmax(160px,1fr)_minmax(180px,1fr)_120px_32px] gap-2 items-center rounded-lg bg-black/10 px-3 py-2">
                           <input
                             value={field.label}
-                            onChange={e => updateField(field.key, { key: e.target.value, label: e.target.value })}
+                            onChange={e => updateField(field.editorId, { key: e.target.value, label: e.target.value })}
                             className="px-2 py-1.5 glass-input rounded-lg text-xs text-slate-200"
                             placeholder="模型名称/结果列名"
                           />
                           <select
                             value={field.sourceKey || ''}
-                            onChange={e => updateField(field.key, {
+                            onChange={e => updateField(field.editorId, {
                               sourceKey: e.target.value,
                               previewType: inferPreviewType(e.target.value, parsedRows.slice(0, 5).map(row => row[e.target.value]))
                             })}
@@ -1635,12 +1666,12 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
                           </select>
                           <select
                             value={previewTypeForField(field, parsedRows)}
-                            onChange={e => updateField(field.key, { previewType: e.target.value as DatasetPreviewType, type: inferSchemaType(e.target.value as DatasetPreviewType) })}
+                            onChange={e => updateField(field.editorId, { previewType: e.target.value as DatasetPreviewType, type: inferSchemaType(e.target.value as DatasetPreviewType) })}
                             className="px-2 py-1.5 glass-input rounded-lg text-xs text-slate-200"
                           >
                             {PREVIEW_OPTIONS.map(option => <option key={option.key} value={option.key}>{option.label}</option>)}
                           </select>
-                          <button onClick={() => removeField(field.key)} className="p-2 rounded-lg text-slate-400 hover:text-red-300 hover:bg-red-500/10">
+                          <button onClick={() => removeField(field.editorId)} className="p-2 rounded-lg text-slate-400 hover:text-red-300 hover:bg-red-500/10">
                             <Trash2 size={14} />
                           </button>
                         </div>
@@ -1663,23 +1694,23 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
                     </div>
                     <div className="p-4 space-y-2">
                       {customFields.map(field => (
-                        <div key={field.key} className="grid grid-cols-1 xl:grid-cols-[minmax(140px,1fr)_130px_minmax(180px,1fr)_120px_32px] gap-2 items-center rounded-lg bg-black/10 px-3 py-2">
+                        <div key={field.editorId} className="grid grid-cols-1 xl:grid-cols-[minmax(140px,1fr)_130px_minmax(180px,1fr)_120px_32px] gap-2 items-center rounded-lg bg-black/10 px-3 py-2">
                           <input
                             value={field.label}
-                            onChange={e => updateField(field.key, { key: e.target.value, label: e.target.value })}
+                            onChange={e => updateField(field.editorId, { key: e.target.value, label: e.target.value })}
                             className="px-2 py-1.5 glass-input rounded-lg text-xs text-slate-200"
                             placeholder="显示名"
                           />
                           <select
                             value={field.role || 'metadata'}
-                            onChange={e => updateField(field.key, { role: e.target.value as DatasetFieldRole })}
+                            onChange={e => updateField(field.editorId, { role: e.target.value as DatasetFieldRole })}
                             className="px-2 py-1.5 glass-input rounded-lg text-xs text-slate-200"
                           >
                             {ROLE_OPTIONS.filter(option => option.key !== 'case_id').map(option => <option key={option.key} value={option.key}>{option.label}</option>)}
                           </select>
                           <select
                             value={field.sourceKey || ''}
-                            onChange={e => updateField(field.key, {
+                            onChange={e => updateField(field.editorId, {
                               sourceKey: e.target.value,
                               previewType: inferPreviewType(e.target.value, parsedRows.slice(0, 5).map(row => row[e.target.value]))
                             })}
@@ -1690,12 +1721,12 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
                           </select>
                           <select
                             value={previewTypeForField(field, parsedRows)}
-                            onChange={e => updateField(field.key, { previewType: e.target.value as DatasetPreviewType, type: inferSchemaType(e.target.value as DatasetPreviewType) })}
+                            onChange={e => updateField(field.editorId, { previewType: e.target.value as DatasetPreviewType, type: inferSchemaType(e.target.value as DatasetPreviewType) })}
                             className="px-2 py-1.5 glass-input rounded-lg text-xs text-slate-200"
                           >
                             {PREVIEW_OPTIONS.map(option => <option key={option.key} value={option.key}>{option.label}</option>)}
                           </select>
-                          <button onClick={() => removeField(field.key)} className="p-2 rounded-lg text-slate-400 hover:text-red-300 hover:bg-red-500/10">
+                          <button onClick={() => removeField(field.editorId)} className="p-2 rounded-lg text-slate-400 hover:text-red-300 hover:bg-red-500/10">
                             <Trash2 size={14} />
                           </button>
                         </div>
