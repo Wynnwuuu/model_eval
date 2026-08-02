@@ -121,3 +121,20 @@
 
 - `npm.cmd run lint`, `npm.cmd run test:rank-ties`, `npm.cmd run test:arena`, and `npm.cmd run build`: passed.
 - Browser: at 1920px width, five test candidates rendered as four cards on the first row and one on the second, with cards around 360x360; at 390px width, cards rendered as a single-column stack. Tied candidates remained adjacent in the same row when width allowed.
+
+## 2026-08-02: Unified generation input mapping
+
+### Completed
+
+- Replaced separate start-frame/end-frame selectors with one optional image-column multiselect while retaining the existing persisted mapping shape.
+- Added per-column reference/start/end roles, semantic role inference, live model-role constraints, and empty-by-default image/audio mappings.
+- Added per-case text, reference-image, start-frame, and start/end-frame mode resolution with strict conflict and ordering checks.
+- Kept image generation generic and preserved the existing Worker, temporary URL/OSS, writeback, and human-evaluation flows.
+- Fixed mapping initialization so parent object identity changes cannot erase an in-progress user selection.
+
+### Validation
+
+- `npm.cmd run test:generation`, `npm.cmd run lint`, `npm.cmd run build`, and `npm.cmd run server:build`: passed.
+- Browser: Seedance 2.0 Pro exposed reference/start/end roles, role changes persisted, empty media input produced a valid `text_to_video` preflight, and image/audio defaults remained empty.
+- Browser: 390x844 and 1280x720 layouts had no modal or input-panel horizontal overflow; console logs were empty.
+- No paid generation was submitted during this regression pass. Existing Vite mixed-import and chunk-size warnings remain unchanged.

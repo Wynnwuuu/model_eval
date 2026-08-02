@@ -20,3 +20,11 @@ The final release audit ran with Docker Desktop and PostgreSQL available; `local
 Arena-rank weak-order support is also complete. Shared tie-aware logic is in `src/rankingUtils.ts`, insight aggregation is in `src/analysisInsights.ts`, and deterministic coverage is in `scripts/test-rank-ties.ts` via `npm.cmd run test:rank-ties`. The UI now uses rank-sorted media cards and a synchronized tier editor in `src/components/ArenaRankVotingScreen.tsx`; cards can move tiers, merge with the previous rank, split out of ties, and participate in drag/drop. Repeated `rank` values remain in the existing JSON/JSONB payload, so no database migration is required.
 
 The browser regression used an isolated local session and removed it afterward. The shared web, API, and database stack is currently healthy.
+
+## Completed work: unified generation input mapping
+
+The generation modal now keeps Prompt as a single selector and exposes optional image/audio multiselects. Selected video image columns carry explicit reference/start/end roles; image models treat selected images generically. Only Prompt is selected by default.
+
+Preflight resolves the generation mode independently for every case and preserves strict start/end ordering. Invalid role combinations affect only their case. The persisted mapping contract, generation Worker, URL handling, dataset writeback, and evaluation handoff are unchanged.
+
+Regression coverage is in `scripts/test-generation.ts`. Generation tests, both TypeScript builds, the Vite production build, mobile/desktop browser layout, role interaction, and text-only preflight all pass. No paid generation was submitted in the final verification.

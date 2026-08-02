@@ -11,6 +11,7 @@ import {
   fingerprintConfig,
   matchUploadedAsset,
   preflightGenerationCase,
+  resolveGenerationImageInputs,
   stableJson,
   type GenerationCase,
   type NormalizedGenerationModel,
@@ -208,6 +209,11 @@ const buildCases = (
         extraInputs[key] = resolved.value;
         extraInputIssues.push(...resolved.issues);
       }
+      const imageInputs = resolveGenerationImageInputs(model.outputModality, {
+        referenceUrls: references.urls,
+        startUrls: start.urls,
+        endUrls: end.urls,
+      });
       const prompt = input.promptColumn ? text(row[input.promptColumn]) : '';
       const seed = request.seedMode === 'fixed'
         ? Number(request.fixedSeed ?? 42)
@@ -220,15 +226,16 @@ const buildCases = (
         datasetItemId,
         rowIndex,
         prompt,
-        imageUrls: Array.from(new Set([...start.urls, ...end.urls, ...references.urls])),
+        imageUrls: imageInputs.imageUrls,
         audioUrls: audios.urls,
         controls,
         seed,
         extraInputs,
+        generationType: imageInputs.generationType,
       };
       return {
         resolvedCase,
-        preparationIssues: [...start.issues, ...end.issues, ...references.issues, ...audios.issues, ...extraInputIssues],
+        preparationIssues: [...start.issues, ...end.issues, ...references.issues, ...audios.issues, ...extraInputIssues, ...imageInputs.issues],
       };
     });
 };

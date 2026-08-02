@@ -7,6 +7,7 @@ import {
   matchUploadedAsset,
   normalizeAionModelConfig,
   preflightGenerationCase,
+  resolveGenerationImageInputs,
 } from '../server/generation/generationPlanning.ts';
 import {
   AionGenerationClient,
@@ -21,6 +22,13 @@ import {
 } from '../server/generation/generationWorker.ts';
 import { createByteLimitStream, generationAssetService } from '../server/generation/generationAssetService.ts';
 import { inferDatasetMappings } from '../src/datasetManifest.ts';
+import {
+  defaultGenerationInputMapping,
+  getGenerationImageRole,
+  inferGenerationImageRole,
+  setGenerationImageRole,
+} from '../src/features/generation/inputMapping.ts';
+import { getSupportedGenerationImageRoles } from '../src/features/generation/modelCapabilities.ts';
 
 const generatedMetadataMappings = inferDatasetMappings(
   ['case_id', 'model_output_request_id'],
@@ -28,6 +36,93 @@ const generatedMetadataMappings = inferDatasetMappings(
 );
 assert.equal(generatedMetadataMappings.caseId, 'case_id');
 assert.equal(generatedMetadataMappings.standard.case_id, 'case_id');
+
+const mappingDataset = {
+  inputSchema: [
+    { key: '完整Prompt', label: '完整Prompt', type: 'text', canonicalKey: 'full_prompt' },
+    { key: '参考图_URLs', label: '参考图_URLs', type: 'image_url', previewType: 'image', canonicalKey: 'reference_image_urls' },
+    { key: '首帧图_URL', label: '首帧图_URL', type: 'image_url', previewType: 'image', canonicalKey: 'start_image_url' },
+    { key: '尾帧图_URL', label: '尾帧图_URL', type: 'image_url', previewType: 'image', canonicalKey: 'end_image_url' },
+    { key: '音频_URL', label: '音频_URL', type: 'audio_url', previewType: 'audio', canonicalKey: 'audio_url' },
+  ],
+  items: [],
+} as any;
+const mappingHeaders = mappingDataset.inputSchema.map((field: { key: string }) => field.key);
+const emptyMediaMapping = defaultGenerationInputMapping(
+  mappingDataset,
+  mappingHeaders,
+  { standard: { full_prompt: '完整Prompt' }, inputColumns: [], outputColumns: [], dimensionColumns: [], referenceColumns: [] },
+);
+assert.equal(emptyMediaMapping.promptColumn, '完整Prompt');
+assert.deepEqual(emptyMediaMapping.referenceImageColumns, []);
+assert.deepEqual(emptyMediaMapping.referenceAudioColumns, []);
+assert.equal(emptyMediaMapping.startImageColumn, '');
+assert.equal(emptyMediaMapping.endImageColumn, '');
+assert.equal(inferGenerationImageRole('参考图_URLs', mappingDataset.inputSchema), 'reference');
+assert.equal(inferGenerationImageRole('首帧图_URL', mappingDataset.inputSchema), 'start');
+assert.equal(inferGenerationImageRole('尾帧图_URL', mappingDataset.inputSchema), 'end');
+assert.equal(inferGenerationImageRole('\u9996\u5e27\u56fe_URL', []), 'start');
+assert.equal(inferGenerationImageRole('\u5c3e\u5e27\u56fe_URL', []), 'end');
+
+const withReference = setGenerationImageRole(emptyMediaMapping, '参考图_URLs', 'reference');
+const withStart = setGenerationImageRole(withReference, '首帧图_URL', 'start');
+const withEnd = setGenerationImageRole(withStart, '尾帧图_URL', 'end');
+assert.equal(getGenerationImageRole(withEnd, '参考图_URLs'), 'reference');
+assert.equal(getGenerationImageRole(withEnd, '首帧图_URL'), 'start');
+assert.equal(getGenerationImageRole(withEnd, '尾帧图_URL'), 'end');
+assert.equal(getGenerationImageRole(setGenerationImageRole(withEnd, '首帧图_URL'), '首帧图_URL'), undefined);
+
+const textImageInputs = resolveGenerationImageInputs('video', {
+  referenceUrls: [],
+  startUrls: [],
+  endUrls: [],
+});
+assert.equal(textImageInputs.generationType, undefined);
+assert.deepEqual(textImageInputs.imageUrls, []);
+
+const referenceImageInputs = resolveGenerationImageInputs('video', {
+  referenceUrls: ['https://assets.example.com/ref-a.png', 'https://assets.example.com/ref-b.png'],
+  startUrls: [],
+  endUrls: [],
+});
+assert.equal(referenceImageInputs.generationType, 'reference_to_video');
+assert.deepEqual(referenceImageInputs.imageUrls, [
+  'https://assets.example.com/ref-a.png',
+  'https://assets.example.com/ref-b.png',
+]);
+
+const startImageInputs = resolveGenerationImageInputs('video', {
+  referenceUrls: [],
+  startUrls: ['https://assets.example.com/start.png'],
+  endUrls: [],
+});
+assert.equal(startImageInputs.generationType, 'image_to_video');
+
+const keyframeImageInputs = resolveGenerationImageInputs('video', {
+  referenceUrls: [],
+  startUrls: ['https://assets.example.com/start.png'],
+  endUrls: ['https://assets.example.com/end.png'],
+});
+assert.equal(keyframeImageInputs.generationType, 'images_to_video');
+assert.deepEqual(keyframeImageInputs.imageUrls, [
+  'https://assets.example.com/start.png',
+  'https://assets.example.com/end.png',
+]);
+assert.deepEqual(keyframeImageInputs.issues, []);
+
+const endOnlyImageInputs = resolveGenerationImageInputs('video', {
+  referenceUrls: [],
+  startUrls: [],
+  endUrls: ['https://assets.example.com/end.png'],
+});
+assert.ok(endOnlyImageInputs.issues.some(issue => issue.code === 'MISSING_START_IMAGE'));
+
+const conflictingImageInputs = resolveGenerationImageInputs('video', {
+  referenceUrls: ['https://assets.example.com/reference.png'],
+  startUrls: ['https://assets.example.com/start.png'],
+  endUrls: [],
+});
+assert.ok(conflictingImageInputs.issues.some(issue => issue.code === 'CONFLICTING_IMAGE_ROLES'));
 
 const rawVideoModel = {
   id: 'model-config-1',
@@ -126,6 +221,7 @@ const camelCaseVideoModel = {
 const videoModel = normalizeAionModelConfig(rawVideoModel);
 assert.equal(videoModel.id, rawVideoModel.name);
 assert.equal(videoModel.outputModality, 'video');
+assert.deepEqual(getSupportedGenerationImageRoles(videoModel), ['start', 'end']);
 assert.deepEqual(videoModel.supportedDurations, [5, 10]);
 assert.equal(videoModel.controls.find(item => item.key === 'duration')?.defaultValue, 5);
 assert.ok(videoModel.configFingerprint);
@@ -137,6 +233,7 @@ assert.equal(videoModel.controls.find(item => item.key === 'custom_strength')?.d
 const cliShapeModel = normalizeAionModelConfig(camelCaseVideoModel);
 assert.equal(cliShapeModel.displayName, camelCaseVideoModel.displayName);
 assert.equal(cliShapeModel.outputModality, 'video');
+assert.deepEqual(getSupportedGenerationImageRoles(cliShapeModel), ['reference', 'start']);
 assert.equal(cliShapeModel.controls.find(item => item.key === 'resolution')?.defaultValue, '1080p');
 assert.deepEqual(cliShapeModel.inputSchema?.required_inputs, camelCaseVideoModel.options.required_params);
 const cliShapeCase = preflightGenerationCase(cliShapeModel, {
@@ -215,6 +312,27 @@ const imageCase = preflightGenerationCase(videoModel, {
   controls: { duration: 5 },
 });
 assert.equal(imageCase.generationType, 'image_to_video');
+
+const referenceCapableModel = {
+  ...videoModel,
+  capabilities: [...videoModel.capabilities, 'reference_to_video'],
+};
+const referenceModeCase = preflightGenerationCase(referenceCapableModel, {
+  caseId: 'case-reference-mode',
+  datasetItemId: 'item-reference-mode',
+  rowIndex: 7,
+  prompt: 'Keep both reference subjects.',
+  imageUrls: referenceImageInputs.imageUrls,
+  audioUrls: [],
+  controls: { duration: 5 },
+  generationType: referenceImageInputs.generationType,
+});
+assert.equal(referenceModeCase.valid, true);
+assert.equal(referenceModeCase.generationType, 'reference_to_video');
+assert.equal(
+  buildAionGenerationRequest(referenceCapableModel, referenceModeCase.resolvedCase).body.generation_type,
+  'reference_to_video',
+);
 
 const request = buildAionGenerationRequest(videoModel, imageCase.resolvedCase);
 assert.equal(request.path, '/model/api/v1/model/generate-video');

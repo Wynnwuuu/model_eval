@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 
+import { supportsGenerationMode, type GenerationMode } from '../../src/features/generation/modelCapabilities.ts';
+
 export type GenerationModality = 'image' | 'video';
 
 export type GenerationControl = {
@@ -58,6 +60,86 @@ export type PreflightCaseResult = {
   errors: PreflightIssue[];
   warnings: PreflightIssue[];
   resolvedCase: GenerationCase & { generationType: string };
+};
+
+export type GenerationImageRoleInputs = {
+  referenceUrls: string[];
+  startUrls: string[];
+  endUrls: string[];
+};
+
+export type ResolvedGenerationImageInputs = {
+  imageUrls: string[];
+  generationType?: 'reference_to_video' | 'image_to_video' | 'images_to_video';
+  issues: PreflightIssue[];
+};
+
+const uniqueUrls = (values: string[]) => Array.from(new Set(values));
+
+export const resolveGenerationImageInputs = (
+  outputModality: GenerationModality,
+  input: GenerationImageRoleInputs,
+): ResolvedGenerationImageInputs => {
+  const referenceUrls = uniqueUrls(input.referenceUrls);
+  const startUrls = uniqueUrls(input.startUrls);
+  const endUrls = uniqueUrls(input.endUrls);
+
+  if (outputModality === 'image') {
+    return {
+      imageUrls: uniqueUrls([...startUrls, ...endUrls, ...referenceUrls]),
+      issues: [],
+    };
+  }
+
+  const issues: PreflightIssue[] = [];
+  if (startUrls.length > 1) {
+    issues.push({
+      code: 'INVALID_IMAGE_ROLE_COUNT',
+      field: 'startImageColumn',
+      message: 'A case can contain only one start-frame image.',
+    });
+  }
+  if (endUrls.length > 1) {
+    issues.push({
+      code: 'INVALID_IMAGE_ROLE_COUNT',
+      field: 'endImageColumn',
+      message: 'A case can contain only one end-frame image.',
+    });
+  }
+
+  const hasReference = referenceUrls.length > 0;
+  const hasStart = startUrls.length > 0;
+  const hasEnd = endUrls.length > 0;
+  if (hasEnd && !hasStart) {
+    issues.push({
+      code: 'MISSING_START_IMAGE',
+      field: 'startImageColumn',
+      message: 'An end-frame image requires a start-frame image in the same case.',
+    });
+  }
+  if (hasReference && (hasStart || hasEnd)) {
+    issues.push({
+      code: 'CONFLICTING_IMAGE_ROLES',
+      field: 'referenceImageColumns',
+      message: 'A case cannot mix reference images with start/end keyframes.',
+    });
+  }
+
+  if (hasStart || hasEnd) {
+    return {
+      imageUrls: [...startUrls, ...endUrls, ...referenceUrls],
+      generationType: hasEnd ? 'images_to_video' : 'image_to_video',
+      issues,
+    };
+  }
+  if (hasReference) {
+    return {
+      imageUrls: referenceUrls,
+      generationType: 'reference_to_video',
+      issues,
+    };
+  }
+  return { imageUrls: [], issues };
 };
 
 const STANDARD_CONTROLS: Record<string, Omit<GenerationControl, 'key'>> = {
@@ -283,7 +365,7 @@ const resolveGenerationType = (model: NormalizedGenerationModel, item: Generatio
   }
   if (item.generationType) return item.generationType;
   if (item.extraInputs?.elements) return 'reference_to_video';
-  if (item.imageUrls.length >= 2 && hasCapability(model, ['images_to_video', 'keyframe_to_video'])) {
+  if (item.imageUrls.length >= 2 && supportsGenerationMode(model, 'images_to_video')) {
     return 'images_to_video';
   }
   if (item.imageUrls.length) return 'image_to_video';
@@ -459,13 +541,16 @@ export const preflightGenerationCase = (
   }
 
   if (model.outputModality === 'video') {
-    const capabilityNames: Record<string, string[]> = {
-      text_to_video: ['text_to_video', 'text2video'],
-      image_to_video: ['image_to_video', 'image2video'],
-      images_to_video: ['images_to_video', 'keyframe_to_video', 'keyframe2video'],
-      reference_to_video: ['reference_to_video', 'ref2video'],
-    };
-    if (!hasCapability(model, capabilityNames[generationType] || [generationType])) {
+    const standardModes = new Set<GenerationMode>([
+      'text_to_video',
+      'image_to_video',
+      'images_to_video',
+      'reference_to_video',
+    ]);
+    const supported = standardModes.has(generationType as GenerationMode)
+      ? supportsGenerationMode(model, generationType as GenerationMode)
+      : hasCapability(model, [generationType]);
+    if (!supported) {
       errors.push({
         code: 'UNSUPPORTED_GENERATION_TYPE',
         field: 'generationType',

@@ -102,3 +102,11 @@ Exact pair-relation agreement is the primary intuitive agreement measure and Ken
 ## 2026-07-13: Ties do not create significance
 
 Pairwise dominance counts a tie as 0.5, but Wilson intervals and binomial sign tests use decisive relations only. An all-tied pair has 50% dominance and no reportable confidence interval or p-value.
+
+## 2026-08-02: Image mapping is unified while roles remain explicit
+
+The generation dialog uses one optional image-column multiselect, but each selected column retains a reference, start-frame, or end-frame role. This keeps the UI compact without asking Aion to infer keyframe semantics from image order. The existing `referenceImageColumns`, `startImageColumn`, and `endImageColumn` contract remains unchanged, so no migration or Worker change is required.
+
+Generation mode is resolved per case from non-empty media rather than once per batch. Text-only, ordinary reference, start-frame, and start/end-frame cases may coexist; end-only, mixed reference/keyframe, unsupported-mode, and over-limit cases fail preflight independently.
+
+Only Prompt is inferred by default. Image and audio columns remain empty until explicitly selected, and initialization is keyed by stable dataset ID/version so rerenders cannot overwrite user mapping edits.

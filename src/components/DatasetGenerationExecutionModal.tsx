@@ -13,9 +13,7 @@ import {
 } from 'lucide-react';
 
 import {
-  DatasetColumnMappings,
   DatasetPreviewType,
-  DatasetSchemaField,
   EvalDataset,
   GenerationAssetBinding,
   GenerationInputMapping,
@@ -42,6 +40,17 @@ import {
   waitForExecutionBatch,
 } from '../features/generation/executionApi';
 
+import {
+  defaultGenerationInputMapping,
+  getGenerationImageRole,
+  inferGenerationImageRole,
+  setGenerationImageRole,
+} from '../features/generation/inputMapping';
+import {
+  GenerationImageRole,
+  getSupportedGenerationImageRoles,
+} from '../features/generation/modelCapabilities';
+
 interface DatasetGenerationExecutionModalProps {
   dataset: EvalDataset;
   initialBatchId?: string;
@@ -62,9 +71,9 @@ const copy = {
   loadingModels: '\u6b63\u5728\u8bfb\u53d6 VidMuse \u5b9e\u65f6\u6a21\u578b\u914d\u7f6e...',
   outputColumn: '\u76ee\u6807\u7ed3\u679c\u5217',
   promptColumn: 'Prompt \u5217',
-  startImage: '\u9996\u5e27\u56fe\u5217',
-  endImage: '\u5c3e\u5e27\u56fe\u5217',
-  refImages: '\u53c2\u8003\u56fe\u5217',
+  imageInputs: '\u56fe\u50cf\u8f93\u5165\u5217\uff08\u53ef\u9009\uff09',
+  imageRole: '\u56fe\u50cf',
+  unsupportedRole: '\u5f53\u524d\u6a21\u578b\u4e0d\u652f\u6301',
   refAudios: '\u53c2\u8003\u97f3\u9891\u5217',
   none: '\u4e0d\u4f7f\u7528',
   controls: '\u751f\u6210\u53c2\u6570',
@@ -85,6 +94,12 @@ const copy = {
   explicitConfirm: '\u6211\u5df2\u6838\u5bf9\u6709\u6548/\u65e0\u6548 case\u3001\u6a21\u578b\u914d\u7f6e\u5feb\u7167\u548c\u8d39\u7528\u4fe1\u606f\u3002',
 };
 
+const imageRoleLabels: Record<GenerationImageRole, string> = {
+  reference: '\u53c2\u8003\u56fe',
+  start: '\u9996\u5e27',
+  end: '\u5c3e\u5e27',
+};
+
 const emptyMapping: GenerationInputMapping = {
   promptColumn: '',
   referenceImageColumns: [],
@@ -100,39 +115,6 @@ const formatDateKey = () => {
   const now = new Date();
   const pad = (value: number) => String(value).padStart(2, '0');
   return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}`;
-};
-
-const fieldMatches = (field: DatasetSchemaField, candidates: string[]) => {
-  const haystack = [field.key, field.label, field.sourceKey, field.canonicalKey].filter(Boolean).join(' ').toLowerCase();
-  return candidates.some(candidate => haystack.includes(candidate));
-};
-
-const defaultMapping = (
-  dataset: EvalDataset,
-  headers: string[],
-  mappings: DatasetColumnMappings,
-): GenerationInputMapping => {
-  const fields = dataset.inputSchema || [];
-  const fieldKey = (predicate: (field: DatasetSchemaField) => boolean) => fields.find(predicate)?.key;
-  return {
-    ...emptyMapping,
-    promptColumn:
-      mappings.standard.full_prompt
-      || fieldKey(field => field.canonicalKey === 'full_prompt')
-      || fieldKey(field => field.canonicalKey === 'zh_prompt')
-      || mappings.inputColumns.find(column => headers.includes(column))
-      || headers.find(header => /prompt|input/i.test(header))
-      || '',
-    referenceImageColumns: fields
-      .filter(field => field.previewType === 'image' && (field.role === 'reference' || fieldMatches(field, ['reference', 'ref'])))
-      .map(field => field.key),
-    referenceAudioColumns: fields
-      .filter(field => field.previewType === 'audio' || fieldMatches(field, ['audio', 'music']))
-      .map(field => field.key),
-    startImageColumn: fieldKey(field => field.canonicalKey === 'start_image_url' || fieldMatches(field, ['first frame', 'start image'])),
-    endImageColumn: fieldKey(field => field.canonicalKey === 'end_image_url' || fieldMatches(field, ['last frame', 'end image'])),
-    lyricsOrDialogueColumn: fieldKey(field => field.canonicalKey === 'lyrics_or_dialogue'),
-  };
 };
 
 const targetColumnFor = (model?: GenerationModelConfig) =>
@@ -214,6 +196,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   ])), [dataset]);
   const selectedModel = models.find(model => model.id === modelId);
   const advancedInputKeys = useMemo(() => advancedInputKeysFor(selectedModel), [selectedModel]);
+  const imageRoles = useMemo(() => getSupportedGenerationImageRoles(selectedModel), [selectedModel]);
   const hasUnknownSubmission = batch?.items.some(item => item.status === 'submission_unknown') || false;
 
   const applyModel = (model?: GenerationModelConfig) => {
@@ -229,8 +212,8 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   };
 
   useEffect(() => {
-    setInputMapping(defaultMapping(dataset, headers, mappings));
-  }, [dataset, headers, mappings]);
+    setInputMapping(defaultGenerationInputMapping(dataset, headers, mappings));
+  }, [dataset.id, dataset.version]);
 
   useEffect(() => {
     let active = true;
@@ -290,6 +273,41 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     updateMapping({
       [field]: values.includes(column) ? values.filter(value => value !== column) : [...values, column],
     });
+  };
+
+  const imageRoleOccupied = (role: GenerationImageRole, column: string) => (
+    role === 'start'
+      ? Boolean(inputMapping.startImageColumn && inputMapping.startImageColumn !== column)
+      : role === 'end'
+        ? Boolean(inputMapping.endImageColumn && inputMapping.endImageColumn !== column)
+        : false
+  );
+
+  const toggleImageColumn = (column: string) => {
+    const currentRole = getGenerationImageRole(inputMapping, column);
+    if (currentRole) {
+      updateMapping(setGenerationImageRole(inputMapping, column));
+      return;
+    }
+
+    const inferredRole = selectedModel?.outputModality === 'image'
+      ? 'reference'
+      : inferGenerationImageRole(column, dataset.inputSchema || []);
+    const nextRole = [inferredRole, ...imageRoles]
+      .find((role, index, roles) => roles.indexOf(role) === index
+        && imageRoles.includes(role)
+        && !imageRoleOccupied(role, column));
+    if (!nextRole) {
+      setError('\u5f53\u524d\u6a21\u578b\u6ca1\u6709\u53ef\u7528\u7684\u56fe\u50cf\u8f93\u5165\u89d2\u8272\u3002');
+      return;
+    }
+    setError('');
+    updateMapping(setGenerationImageRole(inputMapping, column, nextRole));
+  };
+
+  const changeImageRole = (column: string, role: GenerationImageRole) => {
+    if (!imageRoles.includes(role) || imageRoleOccupied(role, column)) return;
+    updateMapping(setGenerationImageRole(inputMapping, column, role));
   };
 
   const buildRequest = (): GenerationPreflightRequest => {
@@ -575,28 +593,73 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
             <div className="space-y-7">
               <section>
                 <h3 className="mb-3 text-sm font-semibold text-slate-100">Input mapping</h3>
-                <div className="grid gap-3 md:grid-cols-3">
+                <div className="max-w-xl">
                   {renderColumnSelect(inputMapping.promptColumn, value => updateMapping({ promptColumn: value }), copy.promptColumn)}
-                  {renderColumnSelect(inputMapping.startImageColumn, value => updateMapping({ startImageColumn: value }), copy.startImage)}
-                  {renderColumnSelect(inputMapping.endImageColumn, value => updateMapping({ endImageColumn: value }), copy.endImage)}
                 </div>
                 <div className="mt-4 grid gap-4 md:grid-cols-2">
-                  <div>
-                    <div className="mb-2 text-xs text-slate-400">{copy.refImages}</div>
-                    <div className="max-h-36 space-y-1 overflow-auto border border-white/10 p-2">
-                      {headers.map(header => (
-                        <label key={header} className="flex items-center gap-2 px-1 py-1 text-xs text-slate-300">
-                          <input type="checkbox" checked={inputMapping.referenceImageColumns.includes(header)} onChange={() => toggleMappingColumn('referenceImageColumns', header)} />
-                          <span className="truncate" title={header}>{header}</span>
-                        </label>
-                      ))}
+                  <div className="min-w-0">
+                    <div className="mb-2 text-xs text-slate-400">{copy.imageInputs}</div>
+                    <div data-testid="generation-image-input-columns" className="max-h-44 space-y-1 overflow-auto border border-white/10 p-2">
+                      {headers.map(header => {
+                        const selectedRole = getGenerationImageRole(inputMapping, header);
+                        const roleOptions = selectedRole
+                          ? Array.from(new Set([selectedRole, ...imageRoles]))
+                          : imageRoles;
+                        const hasAvailableRole = imageRoles.some(role => !imageRoleOccupied(role, header));
+                        return (
+                          <div key={header} className="flex min-h-8 items-center gap-2 px-1 py-1 text-xs text-slate-300">
+                            <label className="flex min-w-0 flex-1 items-center gap-2">
+                              <input
+                                type="checkbox"
+                                data-generation-image-column={header}
+                                checked={Boolean(selectedRole)}
+                                disabled={!selectedRole && !hasAvailableRole}
+                                onChange={() => toggleImageColumn(header)}
+                              />
+                              <span className="truncate" title={header}>{header}</span>
+                            </label>
+                            {selectedRole && selectedModel.outputModality === 'video' && roleOptions.length > 1 ? (
+                              <select
+                                value={selectedRole}
+                                aria-label={`${header} ${copy.imageRole}`}
+                                onChange={event => changeImageRole(header, event.target.value as GenerationImageRole)}
+                                className={`w-24 shrink-0 rounded-md border bg-slate-900 px-2 py-1 text-xs ${
+                                  imageRoles.includes(selectedRole)
+                                    ? 'border-white/10 text-slate-200'
+                                    : 'border-red-400/40 text-red-300'
+                                }`}
+                              >
+                                {roleOptions.map(role => (
+                                  <option
+                                    key={role}
+                                    value={role}
+                                    disabled={!imageRoles.includes(role) || imageRoleOccupied(role, header)}
+                                  >
+                                    {imageRoleLabels[role]}
+                                  </option>
+                                ))}
+                              </select>
+                            ) : selectedRole ? (
+                              <span className={`shrink-0 px-2 py-1 ${
+                                imageRoles.includes(selectedRole) ? 'text-slate-400' : 'text-red-300'
+                              }`}>
+                                {selectedModel.outputModality === 'image'
+                                  ? copy.imageRole
+                                  : imageRoles.includes(selectedRole)
+                                    ? imageRoleLabels[selectedRole]
+                                    : copy.unsupportedRole}
+                              </span>
+                            ) : null}
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <div className="mb-2 text-xs text-slate-400">{copy.refAudios}</div>
-                    <div className="max-h-36 space-y-1 overflow-auto border border-white/10 p-2">
+                    <div data-testid="generation-audio-input-columns" className="max-h-44 space-y-1 overflow-auto border border-white/10 p-2">
                       {headers.map(header => (
-                        <label key={header} className="flex items-center gap-2 px-1 py-1 text-xs text-slate-300">
+                        <label key={header} className="flex min-h-8 items-center gap-2 px-1 py-1 text-xs text-slate-300">
                           <input type="checkbox" checked={inputMapping.referenceAudioColumns.includes(header)} onChange={() => toggleMappingColumn('referenceAudioColumns', header)} />
                           <span className="truncate" title={header}>{header}</span>
                         </label>
