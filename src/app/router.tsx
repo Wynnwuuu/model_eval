@@ -11,6 +11,14 @@ const buildRoutePath = (route: AppRoute, context: RouteContext = {}) => {
   if (context.materialStatusFilter) {
     search.set('status', context.materialStatusFilter);
   }
+  if (context.taskDatasetId) {
+    search.set('datasetId', context.taskDatasetId);
+  }
+  (context.taskModelColumns || []).forEach(column => search.append('modelColumn', column));
+
+  if (route === 'tasks' && context.taskBuilderMode === 'create' && context.projectId) {
+    search.set('projectId', context.projectId);
+  }
 
   const suffix = search.toString();
   const withSearch = (path: string) => suffix ? `${path}?${suffix}` : path;
@@ -31,7 +39,6 @@ const buildRoutePath = (route: AppRoute, context: RouteContext = {}) => {
         return withSearch(`/tasks/${context.taskId || context.materialId}`);
       }
       if (context.taskBuilderMode === 'create') {
-        if (context.projectId) search.set('projectId', context.projectId);
         return withSearch('/tasks/new');
       }
       return withSearch(context.projectId ? `/projects/${context.projectId}/tasks` : '/tasks');
@@ -58,10 +65,14 @@ const isStatusFilter = (value: string | null): value is NonNullable<RouteContext
 const withSearchContext = (context: RouteContext, searchParams: URLSearchParams): RouteContext => {
   const status = searchParams.get('status');
   const projectId = searchParams.get('projectId') || context.projectId;
+  const taskDatasetId = searchParams.get('datasetId') || context.taskDatasetId;
+  const taskModelColumns = searchParams.getAll('modelColumn').filter(Boolean);
 
   return {
     ...context,
     projectId,
+    taskDatasetId,
+    taskModelColumns: taskModelColumns.length ? taskModelColumns : context.taskModelColumns,
     materialStatusFilter: isStatusFilter(status) ? status : context.materialStatusFilter,
   };
 };

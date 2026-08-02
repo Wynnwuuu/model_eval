@@ -832,6 +832,12 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
             onBack={() => navigate('overview')}
             mode={currentRoute === 'generation' ? 'generation' : 'repository'}
             initialDatasetId={routeContext.datasetId}
+            onCreateEvaluation={(datasetId, resultColumn) => navigate('tasks', {
+              taskBuilderMode: 'create',
+              source: 'dataset',
+              taskDatasetId: datasetId,
+              taskModelColumns: [resultColumn],
+            })}
           />
         </div>
       );
@@ -853,6 +859,8 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
             initialMode={routeContext.taskBuilderMode || taskBuilderMode}
             initialStatusFilter={routeContext.materialStatusFilter}
             initialTaskId={routeContext.taskId}
+            initialDatasetId={routeContext.taskDatasetId}
+            initialModelColumns={routeContext.taskModelColumns}
             onBack={() => routeContext.projectId ? navigate('projects', { projectId: routeContext.projectId, source: 'dashboard' }) : navigate('overview')}
             onClearProjectScope={routeContext.projectId ? () => navigate('tasks', { taskBuilderMode: 'list' }) : undefined}
             onEvaluateTask={(task) => navigate('voting', { taskId: task.id, materialId: task.id, source: 'task' })}

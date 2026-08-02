@@ -1,12 +1,45 @@
 {
-  "feature": "dataset_live_editing_and_propagation",
-  "requirements": [
-    { "id": "dataset-stable-identity", "status": "completed", "description": "Stable case identity across versions and task bindings" },
-    { "id": "dataset-inline-editing", "status": "completed", "description": "Typed double-click editing for every case field and editable Dataset Card field" },
-    { "id": "dataset-version-conflict", "status": "completed", "description": "Per-field versions with optimistic conflict protection" },
-    { "id": "dataset-task-sync", "status": "completed", "description": "Lifecycle-aware task item propagation and archived removals" },
-    { "id": "dataset-result-audit", "status": "completed", "description": "Latest result projection with immutable evaluated snapshots" },
-    { "id": "dataset-offline-parity", "status": "completed", "description": "Equivalent local datastore behavior" },
-    { "id": "dataset-sync-tests", "status": "completed", "description": "Deterministic, API, build, and browser regression coverage" }
-  ]
+    "feature":  "manueval_vidmuse_direct_generation",
+    "requirements":  [
+                         {
+                             "id":  "live-model-config",
+                             "status":  "completed",
+                             "description":  "Read current Aion image/video model configuration and fail closed before execution"
+                         },
+                         {
+                             "id":  "generation-preflight",
+                             "status":  "completed",
+                             "description":  "Validate cases, controls, target column, config fingerprint, and cost before confirmation"
+                         },
+                         {
+                             "id":  "durable-worker",
+                             "status":  "completed",
+                             "description":  "PostgreSQL-backed image/video execution with leases, polling, cancellation, recovery, and conservative retries"
+                         },
+                         {
+                             "id":  "oss-assets",
+                             "status":  "completed",
+                             "description":  "Direct uploads, local path matching, input/output archival, and stable media URLs"
+                         },
+                         {
+                             "id":  "atomic-writeback",
+                             "status":  "completed",
+                             "description":  "One dataset version per terminal batch with stable-ID merge and no historical overwrite"
+                         },
+                         {
+                             "id":  "generation-ui",
+                             "status":  "completed",
+                             "description":  "Dynamic model controls, preflight confirmation, reload-safe status, and evaluation-task shortcut"
+                         },
+                         {
+                             "id":  "dev-deployment",
+                             "status":  "completed",
+                             "description":  "Dev-only Aion, OSS, public URL, limits, and worker configuration"
+                         },
+                         {
+                             "id":  "verification",
+                             "status":  "completed",
+                             "description":  "Deterministic and PostgreSQL tests plus a real browser image smoke; OSS durability is a later upgrade"
+                         }
+                     ]
 }

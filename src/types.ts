@@ -247,6 +247,8 @@ export interface RouteContext {
   materialId?: string;
   materialStatusFilter?: 'draft' | 'active' | 'completed';
   datasetId?: string;
+  taskDatasetId?: string;
+  taskModelColumns?: string[];
   source?: 'dashboard' | 'task' | 'dataset';
   taskBuilderMode?: 'create' | 'list';
 }
@@ -438,21 +440,26 @@ export interface EvalDataset {
 }
 
 export type GenerationOutputModality = DatasetModality;
-export type GenerationJobStatus = 'draft' | 'queued' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled';
-export type GenerationItemStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type GenerationJobStatus = 'draft' | 'queued' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled' | 'writeback_conflict';
+export type GenerationItemStatus =
+  | 'pending' | 'submitting' | 'submitted' | 'processing' | 'archiving'
+  | 'running' | 'succeeded' | 'completed' | 'failed' | 'submission_unknown' | 'cancelled';
 export type GenerationSeedMode = 'fixed' | 'derive_from_case' | 'column';
 
 export interface GenerationControlDefinition {
   key: string;
   label: string;
-  type: 'text' | 'number' | 'select';
+  type: 'text' | 'number' | 'select' | 'toggle' | 'json';
   options?: string[];
-  defaultValue?: string | number;
+  defaultValue?: string | number | boolean;
   unit?: string;
 }
 
 export interface GenerationModelConfig {
   id: string;
+  configId?: string;
+  modelName?: string;
+  description?: string;
   displayName: string;
   provider: string;
   outputModality: GenerationOutputModality;
@@ -462,6 +469,12 @@ export interface GenerationModelConfig {
   supportedResolutions?: string[];
   supportedDurations?: Array<string | number>;
   controls: GenerationControlDefinition[];
+  inputSchema?: Record<string, any>;
+  options?: Record<string, any>;
+  priceItems?: Array<Record<string, any>>;
+  costItems?: Array<Record<string, any>>;
+  configFingerprint?: string;
+  updatedAt?: string;
 }
 
 export interface GenerationInputMapping {
@@ -472,6 +485,7 @@ export interface GenerationInputMapping {
   endImageColumn?: string;
   lyricsOrDialogueColumn?: string;
   extraInputColumns: string[];
+  extraInputMappings?: Record<string, string>;
 }
 
 export interface DatasetGenerationJob {
@@ -482,13 +496,16 @@ export interface DatasetGenerationJob {
   modelConfig: GenerationModelConfig;
   targetColumn: string;
   inputMapping: GenerationInputMapping;
-  defaultControls: Record<string, string | number>;
+  defaultControls: Record<string, string | number | boolean>;
   perCaseControlColumns: Record<string, string>;
   seedMode: GenerationSeedMode;
   fixedSeed?: number;
   seedColumn?: string;
   status: GenerationJobStatus;
   total: number;
+  cancelRequested?: boolean;
+  writebackStatus?: 'pending' | 'running' | 'completed' | 'conflict' | 'failed';
+  writebackDatasetVersion?: number;
   succeeded: number;
   failed: number;
   createdByUid?: string;
@@ -507,6 +524,8 @@ export interface DatasetGenerationJobItem {
   requestId?: string;
   providerJobId?: string;
   resolvedInputs: Record<string, any>;
+  providerStatus?: string;
+  attempt?: number;
   resolvedControls: Record<string, any>;
   seed?: number;
   resultUrl?: string;
@@ -518,6 +537,45 @@ export interface DatasetGenerationJobItem {
   };
   startedAt?: number;
   finishedAt?: number;
+}
+
+export interface GenerationAssetBinding {
+  id: string;
+  relativePath: string;
+  fileName: string;
+}
+
+export interface GenerationPreflightIssue {
+  code: string;
+  message: string;
+  field?: string;
+}
+
+export interface GenerationPreflightCase {
+  valid: boolean;
+  generationType: string;
+  errors: GenerationPreflightIssue[];
+  warnings: GenerationPreflightIssue[];
+  resolvedCase: Record<string, any>;
+}
+
+export interface GenerationPreflightResult {
+  id: string;
+  model: GenerationModelConfig;
+  configFingerprint: string;
+  validCount: number;
+  invalidCount: number;
+  total: number;
+  costEstimate: {
+    known: boolean;
+    totalCredits: number | null;
+    unitCredits: number | null;
+    unitLabel?: string;
+    source?: unknown;
+  };
+  cases: GenerationPreflightCase[];
+  requestHash: string;
+  expiresAt: number;
 }
 
 export interface EvalDimension {

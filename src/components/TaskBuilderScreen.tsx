@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ArrowLeft, Plus, Save, Trash2, Database, LayoutTemplate, Box, CheckCircle2, Play, Link as LinkIcon, Upload, X, Users, Edit, Eye, Loader2, ClipboardList } from 'lucide-react';
 import { EvalDataset, EvalTemplate, EvalTask, EvalDimension, EvalParadigm, EvaluationConfig, EvaluationItem, EvaluationMethod, EvaluationProject } from '../types';
 import { db, auth } from '../auth';
@@ -48,6 +48,8 @@ interface TaskBuilderScreenProps {
   initialMode?: 'create' | 'list';
   initialStatusFilter?: EvalTask['status'];
   initialTaskId?: string;
+  initialDatasetId?: string;
+  initialModelColumns?: string[];
   onClearProjectScope?: () => void;
   onEvaluateTask?: (task: EvalTask) => void;
   onOpenInsights?: (task: EvalTask) => void;
@@ -144,12 +146,15 @@ export default function TaskBuilderScreen({
   initialMode = 'create',
   initialStatusFilter,
   initialTaskId,
+  initialDatasetId,
+  initialModelColumns,
   onClearProjectScope,
   onEvaluateTask,
   onOpenInsights
 }: TaskBuilderScreenProps) {
   const [tasks, setTasks] = useState<EvalTask[]>([]);
   const [datasets, setDatasets] = useState<EvalDataset[]>([]);
+  const generationPrefillRef = useRef('');
   const [templates, setTemplates] = useState<EvalTemplate[]>([]);
   const [projects, setProjects] = useState<EvaluationProject[]>([]);
   const [users, setUsers] = useState<{uid: string, email: string, displayName: string}[]>([]);
@@ -372,6 +377,32 @@ export default function TaskBuilderScreen({
       outputType: inferOutputTypeFromDataset(dataset)
     }));
   };
+
+  const generationPrefillKey = `${initialDatasetId || ''}:${(initialModelColumns || []).join('|')}`;
+  useEffect(() => {
+    if (!initialDatasetId || generationPrefillRef.current === generationPrefillKey) return;
+    const targetDataset = datasets.find(item => item.id === initialDatasetId);
+    if (!targetDataset) return;
+
+    const headers = Array.from(new Set([
+      ...(targetDataset.inputSchema || []).map(field => field.key),
+      ...Object.keys(targetDataset.items?.[0] || {}),
+    ])).filter(key => key !== '_originalData' && !key.startsWith('__'));
+    const inferred = targetDataset.columnMappings || inferDatasetMappings(headers, targetDataset.items || []);
+    const outputDefaults = (initialModelColumns || []).filter(column => headers.includes(column));
+    applyDatasetDefaults(targetDataset);
+    setInputColumns((inferred.inputColumns || []).filter(column => headers.includes(column)));
+    setModelColumns(outputDefaults);
+    setDimensionColumns([]);
+    setIsCreating(true);
+    setNewTask(previous => ({
+      ...previous,
+      name: previous.name || `${targetDataset.name} - \u4eba\u5de5\u8bc4\u6d4b`,
+      datasetId: targetDataset.id,
+      outputType: inferOutputTypeFromDataset(targetDataset),
+    }));
+    generationPrefillRef.current = generationPrefillKey;
+  }, [datasets, generationPrefillKey, initialDatasetId]);
 
   const handleCreateTask = async () => {
     if (isSubmitting) return;

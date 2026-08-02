@@ -1,4 +1,35 @@
 # Arena Implementation Progress
+## 2026-08-01: no-OSS browser smoke complete
+
+- Enabled `GENERATION_ASSET_MODE=temporary_url`: no OSS credentials are required, local uploads are disabled, and the returned media URL is written directly to the dataset.
+- Added a local `task_worker` execution transport for diagnostics when the Aion ClusterIP and runner JWT are unavailable. It bypasses Planner, forwards standard image/video parameters, and maps VidFlow results to the existing VidMuse CDN.
+- Completed a real browser smoke with `xai/grok-imagine-image`, `720p`, `1:1`: batch `gen-97c0abef-5726-4a87-98c9-a09b94351444` succeeded 1/1, wrote dataset v4, and rendered the 1024x1024 image.
+- Fixed generated `*_request_id` columns being misclassified as the case-ID column and added a regression assertion.
+- Shared dev remains on `AION_EXECUTION_TRANSPORT=model_api`; the local task-worker path is not the deployment executor. OSS archival and stable ManuEval capability URLs remain a later durability upgrade.
+
+## VidMuse direct generation integration (complete)
+
+- Branch: `feature/manueval-aion-generation` from `c3bbd53`.
+- Scope stayed inside ManuEval dev: no Aion deployment/code changes, VidMuse CLI runtime, Redis, PVC, H3-specific logic, or AI scoring.
+
+### Completed
+
+- Replaced the browser mock executor with a three-step production modal backed by Aion live image/video model configuration, flexible schema-derived mappings/controls, explicit preflight, configuration fingerprinting, conservative cost display, and duplicate-billing acknowledgement.
+- Added PostgreSQL preflights, idempotent batch creation, per-case state, global advisory-lock concurrency, renewable leases, restart recovery, cancellation gating, `submission_unknown` handling, and a separate recoverable writeback lane.
+- Added browser-to-OSS single/multipart upload, relative-path/file-name matching, ownership checks, SSRF-safe public-material archival, streaming byte limits, output archival, and stable capability URLs.
+- Added one-version stable-ID dataset writeback, conflict detection, companion metadata columns, retry preflights, and the existing evaluation-task shortcut with dataset/result-column prefill.
+- Added dev-only Aion/OSS deployment variables, required-secret checks, migration `008`, the backend contract, and CI coverage for deterministic and live-PostgreSQL generation tests.
+
+### Validation
+
+- Passed: `npm.cmd run lint`, `npm.cmd run server:build`, `npm.cmd run build`, `npm.cmd run test:generation`, `npm.cmd run test:generation:db`, `npm.cmd run test:dataset-sync`, `npm.cmd run test:arena`, `npm.cmd run test:rank-ties`, and `npm.cmd run test:api:smoke`.
+- PostgreSQL migration `008_generation_execution.sql` applied locally. Integration tests cover two-worker claiming, global capacity, lease renewal, cancellation after claim, ambiguous-submission non-retry, terminal writeback, and crash reconciliation without duplicate versions.
+- Browser: live-config-shaped fake Aion model rendered all three modal steps; preflight returned 2/2 valid cases and a 10-credit upper bound. Desktop and 390x844 mobile passed with no horizontal overflow. The only console error is the pre-existing missing `favicon.ico`.
+- Configured GitHub Actions secrets for the real dev Aion ClusterIP base URL and dedicated numeric evaluation user. The public base URL now falls back to the existing Feishu callback origin.
+- Local direct discovery is live against the admin gateway: `/api/generation/models` returns the CLI-aligned 17 image and 44 video models, including `seedance-2.0-pro` and `minimax/hailuo-h3`. Twenty-nine disabled history/test configs are excluded; no paid generation was submitted.
+- Real dev OSS smoke remains an environment acceptance step because least-privilege OSS RAM credentials, bucket authorization, and CORS still require an administrator.
+- No-OSS model smoke passed through the authenticated VidMuse CLI/Planner path. Thread `a6d205b6-8d1a-4594-b494-fc2b0c81bad1` invoked `xai/grok-imagine-image` once and produced asset `asset-8e0313c0ff0b90c0` (`model_request_id=ff0bea03-4c05-4d36-8299-b99775db570a`). The downloaded JPEG is 1024x1024 and 152,334 bytes at `task_state/smoke-generation/grok-imagine-image-red-teapot.jpg`.
+- The smoke also confirmed why the CLI/Planner path is not the batch-evaluation runtime: it added Planner work and changed the requested `720p` resolution to the model default `1080p`. Direct Aion execution remains necessary for exact parameter control, while OSS is still required for durable batch archiving and dataset writeback.
 
 ## Dataset live editing and propagation (complete)
 

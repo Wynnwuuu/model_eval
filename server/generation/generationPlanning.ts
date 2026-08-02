@@ -1,0 +1,686 @@
+import { createHash } from 'node:crypto';
+
+export type GenerationModality = 'image' | 'video';
+
+export type GenerationControl = {
+  key: string;
+  label: string;
+  type: 'text' | 'number' | 'select' | 'toggle' | 'json';
+  options?: string[];
+  defaultValue?: string | number | boolean;
+  unit?: string;
+};
+
+export type NormalizedGenerationModel = {
+  id: string;
+  configId: string;
+  modelName: string;
+  displayName: string;
+  description: string;
+  provider: string;
+  outputModality: GenerationModality;
+  previewType: GenerationModality;
+  capabilities: string[];
+  supportedAspectRatios: string[];
+  supportedResolutions: string[];
+  supportedDurations: Array<string | number>;
+  controls: GenerationControl[];
+  inputSchema?: Record<string, any>;
+  options: Record<string, any>;
+  priceItems: Array<Record<string, any>>;
+  costItems: Array<Record<string, any>>;
+  configFingerprint: string;
+  updatedAt?: string;
+};
+
+export type GenerationCase = {
+  caseId: string;
+  datasetItemId: string;
+  rowIndex: number;
+  prompt?: string;
+  imageUrls: string[];
+  audioUrls: string[];
+  controls: Record<string, any>;
+  seed?: number;
+  extraInputs?: Record<string, any>;
+  generationType?: string;
+};
+
+export type PreflightIssue = {
+  code: string;
+  message: string;
+  field?: string;
+};
+
+export type PreflightCaseResult = {
+  valid: boolean;
+  generationType: string;
+  errors: PreflightIssue[];
+  warnings: PreflightIssue[];
+  resolvedCase: GenerationCase & { generationType: string };
+};
+
+const STANDARD_CONTROLS: Record<string, Omit<GenerationControl, 'key'>> = {
+  aspect_ratio: { label: 'Aspect ratio', type: 'select' },
+  resolution: { label: 'Resolution', type: 'select' },
+  duration: { label: 'Duration', type: 'select', unit: 's' },
+  generate_audio: { label: 'Generate audio', type: 'toggle', defaultValue: false },
+  negative_prompt: { label: 'Negative prompt', type: 'text' },
+  guidance_scale: { label: 'Guidance scale', type: 'number' },
+  safety_tolerance: { label: 'Safety tolerance', type: 'number' },
+  watermark: { label: 'Watermark', type: 'toggle', defaultValue: false },
+  keep_original_sound: { label: 'Keep original sound', type: 'toggle' },
+  num_images: { label: 'Image count', type: 'number', defaultValue: 1 },
+  seed: { label: 'Seed', type: 'number' },
+};
+
+const OPTION_KEYS: Record<string, string[]> = {
+  aspect_ratio: ['aspect_ratio_options', 'aspect_ratios', 'supported_aspect_ratios'],
+  resolution: ['resolution_options', 'resolutions', 'supported_resolutions'],
+  duration: ['duration_options', 'durations', 'supported_durations'],
+};
+
+const DEFAULT_KEYS: Record<string, string[]> = {
+  aspect_ratio: ['default_aspect_ratio', 'aspect_ratio_default', 'aspect_ratio'],
+  resolution: ['default_resolution', 'resolution_default', 'resolution'],
+  duration: ['default_duration', 'duration_default', 'duration'],
+};
+
+const stableValue = (value: any): any => {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.keys(value).sort().map(key => [key, stableValue(value[key])]));
+  }
+  return value;
+};
+
+export const stableJson = (value: unknown) => JSON.stringify(stableValue(value));
+
+export const fingerprintConfig = (value: unknown) =>
+  createHash('sha256').update(stableJson(value)).digest('hex');
+
+const valueArray = (value: unknown): Array<string | number> =>
+  Array.isArray(value)
+    ? value.filter(item => typeof item === 'string' || typeof item === 'number')
+    : [];
+
+const firstOptionArray = (options: Record<string, any>, keys: string[]) => {
+  for (const key of keys) {
+    const values = valueArray(options[key]);
+    if (values.length) return values;
+  }
+  return [];
+};
+
+const firstDefined = (options: Record<string, any>, keys: string[]) => {
+  for (const key of keys) {
+    if (options[key] !== undefined && options[key] !== null) return options[key];
+  }
+  return undefined;
+};
+
+const normalizeCapabilities = (value: unknown) => {
+  if (Array.isArray(value)) return value.map(String);
+  if (!value || typeof value !== 'object') return [];
+  return Object.entries(value as Record<string, any>)
+    .filter(([, enabled]) => enabled === true || (Array.isArray(enabled) && enabled.length > 0))
+    .map(([key]) => key);
+};
+
+const supportedParams = (options: Record<string, any>) => {
+  const values = options.supported_params || options.supportedParams;
+  return new Set(Array.isArray(values) ? values.map(String) : []);
+};
+
+const parameterSchemaProperties = (options: Record<string, any>): Record<string, any> => {
+  for (const candidate of [options.parameter_schema, options.params_schema, options.parameters_schema]) {
+    if (candidate?.properties && typeof candidate.properties === 'object') return candidate.properties;
+  }
+  return {};
+};
+
+const STANDARD_INPUT_PARAMS = new Set([
+  'prompt',
+  'image_urls',
+  'audio_url',
+  'audios',
+  'elements',
+  'generation_type',
+]);
+
+const normalizeInputSchema = (raw: Record<string, any>, options: Record<string, any>) => {
+  const explicit = raw.input_schema || raw.inputSchema || options.input_schema || options.inputSchema;
+  if (explicit && typeof explicit === 'object') return explicit;
+  const requiredInputs = options.required_params || options.requiredParams;
+  const requiredOneOfInputs = options.required_one_of_params || options.requiredOneOfParams;
+  const unsupportedInputs = options.unsupported_inputs || options.unsupportedInputs;
+  const supportedInputs = Array.from(supportedParams(options))
+    .filter((key: string) => STANDARD_INPUT_PARAMS.has(key));
+  if (!requiredInputs && !requiredOneOfInputs && !unsupportedInputs && !supportedInputs.length) return undefined;
+  return {
+    ...(requiredInputs ? { required_inputs: requiredInputs } : {}),
+    ...(requiredOneOfInputs ? { required_one_of_inputs: requiredOneOfInputs } : {}),
+    ...(unsupportedInputs ? { unsupported_inputs: unsupportedInputs } : {}),
+    ...(supportedInputs.length ? { supported_inputs: Array.from(new Set(supportedInputs)) } : {}),
+  };
+};
+
+const controlFor = (key: string, options: Record<string, any>): GenerationControl => {
+  const schema = parameterSchemaProperties(options)[key] || {};
+  const inferredType: GenerationControl['type'] = Array.isArray(schema.enum)
+    ? 'select'
+    : schema.type === 'number' || schema.type === 'integer'
+      ? 'number'
+      : schema.type === 'boolean'
+        ? 'toggle'
+        : schema.type === 'object' || schema.type === 'array'
+          ? 'json'
+          : key.endsWith('_json') || key === 'extra_params'
+            ? 'json'
+            : 'text';
+  const base = STANDARD_CONTROLS[key] || {
+    label: key.replaceAll('_', ' '),
+    type: inferredType,
+  };
+  const configuredOptions = OPTION_KEYS[key] ? firstOptionArray(options, OPTION_KEYS[key]) : [];
+  const optionValues = Array.isArray(schema.enum) ? schema.enum : configuredOptions;
+  const configuredDefault = DEFAULT_KEYS[key] ? firstDefined(options, DEFAULT_KEYS[key]) : base.defaultValue;
+  const defaultValue = schema.default ?? configuredDefault;
+  return {
+    key,
+    ...base,
+    label: String(schema.title || base.label),
+    ...(optionValues.length
+      ? { type: 'select' as const, options: optionValues.map(String), defaultValue: defaultValue ?? optionValues[0] }
+      : defaultValue !== undefined
+        ? { defaultValue }
+        : {}),
+  };
+};
+
+export const normalizeAionModelConfig = (raw: Record<string, any>): NormalizedGenerationModel => {
+  const modelName = String(raw.name || raw.model_name || raw.modelName || '');
+  const modelType = String(raw.model_type || raw.modelType || raw.type || raw.sub_type || raw.subType || '').toLowerCase();
+  if (modelType !== 'image' && modelType !== 'video') {
+    throw new Error(`Unsupported generation model type: ${modelType || 'unknown'}`);
+  }
+  const options = raw.options && typeof raw.options === 'object' ? raw.options : {};
+  if (!modelName) throw new Error('Aion model config has no model name.');
+  const inputSchema = normalizeInputSchema(raw, options);
+  const priceItems = Array.isArray(raw.price_items) ? raw.price_items : Array.isArray(raw.priceItems) ? raw.priceItems : [];
+  const costItems = Array.isArray(raw.cost_items) ? raw.cost_items : Array.isArray(raw.costItems) ? raw.costItems : [];
+  const updatedAt = raw.update_time || raw.updateTime || raw.updated_at || raw.updatedAt;
+  const params = supportedParams(options);
+  const controlKeys = [
+    ...Array.from(params).map(key => key.replace(/_options$/, '')),
+    ...Object.keys(parameterSchemaProperties(options)),
+  ];
+  for (const key of Object.keys(STANDARD_CONTROLS)) {
+    if (OPTION_KEYS[key]?.some(optionKey => valueArray(options[optionKey]).length)) controlKeys.push(key);
+  }
+  const controls = Array.from(new Set(controlKeys))
+    .filter(key => ![
+      'prompt', 'image_urls', 'audio_url', 'audios', 'elements', 'generation_type', 'model_name', 'features', 'extra_params',
+    ].includes(key))
+    .map(key => controlFor(key, options));
+
+  const fingerprintSource = {
+    id: raw.id,
+    name: modelName,
+    model_type: modelType,
+    provider: raw.provider,
+    capabilities: raw.capabilities,
+    options,
+    input_schema: inputSchema,
+    price_items: priceItems,
+    cost_items: costItems,
+    update_time: updatedAt,
+  };
+
+  return {
+    id: modelName,
+    configId: String(raw.id || raw.configId || modelName),
+    modelName,
+    displayName: String(raw.display_name || raw.displayName || modelName),
+    description: String(raw.description || ''),
+    provider: String(raw.provider || ''),
+    outputModality: modelType,
+    previewType: modelType,
+    capabilities: normalizeCapabilities(raw.capabilities),
+    supportedAspectRatios: firstOptionArray(options, OPTION_KEYS.aspect_ratio).map(String),
+    supportedResolutions: firstOptionArray(options, OPTION_KEYS.resolution).map(String),
+    supportedDurations: firstOptionArray(options, OPTION_KEYS.duration),
+    controls,
+    inputSchema,
+    options,
+    priceItems,
+    costItems,
+    configFingerprint: fingerprintConfig(fingerprintSource),
+    updatedAt: updatedAt ? String(updatedAt) : undefined,
+  };
+};
+
+const isUsableAssetUrl = (value: string) => {
+  if (/^asset:\/\/[a-zA-Z0-9_-]+$/.test(value)) return true;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+};
+
+const hasCapability = (model: NormalizedGenerationModel, names: string[]) => {
+  if (!model.capabilities.length) return true;
+  const normalized = new Set(model.capabilities.map(item => item.toLowerCase().replaceAll('-', '_')));
+  return names.some(name => normalized.has(name) || normalized.has(name.replaceAll('_to_', '2')));
+};
+
+const resolveGenerationType = (model: NormalizedGenerationModel, item: GenerationCase) => {
+  if (model.outputModality === 'image') {
+    if (item.generationType) return item.generationType;
+    return item.imageUrls.length ? 'image_to_image' : 'text_to_image';
+  }
+  if (item.generationType) return item.generationType;
+  if (item.extraInputs?.elements) return 'reference_to_video';
+  if (item.imageUrls.length >= 2 && hasCapability(model, ['images_to_video', 'keyframe_to_video'])) {
+    return 'images_to_video';
+  }
+  if (item.imageUrls.length) return 'image_to_video';
+  return 'text_to_video';
+};
+
+const modeCandidates = (mode: string) => [
+  '*',
+  mode,
+  mode.replaceAll('_to_', '2'),
+  mode.replaceAll('_', ''),
+];
+
+const RESERVED_EXTRA_INPUT_KEYS = new Set([
+  'model_name',
+  'prompt',
+  'image_urls',
+  'audio_url',
+  'audios',
+  'generation_type',
+  'features',
+  'extra_params',
+]);
+
+const safeExtraInputs = (item: GenerationCase) => Object.fromEntries(
+  Object.entries(item.extraInputs || {}).filter(([key]) => !RESERVED_EXTRA_INPUT_KEYS.has(key)),
+);
+
+const configuredInputKeys = (model: NormalizedGenerationModel) => {
+  const schema = model.inputSchema;
+  const keys = new Set<string>();
+  if (!schema || typeof schema !== 'object') return keys;
+  Object.keys(schema.properties || {}).forEach(key => keys.add(key));
+  for (const field of ['required_inputs', 'optional_inputs']) {
+    const declaration = schema[field];
+    if (Array.isArray(declaration)) declaration.forEach(key => keys.add(String(key)));
+    else if (declaration && typeof declaration === 'object') {
+      Object.values(declaration).forEach(value => {
+        if (Array.isArray(value)) value.forEach(key => keys.add(String(key)));
+      });
+    }
+  }
+  const oneOf = schema.required_one_of_inputs;
+  if (oneOf && typeof oneOf === 'object') {
+    Object.values(oneOf).forEach(value => {
+      if (!Array.isArray(value)) return;
+      value.flatMap(group => Array.isArray(group) ? group : [group]).forEach(key => keys.add(String(key)));
+    });
+  }
+  if (Array.isArray(schema.supported_inputs)) {
+    schema.supported_inputs.forEach((key: unknown) => keys.add(String(key)));
+  }
+  return keys;
+};
+
+const configuredExtraInputs = (model: NormalizedGenerationModel, item: GenerationCase) => {
+  const keys = configuredInputKeys(model);
+  return Object.fromEntries(Object.entries(safeExtraInputs(item)).filter(([key]) => keys.has(key)));
+};
+
+const audioInputsFor = (model: NormalizedGenerationModel, item: GenerationCase) => {
+  if (!item.audioUrls.length) return {};
+  const params = supportedParams(model.options);
+  const schemaInputs = configuredInputKeys(model);
+  if (params.has('audios') || schemaInputs.has('audios')) return { audios: item.audioUrls };
+  return { audio_url: item.audioUrls[0] };
+};
+
+const suppliedInputs = (
+  model: NormalizedGenerationModel,
+  item: GenerationCase,
+  generationType: string,
+) => ({
+  ...safeExtraInputs(item),
+  prompt: item.prompt?.trim() || undefined,
+  image_urls: item.imageUrls.length ? item.imageUrls : undefined,
+  ...audioInputsFor(model, item),
+  generation_type: generationType,
+});
+
+export const preflightGenerationCase = (
+  model: NormalizedGenerationModel,
+  item: GenerationCase,
+): PreflightCaseResult => {
+  const errors: PreflightIssue[] = [];
+  const warnings: PreflightIssue[] = [];
+  const generationType = resolveGenerationType(model, item);
+  const resolvedCase = { ...item, generationType };
+  const inputs = suppliedInputs(model, item, generationType);
+
+  for (const [kind, urls] of [['image', item.imageUrls], ['audio', item.audioUrls]] as const) {
+    urls.forEach((url, index) => {
+      if (!isUsableAssetUrl(url)) {
+        errors.push({
+          code: 'INVALID_ASSET_URL',
+          field: `${kind}Urls[${index}]`,
+          message: `Asset must be an http(s) URL or uploaded asset reference: ${url}`,
+        });
+      }
+    });
+  }
+
+  const validateInputCount = (inputKey: string, optionKey: string) => {
+    const value = (inputs as Record<string, any>)[inputKey];
+    if (value === undefined) return;
+    const range = valueArray(model.options[optionKey]).map(Number);
+    if (range.length < 2 || !range.every(Number.isFinite)) return;
+    const count = Array.isArray(value) ? value.length : 1;
+    if (count < range[0] || count > range[1]) {
+      errors.push({
+        code: 'INPUT_COUNT_OUT_OF_RANGE',
+        field: inputKey,
+        message: `${inputKey} count ${count} is outside the supported range ${range[0]}-${range[1]}.`,
+      });
+    }
+  };
+  validateInputCount('image_urls', 'image_urls_count_range');
+  validateInputCount('audios', 'audios_count_range');
+  validateInputCount('elements', 'elements_count_range');
+
+  const elementReferenceRange = valueArray(model.options['element.reference_image_urls_count_range']).map(Number);
+  const elements = (inputs as Record<string, any>).elements;
+  if (Array.isArray(elements) && elementReferenceRange.length >= 2 && elementReferenceRange.every(Number.isFinite)) {
+    elements.forEach((element, index) => {
+      const references = Array.isArray(element?.reference_image_urls) ? element.reference_image_urls : [];
+      if (references.length < elementReferenceRange[0] || references.length > elementReferenceRange[1]) {
+        errors.push({
+          code: 'INPUT_COUNT_OUT_OF_RANGE',
+          field: `elements[${index}].reference_image_urls`,
+          message: `Element reference image count ${references.length} is outside the supported range ${elementReferenceRange[0]}-${elementReferenceRange[1]}.`,
+        });
+      }
+    });
+  }
+
+  if (model.outputModality === 'image' && !inputs.prompt) {
+    errors.push({ code: 'MISSING_REQUIRED_INPUT', field: 'prompt', message: 'Image generation requires a prompt.' });
+  }
+  if (model.outputModality === 'video' && generationType === 'text_to_video' && !inputs.prompt) {
+    errors.push({ code: 'MISSING_REQUIRED_INPUT', field: 'prompt', message: 'Text-to-video generation requires a prompt.' });
+  }
+
+  const schema = model.inputSchema;
+  if (schema && typeof schema === 'object') {
+    const unsupported = new Set(Array.isArray(schema.unsupported_inputs) ? schema.unsupported_inputs.map(String) : []);
+    for (const [key, value] of Object.entries(inputs)) {
+      if (value !== undefined && unsupported.has(key)) {
+        errors.push({ code: 'UNSUPPORTED_INPUT', field: key, message: `The model configuration rejects input: ${key}.` });
+      }
+    }
+    const required = schema.required_inputs && typeof schema.required_inputs === 'object'
+      ? schema.required_inputs as Record<string, string[]>
+      : {};
+    const requiredOneOf = schema.required_one_of_inputs && typeof schema.required_one_of_inputs === 'object'
+      ? schema.required_one_of_inputs as Record<string, string[][]>
+      : {};
+    for (const mode of modeCandidates(generationType)) {
+      for (const key of required[mode] || []) {
+        if ((inputs as Record<string, any>)[key] === undefined) {
+          errors.push({ code: 'MISSING_REQUIRED_INPUT', field: key, message: `${generationType} requires input: ${key}.` });
+        }
+      }
+      for (const group of requiredOneOf[mode] || []) {
+        if (!group.some(key => (inputs as Record<string, any>)[key] !== undefined)) {
+          errors.push({
+            code: 'MISSING_REQUIRED_INPUT',
+            field: group.join('|'),
+            message: `${generationType} requires one of: ${group.join(' / ')}.`,
+          });
+        }
+      }
+    }
+  }
+
+  if (model.outputModality === 'video') {
+    const capabilityNames: Record<string, string[]> = {
+      text_to_video: ['text_to_video', 'text2video'],
+      image_to_video: ['image_to_video', 'image2video'],
+      images_to_video: ['images_to_video', 'keyframe_to_video', 'keyframe2video'],
+      reference_to_video: ['reference_to_video', 'ref2video'],
+    };
+    if (!hasCapability(model, capabilityNames[generationType] || [generationType])) {
+      errors.push({
+        code: 'UNSUPPORTED_GENERATION_TYPE',
+        field: 'generationType',
+        message: `The model does not advertise support for ${generationType}.`,
+      });
+    }
+  }
+
+  for (const control of model.controls) {
+    const value = item.controls[control.key];
+    if (value === undefined || value === null || value === '') continue;
+    if (control.options?.length && !control.options.map(String).includes(String(value))) {
+      errors.push({
+        code: 'UNSUPPORTED_CONTROL_VALUE',
+        field: control.key,
+        message: `${control.label} does not support value ${String(value)}.`,
+      });
+    }
+    if (control.type === 'number') {
+      const numberValue = Number(value);
+      if (!Number.isFinite(numberValue)) {
+        errors.push({ code: 'INVALID_CONTROL_VALUE', field: control.key, message: `${control.label} must be numeric.` });
+      } else {
+        const property = parameterSchemaProperties(model.options)[control.key] || {};
+        const minimum = Number(property.minimum ?? property.min);
+        const maximum = Number(property.maximum ?? property.max);
+        if (Number.isFinite(minimum) && numberValue < minimum) {
+          errors.push({ code: 'CONTROL_OUT_OF_RANGE', field: control.key, message: `${control.label} must be at least ${minimum}.` });
+        }
+        if (Number.isFinite(maximum) && numberValue > maximum) {
+          errors.push({ code: 'CONTROL_OUT_OF_RANGE', field: control.key, message: `${control.label} must be at most ${maximum}.` });
+        }
+      }
+    }
+  }
+
+  return { valid: errors.length === 0, generationType, errors, warnings, resolvedCase };
+};
+
+const compactObject = (value: Record<string, any>) =>
+  Object.fromEntries(Object.entries(value).filter(([, item]) =>
+    item !== undefined && item !== null && item !== '' && (!Array.isArray(item) || item.length > 0)));
+
+const IMAGE_FIELDS = new Set([
+  'aspect_ratio',
+  'resolution',
+  'negative_prompt',
+  'num_images',
+  'guidance_scale',
+  'safety_tolerance',
+]);
+const VIDEO_FIELDS = new Set([
+  'duration',
+  'aspect_ratio',
+  'resolution',
+  'generate_audio',
+  'negative_prompt',
+  'guidance_scale',
+  'keep_original_sound',
+  'safety_tolerance',
+  'preview',
+  'watermark',
+  'watermark_url',
+]);
+
+export const buildAionGenerationRequest = (
+  model: NormalizedGenerationModel,
+  item: GenerationCase & { generationType: string },
+) => {
+  const standardFields = model.outputModality === 'image' ? IMAGE_FIELDS : VIDEO_FIELDS;
+  const standardControls: Record<string, any> = {};
+  const extraParams: Record<string, any> = {};
+  const params = supportedParams(model.options);
+
+  for (const [key, value] of Object.entries(item.controls || {})) {
+    if (value === undefined || value === null || value === '') continue;
+    if (standardFields.has(key)) standardControls[key] = value;
+    else extraParams[key] = value;
+  }
+  if (item.seed !== undefined && params.has('seed')) extraParams.seed = item.seed;
+  Object.assign(extraParams, item.extraInputs?.extra_params || {});
+  const customInputs = configuredExtraInputs(model, item);
+  const audioInputs = audioInputsFor(model, item);
+
+  if (model.outputModality === 'image') {
+    return {
+      path: '/model/api/v1/model/generate-image',
+      body: compactObject({
+        ...customInputs,
+        model_name: model.modelName,
+        prompt: item.prompt?.trim(),
+        image_urls: item.imageUrls,
+        ...standardControls,
+        features: {},
+        extra_params: compactObject(extraParams),
+      }),
+    };
+  }
+
+  return {
+    path: '/model/api/v1/model/generate-video',
+    body: compactObject({
+      ...customInputs,
+      generation_type: item.generationType,
+      model_name: model.modelName,
+      prompt: item.prompt?.trim(),
+      image_urls: item.imageUrls,
+      elements: item.extraInputs?.elements,
+      ...audioInputs,
+      ...standardControls,
+      features: { auto_adjust_duration_to_supported: false },
+      extra_params: compactObject(extraParams),
+    }),
+  };
+};
+
+export const estimateGenerationCost = (
+  model: NormalizedGenerationModel,
+  validCasesOrCount: number | GenerationCase[],
+) => {
+  const cases = Array.isArray(validCasesOrCount) ? validCasesOrCount : [];
+  const validCaseCount = Array.isArray(validCasesOrCount) ? validCasesOrCount.length : validCasesOrCount;
+  if (!validCaseCount) {
+    return { known: true, totalCredits: 0, unitCredits: 0, unitLabel: 'case', source: 'empty' };
+  }
+
+  const directRates = model.priceItems.flatMap(item => {
+    const unit = String(item.unit || item.billing_unit || item.billingUnit || '').toLowerCase();
+    const credits = Number(item.credits ?? item.credit ?? (typeof item.price === 'number' ? item.price : undefined));
+    return Number.isFinite(credits) && credits >= 0 && ['generation', 'image', 'images', 'video', 'request'].includes(unit)
+      ? [credits]
+      : [];
+  });
+  if (directRates.length) {
+    const unitCredits = Math.max(...directRates);
+    return {
+      known: true,
+      totalCredits: unitCredits * validCaseCount,
+      unitCredits,
+      unitLabel: 'case',
+      source: { strategy: 'maximum-direct-rate', priceItems: model.priceItems },
+    };
+  }
+
+  const outputRates = (units: string[]) => model.priceItems.flatMap(item => {
+    const unit = String(item.unit_type || item.unitType || '').toLowerCase();
+    const credits = Number(item.price?.output ?? item.output_price ?? item.outputPrice);
+    return Number.isFinite(credits) && credits >= 0 && units.includes(unit) ? [credits] : [];
+  });
+  if (model.outputModality === 'video') {
+    const rates = outputRates(['second', 'seconds']);
+    const durations = cases.map(item => Number(item.controls?.duration));
+    if (rates.length && cases.length && durations.every(duration => Number.isFinite(duration) && duration > 0)) {
+      const unitCredits = Math.max(...rates);
+      return {
+        known: true,
+        totalCredits: durations.reduce((sum, duration) => sum + duration, 0) * unitCredits,
+        unitCredits,
+        unitLabel: 'second (upper rate)',
+        source: { strategy: 'maximum-second-rate', priceItems: model.priceItems },
+      };
+    }
+  } else {
+    const rates = outputRates(['image', 'images']);
+    if (rates.length) {
+      const unitCredits = Math.max(...rates);
+      const imageCount = cases.length
+        ? cases.reduce((sum, item) => sum + Math.max(1, Number(item.controls?.num_images) || 1), 0)
+        : validCaseCount;
+      return {
+        known: true,
+        totalCredits: imageCount * unitCredits,
+        unitCredits,
+        unitLabel: 'image (upper rate)',
+        source: { strategy: 'maximum-image-rate', priceItems: model.priceItems },
+      };
+    }
+  }
+  return {
+    known: false,
+    totalCredits: null,
+    unitCredits: null,
+    unitLabel: 'unknown',
+    source: model.priceItems,
+  };
+};
+
+export type UploadedAssetCandidate = {
+  id: string;
+  relativePath: string;
+  fileName: string;
+};
+
+const normalizeAssetPath = (value: string) =>
+  value.trim()
+    .replace(/^file:\/\//i, '')
+    .replace(/^[a-zA-Z]:/, '')
+    .replaceAll('\\', '/')
+    .replace(/^\.\//, '')
+    .replace(/^\/+/, '')
+    .replace(/\/+/g, '/')
+    .toLowerCase();
+
+export const matchUploadedAsset = (reference: string, assets: UploadedAssetCandidate[]) => {
+  const normalized = normalizeAssetPath(reference);
+  const exact = assets.filter(asset => normalizeAssetPath(asset.relativePath) === normalized);
+  if (exact.length === 1) return { assetId: exact[0].id };
+  if (exact.length > 1) {
+    return { errorCode: 'AMBIGUOUS_ASSET', message: `Multiple uploaded assets match relative path: ${reference}` };
+  }
+  const basename = normalized.split('/').at(-1);
+  const byName = assets.filter(asset => normalizeAssetPath(asset.fileName) === basename);
+  if (byName.length === 1) return { assetId: byName[0].id };
+  if (byName.length > 1) {
+    return { errorCode: 'AMBIGUOUS_ASSET', message: `File name is ambiguous; use the CSV relative path: ${reference}` };
+  }
+  return { errorCode: 'MISSING_ASSET', message: `Uploaded asset was not found: ${reference}` };
+};

@@ -28,6 +28,48 @@ spec:
               value: "__FEISHU_APP_SECRET__"
             - name: FEISHU_REDIRECT_URI
               value: "__FEISHU_REDIRECT_URI__"
+            - name: AION_MANAGER_BASE_URL
+              value: "__AION_MANAGER_BASE_URL__"
+            - name: AION_EVAL_USER_ID
+              value: "__AION_EVAL_USER_ID__"
+            - name: AION_MODEL_API_BASE_URL
+              value: "http://dev-vidmuse-manager-service:443/model/api/v1/model"
+            - name: AION_EXECUTION_TRANSPORT
+              value: "model_api"
+            - name: MANUEVAL_PUBLIC_BASE_URL
+              value: "__MANUEVAL_PUBLIC_BASE_URL__"
+            - name: GENERATION_ASSET_MODE
+              value: "temporary_url"
+            - name: MANUEVAL_OSS_ACCESS_KEY_ID
+              value: "__MANUEVAL_OSS_ACCESS_KEY_ID__"
+            - name: MANUEVAL_OSS_ACCESS_KEY_SECRET
+              value: "__MANUEVAL_OSS_ACCESS_KEY_SECRET__"
+            - name: MANUEVAL_OSS_ENDPOINT
+              value: "__MANUEVAL_OSS_ENDPOINT__"
+            - name: MANUEVAL_OSS_REGION
+              value: "__MANUEVAL_OSS_REGION__"
+            - name: MANUEVAL_OSS_BUCKET
+              value: "__MANUEVAL_OSS_BUCKET__"
+            - name: MANUEVAL_OSS_PREFIX
+              value: "manueval-dev"
+            - name: MANUEVAL_OSS_SIGNED_URL_TTL_SECONDS
+              value: "86400"
+            - name: GENERATION_WORKER_ENABLED
+              value: "true"
+            - name: GENERATION_MAX_BATCH_SIZE
+              value: "500"
+            - name: GENERATION_IMAGE_CONCURRENCY
+              value: "4"
+            - name: GENERATION_VIDEO_CONCURRENCY
+              value: "2"
+            - name: GENERATION_POLL_INTERVAL_MS
+              value: "5000"
+            - name: GENERATION_LEASE_MS
+              value: "60000"
+            - name: GENERATION_TASK_TIMEOUT_MS
+              value: "1500000"
+            - name: GENERATION_MAX_ASSET_BYTES
+              value: "2147483647"
 ---
 apiVersion: batch/v1
 kind: Job

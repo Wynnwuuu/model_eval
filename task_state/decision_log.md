@@ -1,6 +1,33 @@
 # Arena Decision Log
+## 2026-08-01: Temporary URLs unblock dev generation without OSS
+
+Until a least-privilege OSS identity is available, ManuEval dev uses `GENERATION_ASSET_MODE=temporary_url`. Public CSV URLs pass through unchanged, local uploads are disabled, and returned media URLs are written directly to the new dataset version. This mode preserves execution and human-evaluation flow but does not promise ManuEval-controlled retention.
+
+Shared dev uses the cluster-internal Model API. Local browser diagnostics may use the existing VidFlow task-worker without Planner when the ClusterIP and runner JWT are unavailable. That fallback forwards only standard controls and returns the existing VidMuse CDN URL, so it is diagnostic compatibility rather than the deployment contract.
+
+## 2026-08-01: CLI smoke is a diagnostic fallback, not the production executor
+
+When OSS credentials are unavailable, an authenticated VidMuse CLI thread can verify that a user, model, billing path, and generation backend work end to end without changing Aion. This path is suitable only for a one-off smoke: it runs a Planner and may normalize or override generation parameters, so ManuEval batch execution will continue to call Aion Model API directly and archive outputs to its dedicated OSS prefix.
+
+## 2026-08-01: Reuse verified dev routing, not unrelated storage credentials
+
+ManuEval uses `http://dev-vidmuse-manager-service:443` inside the shared dev ACK namespace and `https://dev-vidmuse-admin.sandaii.cn/admin` for local direct discovery. The dev evaluation user stays in GitHub Actions Secrets. The public ManuEval base URL is derived from the already configured Feishu callback URL unless explicitly overridden.
+
+Existing repository references to `vidmuse-playground`, `athena-artifacts-dev`, ACR credentials, or Aion's own OSS settings do not prove least-privilege ManuEval access, retention, or CORS. They are not reused without an administrator granting a dedicated prefix and RAM identity.
+
+## 2026-08-01: VidMuse generation stays inside ManuEval
+
+Only ManuEval will change. Runtime model discovery calls Aion's existing public configuration endpoint immediately before preflight confirmation, while image/video execution calls the existing Model API from the server with a dedicated dev evaluation user ID. The VidMuse CLI is intentionally not installed in the application container.
+
+Generation runs as a PostgreSQL-backed worker in the existing Express process. Provider POST calls are never retried automatically after dispatch because Aion does not expose a media-generation idempotency key. Ambiguous submissions become `submission_unknown` and require an explicit force retry.
+
+Local and remote media inputs plus generated outputs are archived in a dedicated dev OSS prefix. Dataset writeback happens once at terminal state and merges by stable dataset item ID without overwriting non-empty historical output cells.
 
 ## 2026-07-14: Dataset versions propagate while evaluated evidence remains immutable
+Configured image/video concurrency is global across Express replicas, not per process. PostgreSQL advisory locks serialize slot acquisition, active item leases are renewed during long input/archive operations, and row locks still prevent duplicate case ownership.
+
+The backend only archives public HTTP(S) media. It rejects local/private DNS results on every redirect, enforces time and byte limits while streaming, verifies the OSS object, and deletes partial objects after failure.
+
 
 Every committed dataset version updates bound task content and the default result view. Votes keep their original `evaluatedItemSnapshot`; the current `itemSnapshot` may advance with the dataset so results can show the requested latest content without destroying audit evidence.
 

@@ -146,3 +146,42 @@ dev 部署包含：
 - `eval-studio-migrate`
 
 当前 service 是 `ClusterIP`，对外暴露可按集群现有网关/Ingress 规范另行接入。
+
+## VidMuse 直连生成（dev）
+
+当前 dev 部署使用 `GENERATION_ASSET_MODE=temporary_url`，无需等待 OSS 管理员配置即可执行生成。
+该模式直接回填供应商临时链接、不支持本地素材上传，链接可能过期。切回持久化模式时，把配置
+改为 `GENERATION_ASSET_MODE=oss`，并补齐下方最小权限 OSS RAM 配置。
+
+dev 部署会同时启动 PostgreSQL 租约 Worker，直接读取 Aion 实时模型配置并调用图片/视频生成接口，不安装 VidMuse CLI，也不需要修改 Aion。
+
+以下配置分为已自动完成项和管理员 OSS 必填项：
+
+已自动完成：
+
+- `EVAL_STUDIO_AION_MANAGER_BASE_URL_DEV` 已指向同集群 `default` namespace 的 `http://dev-vidmuse-manager-service:443`。
+- `EVAL_STUDIO_AION_EVAL_USER_ID_DEV` 已配置为专用 VidMuse dev 评测账号。
+- `EVAL_STUDIO_PUBLIC_BASE_URL_DEV` 为可选覆盖项；未配置时，workflow 会从现有 `EVAL_STUDIO_FEISHU_REDIRECT_URI_DEV` 去掉末尾 `/feishu-callback` 后得到公网基址。
+
+以下 OSS GitHub Actions Secrets 在临时链接模式下为可选；切回持久化模式时必须由管理员提供：
+
+| Secret | 说明 |
+| --- | --- |
+| `EVAL_STUDIO_OSS_ACCESS_KEY_ID_DEV` | 仅允许 dev bucket 指定前缀读写的 RAM AK |
+| `EVAL_STUDIO_OSS_ACCESS_KEY_SECRET_DEV` | 上述 RAM SK |
+| `EVAL_STUDIO_OSS_ENDPOINT_DEV` | OSS 上传/服务 endpoint |
+| `EVAL_STUDIO_OSS_REGION_DEV` | OSS region，例如 `oss-cn-hongkong` |
+| `EVAL_STUDIO_OSS_BUCKET_DEV` | dev 归档 bucket |
+
+组织仓库中可以确认 `vidmuse-playground`、`athena-artifacts-dev` 等既有 bucket，但没有可证明适用于 ManuEval 的 RAM 权限、保留策略或 CORS 配置，因此不会自动复用，也不会使用 ACR/ACK 的高权限部署密钥代替。
+
+OSS CORS 必须允许 ManuEval dev 域名执行 `PUT`、`GET`、`HEAD`，允许 `Content-Type` 请求头，并把 `ETag` 加入 exposed headers；否则大文件分片上传无法完成。
+
+默认每批最多 500 个有效 case，图片并发 4、视频并发 2。任务状态和租约都保存在 PostgreSQL；滚动部署或进程重启后会继续轮询和归档。Aion POST 响应丢失时任务会进入 `submission_unknown`，不会自动重发。
+
+完整接口和状态语义见 [generation-backend-contract.md](generation-backend-contract.md)。
+### 临时链接模式验收
+
+五个 `EVAL_STUDIO_OSS_*_DEV` Secret 在当前 `temporary_url` 模式下均为可选，可留空，不会阻塞 dev 部署。共享 dev 明确使用 `AION_EXECUTION_TRANSPORT=model_api`；本地无法访问 ClusterIP 时才使用 `task_worker` 兼容通路。
+
+2026-08-01 已在 ManuEval 网页完成一条真实图片冒烟：`xai/grok-imagine-image`、`720p`、`1:1`，批次 `gen-97c0abef-5726-4a87-98c9-a09b94351444` 成功 1/1，数据集回填至 v4，结果通过 VidMuse dev CDN 以 1024x1024 图片正常预览。

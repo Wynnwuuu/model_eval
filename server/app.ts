@@ -7,6 +7,7 @@ import { authRoutes } from './auth/authRoutes.ts';
 import { datasetRoutes } from './datasets/datasetRoutes.ts';
 import { attachRequestUser } from './auth/context.ts';
 import { checkDatabaseHealth } from './db/client.ts';
+import { generationPublicAssetRoutes } from './generation/generationPublicAssetRoutes.ts';
 import { generationRoutes } from './generation/generationRoutes.ts';
 import { badRequest, sendError } from './http/errors.ts';
 import { mediaProxyRoutes } from './media/mediaProxyRoutes.ts';
@@ -49,6 +50,7 @@ export const createApp = () => {
       sendError(res, error, 'Unknown database error');
     }
   });
+  app.use('/api/generation-assets', generationPublicAssetRoutes);
 
   app.use('/api/media-proxy', mediaProxyRoutes);
   app.use('/api/auth', authRoutes);

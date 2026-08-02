@@ -32,7 +32,7 @@ import { DatasetColumnMappings, DatasetFieldRole, DatasetGenerationJob, DatasetM
 import { auth } from '../auth';
 import { ConfirmModal } from './ConfirmModal';
 import MediaRenderer from './MediaRenderer';
-import DatasetGenerationModal from './DatasetGenerationModal';
+import DatasetGenerationExecutionModal from './DatasetGenerationExecutionModal';
 import { normalizeUrl } from '../utils';
 import {
   deleteDataset,
@@ -67,6 +67,7 @@ interface DatasetRepositoryScreenProps {
   onBack: () => void;
   mode?: 'repository' | 'generation';
   initialDatasetId?: string;
+  onCreateEvaluation?: (datasetId: string, resultColumn: string) => void;
 }
 
 type WizardMode = 'create' | 'append';
@@ -180,6 +181,7 @@ const jobStatusLabel = (status?: DatasetGenerationJob['status']) => {
   if (status === 'failed') return '失败';
   if (status === 'cancelled') return '已取消';
   if (status === 'queued') return '排队中';
+  if (status === 'writeback_conflict') return '\u56de\u586b\u51b2\u7a81';
   return '草稿';
 };
 
@@ -188,6 +190,7 @@ const jobStatusClass = (status?: DatasetGenerationJob['status']) => {
   if (status === 'partial') return 'bg-amber-500/15 text-amber-300 border-amber-500/20';
   if (status === 'failed' || status === 'cancelled') return 'bg-red-500/15 text-red-300 border-red-500/20';
   if (status === 'running' || status === 'queued') return 'bg-blue-500/15 text-blue-300 border-blue-500/20';
+  if (status === 'writeback_conflict') return 'bg-red-500/15 text-red-300 border-red-500/20';
   return 'bg-white/10 text-slate-300 border-white/10';
 };
 
@@ -485,7 +488,12 @@ const MediaCell = ({
   return <span className={`text-xs text-slate-300 ${sizeClass.text} whitespace-pre-wrap`}>{String(value)}</span>;
 };
 
-const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBack, mode = 'repository', initialDatasetId }) => {
+const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
+  onBack,
+  mode = 'repository',
+  initialDatasetId,
+  onCreateEvaluation,
+}) => {
   const [datasets, setDatasets] = useState<EvalDataset[]>([]);
   const [datasetToDelete, setDatasetToDelete] = useState<string | null>(null);
   const [selectedDatasetId, setSelectedDatasetId] = useState('');
@@ -495,6 +503,12 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
   const [tagFilter, setTagFilter] = useState('');
   const [dimensionFilter, setDimensionFilter] = useState('');
   const [generationModalOpen, setGenerationModalOpen] = useState(false);
+  const [selectedGenerationBatchId, setSelectedGenerationBatchId] = useState<string | undefined>();
+  const openNewGeneration = () => {
+    setSelectedGenerationBatchId(undefined);
+    setGenerationModalOpen(true);
+  };
+
   const [generationJobs, setGenerationJobs] = useState<DatasetGenerationJob[]>([]);
   const [columnRenameOpen, setColumnRenameOpen] = useState(false);
   const [columnRenameDrafts, setColumnRenameDrafts] = useState<Record<string, string>>({});
@@ -1879,7 +1893,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
           </div>
         </div>
         <div className="flex flex-wrap gap-3">
-          <button onClick={() => setGenerationModalOpen(true)} disabled={!selectedDataset || isViewingHistoricalVersion} className={`${isGenerationMode ? 'bg-gradient-accent text-black shadow-lg shadow-amber-500/20 hover:opacity-90' : 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/20'} flex items-center gap-2 px-4 py-2.5 rounded-xl font-medium text-sm disabled:opacity-40`}>
+          <button onClick={openNewGeneration} disabled={!selectedDataset || isViewingHistoricalVersion} className={`${isGenerationMode ? 'bg-gradient-accent text-black shadow-lg shadow-amber-500/20 hover:opacity-90' : 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/20'} flex items-center gap-2 px-4 py-2.5 rounded-xl font-medium text-sm disabled:opacity-40`}>
             <Wand2 size={18} /> {isGenerationMode ? '开始批量生产' : '批量生产产物'}
           </button>
           <button onClick={() => selectedDataset && openWizard('append', selectedDataset)} disabled={!selectedDataset || isViewingHistoricalVersion} className="flex items-center gap-2 bg-white/5 glass-panel-hover text-slate-300 px-4 py-2.5 rounded-xl font-medium text-sm border border-white/10 disabled:opacity-40">
@@ -1918,7 +1932,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
                 <div className="mt-1 text-sm font-semibold text-slate-100">{runningGenerationJobs.length}</div>
               </div>
             </div>
-            <button onClick={() => setGenerationModalOpen(true)} disabled={!selectedDataset || isViewingHistoricalVersion} className="btn-primary shrink-0 disabled:opacity-40">
+            <button onClick={openNewGeneration} disabled={!selectedDataset || isViewingHistoricalVersion} className="btn-primary shrink-0 disabled:opacity-40">
               <Wand2 size={18} /> 配置并启动生产
             </button>
           </div>
@@ -2062,7 +2076,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
                       <RotateCcw size={16} /> 返回当前版本
                     </button>
                   )}
-                  <button onClick={() => setGenerationModalOpen(true)} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-sm flex items-center gap-2 border border-amber-500/20 disabled:opacity-40">
+                  <button onClick={openNewGeneration} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-sm flex items-center gap-2 border border-amber-500/20 disabled:opacity-40">
                     <Wand2 size={16} /> 批量生产
                   </button>
                   <button onClick={() => tableDataset && downloadCsv(tableDataset.items.length ? `${selectedDataset.name}_v${tableDataset.version || selectedDataset.version || 1}_data.csv` : `template_${selectedDataset.id}.csv`, tableDataset.items.length ? tableDataset.items : tableDataset.inputSchema.map(field => field.key))} className="px-3 py-2 rounded-xl bg-white/5 glass-panel-hover text-slate-300 text-sm flex items-center gap-2 border border-white/10">
@@ -2254,7 +2268,12 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
                 <h3 className="font-semibold text-slate-100 mb-3 flex items-center gap-2"><Wand2 size={18} className="text-amber-400" /> 生产历史</h3>
                 <div className="space-y-2 max-h-56 overflow-auto pr-1">
                   {generationJobs.slice(0, 8).map(job => (
-                    <div key={job.id} className="bg-white/5 rounded-xl p-3 text-xs border border-white/10">
+                    <button
+                      type="button"
+                      key={job.id}
+                      onClick={() => { setSelectedGenerationBatchId(job.id); setGenerationModalOpen(true); }}
+                      className="w-full rounded-xl border border-white/10 bg-white/5 p-3 text-left text-xs hover:bg-white/10"
+                    >
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
                           <div className="text-slate-100 font-semibold truncate" title={job.targetColumn}>{job.targetColumn}</div>
@@ -2268,7 +2287,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
                         <div className="text-red-300">失败 {job.failed || 0}</div>
                       </div>
                       <div className="mt-1 text-slate-500">{formatDate(job.createdAt)}</div>
-                    </div>
+                    </button>
                   ))}
                   {generationJobs.length === 0 && <div className="text-xs text-slate-400">暂无生产记录。点击“批量生产”后会在这里保留批次、参数和结果列。</div>}
                 </div>
@@ -2352,9 +2371,11 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({ onBac
       {renderWizard()}
       {renderColumnRenameModal()}
       {generationModalOpen && selectedDataset && !isViewingHistoricalVersion && (
-        <DatasetGenerationModal
+        <DatasetGenerationExecutionModal
           dataset={selectedDataset}
-          onClose={() => setGenerationModalOpen(false)}
+          initialBatchId={selectedGenerationBatchId}
+          onCreateEvaluation={onCreateEvaluation}
+          onClose={() => { setGenerationModalOpen(false); setSelectedGenerationBatchId(undefined); }}
         />
       )}
 

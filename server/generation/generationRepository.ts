@@ -5,6 +5,7 @@ type GenerationJobRow = {
   id: string;
   dataset_id: string;
   dataset_version_id: string | null;
+  source_dataset_version: number | null;
   status: DatasetGenerationJob['status'];
   model_config_json: DatasetGenerationJob['modelConfig'];
   target_column: string | null;
@@ -23,6 +24,10 @@ type GenerationJobRow = {
   total: number;
   succeeded: number;
   failed: number;
+  cancel_requested: boolean;
+  writeback_status: DatasetGenerationJob['writebackStatus'];
+  writeback_dataset_version: number | null;
+  execution_error_json: Record<string, any> | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -36,6 +41,10 @@ type GenerationJobItemRow = {
   status: DatasetGenerationJobItem['status'];
   request_json: any;
   result_json: any;
+  attempt: number;
+  provider_task_id: string | null;
+  provider_status: string | null;
+  stable_dataset_item_id: string | null;
   error_json: DatasetGenerationJobItem['error'] | null;
   started_at: Date | null;
   finished_at: Date | null;
@@ -54,7 +63,7 @@ const mapJob = (row: GenerationJobRow): DatasetGenerationJob => {
     id: row.id,
     datasetId: row.dataset_id,
     datasetName: controls.datasetName,
-    datasetVersion: controls.datasetVersion,
+    datasetVersion: row.source_dataset_version || controls.datasetVersion,
     modelConfig: row.model_config_json,
     targetColumn: row.target_column || '',
     inputMapping: row.input_mapping_json,
@@ -66,6 +75,9 @@ const mapJob = (row: GenerationJobRow): DatasetGenerationJob => {
     status: row.status,
     total: row.total,
     succeeded: row.succeeded,
+    cancelRequested: row.cancel_requested,
+    writebackStatus: row.writeback_status,
+    writebackDatasetVersion: row.writeback_dataset_version || undefined,
     failed: row.failed,
     createdByUid: controls.createdByUid,
     createdBy: controls.createdBy,
@@ -81,8 +93,10 @@ const mapJobItem = (row: GenerationJobItemRow): DatasetGenerationJobItem => ({
   rowIndex: row.row_index,
   caseId: row.case_key || row.request_json?.caseId || row.id,
   status: row.status,
-  requestId: row.request_json?.requestId,
-  providerJobId: row.request_json?.providerJobId,
+  requestId: row.provider_task_id || row.request_json?.requestId,
+  providerJobId: row.provider_task_id || row.request_json?.providerJobId,
+  providerStatus: row.provider_status || undefined,
+  attempt: row.attempt,
   resolvedInputs: row.request_json?.resolvedInputs || {},
   resolvedControls: row.request_json?.resolvedControls || {},
   seed: row.request_json?.seed,
@@ -242,6 +256,14 @@ export const saveGenerationJobItem = async (item: DatasetGenerationJobItem): Pro
     ]
   );
   return item;
+};
+
+export const isExecutionManagedGenerationJob = async (jobId: string): Promise<boolean> => {
+  const result = await dbPool.query(
+    'SELECT 1 FROM generation_jobs WHERE id = $1 AND request_hash IS NOT NULL LIMIT 1',
+    [jobId],
+  );
+  return Boolean(result.rows[0]);
 };
 
 export const deleteGenerationJob = async (jobId: string): Promise<boolean> => {

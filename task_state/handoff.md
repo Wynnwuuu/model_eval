@@ -1,5 +1,12 @@
 # Arena And Arena-rank Handoff
 
+## Completed work: VidMuse direct generation
+
+The ManuEval-only dev implementation is complete on `feature/manueval-aion-generation`. It reads live Aion image/video configuration, runs confirmed cases through a PostgreSQL worker with global concurrency and renewable leases, writes one conflict-safe dataset version, and links into the existing human-evaluation task builder. No Aion code, Redis, PVC, H3-specific workflow, or AI scoring was added.
+
+The current dev mode is `GENERATION_ASSET_MODE=temporary_url`, so generation no longer waits for OSS credentials. Public input URLs pass through, local uploads are disabled, and returned URLs are written directly to the dataset. Shared dev uses the cluster-internal `model_api`; local diagnostics can use the existing Planner-free VidFlow `task_worker` compatibility transport.
+
+A real browser smoke passed on 2026-08-01: `xai/grok-imagine-image`, `720p`, `1:1`, batch `gen-97c0abef-5726-4a87-98c9-a09b94351444`, success 1/1, dataset v4, 1024x1024 result rendered from VidMuse dev CDN. The result column, seed, provider request ID, writeback, reload recovery, and case-ID display were verified. OSS credentials remain a later durability upgrade rather than a blocker.
 ## Completed work: dataset live editing and propagation
 
 Implementation from baseline `c1d3f4f` is complete. Stable dataset identities, typed double-click editing, optimistic versions, full-manifest rollback, linked task/result propagation, archived evidence, PostgreSQL/offline parity, and regression coverage are in place. Do not remove vote-time snapshots: latest display content and evaluated evidence are intentionally separate.

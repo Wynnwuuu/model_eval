@@ -79,9 +79,14 @@ const splitList = (value: string | string[] | undefined) =>
 
 export const getStandardFieldForColumn = (column: string) => {
   const normalized = normalizeKey(column);
+  const exactMatch = STANDARD_DATASET_FIELDS.find(field => {
+    const candidates = [field.label, field.canonicalKey, ...(field.aliases || [])].map(normalizeKey);
+    return candidates.some(candidate => normalized === candidate);
+  });
+  if (exactMatch) return exactMatch;
   return STANDARD_DATASET_FIELDS.find(field => {
     const candidates = [field.label, field.canonicalKey, ...(field.aliases || [])].map(normalizeKey);
-    return candidates.some(candidate => normalized === candidate || normalized.includes(candidate) || candidate.includes(normalized));
+    return candidates.some(candidate => candidate.length >= 4 && (normalized.includes(candidate) || candidate.includes(normalized)));
   });
 };
 
