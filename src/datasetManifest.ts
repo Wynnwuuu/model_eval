@@ -89,6 +89,14 @@ export const getStandardFieldForColumn = (column: string) => {
     return candidates.some(candidate => candidate.length >= 4 && (normalized.includes(candidate) || candidate.includes(normalized)));
   });
 };
+export const getExactStandardFieldForColumn = (column: string) => {
+  const normalized = normalizeKey(column);
+  return STANDARD_DATASET_FIELDS.find(field => {
+    const candidates = [field.label, field.canonicalKey, ...(field.aliases || [])].map(normalizeKey);
+    return candidates.some(candidate => normalized === candidate);
+  });
+};
+
 
 export const inferPreviewType = (column: string, sampleValues: any[] = []): DatasetPreviewType => {
   const normalized = normalizeKey(column);
@@ -118,6 +126,122 @@ export const inferFieldRole = (column: string, sampleValues: any[] = []): Datase
   const previewType = inferPreviewType(column, sampleValues);
   if (previewType === 'image' || previewType === 'video' || previewType === 'audio') return 'media';
   return 'input';
+};
+
+const CORE_IMPORT_STANDARD_KEYS = new Set([
+  'case_id',
+  'full_prompt',
+  'zh_prompt',
+  'reference_image_urls',
+  'audio_url',
+  'lyrics_or_dialogue',
+  'start_image_url',
+  'end_image_url',
+]);
+
+const IMPORT_OUTPUT_HINTS = [
+  'model',
+  'output',
+  'result',
+  'prediction',
+  'candidate',
+  'provider',
+  'slot',
+  '\u6a21\u578b',
+  '\u8f93\u51fa',
+  '\u7ed3\u679c',
+];
+
+const IMPORT_INPUT_HINTS = [
+  'prompt',
+  'instruction',
+  'question',
+  'query',
+  '\u63d0\u793a\u8bcd',
+];
+
+const IMPORT_REFERENCE_HINTS = [
+  'reference',
+  'refimage',
+  'audio',
+  'music',
+  'firstframe',
+  'startimage',
+  'lastframe',
+  'endimage',
+  '\u53c2\u8003',
+  '\u97f3\u9891',
+  '\u97f3\u4e50',
+  '\u9996\u5e27',
+  '\u5c3e\u5e27',
+];
+
+const hasImportHint = (column: string, hints: string[]) => {
+  const normalized = normalizeKey(column);
+  return hints.some(hint => normalized.includes(normalizeKey(hint)));
+};
+
+export const inferDatasetImportMappings = (
+  headers: string[],
+  rows: Record<string, any>[] = []
+): DatasetColumnMappings => {
+  const visibleHeaders = headers.filter(header => header !== '_originalData' && !header.startsWith('__'));
+  const mappings: DatasetColumnMappings = {
+    inputColumns: [],
+    outputColumns: [],
+    dimensionColumns: [],
+    referenceColumns: [],
+    standard: {},
+  };
+  const reservedSources = new Set<string>();
+
+  visibleHeaders.forEach(header => {
+    const standard = getExactStandardFieldForColumn(header);
+    if (!standard || !CORE_IMPORT_STANDARD_KEYS.has(standard.canonicalKey)) return;
+    if (mappings.standard[standard.canonicalKey]) return;
+
+    mappings.standard[standard.canonicalKey] = header;
+    reservedSources.add(header);
+    if (standard.role === 'case_id') mappings.caseId = header;
+    if (standard.role === 'input') mappings.inputColumns.push(header);
+    if (standard.role === 'reference') mappings.referenceColumns.push(header);
+  });
+
+  visibleHeaders.forEach(header => {
+    if (reservedSources.has(header)) return;
+    const samples = rows.slice(0, 5).map(row => row?.[header]);
+    const sampleValue = samples.map(cleanValue).find(Boolean) || '';
+    const previewType = inferPreviewType(header, samples);
+    const hasOutputHint = hasImportHint(header, IMPORT_OUTPUT_HINTS);
+    const hasReferenceHint = hasImportHint(header, IMPORT_REFERENCE_HINTS);
+    const isMediaUrl = URL_PATTERN.test(sampleValue)
+      && (previewType === 'image' || previewType === 'video' || previewType === 'audio');
+
+    if (hasReferenceHint && !hasOutputHint && isMediaUrl) {
+      mappings.referenceColumns.push(header);
+      reservedSources.add(header);
+      return;
+    }
+
+    if (hasImportHint(header, IMPORT_INPUT_HINTS)) {
+      mappings.inputColumns.push(header);
+      reservedSources.add(header);
+      return;
+    }
+
+    if (hasOutputHint || isMediaUrl) {
+      mappings.outputColumns.push(header);
+      reservedSources.add(header);
+    }
+  });
+
+  return {
+    ...mappings,
+    inputColumns: Array.from(new Set(mappings.inputColumns)),
+    outputColumns: Array.from(new Set(mappings.outputColumns)),
+    dimensionColumns: [],
+    referenceColumns: Array.from(new Set(mappings.referenceColumns)),
+  };
 };
 
 export const inferDatasetMappings = (headers: string[], rows: Record<string, any>[] = []): DatasetColumnMappings => {
@@ -210,13 +334,20 @@ export const buildDatasetSchema = (
   });
 };
 
+export interface NormalizeDatasetRowsOptions {
+  activeFieldsOnly?: boolean;
+}
+
 export const normalizeDatasetRows = (
   rows: Record<string, any>[],
   mappings: DatasetColumnMappings,
-  schemaFields: DatasetSchemaField[] = []
+  schemaFields: DatasetSchemaField[] = [],
+  options: NormalizeDatasetRowsOptions = {}
 ) => rows.map((row, index) => {
   const original = Object.fromEntries(Object.entries(row).filter(([key]) => key !== '_originalData' && !key.startsWith('__')));
-  const next: Record<string, any> = { ...row, _originalData: original };
+  const next: Record<string, any> = options.activeFieldsOnly
+    ? { _originalData: original }
+    : { ...row, _originalData: original };
 
   if (schemaFields.length) {
     schemaFields.forEach(field => {

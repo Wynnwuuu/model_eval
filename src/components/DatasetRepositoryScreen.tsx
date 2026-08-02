@@ -53,6 +53,8 @@ import {
   buildDatasetSchema,
   getDatasetColumnMappings,
   getDatasetDisplayValue,
+  getExactStandardFieldForColumn,
+  inferDatasetImportMappings,
   inferDatasetMappings,
   inferDatasetModality,
   inferInputTypeFromDataset,
@@ -100,23 +102,59 @@ interface DatasetFormState {
   coverageGaps: string;
 }
 
-type EditableDatasetSchemaField = DatasetSchemaField & { editorId: string };
+type EditableDatasetSchemaField = DatasetSchemaField & {
+  editorId: string;
+  isMapped: boolean;
+};
 
 let schemaFieldEditorSequence = 0;
 
-const createSchemaFieldEditorId = (field?: DatasetSchemaField) =>
+const createSchemaFieldEditorId = (field?: { canonicalKey?: string }) =>
   field?.canonicalKey
     ? `standard:${field.canonicalKey}`
     : `schema-field:${++schemaFieldEditorSequence}`;
 
-const attachSchemaFieldEditorIds = (fields: DatasetSchemaField[]): EditableDatasetSchemaField[] =>
-  fields.map(field => ({
-    ...field,
-    editorId: createSchemaFieldEditorId(field)
-  }));
+const standardCanonicalKeys = new Set(STANDARD_DATASET_FIELDS.map(field => field.canonicalKey));
+
+const attachSchemaFieldEditorIds = (fields: DatasetSchemaField[]): EditableDatasetSchemaField[] => {
+  const fieldsByCanonical = new Map<string, DatasetSchemaField>(
+    fields
+      .filter(field => field.canonicalKey)
+      .map(field => [field.canonicalKey as string, field])
+  );
+  const standardFields = STANDARD_DATASET_FIELDS.map(standard => {
+    const existing = fieldsByCanonical.get(standard.canonicalKey);
+    return {
+      ...(existing || {
+        key: standard.label,
+        label: standard.label,
+        type: standard.type,
+        role: standard.role,
+        canonicalKey: standard.canonicalKey,
+        previewType: standard.previewType || 'text',
+        required: standard.required,
+      }),
+      sourceKey: existing ? (existing.sourceKey !== undefined ? existing.sourceKey : existing.key) : undefined,
+      editorId: createSchemaFieldEditorId(standard),
+      isMapped: Boolean(existing),
+    } as EditableDatasetSchemaField;
+  });
+  const customFields = fields
+    .filter(field => !field.canonicalKey || !standardCanonicalKeys.has(field.canonicalKey))
+    .map(field => ({
+      ...field,
+      sourceKey: field.sourceKey !== undefined ? field.sourceKey : field.key,
+      editorId: createSchemaFieldEditorId(field),
+      isMapped: true,
+    }));
+
+  return [...standardFields, ...customFields];
+};
 
 const stripSchemaFieldEditorIds = (fields: EditableDatasetSchemaField[]): DatasetSchemaField[] =>
-  fields.map(({ editorId: _editorId, ...field }) => field);
+  fields
+    .filter(field => field.isMapped && Boolean(field.sourceKey))
+    .map(({ editorId: _editorId, isMapped: _isMapped, ...field }) => field);
 
 const ROLE_OPTIONS: Array<{ key: DatasetFieldRole; label: string }> = [
   { key: 'case_id', label: '用例ID' },
@@ -315,7 +353,8 @@ const createSchemaFieldsFromMappings = (
   headers: string[],
   rows: Record<string, any>[],
   mappings: DatasetColumnMappings,
-  existingFields: DatasetSchemaField[] = []
+  existingFields: DatasetSchemaField[] = [],
+  allowInputFallback = true
 ): DatasetSchemaField[] => {
   if (existingFields.length) return existingFields.map(field => {
     const sourceKey = field.sourceKey || field.key;
@@ -384,7 +423,7 @@ const createSchemaFieldsFromMappings = (
   addColumns(mappings.dimensionColumns, 'dimension');
   addColumns(mappings.referenceColumns, 'reference');
 
-  if (!fields.some(field => field.role === 'input')) {
+  if (allowInputFallback && !fields.some(field => field.role === 'input')) {
     const fallback = headers.find(header => !mappings.outputColumns.includes(header) && header !== mappings.caseId);
     if (fallback) {
       const previewType = inferPreviewType(fallback, rows.slice(0, 5).map(row => row[fallback]));
@@ -401,6 +440,31 @@ const createSchemaFieldsFromMappings = (
 
   return fields;
 };
+
+const reconcileSchemaFieldsToHeaders = (
+  fields: DatasetSchemaField[],
+  headers: string[],
+  rows: Record<string, any>[]
+): DatasetSchemaField[] =>
+  fields.map(field => {
+    const directSource = [field.sourceKey, field.key, field.label]
+      .filter(Boolean)
+      .find(candidate => headers.includes(candidate as string)) as string | undefined;
+    const canonicalSource = field.canonicalKey
+      ? headers.find(header => getExactStandardFieldForColumn(header)?.canonicalKey === field.canonicalKey)
+      : undefined;
+    const sourceKey = directSource || canonicalSource || '';
+    const previewType = sourceKey
+      ? field.previewType || inferPreviewType(sourceKey, rows.slice(0, 5).map(row => row[sourceKey]))
+      : field.previewType || 'text';
+
+    return {
+      ...field,
+      sourceKey,
+      previewType,
+      type: field.type || inferSchemaType(previewType),
+    };
+  });
 
 const parseTableText = (text: string) => {
   const delimiter = text.includes('\t') ? '\t' : undefined;
@@ -564,10 +628,11 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   const [pastedText, setPastedText] = useState('');
   const [schemaFields, setSchemaFields] = useState<EditableDatasetSchemaField[]>(() =>
     attachSchemaFieldEditorIds(
-      createSchemaFieldsFromMappings(DEFAULT_TEMPLATE_HEADERS, [], inferDatasetMappings(DEFAULT_TEMPLATE_HEADERS, []))
+      createSchemaFieldsFromMappings(DEFAULT_TEMPLATE_HEADERS, [], inferDatasetImportMappings(DEFAULT_TEMPLATE_HEADERS, []), [], false)
     )
   );
   const [wizardError, setWizardError] = useState('');
+  const [showMappedFieldsOnly, setShowMappedFieldsOnly] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -1043,15 +1108,19 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     setWizardStep(mode === 'append' ? 2 : 1);
     setWizardOpen(true);
     setWizardError('');
+    setShowMappedFieldsOnly(false);
     setParsedRows([]);
     setParsedHeaders(normalizedTarget?.inputSchema?.map(field => field.key) || []);
     setPastedText('');
-    const initialMappings = normalizedTarget ? getDatasetColumnMappings(normalizedTarget) : inferDatasetMappings(DEFAULT_TEMPLATE_HEADERS, []);
+    const initialMappings = normalizedTarget
+      ? getDatasetColumnMappings(normalizedTarget)
+      : inferDatasetImportMappings(DEFAULT_TEMPLATE_HEADERS, []);
     const initialFields = createSchemaFieldsFromMappings(
       normalizedTarget?.inputSchema?.map(field => field.key) || DEFAULT_TEMPLATE_HEADERS,
       normalizedTarget?.items || [],
       initialMappings,
-      normalizedTarget?.inputSchema || []
+      normalizedTarget?.inputSchema || [],
+      Boolean(normalizedTarget)
     );
     setSchemaFields(attachSchemaFieldEditorIds(initialFields));
     setForm({
@@ -1080,13 +1149,21 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
       setWizardError('未识别到表头，请确认 CSV/TSV 或粘贴内容第一行为字段名。');
       return;
     }
-    const inferred = inferDatasetMappings(headers, rows);
-    const fields = createSchemaFieldsFromMappings(headers, rows, inferred);
+    const fields = wizardMode === 'append' && wizardTarget
+      ? reconcileSchemaFieldsToHeaders(wizardTarget.inputSchema || [], headers, rows)
+      : createSchemaFieldsFromMappings(
+          headers,
+          rows,
+          inferDatasetImportMappings(headers, rows),
+          [],
+          false
+        );
     const derivedMappings = deriveMappingsFromSchemaFields(fields);
     const modality = inferDatasetModality(rows, derivedMappings, form.modality, fields);
     setParsedRows(rows);
     setParsedHeaders(headers);
     setSchemaFields(attachSchemaFieldEditorIds(fields));
+    setShowMappedFieldsOnly(false);
     setForm(prev => ({ ...prev, modality }));
     setWizardError('');
     setWizardStep(3);
@@ -1115,13 +1192,11 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
 
   const updateStandardSource = (standard: typeof STANDARD_DATASET_FIELDS[number], sourceKey: string) => {
     commitSchemaFields(prev => {
-      const existingField = prev.find(field => field.canonicalKey === standard.canonicalKey);
-      const next = prev.filter(field => field.canonicalKey !== standard.canonicalKey);
-      if (!sourceKey) return next;
-      const previewType = standard.previewType || inferPreviewType(sourceKey, parsedRows.slice(0, 5).map(row => row[sourceKey]));
-      return [
-        ...next,
-        {
+      return prev.map(field => {
+        if (field.canonicalKey !== standard.canonicalKey) return field;
+        const previewType = standard.previewType || inferPreviewType(sourceKey, parsedRows.slice(0, 5).map(row => row[sourceKey]));
+        return {
+          ...field,
           key: standard.label,
           label: standard.label,
           type: standard.type || inferSchemaType(previewType),
@@ -1130,15 +1205,31 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
           sourceKey,
           previewType,
           required: standard.required,
-          editorId: existingField?.editorId || createSchemaFieldEditorId({
-            key: standard.label,
-            label: standard.label,
-            type: standard.type,
-            canonicalKey: standard.canonicalKey
-          })
-        }
-      ];
+          isMapped: true,
+        };
+      });
     });
+  };
+
+  const toggleStandardMapping = (standard: typeof STANDARD_DATASET_FIELDS[number], isMapped: boolean) => {
+    const availableHeaders = parsedHeaders.length
+      ? parsedHeaders
+      : wizardTarget?.inputSchema?.map(field => field.key) || DEFAULT_TEMPLATE_HEADERS;
+    commitSchemaFields(prev => prev.map(field => {
+      if (field.canonicalKey !== standard.canonicalKey) return field;
+      if (!isMapped) return { ...field, isMapped: false };
+
+      const suggestedSource = availableHeaders.find(
+        header => getExactStandardFieldForColumn(header)?.canonicalKey === standard.canonicalKey
+      ) || '';
+      const sourceKey = field.sourceKey && availableHeaders.includes(field.sourceKey)
+        ? field.sourceKey
+        : suggestedSource;
+      const previewType = field.previewType
+        || standard.previewType
+        || inferPreviewType(sourceKey, parsedRows.slice(0, 5).map(row => row[sourceKey]));
+      return { ...field, isMapped: true, sourceKey, previewType, type: standard.type || inferSchemaType(previewType) };
+    }));
   };
 
   const updateField = (editorId: string, patch: Partial<DatasetSchemaField>) => {
@@ -1179,7 +1270,8 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
           role,
           sourceKey: preferredSource,
           previewType,
-          editorId: createSchemaFieldEditorId()
+          editorId: createSchemaFieldEditorId(),
+          isMapped: true
         }
       ];
     });
@@ -1196,20 +1288,36 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
       setWizardStep(2);
       return;
     }
+    if (schemaFields.some(field => field.isMapped && !field.sourceKey)) {
+      setWizardError('\u5b58\u5728\u5df2\u5f00\u542f\u4f46\u672a\u9009\u62e9\u539f\u59cb\u5b57\u6bb5\u7684\u6620\u5c04\uff0c\u8bf7\u5b8c\u6210\u9009\u62e9\u6216\u5173\u95ed\u6620\u5c04\u3002');
+      setWizardStep(3);
+      return;
+    }
+
+    const persistedSchemaFields = stripSchemaFieldEditorIds(schemaFields);
+    const hasInputField = persistedSchemaFields.some(
+      field => field.role === 'input' || field.role === 'reference' || field.role === 'media'
+    );
+    if (!hasInputField) {
+      setWizardError('\u8bf7\u81f3\u5c11\u6620\u5c04\u4e00\u4e2a\u6709\u6548\u8f93\u5165\u5b57\u6bb5\u3002');
+      setWizardStep(3);
+      return;
+    }
+
 
     const now = Date.now();
     const userName = auth.currentUser?.displayName || auth.currentUser?.email || 'Unknown';
     const tags = splitList(form.tags);
-    const headers = parsedHeaders.length
-      ? parsedHeaders
-      : wizardTarget?.inputSchema?.map(field => field.key) || DEFAULT_TEMPLATE_HEADERS;
-    const persistedSchemaFields = stripSchemaFieldEditorIds(schemaFields);
     const activeMappings = deriveMappingsFromSchemaFields(persistedSchemaFields);
-    const normalizedRows = normalizeDatasetRows(parsedRows, activeMappings, persistedSchemaFields);
+    const normalizedRows = normalizeDatasetRows(parsedRows, activeMappings, persistedSchemaFields, { activeFieldsOnly: true });
+    const activeHeaders = Array.from(new Set([
+      ...(persistedSchemaFields.some(field => field.role === 'case_id') ? [] : ['\u7528\u4f8bID']),
+      ...persistedSchemaFields.map(field => field.key),
+    ]));
     const previousItems = wizardMode === 'append' ? wizardTarget?.items || [] : [];
     const nextItems = wizardMode === 'append' ? [...previousItems, ...normalizedRows] : normalizedRows;
     const validationSummary = validateDatasetItems(nextItems, activeMappings);
-    const inputSchema = buildDatasetSchema(headers, normalizedRows.length ? normalizedRows : nextItems, activeMappings, persistedSchemaFields);
+    const inputSchema = buildDatasetSchema(activeHeaders, normalizedRows.length ? normalizedRows : nextItems, activeMappings, persistedSchemaFields);
     const inputType = inferInputTypeFromDataset({ inputSchema, items: nextItems, columnMappings: activeMappings } as EvalDataset);
     const categoryPath = form.categoryPath.split('/').map(part => part.trim()).filter(Boolean);
     const versionMeta = appendDatasetVersion(
@@ -1458,17 +1566,26 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     const previewRows = parsedRows.slice(0, 5);
     const persistedSchemaFields = stripSchemaFieldEditorIds(schemaFields);
     const activeMappings = deriveMappingsFromSchemaFields(persistedSchemaFields);
-    const normalizedPreviewRows = normalizeDatasetRows(parsedRows, activeMappings, persistedSchemaFields);
+    const normalizedPreviewRows = normalizeDatasetRows(parsedRows, activeMappings, persistedSchemaFields, { activeFieldsOnly: true });
     const validation = validateDatasetItems(normalizedPreviewRows, activeMappings);
-    const standardGroups = STANDARD_DATASET_FIELDS.reduce<Record<string, typeof STANDARD_DATASET_FIELDS>>((groups, field) => {
+    const hasActiveInputField = persistedSchemaFields.some(
+      field => field.role === 'input' || field.role === 'reference' || field.role === 'media'
+    );
+    const hasIncompleteMappings = schemaFields.some(field => field.isMapped && !field.sourceKey);
+    const mappedStandardCount = schemaFields.filter(field => field.canonicalKey && field.isMapped).length;
+    const visibleStandardFields = STANDARD_DATASET_FIELDS.filter(standard => {
+      const field = schemaFields.find(item => item.canonicalKey === standard.canonicalKey);
+      return !showMappedFieldsOnly || field?.isMapped;
+    });
+    const standardGroups = visibleStandardFields.reduce<Record<string, typeof STANDARD_DATASET_FIELDS>>((groups, field) => {
       const group = field.group || '其他';
       groups[group] = [...(groups[group] || []), field];
       return groups;
     }, {});
-    const outputFields = schemaFields.filter(field => field.role === 'output');
-    const customFields = schemaFields.filter(field => !field.canonicalKey && field.role !== 'output');
+    const outputFields = schemaFields.filter(field => field.isMapped && field.role === 'output');
+    const customFields = schemaFields.filter(field => field.isMapped && !field.canonicalKey && field.role !== 'output');
     const sourceUsage = schemaFields.reduce<Record<string, number>>((usage, field) => {
-      if (field.sourceKey) usage[field.sourceKey] = (usage[field.sourceKey] || 0) + 1;
+      if (field.isMapped && field.sourceKey) usage[field.sourceKey] = (usage[field.sourceKey] || 0) + 1;
       return usage;
     }, {});
 
@@ -1599,9 +1716,16 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
               <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-6">
                 <div className="space-y-5 min-w-0">
                   <div className="rounded-xl border border-white/10 bg-white/5 overflow-hidden">
-                    <div className="px-4 py-3 border-b border-white/10 flex items-center justify-between">
+                    <div className="px-4 py-3 border-b border-white/10 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <h3 className="font-semibold text-slate-100 flex items-center gap-2"><Settings size={18} className="text-amber-400" /> 字段映射</h3>
                       <span className="text-xs text-slate-400">按标准字段选择原始列；预览类型可手动覆盖</span>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <span className="text-xs text-slate-400">{mappedStandardCount} / {STANDARD_DATASET_FIELDS.length} {'\u5df2\u6620\u5c04'}</span>
+                        <div role="group" aria-label={'\u5b57\u6bb5\u663e\u793a\u8303\u56f4'} className="inline-flex border border-white/10 bg-black/20 p-0.5">
+                          <button type="button" aria-pressed={!showMappedFieldsOnly} onClick={() => setShowMappedFieldsOnly(false)} className={`px-2.5 py-1 text-xs ${!showMappedFieldsOnly ? 'bg-amber-400 text-black' : 'text-slate-400 hover:text-slate-100'}`}>{'\u5168\u90e8\u5b57\u6bb5'}</button>
+                          <button type="button" aria-pressed={showMappedFieldsOnly} onClick={() => setShowMappedFieldsOnly(true)} className={`px-2.5 py-1 text-xs ${showMappedFieldsOnly ? 'bg-amber-400 text-black' : 'text-slate-400 hover:text-slate-100'}`}>{'\u4ec5\u5df2\u6620\u5c04'}</button>
+                        </div>
+                    </div>
                     </div>
                     <div className="divide-y divide-white/10">
                       {Object.entries(standardGroups).map(([group, fields]) => (
@@ -1612,30 +1736,42 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                               const mappedField = schemaFields.find(field => field.canonicalKey === standard.canonicalKey);
                               const sourceKey = mappedField?.sourceKey || '';
                               const previewType = mappedField ? previewTypeForField(mappedField, parsedRows) : standard.previewType || 'text';
+                              const isMapped = mappedField?.isMapped ?? false;
                               return (
-                                <div key={standard.canonicalKey} className="grid grid-cols-1 lg:grid-cols-[160px_110px_minmax(180px,1fr)_120px_minmax(120px,1fr)] gap-2 items-center rounded-lg bg-black/10 px-3 py-2">
+                                <div key={standard.canonicalKey} className={`grid grid-cols-1 gap-2 items-center rounded-lg px-3 py-2 transition-colors ${isMapped ? 'bg-black/20 lg:grid-cols-[160px_110px_96px_minmax(180px,1fr)_120px_minmax(120px,1fr)]' : 'bg-black/5 lg:grid-cols-[160px_110px_96px]'}`}>
                                   <div>
                                     <div className="text-sm font-medium text-slate-100">{standard.label}</div>
                                     {standard.required && <div className="text-[11px] text-amber-300">建议映射</div>}
                                   </div>
                                   <div className="text-xs text-slate-400">{roleLabel(standard.role)}</div>
+                                  <label className="inline-flex w-fit cursor-pointer items-center gap-2 text-xs text-slate-300 [&>span:first-of-type]:hidden">
+                                    <input
+                                      type="checkbox"
+                                      checked={isMapped}
+                                      onChange={event => toggleStandardMapping(standard, event.target.checked)}
+                                      aria-label={`${isMapped ? '\u53d6\u6d88' : ''}\u6620\u5c04${standard.label}`}
+                                      className="h-4 w-4 shrink-0 cursor-pointer appearance-none rounded-full border border-slate-500 bg-transparent checked:border-amber-300 checked:bg-amber-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300/50"
+                                    />
+                                    <span aria-hidden="true" className={`flex h-4 w-4 items-center justify-center rounded-full border ${isMapped ? 'border-amber-300 bg-amber-400' : 'border-slate-500 bg-transparent'}`}>{isMapped && <span className="h-1.5 w-1.5 rounded-full bg-black" />}</span>
+                                    <span>{'\u6620\u5c04'}</span>
+                                  </label>
                                   <select
                                     value={sourceKey}
                                     onChange={e => updateStandardSource(standard, e.target.value)}
-                                    className="px-2 py-1.5 glass-input rounded-lg text-xs text-slate-200 min-w-0"
+                                    className={isMapped ? 'px-2 py-1.5 glass-input rounded-lg text-xs text-slate-200 min-w-0' : 'hidden'}
                                   >
-                                    <option value="">不映射</option>
+                                    <option value="" disabled>{'\u8bf7\u9009\u62e9\u539f\u59cb\u5b57\u6bb5'}</option>
                                     {headers.map(header => <option key={header} value={header}>{header}</option>)}
                                   </select>
                                   <select
                                     value={previewType}
-                                    disabled={!mappedField}
+                                    disabled={!isMapped || !sourceKey}
                                     onChange={e => mappedField && updateField(mappedField.editorId, { previewType: e.target.value as DatasetPreviewType, type: inferSchemaType(e.target.value as DatasetPreviewType) })}
-                                    className="px-2 py-1.5 glass-input rounded-lg text-xs text-slate-200 disabled:opacity-50"
+                                    className={isMapped ? 'px-2 py-1.5 glass-input rounded-lg text-xs text-slate-200 disabled:opacity-50' : 'hidden'}
                                   >
                                     {PREVIEW_OPTIONS.map(option => <option key={option.key} value={option.key}>{option.label}</option>)}
                                   </select>
-                                  <div className="text-xs text-slate-400 truncate" title={mappedField ? fieldSample(mappedField, previewRows) : ''}>
+                                  <div className={isMapped ? 'text-xs text-slate-400 truncate' : 'hidden'} title={mappedField ? fieldSample(mappedField, previewRows) : ''}>
                                     {mappedField ? fieldSample(mappedField, previewRows) || '空样例' : '-'}
                                     {sourceKey && sourceUsage[sourceKey] > 1 && <span className="ml-2 text-amber-300">重复使用</span>}
                                   </div>
@@ -1675,7 +1811,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                             })}
                             className="px-2 py-1.5 glass-input rounded-lg text-xs text-slate-200"
                           >
-                            <option value="">选择原始字段</option>
+                            <option value="" disabled>选择原始字段</option>
                             {headers.map(header => <option key={header} value={header}>{header}</option>)}
                           </select>
                           <select
@@ -1730,7 +1866,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                             })}
                             className="px-2 py-1.5 glass-input rounded-lg text-xs text-slate-200"
                           >
-                            <option value="">选择原始字段</option>
+                            <option value="" disabled>选择原始字段</option>
                             {headers.map(header => <option key={header} value={header}>{header}</option>)}
                           </select>
                           <select
@@ -1752,8 +1888,12 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                 <aside className="space-y-4">
                   <div className="rounded-xl border border-white/10 bg-white/5 p-4">
                     <h3 className="font-semibold text-slate-100 mb-3 flex items-center gap-2"><CheckCircle2 size={18} className="text-emerald-400" /> 上传校验</h3>
-                    <div className={`text-sm font-semibold mb-3 ${validation.status === 'ok' ? 'text-emerald-300' : 'text-amber-300'}`}>
-                      {validation.status === 'ok' ? '可保存' : '有警告，可保存后继续修正'}
+                    <div className={`text-sm font-semibold mb-3 ${!hasActiveInputField || hasIncompleteMappings ? 'text-red-300' : validation.status === 'ok' ? 'text-emerald-300' : 'text-amber-300'}`}>
+                      {!hasActiveInputField
+                        ? '\u81f3\u5c11\u6620\u5c04\u4e00\u4e2a\u8f93\u5165\u5b57\u6bb5\u540e\u53ef\u4fdd\u5b58'
+                        : hasIncompleteMappings
+                          ? '\u8bf7\u5b8c\u6210\u6216\u5173\u95ed\u672a\u914d\u7f6e\u7684\u6620\u5c04'
+                          : validation.status === 'ok' ? '\u53ef\u4fdd\u5b58' : '\u6709\u8b66\u544a\uff0c\u53ef\u4fdd\u5b58\u540e\u7ee7\u7eed\u4fee\u6b63'}
                     </div>
                     <div className="space-y-2 text-xs text-slate-300">
                       <div>输入列：{activeMappings.inputColumns.length}</div>
