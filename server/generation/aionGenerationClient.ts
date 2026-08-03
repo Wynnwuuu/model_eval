@@ -38,6 +38,75 @@ const encodeMediaPath = (value: string) =>
     }
   }).join('/');
 
+export type AionUserAssetOptions = {
+  mediaType: GenerationModality;
+  expectedUserId: string;
+  imageBaseUrl?: string;
+  videoBaseUrl?: string;
+};
+
+const encodeTrustedAssetTail = (value: string) => {
+  const segments = value.split('/');
+  if (!segments.length || segments.some(segment => !segment)) return undefined;
+  const encoded: string[] = [];
+  for (const segment of segments) {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(segment);
+    } catch {
+      return undefined;
+    }
+    if (!decoded || decoded === '.' || decoded === '..' || decoded.includes('/') || decoded.includes('\\') || decoded.includes('\0')) {
+      return undefined;
+    }
+    encoded.push(encodeURIComponent(decoded));
+  }
+  return encoded.join('/');
+};
+
+export const aionUserAssetPathToUrl = (
+  rawValue: string,
+  options: AionUserAssetOptions,
+) => {
+  const value = String(rawValue || '').trim();
+  const expectedUserId = String(options.expectedUserId || '').trim();
+  if (!value || !expectedUserId) return undefined;
+
+  const assetDirectory = options.mediaType === 'video' ? 'videos' : 'images';
+  const configuredBaseUrl = options.mediaType === 'video'
+    ? options.videoBaseUrl || serverConfig.aionTaskWorkerVideoBaseUrl
+    : options.imageBaseUrl || serverConfig.aionTaskWorkerImageBaseUrl;
+  let baseUrl: URL;
+  try {
+    baseUrl = new URL(configuredBaseUrl);
+  } catch {
+    return undefined;
+  }
+  if (!['http:', 'https:'].includes(baseUrl.protocol)) return undefined;
+  const basePath = baseUrl.pathname.replace(/\/+$/, '');
+  const expectedPrefix = basePath + '/user/' + encodeURIComponent(expectedUserId) + '/assets/' + assetDirectory + '/';
+
+  if (/^https?:\/\//i.test(value)) {
+    let candidate: URL;
+    try {
+      candidate = new URL(value);
+    } catch {
+      return undefined;
+    }
+    if (candidate.origin !== baseUrl.origin || !candidate.pathname.startsWith(expectedPrefix)) return undefined;
+    const encodedTail = encodeTrustedAssetTail(candidate.pathname.slice(expectedPrefix.length));
+    if (!encodedTail) return undefined;
+    return baseUrl.origin + expectedPrefix + encodedTail + candidate.search;
+  }
+
+  if (value.includes('\\') || value.includes('\0')) return undefined;
+  const match = value.match(/^\/work\/aion-user-base-dev\/([^/]+)\/assets\/(images|videos)\/(.+)$/);
+  if (!match || match[1] !== expectedUserId || match[2] !== assetDirectory) return undefined;
+  const encodedTail = encodeTrustedAssetTail(match[3]);
+  if (!encodedTail) return undefined;
+  return baseUrl.origin + expectedPrefix + encodedTail;
+};
+
 export const buildTaskWorkerSubmission = (
   path: string,
   body: Record<string, any>,

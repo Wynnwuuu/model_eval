@@ -3,7 +3,7 @@
 This integration is enabled only in the shared ManuEval dev deployment. The browser never calls Aion directly and never receives the dedicated VidMuse account ID or OSS credentials.
 
 ```text
-React -> ManuEval Express -> PostgreSQL worker queue -> Aion Model API -> dev OSS or temporary provider URL -> dataset version
+React -> ManuEval Express -> PostgreSQL worker queue -> Aion Model API -> VidMuse user asset, provider fallback, or dev OSS -> dataset version
 ```
 
 ## Model configuration
@@ -44,12 +44,13 @@ Aion has no submission idempotency key. `submission_unknown` is never resent aut
 
 ## Assets
 
-`GENERATION_ASSET_MODE=oss` is the durable path. The temporary dev fallback,
-`GENERATION_ASSET_MODE=temporary_url`, passes public input URLs to Aion unchanged and writes the
-returned media URL directly to the dataset. With `model_api` this is the provider URL; with the
-local `task_worker` fallback it is the existing VidMuse CDN URL. Local uploads are disabled and
-links have no ManuEval-controlled retention guarantee. Switching back to `oss` restores archival
-without a schema migration.
+`GENERATION_ASSET_MODE=oss` remains the ManuEval-controlled durable path. In the dev fallback,
+`GENERATION_ASSET_MODE=temporary_url`, public input URLs pass to Aion unchanged. For generated
+outputs, ManuEval first validates Aion `local_path`/`file_path` against `AION_EVAL_USER_ID`, the
+expected image/video asset directory, and the configured VidMuse CDN host. A valid user asset is
+written as a stable VidMuse CDN URL. If the persisted path is missing or fails validation, only
+that case falls back to the provider URL and is marked `durability=temporary`. Local uploads remain
+disabled. Switching back to `oss` restores ManuEval archival without a schema migration.
 
 - `POST /api/generation/assets/initiate`
 - Browser `PUT` to the returned signed OSS URL, or upload all multipart parts.
@@ -64,7 +65,7 @@ OSS CORS must allow the ManuEval dev origin to use `PUT`, `GET`, and `HEAD`, all
 
 After all queued cases terminate, the worker creates at most one new dataset version. Rows merge by stable dataset item ID. Existing non-empty results are never overwritten.
 
-The worker writes the requested result column plus `<result>_status`, `<result>_seed`, `<result>_request_id`, `<result>_error`, and `<result>_params_json`. If a safe merge is impossible, the batch becomes `writeback_conflict` and no partial version is created. Partial-success/cancelled batches still write successful cases and terminal metadata.
+The worker writes the requested result column plus `<result>_status`, `<result>_seed`, `<result>_request_id`, `<result>_error`, and `<result>_params_json`. The result cell contains only the selected media URL; `_params_json` records `originalResultUrl` and `durability` for audit. Internal Aion file paths are never exposed through the API or dataset. If a safe merge is impossible, the batch becomes `writeback_conflict` and no partial version is created. Partial-success/cancelled batches still write successful cases and terminal metadata.
 
 ## Required dev configuration
 

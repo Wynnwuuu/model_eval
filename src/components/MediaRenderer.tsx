@@ -366,7 +366,6 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
             controls
             autoPlay={isActive}
             loop
-            defaultMuted={false}
             preload={videoPreload}
             playsInline
             referrerPolicy={referrerPolicy}

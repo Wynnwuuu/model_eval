@@ -445,6 +445,7 @@ export type GenerationItemStatus =
   | 'pending' | 'submitting' | 'submitted' | 'processing' | 'archiving'
   | 'running' | 'succeeded' | 'completed' | 'failed' | 'submission_unknown' | 'cancelled';
 export type GenerationSeedMode = 'fixed' | 'derive_from_case' | 'column';
+export type GenerationAssetDurability = 'vidmuse_asset' | 'temporary' | 'manueval_oss';
 
 export interface GenerationControlDefinition {
   key: string;
@@ -529,6 +530,8 @@ export interface DatasetGenerationJobItem {
   resolvedControls: Record<string, any>;
   seed?: number;
   resultUrl?: string;
+  originalResultUrl?: string;
+  durability?: GenerationAssetDurability;
   resultText?: string;
   mediaType?: DatasetPreviewType;
   error?: {

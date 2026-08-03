@@ -118,6 +118,7 @@ export const writeGenerationBatchToDataset = async (jobId: string) => {
         controls: item.resolvedControls || {},
         seed: item.seed,
         originalResultUrl: item.originalResultUrl,
+        durability: item.durability,
       });
     }
 

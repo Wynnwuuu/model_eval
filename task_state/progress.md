@@ -1,4 +1,20 @@
 # Arena Implementation Progress
+
+## 2026-08-03: VidMuse stable generated assets
+
+- ManuEval now prefers Aion-materialized user assets over expiring provider URLs in `temporary_url` mode.
+- Only paths owned by `AION_EVAL_USER_ID` under the expected `assets/images` or `assets/videos` directory are converted to the configured VidMuse CDN.
+- Missing, cross-user, wrong-media, traversal, and unknown paths fall back per case to the provider URL without exposing the local path.
+- Batch items expose `vidmuse_asset`, `temporary`, or `manueval_oss` durability. Dataset result cells keep only the selected URL; audit metadata keeps the provider URL and durability.
+- The execution modal shows a fallback warning only when a successful case actually used a temporary URL.
+
+### Validation
+
+- Passed generation, TypeScript, server build, production build, PostgreSQL generation, dataset sync/import, Arena, rank-tie, and API smoke suites.
+- Browser verification passed at 1280x720 and 390x844 with no horizontal overflow or console errors.
+- The stable video reached `readyState=4` and returned HTTP 200, `video/mp4`, `Accept-Ranges: bytes`, and no `Content-Disposition`.
+- The isolated browser dataset/job was removed. A paid dev generation smoke remains the post-deploy acceptance step.
+
 ## 2026-08-01: no-OSS browser smoke complete
 
 - Enabled `GENERATION_ASSET_MODE=temporary_url`: no OSS credentials are required, local uploads are disabled, and the returned media URL is written directly to the dataset.

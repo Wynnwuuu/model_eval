@@ -43,7 +43,6 @@ export interface GenerationBatch extends DatasetGenerationJob {
   costEstimate: GenerationPreflightResult['costEstimate'];
   items: Array<DatasetGenerationJobItem & {
     datasetItemId?: string;
-    originalResultUrl?: string;
   }>;
   error?: Record<string, any>;
   startedAt?: number;

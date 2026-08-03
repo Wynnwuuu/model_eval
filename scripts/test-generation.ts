@@ -11,14 +11,16 @@ import {
 } from '../server/generation/generationPlanning.ts';
 import {
   AionGenerationClient,
+  aionUserAssetPathToUrl,
   buildTaskWorkerSubmission,
   normalizeTaskWorkerTask,
   taskWorkerFilePathToUrl,
 } from '../server/generation/aionGenerationClient.ts';
 import {
+  archivedGenerationResult,
   normalizeProviderPayload,
   providerResult,
-  temporaryGenerationResult,
+  unarchivedGenerationResult,
 } from '../server/generation/generationWorker.ts';
 import { createByteLimitStream, generationAssetService } from '../server/generation/generationAssetService.ts';
 import { inferDatasetMappings } from '../src/datasetManifest.ts';
@@ -420,16 +422,116 @@ assert.equal(wrappedProviderPayload.task_id, 'task-wrapped');
 assert.equal(wrappedProviderPayload.task_status, 'succeeded');
 const wrappedProviderResult = providerResult({ data: wrappedProviderPayload });
 assert.equal(wrappedProviderResult?.originalResultUrl, 'https://assets.example.com/result.mp4');
+assert.equal(wrappedProviderResult?.resultUrl, 'https://assets.example.com/result.mp4');
+assert.equal(wrappedProviderResult?.durability, 'temporary');
 assert.equal(wrappedProviderResult?.previewUrl, 'https://assets.example.com/preview.jpg');
+
+const vidMuseAssetOptions = {
+  mediaType: 'video' as const,
+  expectedUserId: '796854911166661',
+  imageBaseUrl: 'https://vidmuse-dev.sandcdn.com',
+  videoBaseUrl: 'https://vidmuse-dev-video.sandcdn.com',
+};
+const providerTemporaryUrl = 'https://provider.example.com/generated.mp4?expires=soon';
+const stableVideoUrl = 'https://vidmuse-dev-video.sandcdn.com/user/796854911166661/assets/videos/%E7%BB%93%E6%9E%9C%201.mp4';
+assert.equal(
+  aionUserAssetPathToUrl(
+    '/work/aion-user-base-dev/796854911166661/assets/videos/\u7ed3\u679c 1.mp4',
+    vidMuseAssetOptions,
+  ),
+  stableVideoUrl,
+);
+assert.equal(
+  aionUserAssetPathToUrl(
+    '/work/aion-user-base-dev/796854911166661/assets/images/result image.png',
+    { ...vidMuseAssetOptions, mediaType: 'image' },
+  ),
+  'https://vidmuse-dev.sandcdn.com/user/796854911166661/assets/images/result%20image.png',
+);
+assert.equal(
+  aionUserAssetPathToUrl(
+    'https://vidmuse-dev-video.sandcdn.com/user/796854911166661/assets/videos/already-stable.mp4',
+    vidMuseAssetOptions,
+  ),
+  'https://vidmuse-dev-video.sandcdn.com/user/796854911166661/assets/videos/already-stable.mp4',
+);
+for (const unsafePath of [
+  '/work/aion-user-base-dev/999/assets/videos/result.mp4',
+  '/work/aion-user-base-dev/796854911166661/assets/images/result.mp4',
+  '/work/aion-user-base-dev/796854911166661/assets/videos/../secrets.mp4',
+  '/work/aion-runtime-dev/thread_1/result.mp4',
+  'https://vidmuse-dev-video.sandcdn.com/user/999/assets/videos/wrong-user.mp4',
+  'https://attacker.example.com/user/796854911166661/assets/videos/result.mp4',
+]) {
+  assert.equal(aionUserAssetPathToUrl(unsafePath, vidMuseAssetOptions), undefined);
+}
+
+const persistedProviderResult = providerResult({
+  data: {
+    taskStatus: 'succeeded',
+    videos: [{
+      url: providerTemporaryUrl,
+      local_path: '/work/aion-user-base-dev/796854911166661/assets/videos/\u7ed3\u679c 1.mp4',
+    }],
+  },
+}, vidMuseAssetOptions);
+assert.deepEqual(persistedProviderResult, {
+  originalResultUrl: providerTemporaryUrl,
+  resultUrl: stableVideoUrl,
+  durability: 'vidmuse_asset',
+  previewUrl: undefined,
+});
 assert.deepEqual(
-  temporaryGenerationResult({}, 'https://assets.example.com/temporary.mp4', 'video'),
+  unarchivedGenerationResult({}, persistedProviderResult!, 'video'),
   {
-    originalResultUrl: 'https://assets.example.com/temporary.mp4',
-    resultUrl: 'https://assets.example.com/temporary.mp4',
+    originalResultUrl: providerTemporaryUrl,
+    resultUrl: stableVideoUrl,
+    durability: 'vidmuse_asset',
+    previewUrl: undefined,
     mediaType: 'video',
-    durability: 'temporary',
   },
 );
+assert.deepEqual(
+  archivedGenerationResult({}, persistedProviderResult!, 'https://eval.example.com/stable/video.mp4', 'video'),
+  {
+    originalResultUrl: providerTemporaryUrl,
+    resultUrl: 'https://eval.example.com/stable/video.mp4',
+    mediaType: 'video',
+    durability: 'manueval_oss',
+  },
+);
+
+const camelCasePersistedResult = providerResult({
+  videos: [{
+    url: providerTemporaryUrl,
+    localPath: '/work/aion-user-base-dev/796854911166661/assets/videos/camel-case.mp4',
+  }],
+}, vidMuseAssetOptions);
+assert.equal(
+  camelCasePersistedResult?.resultUrl,
+  'https://vidmuse-dev-video.sandcdn.com/user/796854911166661/assets/videos/camel-case.mp4',
+);
+assert.equal(camelCasePersistedResult?.durability, 'vidmuse_asset');
+
+const topLevelFilePathResult = providerResult({
+  videos: [{ url: providerTemporaryUrl }],
+  filePath: '/work/aion-user-base-dev/796854911166661/assets/videos/top-level.mp4',
+}, vidMuseAssetOptions);
+assert.equal(
+  topLevelFilePathResult?.resultUrl,
+  'https://vidmuse-dev-video.sandcdn.com/user/796854911166661/assets/videos/top-level.mp4',
+);
+assert.equal(topLevelFilePathResult?.durability, 'vidmuse_asset');
+
+const rejectedPersistedResult = providerResult({
+  videos: [{
+    url: providerTemporaryUrl,
+    file_path: '/work/aion-user-base-dev/999/assets/videos/wrong-user.mp4',
+  }],
+}, vidMuseAssetOptions);
+assert.equal(rejectedPersistedResult?.resultUrl, providerTemporaryUrl);
+assert.equal(rejectedPersistedResult?.durability, 'temporary');
+assert.equal(JSON.stringify(rejectedPersistedResult).includes('/work/'), false);
 assert.equal(
   generationAssetService.isExecutionReady(),
   generationAssetService.usesTemporaryUrls() || generationAssetService.isConfigured(),

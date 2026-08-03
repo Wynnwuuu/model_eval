@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 
 import { serverConfig } from '../config.ts';
-import { aionGenerationClient } from './aionGenerationClient.ts';
+import {
+  aionGenerationClient,
+  aionUserAssetPathToUrl,
+  type AionUserAssetOptions,
+} from './aionGenerationClient.ts';
 import { generationAssetService } from './generationAssetService.ts';
 import {
   buildAionGenerationRequest,
@@ -38,13 +42,26 @@ export const normalizeProviderPayload = (payload: Record<string, any>) => {
   };
 };
 
-export const providerResult = (rawPayload: Record<string, any>) => {
+type ProviderResultOptions = Partial<Omit<AionUserAssetOptions, 'mediaType'>> & {
+  mediaType?: 'image' | 'video';
+};
+
+export type ResolvedProviderResult = {
+  originalResultUrl: string;
+  resultUrl: string;
+  durability: 'vidmuse_asset' | 'temporary';
+  previewUrl?: string;
+};
+
+export const providerResult = (
+  rawPayload: Record<string, any>,
+  options: ProviderResultOptions = {},
+): ResolvedProviderResult | null => {
   const payload = normalizeProviderPayload(rawPayload);
-  const media = Array.isArray(payload.images) && payload.images.length
-    ? payload.images[0]
-    : Array.isArray(payload.videos) && payload.videos.length
-      ? payload.videos[0]
-      : null;
+  const imageMedia = Array.isArray(payload.images) && payload.images.length ? payload.images[0] : null;
+  const videoMedia = Array.isArray(payload.videos) && payload.videos.length ? payload.videos[0] : null;
+  const media = imageMedia || videoMedia;
+  const mediaType = options.mediaType || (imageMedia ? 'image' : videoMedia ? 'video' : undefined);
   const directUrl = payload.result_url
     || payload.resultUrl
     || payload.video_url
@@ -52,28 +69,64 @@ export const providerResult = (rawPayload: Record<string, any>) => {
     || payload.image_url
     || payload.imageUrl
     || payload.url;
-  const url = media?.url || media?.file_url || directUrl;
-  return url
-    ? {
-      originalResultUrl: String(url),
-      previewUrl: media?.preview_url || media?.previewUrl
-        ? String(media.preview_url || media.previewUrl)
-        : undefined,
-      media: media || { url },
-    }
-    : null;
+  const providerUrl = media?.url || media?.file_url || media?.fileUrl || directUrl;
+  const originalResultUrl = providerUrl ? String(providerUrl) : undefined;
+  const assetOptions = mediaType ? {
+    mediaType,
+    expectedUserId: options.expectedUserId ?? serverConfig.aionEvalUserId,
+    imageBaseUrl: options.imageBaseUrl ?? serverConfig.aionTaskWorkerImageBaseUrl,
+    videoBaseUrl: options.videoBaseUrl ?? serverConfig.aionTaskWorkerVideoBaseUrl,
+  } : undefined;
+  const persistedCandidates = [
+    media?.local_path,
+    media?.localPath,
+    media?.file_path,
+    media?.filePath,
+    payload.local_path,
+    payload.localPath,
+    payload.file_path,
+    payload.filePath,
+    originalResultUrl,
+  ];
+  const stableResultUrl = assetOptions
+    ? persistedCandidates
+      .filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+      .map(value => aionUserAssetPathToUrl(value, assetOptions))
+      .find(Boolean)
+    : undefined;
+  const resultUrl = stableResultUrl || originalResultUrl;
+  if (!resultUrl) return null;
+  return {
+    originalResultUrl: originalResultUrl || resultUrl,
+    resultUrl,
+    durability: stableResultUrl ? 'vidmuse_asset' : 'temporary',
+    previewUrl: media?.preview_url || media?.previewUrl
+      ? String(media.preview_url || media.previewUrl)
+      : undefined,
+  };
 };
 
-export const temporaryGenerationResult = (
+export const unarchivedGenerationResult = (
   existing: Record<string, any>,
-  originalResultUrl: string,
+  result: ResolvedProviderResult,
   mediaType: 'image' | 'video',
 ) => ({
   ...existing,
-  originalResultUrl,
-  resultUrl: originalResultUrl,
+  ...result,
   mediaType,
-  durability: 'temporary',
+});
+
+export const archivedGenerationResult = (
+  existing: Record<string, any>,
+  provider: ResolvedProviderResult,
+  archivedResultUrl: string,
+  mediaType: 'image' | 'video',
+) => ({
+  ...existing,
+  originalResultUrl: provider.originalResultUrl,
+  resultUrl: archivedResultUrl,
+  mediaType,
+  durability: 'manueval_oss' as const,
 });
 
 const nextPollAt = (attempt: number) =>
@@ -137,13 +190,13 @@ const prepareInputs = async (item: ClaimedGenerationItem, generationCase: Genera
 
 const archiveResult = async (
   item: ClaimedGenerationItem,
-  originalResultUrl: string,
+  provider: ResolvedProviderResult,
   mediaType: 'image' | 'video',
 ) => {
   if (generationAssetService.usesTemporaryUrls()) {
     await updateGenerationItem(item.id, {
       status: 'succeeded',
-      result: temporaryGenerationResult(item.result, originalResultUrl, mediaType),
+      result: unarchivedGenerationResult(item.result, provider, mediaType),
       archivedAssetId: null,
       providerStatus: 'succeed',
       finishedAt: Date.now(),
@@ -151,7 +204,7 @@ const archiveResult = async (
     });
     return;
   }
-  const archived = await generationAssetService.archiveRemote(originalResultUrl, {
+  const archived = await generationAssetService.archiveRemote(provider.originalResultUrl, {
     datasetId: item.job.datasetId,
     jobId: item.jobId,
     jobItemId: item.id,
@@ -161,12 +214,7 @@ const archiveResult = async (
   });
   await updateGenerationItem(item.id, {
     status: 'succeeded',
-    result: {
-      ...item.result,
-      originalResultUrl,
-      resultUrl: archived.stableUrl,
-      mediaType,
-    },
+    result: archivedGenerationResult(item.result, provider, archived.stableUrl, mediaType),
     archivedAssetId: archived.id,
     providerStatus: 'succeed',
     finishedAt: Date.now(),
@@ -180,7 +228,9 @@ const handleProviderPayload = async (
 ) => {
   payload = normalizeProviderPayload(payload);
   const providerStatus = String(payload.task_status || payload.status || '').toLowerCase();
-  const result = providerResult(payload);
+  const result = providerResult(payload, {
+    mediaType: item.job.model.outputModality,
+  });
   const endpointType = payload.endpoint_type ? String(payload.endpoint_type) : item.providerEndpointType;
   const taskId = payload.task_id ? String(payload.task_id) : item.providerTaskId;
 
@@ -195,7 +245,7 @@ const handleProviderPayload = async (
     });
     await archiveResult(
       { ...item, providerTaskId: taskId, providerEndpointType: endpointType, result: { ...item.result, ...result } },
-      result.originalResultUrl,
+      result,
       item.job.model.outputModality,
     );
     return;
@@ -342,7 +392,7 @@ const pollItem = async (item: ClaimedGenerationItem) => {
 };
 
 const resumeArchive = async (item: ClaimedGenerationItem) => {
-  const originalResultUrl = String(item.result.originalResultUrl || '');
+  const originalResultUrl = String(item.result.originalResultUrl || item.result.resultUrl || '');
   if (!originalResultUrl) {
     await updateGenerationItem(item.id, {
       status: 'failed',
@@ -353,7 +403,12 @@ const resumeArchive = async (item: ClaimedGenerationItem) => {
     return;
   }
   try {
-    await archiveResult(item, originalResultUrl, item.job.model.outputModality);
+    await archiveResult(item, {
+      originalResultUrl,
+      resultUrl: String(item.result.resultUrl || originalResultUrl),
+      durability: item.result.durability === 'vidmuse_asset' ? 'vidmuse_asset' : 'temporary',
+      previewUrl: item.result.previewUrl,
+    }, item.job.model.outputModality);
   } catch (error) {
     await updateGenerationItem(item.id, {
       status: 'archiving',

@@ -15,6 +15,7 @@ import {
 import {
   DatasetPreviewType,
   EvalDataset,
+  GenerationAssetDurability,
   GenerationAssetBinding,
   GenerationInputMapping,
   GenerationModelConfig,
@@ -136,6 +137,18 @@ const statusLabel = (status?: string) => ({
   queued: '\u6392\u961f\u4e2d',
   conflict: '\u56de\u586b\u51b2\u7a81',
 }[status || ''] || status || '-');
+
+const durabilityLabel = (durability?: GenerationAssetDurability) => ({
+  vidmuse_asset: 'VidMuse \u7a33\u5b9a\u8d44\u4ea7',
+  temporary: '\u4e34\u65f6\u94fe\u63a5',
+  manueval_oss: 'ManuEval OSS',
+}[durability || ''] || '');
+
+const durabilityClass = (durability?: GenerationAssetDurability) => durability === 'temporary'
+  ? 'text-amber-300'
+  : durability === 'vidmuse_asset'
+    ? 'text-emerald-300'
+    : 'text-sky-300';
 
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 
@@ -486,6 +499,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
 
   const terminal = isTerminalGenerationBatch(batch || undefined);
   const completedItems = batch?.items.filter(item => ['succeeded', 'failed', 'submission_unknown', 'cancelled'].includes(item.status)).length || 0;
+  const temporaryResultCount = batch?.items.filter(item => item.status === 'succeeded' && item.durability === 'temporary').length || 0;
   const progress = batch?.total ? Math.round((completedItems / batch.total) * 100) : 0;
   const targetHasValues = dataset.items.some(row => String(row[targetColumn] ?? '').trim());
 
@@ -691,8 +705,8 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                 <div className="flex items-start gap-2 border border-amber-400/30 bg-amber-500/10 px-3 py-3 text-sm text-amber-100">
                   <AlertTriangle size={17} className="mt-0.5 shrink-0" />
                   <div>
-                    <div className="font-medium">当前为临时链接模式</div>
-                    <div className="mt-1 text-xs text-amber-200/80">结果将直接回填供应商链接，链接可能过期。请尽快完成评测或导出；输入素材仅支持 CSV 中可公网访问的 URL。</div>
+                    <div className="font-medium">{'\u5f53\u524d\u672a\u542f\u7528 ManuEval OSS'}</div>
+                    <div className="mt-1 text-xs text-amber-200/80">{'\u751f\u6210\u7ed3\u679c\u5c06\u4f18\u5148\u4f7f\u7528 Aion \u5df2\u6301\u4e45\u5316\u7684 VidMuse \u7528\u6237\u8d44\u4ea7\uff1b\u82e5\u8fd4\u56de\u4e2d\u7f3a\u5c11\u53ef\u9a8c\u8bc1\u7684\u8d44\u4ea7\u8def\u5f84\uff0c\u4ec5\u5bf9\u5e94 case \u56de\u9000\u4e3a\u53ef\u80fd\u8fc7\u671f\u7684\u4f9b\u5e94\u5546\u4e34\u65f6\u94fe\u63a5\u3002\u8f93\u5165\u7d20\u6750\u4ecd\u53ea\u652f\u6301 CSV \u4e2d\u53ef\u516c\u7f51\u8bbf\u95ee\u7684 URL\u3002'}</div>
                   </div>
                 </div>
               )}
@@ -728,7 +742,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                     </label>
                   </div>
                 </div>
-                {runtimeHealth?.localUploadsEnabled === false && <div className="mt-2 text-xs text-amber-300">临时链接模式不支持本地素材上传。</div>}
+                {runtimeHealth?.localUploadsEnabled === false && <div className="mt-2 text-xs text-amber-300">{'\u5f53\u524d\u6a21\u5f0f\u4e0d\u652f\u6301\u672c\u5730\u7d20\u6750\u4e0a\u4f20\u3002'}</div>}
                 {uploading && <div className="mt-3 flex items-center gap-2 text-xs text-blue-300"><Loader2 size={14} className="animate-spin" /> {uploadProgress}</div>}
                 {!!assetBindings.length && (
                   <div className="mt-3 max-h-32 overflow-auto border border-white/10">
@@ -843,10 +857,10 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
 
               {batch && !preflight && (
                 <>
-                  {runtimeHealth?.assetMode === 'temporary_url' && (
+                  {temporaryResultCount > 0 && (
                     <div className="flex items-start gap-2 border border-amber-400/30 bg-amber-500/10 px-3 py-3 text-sm text-amber-100">
                       <AlertTriangle size={17} className="mt-0.5 shrink-0" />
-                      <div>本批次使用供应商临时链接，回填结果未做持久化归档。</div>
+                      <div>{'\u672c\u6279\u6b21\u6709 '}{temporaryResultCount}{' \u4e2a\u6210\u529f\u7ed3\u679c\u672a\u8fd4\u56de\u53ef\u9a8c\u8bc1\u7684 VidMuse \u8d44\u4ea7\u8def\u5f84\uff0c\u5df2\u56de\u586b\u4f9b\u5e94\u5546\u4e34\u65f6\u94fe\u63a5\u3002'}</div>
                     </div>
                   )}
                   <section>
@@ -887,7 +901,12 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                             <div className="truncate text-slate-200" title={item.caseId}>{item.caseId}</div>
                             <div className="mt-1 truncate text-slate-500" title={item.providerJobId}>{item.providerJobId || item.requestId || '-'}</div>
                           </div>
-                          <div className={item.status === 'succeeded' ? 'text-emerald-300' : item.status === 'failed' || item.status === 'submission_unknown' ? 'text-red-300' : 'text-blue-300'}>{statusLabel(item.status)}</div>
+                          <div>
+                            <div className={item.status === 'succeeded' ? 'text-emerald-300' : item.status === 'failed' || item.status === 'submission_unknown' ? 'text-red-300' : 'text-blue-300'}>{statusLabel(item.status)}</div>
+                            {item.status === 'succeeded' && item.durability && (
+                              <div className={'mt-1 ' + durabilityClass(item.durability)}>{durabilityLabel(item.durability)}</div>
+                            )}
+                          </div>
                           <div className="min-w-0 break-words text-slate-400">{item.error?.message || item.providerStatus || '-'}</div>
                           <div className="h-20 w-44 overflow-hidden bg-black/30">
                             {item.resultUrl ? (

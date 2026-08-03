@@ -1,4 +1,13 @@
 # Arena Decision Log
+
+## 2026-08-03: Reuse Aion-materialized VidMuse user assets
+
+Aion Model API already materializes successful image/video outputs into the dedicated VidMuse user asset directory and returns `local_path`. ManuEval will use that existing copy instead of downloading and uploading the media again.
+
+The conversion is fail closed: the path must belong to the configured evaluation user, match the requested media directory, and map to the configured VidMuse CDN origin. Invalid or absent paths do not fail or resubmit generation; the individual case keeps the provider URL and is marked temporary. Internal paths never enter API responses or dataset cells.
+
+ManuEval OSS remains a separate future retention layer. Enabling it continues to archive the provider result and marks the output `manueval_oss` without a database migration or Aion change.
+
 ## 2026-08-01: Temporary URLs unblock dev generation without OSS
 
 Until a least-privilege OSS identity is available, ManuEval dev uses `GENERATION_ASSET_MODE=temporary_url`. Public CSV URLs pass through unchanged, local uploads are disabled, and returned media URLs are written directly to the new dataset version. This mode preserves execution and human-evaluation flow but does not promise ManuEval-controlled retention.

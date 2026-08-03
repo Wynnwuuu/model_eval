@@ -251,6 +251,7 @@ const mapBatch = (job: any, items: any[]) => ({
     seed: item.request_json?.seed,
     resultUrl: item.result_json?.resultUrl,
     originalResultUrl: item.result_json?.originalResultUrl,
+    durability: item.result_json?.durability,
     mediaType: item.result_json?.mediaType,
     error: item.error_json || {},
     startedAt: toTimestamp(item.started_at),

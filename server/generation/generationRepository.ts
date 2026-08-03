@@ -101,6 +101,8 @@ const mapJobItem = (row: GenerationJobItemRow): DatasetGenerationJobItem => ({
   resolvedControls: row.request_json?.resolvedControls || {},
   seed: row.request_json?.seed,
   resultUrl: row.result_json?.resultUrl,
+  originalResultUrl: row.result_json?.originalResultUrl,
+  durability: row.result_json?.durability,
   resultText: row.result_json?.resultText,
   mediaType: row.result_json?.mediaType,
   error: row.error_json || undefined,
@@ -247,6 +249,8 @@ export const saveGenerationJobItem = async (item: DatasetGenerationJobItem): Pro
       }),
       JSON.stringify({
         resultUrl: item.resultUrl,
+        originalResultUrl: item.originalResultUrl,
+        durability: item.durability,
         resultText: item.resultText,
         mediaType: item.mediaType,
       }),

@@ -1,5 +1,12 @@
 # Arena And Arena-rank Handoff
 
+## Current work: VidMuse stable generated assets
+
+ManuEval dev now consumes Aion `local_path`/`file_path` results and emits trusted VidMuse image/video CDN URLs for the dedicated evaluation user. Provider URLs remain audit metadata and per-case fallback only. No Aion, VidMuse upload, OSS credential, or schema change is required.
+
+The UI distinguishes VidMuse stable assets, temporary fallback links, and future ManuEval OSS assets. Local tests, builds, PostgreSQL/API smoke, desktop/mobile layout, inline video playback, Range support, and clean browser console all pass. The remaining release action is main push, CI/dev rollout, and one lowest-cost short-video generation without automatic paid retry.
+
+
 ## Completed work: VidMuse direct generation
 
 The ManuEval-only dev implementation is complete on `feature/manueval-aion-generation`. It reads live Aion image/video configuration, runs confirmed cases through a PostgreSQL worker with global concurrency and renewable leases, writes one conflict-safe dataset version, and links into the existing human-evaluation task builder. No Aion code, Redis, PVC, H3-specific workflow, or AI scoring was added.

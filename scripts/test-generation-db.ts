@@ -228,6 +228,41 @@ try {
   assert.equal(unknownBatch?.items[0].status, 'submission_unknown');
   assert.equal(unknownBatch?.writebackStatus, 'completed');
 
+  const stableProviderUrl = 'https://provider.example.com/result.png?expires=soon';
+  const stableAssetUrl = 'https://vidmuse-dev.sandcdn.com/user/796854911166661/assets/images/result.png';
+  const stablePreflight = createPreflightRecord(
+    (await getDataset(datasetId))!,
+    'stable_result',
+    `request-${suffix}-stable`,
+  );
+  await saveGenerationPreflight(stablePreflight);
+  const stableJob = await createGenerationBatchFromPreflight(stablePreflight, user);
+  const stableClaim = await claimNextGenerationItem('image', `worker-stable-${suffix}`);
+  assert.equal(stableClaim?.jobId, stableJob.id);
+  await updateGenerationItem(stableClaim!.id, {
+    status: 'succeeded',
+    providerTaskId: 'provider-stable-request',
+    providerStatus: 'succeed',
+    result: {
+      originalResultUrl: stableProviderUrl,
+      resultUrl: stableAssetUrl,
+      durability: 'vidmuse_asset',
+      mediaType: 'image',
+    },
+    finishedAt: Date.now(),
+    nextPollAt: null,
+  });
+  await releaseGenerationItemLease(stableClaim!.id);
+  await refreshGenerationJob(stableJob.id);
+  assert.equal(await writeGenerationBatchToDataset(stableJob.id), true);
+  const stableBatch = await getGenerationBatch(stableJob.id);
+  assert.equal(stableBatch?.items[0].durability, 'vidmuse_asset');
+  assert.equal(stableBatch?.items[0].originalResultUrl, stableProviderUrl);
+  const afterStableWriteback = await getDataset(datasetId);
+  assert.equal(afterStableWriteback?.items[0].stable_result, stableAssetUrl);
+  const stableParams = JSON.parse(String(afterStableWriteback?.items[0].stable_result_params_json || '{}'));
+  assert.equal(stableParams.durability, 'vidmuse_asset');
+  assert.equal(stableParams.originalResultUrl, stableProviderUrl);
   const capacityPreflight = createPreflightRecord(
     (await getDataset(datasetId))!,
     'capacity_result',
