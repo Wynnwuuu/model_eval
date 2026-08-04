@@ -285,6 +285,32 @@ assert.equal(missingOutputPlan.updates[0].item.modelOutputs?.[1]?.modelId, 'mode
 assert.equal(missingOutputPlan.updates[0].item.modelB_Url, originalRows[0].model_b);
 assert.ok(missingOutputPlan.warnings.some(warning => warning.includes('model_a')));
 
+const removableBinding = {
+  ...activeTask.datasetBinding!,
+  referenceColumns: ['removed_reference'],
+};
+const retainedModelColumns = Object.values(removableBinding.modelColumns);
+const prunedBinding = remapTaskDatasetBinding(
+  removableBinding,
+  undefined,
+  {
+    inputColumns: [],
+    outputColumns: retainedModelColumns,
+    dimensionColumns: [],
+    referenceColumns: [],
+    standard: {},
+  },
+  retainedModelColumns
+);
+assert.deepEqual(prunedBinding.inputColumns, [], 'deleted input columns must leave task bindings');
+assert.deepEqual(prunedBinding.dimensionColumns, [], 'deleted dimension columns must leave task bindings');
+assert.deepEqual(prunedBinding.referenceColumns, [], 'deleted reference columns must leave task bindings');
+assert.deepEqual(
+  prunedBinding.modelColumns,
+  removableBinding.modelColumns,
+  'missing output columns must retain model identity for transparent empty-output warnings'
+);
+
 const pairTask: EvalTask = {
   ...activeTask,
   id: 'task-pair-rename',

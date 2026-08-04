@@ -28,7 +28,7 @@ import {
   X
 } from 'lucide-react';
 import Papa from 'papaparse';
-import { DatasetColumnMappings, DatasetFieldRole, DatasetGenerationJob, DatasetModality, DatasetPreviewType, DatasetSchemaField, EvalDataset } from '../types';
+import { DatasetColumnMappings, DatasetFieldRole, DatasetGenerationJob, DatasetModality, DatasetPreviewType, DatasetSchemaField, EvalDataset, EvalTask } from '../types';
 import { auth } from '../auth';
 import { ConfirmModal } from './ConfirmModal';
 import MediaRenderer from './MediaRenderer';
@@ -44,6 +44,13 @@ import {
   updateDatasetManifest as persistDatasetManifestEdit,
 } from '../features/datasets/api';
 import { DATASET_ITEM_ID_KEY, getDatasetItemStableId } from '../datasetSync';
+import {
+  getDatasetActiveColumnKeys,
+  getDatasetColumnRole,
+  getTaskColumnUsage,
+  removeDatasetColumn,
+} from '../datasetColumnDeletion';
+import { subscribeTasks } from '../features/tasks/api';
 import { subscribeGenerationJobs } from '../features/generation/api';
 import {
   DATASET_MODALITIES,
@@ -297,13 +304,6 @@ const deriveMappingsFromSchemaFields = (fields: DatasetSchemaField[]): DatasetCo
   };
 };
 
-const getDatasetColumnKeys = (dataset?: EvalDataset) => {
-  if (!dataset) return [];
-  const schemaKeys = dataset.inputSchema?.map(field => field.key).filter(Boolean) || [];
-  const sourceKeys = dataset.inputSchema?.map(field => field.sourceKey).filter(Boolean) || [];
-  const rowKeys = (dataset.items || []).flatMap(row => Object.keys(row).filter(key => key !== '_originalData' && !key.startsWith('__')));
-  return Array.from(new Set([...schemaKeys, ...sourceKeys, ...rowKeys])).filter(key => !key.startsWith('__'));
-};
 
 const applyRenameMapToMappings = (mappings: DatasetColumnMappings, renameMap: Map<string, string>): DatasetColumnMappings => {
   const renameValue = (value?: string) => value ? renameMap.get(value) || value : value;
@@ -577,6 +577,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   onCreateEvaluation,
 }) => {
   const [datasets, setDatasets] = useState<EvalDataset[]>([]);
+  const [tasks, setTasks] = useState<EvalTask[]>([]);
   const [datasetToDelete, setDatasetToDelete] = useState<string | null>(null);
   const [selectedDatasetId, setSelectedDatasetId] = useState('');
   const [selectedRowIndex, setSelectedRowIndex] = useState(0);
@@ -596,6 +597,11 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   const [columnRenameDrafts, setColumnRenameDrafts] = useState<Record<string, string>>({});
   const [columnRenameError, setColumnRenameError] = useState('');
   const [isSavingColumnNames, setIsSavingColumnNames] = useState(false);
+  const [columnToDelete, setColumnToDelete] = useState<string | null>(null);
+  const [columnDeleteRiskAccepted, setColumnDeleteRiskAccepted] = useState(false);
+  const [columnDeleteError, setColumnDeleteError] = useState('');
+  const [isDeletingColumn, setIsDeletingColumn] = useState(false);
+  const [columnDeleteSource, setColumnDeleteSource] = useState<'header' | 'manager'>('manager');
   const [previewSize, setPreviewSize] = useState<DatasetPreviewSize>(readStoredPreviewSize);
   const [layoutWidths, setLayoutWidths] = useState(readStoredLayoutWidths);
   const [resizingPane, setResizingPane] = useState<'left' | 'right' | null>(null);
@@ -638,6 +644,15 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   useEffect(() => {
     const unsubscribe = subscribeDatasets(setDatasets, (error) => {
       console.error('Error fetching datasets:', error);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = subscribeTasks({}, setTasks, (error) => {
+      console.error('Error fetching task impact for dataset columns:', error);
+      setTasks([]);
     });
 
     return () => unsubscribe();
@@ -745,7 +760,62 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   const selectedRow = selectedRows[Math.min(selectedRowIndex, Math.max(selectedRows.length - 1, 0))];
   const outputColumns = selectedMappings.outputColumns;
   const referenceColumns = selectedMappings.referenceColumns;
-  const currentColumnKeys = useMemo(() => getDatasetColumnKeys(selectedDataset), [selectedDataset]);
+  const currentColumnKeys = useMemo(() => getDatasetActiveColumnKeys(selectedDataset), [selectedDataset]);
+  const linkedTasks = useMemo(
+    () => tasks.filter(task => task.datasetId === selectedDataset?.id),
+    [selectedDataset?.id, tasks]
+  );
+  const columnDeleteImpact = useMemo(() => {
+    if (!selectedDataset || !columnToDelete) return null;
+    const mappings = getDatasetColumnMappings(selectedDataset);
+    const field = selectedDataset.inputSchema?.find(schemaField => schemaField.key === columnToDelete);
+    const role = getDatasetColumnRole(selectedDataset, columnToDelete);
+    const taskImpacts = linkedTasks.map(task => ({
+      task,
+      usage: getTaskColumnUsage(task, columnToDelete),
+    }));
+    const directlyAffectedTasks = taskImpacts.filter(impact => impact.usage.length > 0);
+    const completedTaskCount = linkedTasks.filter(task => task.status === 'completed').length;
+    const nonEmptyCount = (selectedDataset.items || []).filter(row => {
+      const value = row[columnToDelete];
+      if (Array.isArray(value)) return value.length > 0;
+      if (value && typeof value === 'object') return Object.keys(value).length > 0;
+      return value !== undefined && value !== null && String(value).trim() !== '';
+    }).length;
+    const remainingInputCount = Array.from(new Set([
+      ...mappings.inputColumns,
+      ...mappings.referenceColumns,
+    ])).filter(column => column !== columnToDelete).length;
+    const remainingOutputCount = mappings.outputColumns.filter(column => column !== columnToDelete).length;
+    const risks: string[] = [];
+
+    if (mappings.caseId === columnToDelete || role === 'case_id') {
+      risks.push('\u5220\u9664\u540e\u5c06\u4f7f\u7528\u5185\u90e8\u7a33\u5b9a ID \u6216\u81ea\u52a8\u7f16\u53f7\u8bc6\u522b case\u3002');
+    }
+    if ((role === 'input' || role === 'reference' || role === 'media') && remainingInputCount === 0) {
+      risks.push('\u5220\u9664\u540e\u8bc4\u6d4b\u96c6\u4e0d\u518d\u5305\u542b\u6709\u6548\u8f93\u5165\uff0c\u540e\u7eed\u4efb\u52a1\u53ef\u80fd\u65e0\u6cd5\u6b63\u5e38\u521b\u5efa\u3002');
+    }
+    if (role === 'output' && remainingOutputCount < 2) {
+      risks.push('\u5220\u9664\u540e\u6a21\u578b\u7ed3\u679c\u5217\u5c11\u4e8e 2 \u4e2a\uff0cA/B\u3001Pairwise \u548c Arena \u4efb\u52a1\u53ef\u80fd\u65e0\u6cd5\u7ee7\u7eed\u8bc4\u6d4b\u3002');
+    }
+    if (directlyAffectedTasks.length > 0) {
+      risks.push(`\u8be5\u5217\u88ab ${directlyAffectedTasks.length} \u4e2a\u4efb\u52a1\u76f4\u63a5\u4f7f\u7528\uff0c\u5220\u9664\u4f1a\u540c\u6b65\u6e05\u7a7a\u5bf9\u5e94\u8f93\u5165\u3001\u7ef4\u5ea6\u6216\u5a92\u4f53\u3002`);
+    }
+    if (completedTaskCount > 0) {
+      risks.push(`\u5173\u8054\u4efb\u52a1\u4e2d\u5305\u542b ${completedTaskCount} \u4e2a\u5df2\u5b8c\u6210\u4efb\u52a1\uff0c\u5176\u6700\u65b0\u7ed3\u679c\u89c6\u56fe\u4e5f\u4f1a\u540c\u6b65\u66f4\u65b0\u3002`);
+    }
+
+    return {
+      role,
+      previewType: field?.previewType,
+      nonEmptyCount,
+      taskImpacts,
+      directlyAffectedTasks,
+      completedTaskCount,
+      risks,
+      requiresRiskAcceptance: risks.length > 0 || linkedTasks.length > 0,
+    };
+  }, [columnToDelete, linkedTasks, selectedDataset]);
   const promptKeys = [
     selectedMappings.standard.full_prompt,
     selectedMappings.standard.zh_prompt,
@@ -934,7 +1004,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
 
   const openColumnRenameEditor = () => {
     if (!selectedDataset || isViewingHistoricalVersion) return;
-    const drafts = Object.fromEntries(getDatasetColumnKeys(selectedDataset).map(column => [column, column]));
+    const drafts = Object.fromEntries(getDatasetActiveColumnKeys(selectedDataset).map(column => [column, column]));
     setColumnRenameDrafts(drafts);
     setColumnRenameError('');
     setColumnRenameOpen(true);
@@ -946,6 +1016,114 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     setIsSavingColumnNames(false);
   };
 
+
+  const openColumnDelete = (column: string, source: 'header' | 'manager' = 'manager') => {
+    if (!selectedDataset || isViewingHistoricalVersion || column === DATASET_ITEM_ID_KEY || column.startsWith('__')) return;
+    setColumnToDelete(column);
+    setColumnDeleteSource(source);
+    setColumnDeleteRiskAccepted(false);
+    setColumnDeleteError('');
+  };
+
+  const closeColumnDelete = () => {
+    if (isDeletingColumn) return;
+    setColumnToDelete(null);
+    setColumnDeleteRiskAccepted(false);
+    setColumnDeleteError('');
+  };
+
+  const confirmDeleteColumn = async () => {
+    if (!selectedDataset || !columnToDelete || isDeletingColumn || isViewingHistoricalVersion) return;
+    if (columnDeleteImpact?.requiresRiskAcceptance && !columnDeleteRiskAccepted) {
+      setColumnDeleteError('\u8bf7\u5148\u786e\u8ba4\u4f60\u5df2\u4e86\u89e3\u8be5\u5217\u5220\u9664\u540e\u7684\u7ed3\u6784\u4e0e\u4efb\u52a1\u5f71\u54cd\u3002');
+      return;
+    }
+
+    try {
+      setIsDeletingColumn(true);
+      setColumnDeleteError('');
+      const projection = removeDatasetColumn(selectedDataset, columnToDelete);
+      const nextInputType = inferInputTypeFromDataset({
+        ...selectedDataset,
+        items: projection.items,
+        inputSchema: projection.inputSchema,
+        columnMappings: projection.columnMappings,
+      } as EvalDataset);
+      const nextModality = inferDatasetModality(
+        projection.items,
+        projection.columnMappings,
+        selectedDataset.modality || 'other',
+        projection.inputSchema
+      );
+      const changeSummary = `\u5220\u9664\u5217\uff1a${columnToDelete}`;
+      const userName = auth.currentUser?.displayName || auth.currentUser?.email || 'Unknown';
+      const now = Date.now();
+      const versionMeta = appendDatasetVersion(
+        selectedDataset,
+        userName,
+        changeSummary,
+        selectedDataset.items?.length || 0,
+        projection.items.length
+      );
+      const nextDataset: EvalDataset = {
+        ...selectedDataset,
+        items: projection.items,
+        inputSchema: projection.inputSchema,
+        inputType: nextInputType,
+        modality: nextModality,
+        columnMappings: projection.columnMappings,
+        datasetCard: buildDatasetCard(
+          {
+            ...selectedDataset,
+            items: projection.items,
+            inputSchema: projection.inputSchema,
+            columnMappings: projection.columnMappings,
+            modality: nextModality,
+          } as EvalDataset,
+          projection.columnMappings,
+          {
+            applicableTasks: selectedDataset.datasetCard?.applicableTasks || [],
+            applicableStages: selectedDataset.datasetCard?.applicableStages || [],
+            source: selectedDataset.datasetCard?.source || '',
+            rubricBinding: selectedDataset.datasetCard?.rubricBinding || '',
+            coverageGaps: selectedDataset.datasetCard?.coverageGaps || [],
+            latestChange: changeSummary,
+            modality: nextModality,
+          }
+        ),
+        validationSummary: validateDatasetItems(projection.items, projection.columnMappings),
+        ...versionMeta,
+        updatedAt: now,
+      };
+
+      const savedDataset = await saveDataset(nextDataset, {
+        expectedVersion: selectedDataset.version || 1,
+      });
+      setDatasets(previous => previous.map(dataset => dataset.id === savedDataset.id ? savedDataset : dataset));
+      setSelectedDatasetId(savedDataset.id);
+      setViewingVersionDataset(null);
+      setColumnRenameDrafts(Object.fromEntries(
+        getDatasetActiveColumnKeys(savedDataset).map(column => [column, column])
+      ));
+      if (inlineRenameColumn === columnToDelete) cancelInlineColumnRename();
+      if (savedDataset.syncSummary) {
+        const sync = savedDataset.syncSummary;
+        setSyncNotice(`\u5df2\u5220\u9664\u5217\u201c${columnToDelete}\u201d\u5e76\u751f\u6210 v${savedDataset.version}\uff1b\u540c\u6b65 ${sync.tasks} \u4e2a\u4efb\u52a1\u3001${sync.votesUpdated} \u6761\u7ed3\u679c\u8bb0\u5f55\u3002`);
+      } else {
+        setSyncNotice(`\u5df2\u5220\u9664\u5217\u201c${columnToDelete}\u201d\u5e76\u751f\u6210 v${savedDataset.version}\u3002`);
+      }
+      setColumnToDelete(null);
+      setColumnDeleteRiskAccepted(false);
+      setColumnDeleteError('');
+    } catch (error: any) {
+      console.error('Error deleting dataset column:', error);
+      setColumnDeleteError(error?.status === 409
+        ? '\u8bc4\u6d4b\u96c6\u5df2\u88ab\u5176\u4ed6\u4eba\u66f4\u65b0\uff0c\u8bf7\u5173\u95ed\u5f39\u7a97\u3001\u5237\u65b0\u540e\u91cd\u65b0\u786e\u8ba4\u5220\u9664\u3002'
+        : `\u5220\u9664\u5217\u5931\u8d25\uff1a${error.message || error}`);
+    } finally {
+      setIsDeletingColumn(false);
+    }
+  };
   const saveColumnRenameEntries = async (
     renameEntries: Array<readonly [string, string]>,
     options: {
@@ -1545,6 +1723,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
             {inlineRenameError && <div className="text-[11px] normal-case tracking-normal text-red-300">{inlineRenameError}</div>}
           </div>
         ) : (
+          <div className="group flex max-w-[280px] items-center gap-1">
           <button
             type="button"
             onDoubleClick={() => openInlineColumnRename(column)}
@@ -1555,6 +1734,21 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
             <span className="truncate">{column}</span>
             {!isViewingHistoricalVersion && <Pencil size={12} className="opacity-0 transition-opacity group-hover:opacity-70" />}
           </button>
+            {!isViewingHistoricalVersion && (
+              <button
+                type="button"
+                onClick={event => {
+                  event.stopPropagation();
+                  openColumnDelete(column, 'header');
+                }}
+                title={`\u5220\u9664\u5217 ${column}`}
+                aria-label={`\u5220\u9664\u5217 ${column}`}
+                className="shrink-0 rounded p-1 text-slate-500 opacity-0 transition-all hover:bg-red-500/15 hover:text-red-300 focus:opacity-100 group-hover:opacity-100"
+              >
+                <Trash2 size={13} />
+              </button>
+            )}
+          </div>
         )}
       </th>
     );
@@ -1948,6 +2142,140 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     );
   };
 
+  const renderColumnDeleteModal = () => {
+    if (!columnToDelete || !selectedDataset || !columnDeleteImpact) return null;
+    const previewLabel = PREVIEW_OPTIONS.find(option => option.key === columnDeleteImpact.previewType)?.label
+      || columnDeleteImpact.previewType
+      || '-';
+    const taskStatusLabel = (task: EvalTask) => {
+      if (task.status === 'completed') return '\u5df2\u5b8c\u6210';
+      if (task.status === 'active') return '\u8fdb\u884c\u4e2d';
+      if (task.status === 'draft') return '\u8349\u7a3f';
+      return task.status;
+    };
+    const usageLabel = (usage: ReturnType<typeof getTaskColumnUsage>) => usage.map(item => {
+      if (item === 'input') return '\u8f93\u5165';
+      if (item === 'output') return '\u6a21\u578b\u8f93\u51fa';
+      if (item === 'dimension') return '\u7ef4\u5ea6';
+      return '\u53c2\u8003\u7d20\u6750';
+    }).join(' / ');
+
+    return (
+      <div
+        className="fixed inset-0 z-[140] flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+        onMouseDown={event => { if (event.target === event.currentTarget) closeColumnDelete(); }}
+      >
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="dataset-column-delete-title"
+          className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden border border-red-400/30 bg-slate-950 shadow-2xl"
+        >
+          <div className="flex items-start justify-between gap-4 border-b border-white/10 px-6 py-5">
+            <div className="min-w-0">
+              <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-red-300">
+                <AlertTriangle size={15} />
+                {columnDeleteSource === 'header' ? '\u8868\u5934\u5feb\u6377\u64cd\u4f5c' : '\u5217\u7ba1\u7406'}
+              </div>
+              <h2 id="dataset-column-delete-title" className="text-xl font-semibold text-slate-100">
+                {'\u5220\u9664\u5217'}
+              </h2>
+              <p className="mt-2 text-sm text-slate-400">
+                {'\u6b64\u64cd\u4f5c\u4f1a\u751f\u6210\u65b0\u7248\u672c\uff0c\u5e76\u540c\u6b65\u5230\u6240\u6709\u5173\u8054\u4efb\u52a1\u3002'}
+              </p>
+            </div>
+            <button type="button" onClick={closeColumnDelete} disabled={isDeletingColumn} aria-label={'\u5173\u95ed\u5220\u9664\u5217\u5f39\u7a97'} className="p-2 text-slate-400 hover:text-white disabled:opacity-40">
+              <X size={18} />
+            </button>
+          </div>
+
+          <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
+            <div className="border-l-4 border-red-400 bg-red-500/10 px-4 py-3">
+              <div className="text-xs text-red-200">{'\u5f85\u5220\u9664\u5217'}</div>
+              <div className="mt-1 break-all font-mono text-base font-semibold text-white">{columnToDelete}</div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-px overflow-hidden border border-white/10 bg-white/10 md:grid-cols-4">
+              {[
+                ['\u5b57\u6bb5\u89d2\u8272', roleLabel(columnDeleteImpact.role)],
+                ['\u9884\u89c8\u7c7b\u578b', previewLabel],
+                ['\u975e\u7a7a CASE', `${columnDeleteImpact.nonEmptyCount} / ${selectedDataset.items.length}`],
+                ['\u5173\u8054\u4efb\u52a1', String(columnDeleteImpact.taskImpacts.length)],
+              ].map(([label, value]) => (
+                <div key={label} className="bg-slate-950 px-3 py-3">
+                  <div className="text-[11px] text-slate-500">{label}</div>
+                  <div className="mt-1 text-sm font-medium text-slate-100">{value}</div>
+                </div>
+              ))}
+            </div>
+
+            {columnDeleteImpact.risks.length > 0 ? (
+              <div className="border border-amber-400/30 bg-amber-500/10 px-4 py-3">
+                <div className="mb-2 text-sm font-semibold text-amber-200">{'\u5220\u9664\u5f71\u54cd'}</div>
+                <ul className="space-y-2 text-sm text-amber-100">
+                  {columnDeleteImpact.risks.map(risk => <li key={risk} className="flex gap-2"><span className="text-amber-400">-</span><span>{risk}</span></li>)}
+                </ul>
+              </div>
+            ) : (
+              <div className="border border-emerald-400/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
+                {'\u672a\u68c0\u6d4b\u5230\u4efb\u52a1\u5f15\u7528\u6216\u7ed3\u6784\u98ce\u9669\u3002'}
+              </div>
+            )}
+
+            {columnDeleteImpact.taskImpacts.length > 0 && (
+              <div>
+                <div className="mb-2 text-sm font-semibold text-slate-200">{'\u5173\u8054\u4efb\u52a1'}</div>
+                <div className="max-h-52 divide-y divide-white/10 overflow-y-auto border border-white/10">
+                  {columnDeleteImpact.taskImpacts.map(({ task, usage }) => (
+                    <div key={task.id} className="flex items-center justify-between gap-4 px-3 py-2.5 text-sm">
+                      <div className="min-w-0">
+                        <div className="truncate text-slate-100">{task.name}</div>
+                        <div className="mt-0.5 text-xs text-slate-500">{usage.length ? usageLabel(usage) : '\u6570\u636e\u96c6\u7248\u672c\u540c\u6b65'}</div>
+                      </div>
+                      <span className="shrink-0 border border-white/10 px-2 py-1 text-[11px] text-slate-300">{taskStatusLabel(task)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="border border-blue-400/20 bg-blue-500/[0.07] px-4 py-3 text-xs leading-5 text-blue-100">
+              {'\u4ec5\u5220\u9664\u5f53\u524d\u6d3b\u52a8\u5217\uff1b_originalData\u3001\u65e7\u7248\u672c\u3001\u751f\u4ea7\u5386\u53f2\u53ca\u4f34\u968f\u751f\u4ea7\u5143\u6570\u636e\u5217\u4ecd\u4fdd\u7559\u3002'}
+            </div>
+
+            {columnDeleteImpact.requiresRiskAcceptance && (
+              <label className="flex cursor-pointer items-start gap-3 border border-red-400/25 bg-red-500/[0.07] px-4 py-3 text-sm text-red-100">
+                <input
+                  type="checkbox"
+                  checked={columnDeleteRiskAccepted}
+                  onChange={event => { setColumnDeleteRiskAccepted(event.target.checked); setColumnDeleteError(''); }}
+                  className="mt-0.5 h-4 w-4 accent-red-500"
+                />
+                <span>{'\u6211\u5df2\u4e86\u89e3\u4e0a\u8ff0\u5f71\u54cd\uff0c\u4ecd\u8981\u5220\u9664\u8be5\u5217\u5e76\u7ea7\u8054\u66f4\u65b0\u4efb\u52a1\u3002'}</span>
+              </label>
+            )}
+
+            {columnDeleteError && (
+              <div className="border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">{columnDeleteError}</div>
+            )}
+          </div>
+
+          <div className="flex justify-end gap-3 border-t border-white/10 px-6 py-4">
+            <button type="button" onClick={closeColumnDelete} disabled={isDeletingColumn} className="btn-secondary px-4 py-2 text-sm disabled:opacity-40">{'\u53d6\u6d88'}</button>
+            <button
+              type="button"
+              onClick={confirmDeleteColumn}
+              disabled={isDeletingColumn || (columnDeleteImpact.requiresRiskAcceptance && !columnDeleteRiskAccepted)}
+              className="inline-flex items-center gap-2 bg-red-500 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-red-400 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Trash2 size={16} /> {isDeletingColumn ? '\u5220\u9664\u4e2d...' : '\u786e\u8ba4\u5220\u9664'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderColumnRenameModal = () => {
     if (!columnRenameOpen || !selectedDataset) return null;
     const schemaByColumn = new Map<string, DatasetSchemaField>();
@@ -1962,13 +2290,13 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
           <div className="px-6 py-4 border-b border-white/10 flex items-center justify-between shrink-0">
             <div>
               <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
-                <Pencil size={18} className="text-amber-400" /> 编辑列名
+                <Settings size={18} className="text-amber-400" /> {'\u7ba1\u7406\u5217'}
               </h2>
               <p className="text-xs text-slate-400 mt-1">
-                修改后会同步更新数据列、字段映射、Dataset Card、版本记录，并影响后续创建评测物料时看到的列名。
+                {'\u91cd\u547d\u540d\u6216\u5220\u9664\u4f1a\u751f\u6210\u65b0\u7248\u672c\uff0c\u5e76\u540c\u6b65\u66f4\u65b0\u6570\u636e\u5217\u3001\u5b57\u6bb5\u6620\u5c04\u3001Dataset Card \u53ca\u5173\u8054\u4efb\u52a1\u3002'}
               </p>
             </div>
-            <button onClick={closeColumnRenameEditor} className="p-2 rounded-lg text-slate-300 hover:text-white hover:bg-white/10" aria-label="关闭编辑列名窗口">
+            <button onClick={closeColumnRenameEditor} className="p-2 rounded-lg text-slate-300 hover:text-white hover:bg-white/10" aria-label={'\u5173\u95ed\u7ba1\u7406\u5217\u7a97\u53e3'}>
               <X size={18} />
             </button>
           </div>
@@ -1980,18 +2308,19 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
               </div>
             )}
             <div className="rounded-xl border border-white/10 overflow-hidden">
-              <div className="hidden md:grid md:grid-cols-[minmax(160px,1fr)_minmax(220px,1.4fr)_120px_120px] gap-3 px-4 py-3 bg-black/20 text-xs uppercase tracking-wide text-slate-400">
+              <div className="hidden md:grid md:grid-cols-[minmax(160px,1fr)_minmax(220px,1.4fr)_120px_120px_64px] gap-3 px-4 py-3 bg-black/20 text-xs uppercase tracking-wide text-slate-400">
                 <div>当前列名</div>
                 <div>新列名</div>
                 <div>字段角色</div>
                 <div>预览类型</div>
+                <div>{'\u64cd\u4f5c'}</div>
               </div>
               <div className="divide-y divide-white/10">
                 {currentColumnKeys.map(column => {
                   const field = schemaByColumn.get(column);
                   const previewLabel = PREVIEW_OPTIONS.find(option => option.key === field?.previewType)?.label || field?.previewType || '-';
                   return (
-                    <div key={column} className="grid grid-cols-1 md:grid-cols-[minmax(160px,1fr)_minmax(220px,1.4fr)_120px_120px] gap-3 px-4 py-3 items-center bg-white/[0.03]">
+                    <div key={column} className="grid grid-cols-1 md:grid-cols-[minmax(160px,1fr)_minmax(220px,1.4fr)_120px_120px_64px] gap-3 px-4 py-3 items-center bg-white/[0.03]">
                       <div>
                         <div className="md:hidden text-[11px] text-slate-500 mb-1">当前列名</div>
                         <div className="text-sm text-slate-300 break-all">{column}</div>
@@ -2015,6 +2344,17 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                       <div>
                         <div className="md:hidden text-[11px] text-slate-500 mb-1">预览类型</div>
                         <div className="text-xs text-slate-400">{previewLabel}</div>
+                      </div>
+                      <div className="flex justify-end md:justify-start">
+                        <button
+                          type="button"
+                          onClick={() => openColumnDelete(column, 'manager')}
+                          title={`\u5220\u9664\u5217 ${column}`}
+                          aria-label={`\u5220\u9664\u5217 ${column}`}
+                          className="inline-flex h-8 w-8 items-center justify-center rounded border border-red-400/20 bg-red-500/10 text-red-200 transition-colors hover:bg-red-500/20"
+                        >
+                          <Trash2 size={14} />
+                        </button>
                       </div>
                     </div>
                   );
@@ -2071,7 +2411,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
             <Upload size={18} /> 追加内容
           </button>
           <button onClick={openColumnRenameEditor} disabled={!selectedDataset || isViewingHistoricalVersion} className="flex items-center gap-2 bg-white/5 glass-panel-hover text-slate-300 px-4 py-2.5 rounded-xl font-medium text-sm border border-white/10 disabled:opacity-40">
-            <Pencil size={18} /> 编辑列名
+            <Settings size={18} /> {'\u7ba1\u7406\u5217'}
           </button>
           <button onClick={() => openWizard('create')} className="flex items-center gap-2 bg-gradient-accent text-black px-5 py-2.5 rounded-xl font-medium text-sm shadow-lg shadow-amber-500/20 transition-all hover:opacity-90">
             <Plus size={18} /> 新建/导入评测集
@@ -2254,7 +2594,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                     <Download size={16} /> {tableDataset?.items.length ? '下载数据' : '下载模板'}
                   </button>
                   <button onClick={openColumnRenameEditor} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-white/5 glass-panel-hover text-slate-300 text-sm flex items-center gap-2 border border-white/10 disabled:opacity-40">
-                    <Pencil size={16} /> 编辑列名
+                    <Settings size={16} /> {'\u7ba1\u7406\u5217'}
                   </button>
                   <button onClick={() => openWizard('append', selectedDataset)} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-sm flex items-center gap-2 border border-amber-500/20 disabled:opacity-40">
                     <Upload size={16} /> 追加
@@ -2541,6 +2881,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
 
       {renderWizard()}
       {renderColumnRenameModal()}
+      {renderColumnDeleteModal()}
       {generationModalOpen && selectedDataset && !isViewingHistoricalVersion && (
         <DatasetGenerationExecutionModal
           dataset={selectedDataset}

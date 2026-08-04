@@ -213,11 +213,12 @@ export const remapTaskDatasetBinding = (
     const renamedColumn = columnRenameMap[column];
     return renamedColumn && availableKeys.has(renamedColumn) ? renamedColumn : column;
   };
+  const remapExisting = (columns: string[]) => columns.map(remap).filter(column => availableKeys.has(column));
   return {
     ...binding,
-    inputColumns: binding.inputColumns.map(remap),
-    dimensionColumns: binding.dimensionColumns.map(remap),
-    referenceColumns: binding.referenceColumns.map(remap),
+    inputColumns: remapExisting(binding.inputColumns),
+    dimensionColumns: remapExisting(binding.dimensionColumns),
+    referenceColumns: remapExisting(binding.referenceColumns),
     modelColumns: Object.fromEntries(Object.entries(binding.modelColumns).map(([modelId, column]) => [
       modelId,
       remap(column),

@@ -24,6 +24,7 @@
     "test:api:smoke": "tsx scripts/smoke-postgres-api.ts",
     "test:arena": "tsx scripts/test-arena.ts",
     "test:dataset-sync": "tsx scripts/test-dataset-sync.ts",
+    "test:dataset-column-deletion": "tsx scripts/test-dataset-column-deletion.ts",
     "test:dataset-import-mappings": "tsx scripts/test-dataset-import-mappings.ts",
     "test:rank-ties": "tsx scripts/test-rank-ties.ts",
     "migrate:postgres": "tsx scripts/migrate-to-postgres.ts",
