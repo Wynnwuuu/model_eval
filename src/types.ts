@@ -445,7 +445,16 @@ export type GenerationItemStatus =
   | 'pending' | 'submitting' | 'submitted' | 'processing' | 'archiving'
   | 'running' | 'succeeded' | 'completed' | 'failed' | 'submission_unknown' | 'cancelled';
 export type GenerationSeedMode = 'fixed' | 'derive_from_case' | 'column';
+export type GenerationTargetMode = 'new' | 'fill_existing';
 export type GenerationAssetDurability = 'vidmuse_asset' | 'temporary' | 'manueval_oss';
+
+export interface GenerationSelectionSummary {
+  datasetTotal: number;
+  selected: number;
+  valid: number;
+  invalid: number;
+  unselected: number;
+}
 
 export interface GenerationControlDefinition {
   key: string;
@@ -496,6 +505,8 @@ export interface DatasetGenerationJob {
   datasetVersion?: number;
   modelConfig: GenerationModelConfig;
   targetColumn: string;
+  targetMode?: GenerationTargetMode;
+  selectionSummary?: GenerationSelectionSummary;
   inputMapping: GenerationInputMapping;
   defaultControls: Record<string, string | number | boolean>;
   perCaseControlColumns: Record<string, string>;
@@ -569,6 +580,8 @@ export interface GenerationPreflightResult {
   validCount: number;
   invalidCount: number;
   total: number;
+  selectionSummary?: GenerationSelectionSummary;
+  batchWarnings?: GenerationPreflightIssue[];
   costEstimate: {
     known: boolean;
     totalCredits: number | null;

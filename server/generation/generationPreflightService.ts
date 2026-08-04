@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto';
 
-import { DATASET_ITEM_ID_KEY, getDatasetRowCaseId } from '../../src/datasetSync.ts';
+import { getDatasetRowCaseId } from '../../src/datasetSync.ts';
+import {
+  inspectGenerationTargetColumn,
+  resolveGenerationCaseSelection,
+  type GenerationSelectionRow,
+} from '../../src/features/generation/caseSelection.ts';
+import type { GenerationTargetMode } from '../../src/types.ts';
 import type { RequestUser } from '../auth/context.ts';
 import { serverConfig } from '../config.ts';
 import { getDatasetVersion } from '../datasets/datasetRepository.ts';
@@ -31,6 +37,7 @@ export type GenerationPreflightRequest = {
   datasetName?: string;
   modelName: string;
   targetColumn: string;
+  targetMode?: GenerationTargetMode;
   inputMapping: {
     promptColumn?: string;
     referenceImageColumns?: string[];
@@ -165,14 +172,11 @@ const buildCases = (
   dataset: Awaited<ReturnType<typeof getDatasetVersion>> extends infer T ? Exclude<T, null> : never,
   request: GenerationPreflightRequest,
   model: NormalizedGenerationModel,
+  selectedRows: GenerationSelectionRow[],
 ) => {
-  const selected = new Set(request.selectedDatasetItemIds || []);
   const assets = request.assetBindings || [];
-  return (dataset.items || [])
-    .map((row, rowIndex) => ({ row, rowIndex }))
-    .filter(({ row }) => !selected.size || selected.has(text(row[DATASET_ITEM_ID_KEY])))
-    .map(({ row, rowIndex }) => {
-      const datasetItemId = text(row[DATASET_ITEM_ID_KEY]);
+  return selectedRows
+    .map(({ row, rowIndex, datasetItemId }) => {
       const caseId = getDatasetRowCaseId(row, rowIndex);
       const input = request.inputMapping || {};
       const start = resolveReferences(input.startImageColumn ? [row[input.startImageColumn]] : [], assets);
@@ -256,6 +260,37 @@ export const createGenerationPreflight = async (
   const model = await aionGenerationClient.getModel(request.modelName);
   if (!model) throw notFound('Enabled Aion model');
 
+  const targetMode = request.targetMode || 'new';
+  const targetInspection = inspectGenerationTargetColumn(dataset, {
+    mode: targetMode,
+    targetColumn: request.targetColumn,
+    modelName: model.modelName || model.id,
+    outputModality: model.outputModality,
+    configFingerprint: model.configFingerprint,
+  });
+  const targetErrors = request.retryOfJobId
+    ? targetInspection.errors.filter(issue => ![
+      'TARGET_COLUMN_EXISTS',
+      'TARGET_COLUMN_NOT_OUTPUT',
+    ].includes(issue.code))
+    : targetInspection.errors;
+  if (targetErrors.length) {
+    throw badRequest(targetErrors[0].message, { issues: targetErrors });
+  }
+
+  const selection = resolveGenerationCaseSelection(
+    dataset.items || [],
+    request.selectedDatasetItemIds,
+  );
+  if (selection.errors.length) {
+    throw badRequest(selection.errors[0].message, { issues: selection.errors });
+  }
+  request = {
+    ...request,
+    targetMode,
+    selectedDatasetItemIds: selection.normalizedIds,
+  };
+
   const requestedAssetIds = Array.from(new Set((request.assetBindings || []).map(asset => String(asset.id))));
   const verifiedAssets = await getGenerationAssetsForPreflight(requestedAssetIds, request.datasetId, user);
   if (verifiedAssets.length !== requestedAssetIds.length) {
@@ -266,7 +301,7 @@ export const createGenerationPreflight = async (
   }
   request = { ...request, assetBindings: verifiedAssets };
 
-  const prepared = buildCases(dataset, request, model);
+  const prepared = buildCases(dataset, request, model, selection.rows);
   if (!prepared.length) throw badRequest('No dataset cases were selected.');
   if (prepared.length > serverConfig.generationMaxBatchSize) {
     throw badRequest(`A generation batch is limited to ${serverConfig.generationMaxBatchSize} cases.`);
@@ -300,6 +335,13 @@ export const createGenerationPreflight = async (
 
   const validCount = cases.filter(item => item.valid).length;
   const invalidCount = cases.length - validCount;
+  const selectionSummary = {
+    datasetTotal: dataset.items.length,
+    selected: cases.length,
+    valid: validCount,
+    invalid: invalidCount,
+    unselected: Math.max(0, dataset.items.length - cases.length),
+  };
   const costEstimate = estimateGenerationCost(model, cases.filter(item => item.valid).map(item => item.resolvedCase));
   const requestHash = fingerprintConfig({
     datasetId: request.datasetId,
@@ -307,6 +349,7 @@ export const createGenerationPreflight = async (
     modelName: request.modelName,
     configFingerprint: model.configFingerprint,
     targetColumn: request.targetColumn.trim(),
+    targetMode,
     inputMapping: request.inputMapping,
     defaultControls: request.defaultControls || {},
     perCaseControlColumns: request.perCaseControlColumns || {},
@@ -314,7 +357,7 @@ export const createGenerationPreflight = async (
     seedMode: request.seedMode,
     fixedSeed: request.fixedSeed,
     seedColumn: request.seedColumn,
-    selectedDatasetItemIds: request.selectedDatasetItemIds || [],
+    selectedDatasetItemIds: selection.normalizedIds,
     cases: cases.map(item => item.resolvedCase),
   });
   const id = `preflight-${randomUUID()}`;
@@ -330,6 +373,8 @@ export const createGenerationPreflight = async (
     validCount,
     invalidCount,
     total: cases.length,
+    selectionSummary,
+    batchWarnings: targetInspection.warnings,
     costEstimate,
     cases,
     requestHash,

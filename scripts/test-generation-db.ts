@@ -51,20 +51,33 @@ const createPreflightRecord = (
   savedDataset: EvalDataset,
   targetColumn: string,
   requestHash: string,
+  rowIndexes: number[] = [0],
+  targetMode: 'new' | 'fill_existing' = 'new',
 ): StoredGenerationPreflight => {
-  const stableItemId = String(savedDataset.items[0][DATASET_ITEM_ID_KEY]);
-  const resolvedCase = {
-    caseId: 'case-1',
-    datasetItemId: stableItemId,
-    rowIndex: 0,
-    prompt: 'A controlled database test image.',
-    imageUrls: [],
-    audioUrls: [],
-    controls: { aspect_ratio: '1:1' },
-    seed: 7,
-    extraInputs: {},
-    generationType: 'text_to_image',
-  };
+  const selectedDatasetItemIds = rowIndexes.map(rowIndex =>
+    String(savedDataset.items[rowIndex][DATASET_ITEM_ID_KEY]));
+  const cases = rowIndexes.map(rowIndex => {
+    const row = savedDataset.items[rowIndex];
+    const resolvedCase = {
+      caseId: String(row.case_id || `case-${rowIndex + 1}`),
+      datasetItemId: String(row[DATASET_ITEM_ID_KEY]),
+      rowIndex,
+      prompt: String(row.prompt || ''),
+      imageUrls: [],
+      audioUrls: [],
+      controls: { aspect_ratio: '1:1' },
+      seed: 7 + rowIndex,
+      extraInputs: {},
+      generationType: 'text_to_image',
+    };
+    return {
+      valid: true,
+      generationType: 'text_to_image',
+      errors: [],
+      warnings: [],
+      resolvedCase,
+    };
+  });
   const now = Date.now();
   return {
     id: `preflight-${randomUUID()}`,
@@ -79,6 +92,8 @@ const createPreflightRecord = (
       datasetName: savedDataset.name,
       modelName: model.modelName,
       targetColumn,
+      targetMode,
+      selectedDatasetItemIds,
       inputMapping: {
         promptColumn: 'prompt',
         referenceImageColumns: [],
@@ -94,17 +109,23 @@ const createPreflightRecord = (
     result: {
       model,
       configFingerprint: model.configFingerprint,
-      validCount: 1,
+      validCount: cases.length,
       invalidCount: 0,
-      total: 1,
-      costEstimate: { known: true, totalCredits: 1, unitCredits: 1, unitLabel: 'image' },
-      cases: [{
-        valid: true,
-        generationType: 'text_to_image',
-        errors: [],
-        warnings: [],
-        resolvedCase,
-      }],
+      total: cases.length,
+      selectionSummary: {
+        datasetTotal: savedDataset.items.length,
+        selected: cases.length,
+        valid: cases.length,
+        invalid: 0,
+        unselected: savedDataset.items.length - cases.length,
+      },
+      costEstimate: {
+        known: true,
+        totalCredits: cases.length,
+        unitCredits: 1,
+        unitLabel: 'image',
+      },
+      cases,
       requestHash,
       expiresAt: now + 60_000,
     },
@@ -137,7 +158,11 @@ try {
       sourceKey: 'prompt',
       previewType: 'text',
     }],
-    items: [{ case_id: 'case-1', prompt: 'A controlled database test image.' }],
+    items: [
+      { case_id: 'case-1', prompt: 'A controlled database test image.' },
+      { case_id: 'case-2', prompt: 'A second controlled database test image.' },
+      { case_id: 'case-3', prompt: 'A third controlled database test image.' },
+    ],
     inputType: 'text',
     modality: 'image',
     columnMappings: {
@@ -263,6 +288,128 @@ try {
   const stableParams = JSON.parse(String(afterStableWriteback?.items[0].stable_result_params_json || '{}'));
   assert.equal(stableParams.durability, 'vidmuse_asset');
   assert.equal(stableParams.originalResultUrl, stableProviderUrl);
+  const partialColumn = 'partial_result';
+  const partialPreflight = createPreflightRecord(
+    (await getDataset(datasetId))!,
+    partialColumn,
+    `request-${suffix}-partial-first`,
+    [0, 1],
+    'new',
+  );
+  await saveGenerationPreflight(partialPreflight);
+  const partialJob = await createGenerationBatchFromPreflight(partialPreflight, user);
+  const partialBatchBefore = await getGenerationBatch(partialJob.id);
+  assert.equal(partialBatchBefore?.total, 2);
+  assert.deepEqual(partialBatchBefore?.selectionSummary, {
+    datasetTotal: 3,
+    selected: 2,
+    valid: 2,
+    invalid: 0,
+    unselected: 1,
+  });
+
+  const partialClaims = await Promise.all([
+    claimNextGenerationItem('image', `worker-partial-a-${suffix}`),
+    claimNextGenerationItem('image', `worker-partial-b-${suffix}`),
+  ]);
+  assert.equal(partialClaims.filter(Boolean).length, 2);
+  for (const item of partialClaims) {
+    if (!item) throw new Error('Expected a claimed partial generation item.');
+    const claimedCaseId = String(item.request.caseId);
+    await updateGenerationItem(item.id, {
+      status: 'succeeded',
+      providerTaskId: `provider-${claimedCaseId}`,
+      providerStatus: 'succeed',
+      result: {
+        resultUrl: `https://assets.example.com/${claimedCaseId}.png`,
+        durability: 'vidmuse_asset',
+        mediaType: 'image',
+      },
+      finishedAt: Date.now(),
+      nextPollAt: null,
+    });
+    await releaseGenerationItemLease(item.id);
+  }
+  await refreshGenerationJob(partialJob.id);
+  assert.equal(await writeGenerationBatchToDataset(partialJob.id), true);
+
+  const afterPartialWriteback = (await getDataset(datasetId))!;
+  const firstResult = String(afterPartialWriteback.items[0][partialColumn]);
+  const secondResult = String(afterPartialWriteback.items[1][partialColumn]);
+  assert.match(firstResult, /case-1\.png$/);
+  assert.match(secondResult, /case-2\.png$/);
+  assert.equal(afterPartialWriteback.items[2][partialColumn], undefined);
+  for (const suffixKey of ['status', 'seed', 'request_id', 'error', 'params_json']) {
+    assert.equal(
+      afterPartialWriteback.items[2][`${partialColumn}_${suffixKey}`],
+      undefined,
+      `unselected case must not receive ${suffixKey} metadata`,
+    );
+  }
+
+  const fillPreflight = createPreflightRecord(
+    afterPartialWriteback,
+    partialColumn,
+    `request-${suffix}-partial-fill`,
+    [2],
+    'fill_existing',
+  );
+  await saveGenerationPreflight(fillPreflight);
+  const fillJob = await createGenerationBatchFromPreflight(fillPreflight, user);
+  const fillClaim = await claimNextGenerationItem('image', `worker-partial-fill-${suffix}`);
+  assert.equal(fillClaim?.jobId, fillJob.id);
+  await updateGenerationItem(fillClaim!.id, {
+    status: 'succeeded',
+    providerTaskId: 'provider-case-3',
+    providerStatus: 'succeed',
+    result: {
+      resultUrl: 'https://assets.example.com/case-3.png',
+      durability: 'vidmuse_asset',
+      mediaType: 'image',
+    },
+    finishedAt: Date.now(),
+    nextPollAt: null,
+  });
+  await releaseGenerationItemLease(fillClaim!.id);
+  await refreshGenerationJob(fillJob.id);
+  assert.equal(await writeGenerationBatchToDataset(fillJob.id), true);
+
+  const afterFillWriteback = (await getDataset(datasetId))!;
+  assert.equal(afterFillWriteback.items[0][partialColumn], firstResult);
+  assert.equal(afterFillWriteback.items[1][partialColumn], secondResult);
+  assert.equal(afterFillWriteback.items[2][partialColumn], 'https://assets.example.com/case-3.png');
+  assert.equal(afterFillWriteback.inputSchema?.filter(field => field.key === partialColumn).length, 1);
+  assert.equal(afterFillWriteback.columnMappings?.outputColumns.filter(column => column === partialColumn).length, 1);
+
+  const overwritePreflight = createPreflightRecord(
+    afterFillWriteback,
+    partialColumn,
+    `request-${suffix}-partial-overwrite`,
+    [0],
+    'fill_existing',
+  );
+  await saveGenerationPreflight(overwritePreflight);
+  const overwriteJob = await createGenerationBatchFromPreflight(overwritePreflight, user);
+  const overwriteClaim = await claimNextGenerationItem('image', `worker-partial-overwrite-${suffix}`);
+  assert.equal(overwriteClaim?.jobId, overwriteJob.id);
+  await updateGenerationItem(overwriteClaim!.id, {
+    status: 'succeeded',
+    result: {
+      resultUrl: 'https://assets.example.com/should-not-overwrite.png',
+      durability: 'vidmuse_asset',
+      mediaType: 'image',
+    },
+    finishedAt: Date.now(),
+    nextPollAt: null,
+  });
+  await releaseGenerationItemLease(overwriteClaim!.id);
+  await refreshGenerationJob(overwriteJob.id);
+  assert.equal(await writeGenerationBatchToDataset(overwriteJob.id), false);
+  const afterOverwriteAttempt = await getDataset(datasetId);
+  assert.equal(afterOverwriteAttempt?.items[0][partialColumn], firstResult);
+  assert.equal((await getGenerationBatch(overwriteJob.id))?.writebackStatus, 'conflict');
+
+
   const capacityPreflight = createPreflightRecord(
     (await getDataset(datasetId))!,
     'capacity_result',
@@ -305,6 +452,35 @@ try {
   assert.ok(leaseAfter.rows[0].lease_expires_at >= leaseBefore.rows[0].lease_expires_at);
   await requestGenerationCancellation(capacityJob.id);
   await Promise.all(activeClaims.map(item => releaseGenerationItemLease(item!.id)));
+  const partlyInvalidPreflight = createPreflightRecord(
+    (await getDataset(datasetId))!,
+    'partly_invalid_result',
+    `request-${suffix}-partly-invalid`,
+    [0, 1],
+  );
+  partlyInvalidPreflight.result.cases[1] = {
+    ...partlyInvalidPreflight.result.cases[1],
+    valid: false,
+    errors: [{ code: 'TEST_INVALID_CASE', message: 'Simulated invalid selected case.' }],
+  };
+  partlyInvalidPreflight.result.validCount = 1;
+  partlyInvalidPreflight.result.invalidCount = 1;
+  partlyInvalidPreflight.result.selectionSummary = {
+    datasetTotal: 3,
+    selected: 2,
+    valid: 1,
+    invalid: 1,
+    unselected: 1,
+  };
+  await saveGenerationPreflight(partlyInvalidPreflight);
+  const partlyInvalidJob = await createGenerationBatchFromPreflight(partlyInvalidPreflight, user);
+  const partlyInvalidBatch = await getGenerationBatch(partlyInvalidJob.id);
+  assert.equal(partlyInvalidBatch?.total, 1);
+  assert.equal(partlyInvalidBatch?.items.length, 1);
+  assert.equal(partlyInvalidBatch?.items[0].caseId, 'case-1');
+  await requestGenerationCancellation(partlyInvalidJob.id);
+
+
   console.log('Generation PostgreSQL integration tests passed.');
 } finally {
   await dbPool.query('DELETE FROM datasets WHERE id = $1', [datasetId]).catch(() => undefined);

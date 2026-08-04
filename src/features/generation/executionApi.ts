@@ -6,6 +6,7 @@ import {
   GenerationModelConfig,
   GenerationPreflightResult,
   GenerationSeedMode,
+  GenerationTargetMode,
 } from '../../types';
 import { getApiAuthHeaders } from '../apiAuthHeaders';
 import { API_BASE_URL, USE_SHARED_DATA_SOURCE } from '../../runtimeConfig';
@@ -16,6 +17,7 @@ export interface GenerationPreflightRequest {
   datasetName?: string;
   modelName: string;
   targetColumn: string;
+  targetMode: GenerationTargetMode;
   inputMapping: GenerationInputMapping;
   defaultControls: Record<string, unknown>;
   perCaseControlColumns: Record<string, string>;
@@ -35,11 +37,13 @@ export interface GenerationRuntimeHealth {
   durableAssets: boolean;
   localUploadsEnabled: boolean;
   workerEnabled: boolean;
+  maxBatchSize: number;
 }
 
 export interface GenerationBatch extends DatasetGenerationJob {
   sourceDatasetVersion: number;
   controls: Record<string, any>;
+  targetMode?: GenerationTargetMode;
   costEstimate: GenerationPreflightResult['costEstimate'];
   items: Array<DatasetGenerationJobItem & {
     datasetItemId?: string;

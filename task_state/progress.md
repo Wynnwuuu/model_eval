@@ -154,3 +154,24 @@
 - Browser: Seedance 2.0 Pro exposed reference/start/end roles, role changes persisted, empty media input produced a valid `text_to_video` preflight, and image/audio defaults remained empty.
 - Browser: 390x844 and 1280x720 layouts had no modal or input-panel horizontal overflow; console logs were empty.
 - No paid generation was submitted during this regression pass. Existing Vite mixed-import and chunk-size warnings remain unchanged.
+
+## 2026-08-04: Generation case selection and same-column fill
+
+### Completed
+
+- Added explicit new-column and fill-existing target modes with modality, prior-model, fingerprint, completion, and legacy-audit checks.
+- Added a searchable case selector with stable-ID selection, filtered tri-state selection, select-all/clear actions, target-filled row protection, batch-limit feedback, and lazy media mounting.
+- Canonicalized selected case IDs in dataset order, persisted target/selection audit data, and exposed the server batch limit through generation health.
+- Kept legacy omitted selections as full-dataset requests while rejecting explicit empty, unknown, duplicated, or ambiguous stable-ID selections.
+- Added PostgreSQL coverage for two-case writeback, a later third-case fill, unchanged earlier results, no metadata on unselected rows, one output schema entry, overwrite conflict protection, and invalid-case exclusion.
+
+### Validation
+
+- `npm.cmd run test:generation`: passed.
+- `npm.cmd run test:generation:db`: passed against Docker PostgreSQL.
+- `npm.cmd run test:dataset-sync`: passed.
+- `npm.cmd run test:arena`, `test:rank-ties`, `test:dataset-import-mappings`, and `test:dataset-column-deletion`: passed.
+- `npm.cmd run test:api:smoke`: passed.
+- `npm.cmd run lint`, `npm.cmd run build`, and `npm.cmd run server:build`: passed. Existing Vite mixed-import and chunk-size warnings remain.
+- `npm.cmd run local:check`: web, API, and database health passed.
+- Browser: passed default/full/partial/empty selection, filtered header selection, batch-limit disabling, preflight summary, back-navigation persistence, fill-existing exclusion, request payload audit, and 390px horizontal containment. UI-only API route mocks were used because local Aion model configuration is intentionally absent; no generation was submitted.

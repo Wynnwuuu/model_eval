@@ -21,6 +21,11 @@ If Aion is unavailable, the endpoint returns `503 MODEL_CONFIG_UNAVAILABLE` and 
 
 `POST /api/generation/preflights` accepts the dataset/version, model name, target column, input mapping, controls, seed policy, selected stable item IDs, and uploaded asset bindings.
 
+The browser sends `targetMode` as `new` or `fill_existing`. New mode requires a column name that does not exist. Fill mode requires an existing compatible output column; known model mismatches are rejected, while legacy rows without model audit metadata produce a warning. `GET /api/generation/health` exposes `maxBatchSize` so clients can enforce the same selected-case limit before preflight.
+
+`selectedDatasetItemIds` has strict compatibility semantics: an omitted field means all cases for legacy clients, but an explicit empty array returns `400`. Unknown, duplicated, or ambiguous stable IDs are rejected. The server restores dataset order before validation and request hashing, so the same selected set is idempotent regardless of checkbox order. Cost estimation, input validation, and task creation operate only on selected cases; invalid selected cases remain visible in preflight but are not queued.
+
+
 The server reloads that dataset version, rebuilds every case, validates required inputs/assets/controls and target-column conflicts, and returns valid/invalid cases plus a conservative cost estimate. Unknown cost is explicitly reported as unknown.
 
 `POST /api/generation/batches` accepts `{ "batch": { "preflightId": "..." } }`. It reloads live Aion configuration and compares the fingerprint. Changed configuration returns `409`; expired preflight returns `410`. Only valid cases are queued. A unique request hash prevents duplicate-click submissions.
@@ -64,6 +69,8 @@ OSS CORS must allow the ManuEval dev origin to use `PUT`, `GET`, and `HEAD`, all
 ## Dataset writeback
 
 After all queued cases terminate, the worker creates at most one new dataset version. Rows merge by stable dataset item ID. Existing non-empty results are never overwritten.
+
+Only actual batch items are visited during writeback. Unselected rows retain an empty result and receive no status, error, seed, request ID, or parameter metadata. Later `fill_existing` batches reuse the same output schema and fill only the remaining empty rows; retries remain scoped to failures from their original batch.
 
 The worker writes the requested result column plus `<result>_status`, `<result>_seed`, `<result>_request_id`, `<result>_error`, and `<result>_params_json`. The result cell contains only the selected media URL; `_params_json` records `originalResultUrl` and `durability` for audit. Internal Aion file paths are never exposed through the API or dataset. If a safe merge is impossible, the batch becomes `writeback_conflict` and no partial version is created. Partial-success/cancelled batches still write successful cases and terminal metadata.
 

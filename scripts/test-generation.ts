@@ -4,6 +4,7 @@ import { Readable } from 'node:stream';
 import {
   buildAionGenerationRequest,
   estimateGenerationCost,
+  fingerprintConfig,
   matchUploadedAsset,
   normalizeAionModelConfig,
   preflightGenerationCase,
@@ -31,6 +32,95 @@ import {
   setGenerationImageRole,
 } from '../src/features/generation/inputMapping.ts';
 import { getSupportedGenerationImageRoles } from '../src/features/generation/modelCapabilities.ts';
+import {
+  inspectGenerationTargetColumn,
+  resolveGenerationCaseSelection,
+} from '../src/features/generation/caseSelection.ts';
+import { DATASET_ITEM_ID_KEY } from '../src/datasetSync.ts';
+const selectionRows = [
+  { [DATASET_ITEM_ID_KEY]: 'item-1', case_id: 'case-1', prompt: 'One' },
+  { [DATASET_ITEM_ID_KEY]: 'item-2', case_id: 'case-2', prompt: 'Two' },
+  { [DATASET_ITEM_ID_KEY]: 'item-3', case_id: 'case-3', prompt: 'Three' },
+];
+
+const legacyFullSelection = resolveGenerationCaseSelection(selectionRows);
+assert.deepEqual(legacyFullSelection.rows.map(item => item.datasetItemId), ['item-1', 'item-2', 'item-3']);
+assert.deepEqual(legacyFullSelection.errors, []);
+
+const subsetSelection = resolveGenerationCaseSelection(selectionRows, ['item-3', 'item-1']);
+assert.deepEqual(subsetSelection.rows.map(item => item.datasetItemId), ['item-1', 'item-3']);
+assert.deepEqual(subsetSelection.normalizedIds, ['item-1', 'item-3']);
+assert.deepEqual(subsetSelection.errors, []);
+
+const reorderedSubset = resolveGenerationCaseSelection(selectionRows, ['item-1', 'item-3']);
+assert.deepEqual(reorderedSubset.normalizedIds, subsetSelection.normalizedIds);
+assert.equal(
+  fingerprintConfig({ selectedDatasetItemIds: reorderedSubset.normalizedIds }),
+  fingerprintConfig({ selectedDatasetItemIds: subsetSelection.normalizedIds }),
+);
+assert.notEqual(
+  fingerprintConfig({ selectedDatasetItemIds: subsetSelection.normalizedIds }),
+  fingerprintConfig({ selectedDatasetItemIds: ['item-2'] }),
+);
+
+
+assert.ok(resolveGenerationCaseSelection(selectionRows, []).errors.some(issue => issue.code === 'EMPTY_SELECTION'));
+assert.ok(resolveGenerationCaseSelection(selectionRows, ['missing']).errors.some(issue => issue.code === 'UNKNOWN_SELECTED_ITEM_ID'));
+assert.ok(resolveGenerationCaseSelection(selectionRows, ['item-1', 'item-1']).errors.some(issue => issue.code === 'DUPLICATE_SELECTED_ITEM_ID'));
+
+const generatedDataset = {
+  inputSchema: [
+    { key: 'generated_video', label: 'generated_video', type: 'video_url', role: 'output', previewType: 'video' },
+  ],
+  columnMappings: {
+    inputColumns: ['prompt'],
+    outputColumns: ['generated_video'],
+    dimensionColumns: [],
+    referenceColumns: [],
+    standard: {},
+  },
+  items: [
+    {
+      [DATASET_ITEM_ID_KEY]: 'item-1',
+      generated_video: 'https://assets.example.com/one.mp4',
+      generated_video_params_json: JSON.stringify({ modelName: 'provider/video-pro', configFingerprint: 'old-fingerprint' }),
+    },
+    { [DATASET_ITEM_ID_KEY]: 'item-2', generated_video: '' },
+  ],
+} as any;
+
+assert.ok(inspectGenerationTargetColumn(generatedDataset, {
+  mode: 'new',
+  targetColumn: 'generated_video',
+  modelName: 'provider/video-pro',
+  outputModality: 'video',
+}).errors.some(issue => issue.code === 'TARGET_COLUMN_EXISTS'));
+
+const fillTarget = inspectGenerationTargetColumn(generatedDataset, {
+  mode: 'fill_existing',
+  targetColumn: 'generated_video',
+  modelName: 'provider/video-pro',
+  outputModality: 'video',
+  configFingerprint: 'new-fingerprint',
+});
+assert.equal(fillTarget.completedCount, 1);
+assert.equal(fillTarget.emptyCount, 1);
+assert.deepEqual(fillTarget.errors, []);
+assert.ok(fillTarget.warnings.some(issue => issue.code === 'TARGET_CONFIG_CHANGED'));
+
+assert.ok(inspectGenerationTargetColumn(generatedDataset, {
+  mode: 'fill_existing',
+  targetColumn: 'generated_video',
+  modelName: 'provider/other-video',
+  outputModality: 'video',
+}).errors.some(issue => issue.code === 'TARGET_MODEL_MISMATCH'));
+
+assert.ok(inspectGenerationTargetColumn(generatedDataset, {
+  mode: 'fill_existing',
+  targetColumn: 'generated_video',
+  modelName: 'provider/video-pro',
+  outputModality: 'image',
+}).errors.some(issue => issue.code === 'TARGET_MODALITY_MISMATCH'));
 
 const generatedMetadataMappings = inferDatasetMappings(
   ['case_id', 'model_output_request_id'],

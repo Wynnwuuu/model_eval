@@ -48,6 +48,7 @@ generationRoutes.get('/health', async (_req, res) => {
     durableAssets: assetMode === 'oss' && ossConfigured,
     localUploadsEnabled: assetMode === 'oss' && ossConfigured,
     workerEnabled: serverConfig.generationWorkerEnabled && configured,
+    maxBatchSize: serverConfig.generationMaxBatchSize,
   });
 });
 
@@ -129,6 +130,7 @@ generationRoutes.post('/batches/:batchId/retry', async (req, res) => {
       datasetName: currentDataset.name,
       modelName: batch.modelConfig.modelName,
       targetColumn: batch.targetColumn,
+      targetMode: batch.controls.targetMode || 'new',
       inputMapping: batch.inputMapping,
       defaultControls: batch.controls.defaultControls || {},
       perCaseControlColumns: batch.controls.perCaseControlColumns || {},

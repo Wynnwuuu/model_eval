@@ -119,3 +119,15 @@ The generation dialog uses one optional image-column multiselect, but each selec
 Generation mode is resolved per case from non-empty media rather than once per batch. Text-only, ordinary reference, start-frame, and start/end-frame cases may coexist; end-only, mixed reference/keyframe, unsupported-mode, and over-limit cases fail preflight independently.
 
 Only Prompt is inferred by default. Image and audio columns remain empty until explicitly selected, and initialization is keyed by stable dataset ID/version so rerenders cannot overwrite user mapping edits.
+
+## 2026-08-04: Generation subsets use stable dataset IDs
+
+The browser always sends an explicit stable-ID selection. The server treats an omitted selection as full-dataset only for old-client compatibility; an explicit empty selection is an error. The selected set is restored to dataset order before validation and hashing so checkbox order cannot change idempotency.
+
+## 2026-08-04: Existing generation results are immutable
+
+A fill-existing batch may target only compatible output columns and only empty rows. Known model mismatches are rejected; old rows without model metadata require a warning. A changed model fingerprint is allowed with a warning because each generated row records its actual model and fingerprint. Writeback remains atomic and rejects any concurrent non-empty target.
+
+## 2026-08-04: Unselected rows receive no generation audit fields
+
+The output schema is dataset-wide, but result, status, error, seed, request ID, and parameter metadata are written only for actual batch items. Retrying stays scoped to failed items from that batch; previously unselected rows require a new fill-existing batch.

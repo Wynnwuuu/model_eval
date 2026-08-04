@@ -35,3 +35,9 @@ The generation modal now keeps Prompt as a single selector and exposes optional 
 Preflight resolves the generation mode independently for every case and preserves strict start/end ordering. Invalid role combinations affect only their case. The persisted mapping contract, generation Worker, URL handling, dataset writeback, and evaluation handoff are unchanged.
 
 Regression coverage is in `scripts/test-generation.ts`. Generation tests, both TypeScript builds, the Vite production build, mobile/desktop browser layout, role interaction, and text-only preflight all pass. No paid generation was submitted in the final verification.
+
+## Completed work: generation case selection and same-column fill
+
+Generation now supports explicit per-case selection in step 2 and later filling the same output column without overwriting completed rows. Shared selection/target validation is in `src/features/generation/caseSelection.ts`; the UI table is `src/components/GenerationCaseSelector.tsx`; server canonicalization lives in `server/generation/generationPreflightService.ts`.
+
+All requested automated gates and browser regressions passed. Docker Desktop, PostgreSQL, the local web app, and the API were healthy at the end of validation. Browser preflight calls were intercepted only for UI verification because local Aion model configuration is absent, and no paid generation was submitted.
