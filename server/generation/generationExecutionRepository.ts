@@ -304,6 +304,18 @@ export const claimNextGenerationItem = async (
       return null;
     }
 
+    const providerActiveResult = await client.query(
+      `
+        SELECT count(*)::int AS active
+        FROM generation_job_items item
+        JOIN generation_jobs job ON job.id = item.job_id
+        WHERE job.model_config_json->>'outputModality' = $1
+          AND item.status IN ('submitting', 'submitted', 'processing')
+      `,
+      [modality],
+    );
+    const providerActive = Number(providerActiveResult.rows[0]?.active || 0);
+
     const result = await client.query(
       `
         WITH candidate AS (
@@ -311,11 +323,14 @@ export const claimNextGenerationItem = async (
           FROM generation_job_items item
           JOIN generation_jobs job ON job.id = item.job_id
           WHERE job.model_config_json->>'outputModality' = $1
-            AND item.status IN ('pending', 'submitting', 'submitted', 'processing', 'archiving')
+            AND (
+              item.status IN ('submitting', 'submitted', 'processing', 'archiving')
+              OR (item.status = 'pending' AND $4::int < $5::int)
+            )
             AND (item.next_poll_at IS NULL OR item.next_poll_at <= now())
             AND (item.lease_expires_at IS NULL OR item.lease_expires_at < now())
             AND NOT (job.cancel_requested AND item.status = 'pending')
-          ORDER BY item.next_poll_at NULLS FIRST, item.created_at
+          ORDER BY CASE WHEN item.status = 'pending' THEN 1 ELSE 0 END, item.next_poll_at NULLS FIRST, item.created_at
           FOR UPDATE OF item SKIP LOCKED
           LIMIT 1
         )
@@ -327,7 +342,7 @@ export const claimNextGenerationItem = async (
         WHERE item.id = candidate.id
         RETURNING item.*
       `,
-      [modality, owner, serverConfig.generationLeaseMs],
+      [modality, owner, serverConfig.generationLeaseMs, providerActive, concurrencyLimit],
     );
     const row = result.rows[0];
     if (!row) {

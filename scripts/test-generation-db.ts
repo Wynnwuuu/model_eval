@@ -450,8 +450,34 @@ try {
     [firstActiveClaim.id],
   );
   assert.ok(leaseAfter.rows[0].lease_expires_at >= leaseBefore.rows[0].lease_expires_at);
-  await requestGenerationCancellation(capacityJob.id);
   await Promise.all(activeClaims.map(item => releaseGenerationItemLease(item!.id)));
+
+  const capacityBatch = await getGenerationBatch(capacityJob.id);
+  const outstandingItems = capacityBatch!.items.slice(0, serverConfig.generationImageConcurrency);
+  for (const [index, item] of outstandingItems.entries()) {
+    await updateGenerationItem(item.id, {
+      status: 'processing',
+      providerTaskId: `outstanding-task-${index}-${suffix}`,
+      providerStatus: 'processing',
+      nextPollAt: Date.now() + 60_000,
+    });
+  }
+  assert.equal(await claimNextGenerationItem('image', `worker-outstanding-block-${suffix}`), null,
+    'outstanding provider tasks must block new submissions at the configured capacity');
+  await updateGenerationItem(outstandingItems[0].id, { nextPollAt: Date.now() - 1 });
+  const pollClaim = await claimNextGenerationItem('image', `worker-outstanding-poll-${suffix}`);
+  assert.equal(pollClaim?.id, outstandingItems[0].id,
+    'due provider tasks must remain pollable while submission capacity is full');
+  await releaseGenerationItemLease(pollClaim!.id);
+  await updateGenerationItem(outstandingItems[0].id, {
+    status: 'succeeded',
+    nextPollAt: null,
+  });
+  const resumedClaim = await claimNextGenerationItem('image', `worker-outstanding-resume-${suffix}`);
+  assert.equal(resumedClaim?.status, 'pending',
+    'a terminal provider task must release capacity for the next pending submission');
+  await releaseGenerationItemLease(resumedClaim!.id);
+  await requestGenerationCancellation(capacityJob.id);
   const partlyInvalidPreflight = createPreflightRecord(
     (await getDataset(datasetId))!,
     'partly_invalid_result',
