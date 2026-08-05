@@ -34,8 +34,29 @@ type ProbeAudioDurationsOptions = {
 
 const AUDIO_DURATION_TOLERANCE_SECONDS = 0.15;
 
-const numericOptions = (model: DurationModelSource) => {
-  const fromModel = (model.supportedDurations || []).map(Number).filter(Number.isFinite);
+const MODE_DURATION_OPTION_KEYS: Record<string, string[]> = {
+  text_to_video: ['text_to_video_duration_options', 'text2video_duration_options', 't2v_duration_options'],
+  image_to_video: ['image_to_video_duration_options', 'image2video_duration_options', 'i2v_duration_options'],
+  images_to_video: ['images_to_video_duration_options', 'images2video_duration_options', 'keyframe_duration_options'],
+  reference_to_video: [
+    'reference_to_video_duration_options',
+    'reference2video_duration_options',
+    'ref_to_video_duration_options',
+    'ref2video_duration_options',
+    'reference_video_duration_options',
+  ],
+};
+
+const finiteDurationOptions = (value: unknown) => Array.isArray(value)
+  ? value.map(Number).filter(Number.isFinite)
+  : [];
+
+const numericOptions = (model: DurationModelSource, generationType?: string) => {
+  for (const key of MODE_DURATION_OPTION_KEYS[generationType || ''] || []) {
+    const values = finiteDurationOptions(model.options?.[key]);
+    if (values.length) return Array.from(new Set(values)).sort((left, right) => left - right);
+  }
+  const fromModel = finiteDurationOptions(model.supportedDurations || []);
   if (fromModel.length) return Array.from(new Set(fromModel)).sort((left, right) => left - right);
   const control = model.controls?.find(item => item.key === 'duration');
   return Array.from(new Set((control?.options || []).map(Number).filter(Number.isFinite)))
@@ -83,8 +104,9 @@ const roundedMilliseconds = (value: number) => Math.round(value * 1000) / 1000;
 export const resolveReferenceAudioDuration = (
   model: DurationModelSource,
   detectedSeconds: number,
-  toleranceSeconds = AUDIO_DURATION_TOLERANCE_SECONDS,
+  generationType?: string,
 ): ReferenceAudioDurationResolution => {
+  const toleranceSeconds = AUDIO_DURATION_TOLERANCE_SECONDS;
   const detected = Number(detectedSeconds);
   if (!Number.isFinite(detected) || detected <= 0) {
     return {
@@ -98,7 +120,7 @@ export const resolveReferenceAudioDuration = (
     };
   }
 
-  const supported = numericOptions(model);
+  const supported = numericOptions(model, generationType);
   if (supported.length) {
     const minimum = supported[0];
     const maximum = supported[supported.length - 1];
@@ -180,11 +202,12 @@ export const resolveReferenceAudioDuration = (
 
 export const probeBrowserAudioDuration = (url: string, signal?: AbortSignal) =>
   new Promise<number>((resolve, reject) => {
-    if (typeof Audio === 'undefined') {
+    const AudioConstructor = (globalThis as { Audio?: new () => any }).Audio;
+    if (!AudioConstructor) {
       reject(new Error('Audio metadata probing is unavailable in this runtime.'));
       return;
     }
-    const audio = new Audio();
+    const audio = new AudioConstructor();
     audio.preload = 'metadata';
 
     const cleanup = () => {

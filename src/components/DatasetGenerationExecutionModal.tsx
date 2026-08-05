@@ -65,7 +65,10 @@ import {
   probeAudioDurations,
   resolveReferenceAudioDuration,
 } from '../features/generation/audioDuration';
-import { uniqueGenerationReferences } from '../features/generation/mediaReferences';
+import {
+  parseStructuredGenerationValue,
+  uniqueGenerationReferences,
+} from '../features/generation/mediaReferences';
 
 interface DatasetGenerationExecutionModalProps {
   dataset: EvalDataset;
@@ -176,6 +179,12 @@ const durabilityClass = (durability?: GenerationAssetDurability) => durability =
 
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 
+const hasConfiguredInputValue = (value: unknown) => {
+  const parsed = parseStructuredGenerationValue(value);
+  if (Array.isArray(parsed)) return parsed.length > 0;
+  return parsed !== undefined && parsed !== null && String(parsed).trim() !== '';
+};
+
 const advancedInputKeysFor = (model?: GenerationModelConfig) => {
   const schema = model?.inputSchema || {};
   const keys = new Set<string>(Object.keys(schema.properties || {}));
@@ -195,6 +204,7 @@ const advancedInputKeysFor = (model?: GenerationModelConfig) => {
     'prompt', 'image_urls', 'audio_url', 'audios', 'video_url', 'video_urls',
     'reference_video_urls', 'elements', 'generation_type', 'model_name', 'features', 'extra_params',
   ].forEach(key => keys.delete(key));
+  (model?.controls || []).forEach(control => keys.delete(control.key));
   return Array.from(keys).sort();
 };
 
@@ -334,9 +344,28 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
       const audioUrls = uniqueGenerationReferences(
         (inputMapping.referenceAudioColumns || []).map(column => row[column]),
       );
-      return [{ datasetItemId, audioUrls }];
+      const hasReferenceVideos = uniqueGenerationReferences(
+        (inputMapping.referenceVideoColumns || []).map(column => row[column]),
+      ).length > 0;
+      const hasStartImage = Boolean(inputMapping.startImageColumn
+        && uniqueGenerationReferences([row[inputMapping.startImageColumn]]).length);
+      const hasEndImage = Boolean(inputMapping.endImageColumn
+        && uniqueGenerationReferences([row[inputMapping.endImageColumn]]).length);
+      const hasReferenceImages = uniqueGenerationReferences(
+        (inputMapping.referenceImageColumns || []).map(column => row[column]),
+      ).length > 0;
+      const elementsColumn = inputMapping.extraInputMappings?.elements;
+      const hasRawElements = Boolean(elementsColumn && hasConfiguredInputValue(row[elementsColumn]));
+      const generationType = hasReferenceVideos
+        ? 'reference_to_video'
+        : hasStartImage || hasEndImage
+          ? (hasEndImage ? 'images_to_video' : 'image_to_video')
+          : hasReferenceImages || hasRawElements
+            ? 'reference_to_video'
+            : 'text_to_video';
+      return [{ datasetItemId, audioUrls, generationType }];
     });
-  }, [dataset.items, inputMapping.referenceAudioColumns, selectedDatasetItemIds]);
+  }, [dataset.items, inputMapping, selectedDatasetItemIds]);
 
   useEffect(() => {
     audioProbeController.current?.abort();
@@ -374,7 +403,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
           issues[item.datasetItemId] = probed?.error || '\u65e0\u6cd5\u8bfb\u53d6\u97f3\u9891\u65f6\u957f\u3002';
           continue;
         }
-        const normalized = resolveReferenceAudioDuration(selectedModel, probed.seconds);
+        const normalized = resolveReferenceAudioDuration(selectedModel, probed.seconds, item.generationType);
         if (!normalized.valid || normalized.resolvedDuration === undefined) {
           issues[item.datasetItemId] = normalized.error?.message || '\u97f3\u9891\u65f6\u957f\u4e0d\u53d7\u5f53\u524d\u6a21\u578b\u652f\u6301\u3002';
           continue;
@@ -1268,8 +1297,8 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                             {item.warnings.map(issue => <div key={`${issue.code}-${issue.field || ''}`} className="text-amber-300">[{issue.code}] {issue.message}</div>)}
                             {item.resolvedCase.durationResolution?.source === 'reference_audio' && (
                               <div className="text-sky-300">
-                                {'音频 '}{item.resolvedCase.durationResolution.detectedSeconds}s
-                                {' → 请求 '}{item.resolvedCase.durationResolution.resolvedDuration}s
+                                {'\u97f3\u9891 '}{item.resolvedCase.durationResolution.detectedSeconds}s
+                                {' \u2192 \u8bf7\u6c42 '}{item.resolvedCase.durationResolution.resolvedDuration}s
                               </div>
                             )}
                             {!item.errors.length && !item.warnings.length && !item.resolvedCase.durationResolution && <span>-</span>}

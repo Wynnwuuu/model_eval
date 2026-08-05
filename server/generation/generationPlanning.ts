@@ -635,14 +635,16 @@ export const preflightGenerationCase = (
     const requiredOneOf = schema.required_one_of_inputs && typeof schema.required_one_of_inputs === 'object'
       ? schema.required_one_of_inputs as Record<string, string[][]>
       : {};
+    const hasResolvedInput = (key: string) =>
+      (inputs as Record<string, any>)[key] !== undefined || item.controls[key] !== undefined;
     for (const mode of modeCandidates(generationType)) {
       for (const key of required[mode] || []) {
-        if ((inputs as Record<string, any>)[key] === undefined) {
+        if (!hasResolvedInput(key)) {
           errors.push({ code: 'MISSING_REQUIRED_INPUT', field: key, message: `${generationType} requires input: ${key}.` });
         }
       }
       for (const group of requiredOneOf[mode] || []) {
-        if (!group.some(key => (inputs as Record<string, any>)[key] !== undefined)) {
+        if (!group.some(hasResolvedInput)) {
           errors.push({
             code: 'MISSING_REQUIRED_INPUT',
             field: group.join('|'),

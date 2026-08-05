@@ -49,6 +49,7 @@ import {
   resolveGenerationCaseSelection,
 } from '../src/features/generation/caseSelection.ts';
 import { DATASET_ITEM_ID_KEY } from '../src/datasetSync.ts';
+import { uniqueGenerationReferences } from '../src/features/generation/mediaReferences.ts';
 const selectionRows = [
   { [DATASET_ITEM_ID_KEY]: 'item-1', case_id: 'case-1', prompt: 'One' },
   { [DATASET_ITEM_ID_KEY]: 'item-2', case_id: 'case-2', prompt: 'Two' },
@@ -75,6 +76,14 @@ assert.notEqual(
   fingerprintConfig({ selectedDatasetItemIds: subsetSelection.normalizedIds }),
   fingerprintConfig({ selectedDatasetItemIds: ['item-2'] }),
 );
+assert.deepEqual(uniqueGenerationReferences([
+  'https://assets.example.com/first.mp4;https://assets.example.com/second.mp4',
+  '["https://assets.example.com/third.mp4", "https://assets.example.com/first.mp4"]',
+]), [
+  'https://assets.example.com/first.mp4',
+  'https://assets.example.com/second.mp4',
+  'https://assets.example.com/third.mp4',
+]);
 
 
 assert.ok(resolveGenerationCaseSelection(selectionRows, []).errors.some(issue => issue.code === 'EMPTY_SELECTION'));
@@ -386,6 +395,19 @@ const h3ReferenceRequest = buildAionGenerationRequest(hailuoH3Model, h3Reference
 assert.equal(h3ReferenceRequest.body.generation_type, 'reference_to_video');
 assert.deepEqual(h3ReferenceRequest.body.elements, h3VideoInputs.extraInputs.elements);
 assert.equal(h3ReferenceRequest.body.duration, 9);
+const h3RequiredControlModel = {
+  ...hailuoH3Model,
+  inputSchema: {
+    ...(hailuoH3Model.inputSchema || {}),
+    required_inputs: {
+      reference_to_video: ['prompt', 'elements', 'duration', 'resolution'],
+    },
+  },
+};
+assert.equal(preflightGenerationCase(
+  h3RequiredControlModel,
+  h3ReferenceCase.resolvedCase,
+).valid, true, 'required model inputs must include resolved standard controls');
 
 const keyframeVideoConflict = preflightGenerationCase(hailuoH3Model, {
   ...h3ReferenceCase.resolvedCase,
@@ -393,7 +415,8 @@ const keyframeVideoConflict = preflightGenerationCase(hailuoH3Model, {
   imageUrls: ['https://assets.example.com/start.png'],
   generationType: 'image_to_video',
 });
-assert.ok(keyframeVideoConflict.errors.some(issue => issue.code === 'CONFLICTING_VIDEO_AND_KEYFRAMES'));assert.ok(compileGenerationReferenceVideoInputs(hailuoH3Model, [
+assert.ok(keyframeVideoConflict.errors.some(issue => issue.code === 'CONFLICTING_VIDEO_AND_KEYFRAMES'));
+assert.ok(compileGenerationReferenceVideoInputs(hailuoH3Model, [
   'https://assets.example.com/1.mp4',
   'https://assets.example.com/2.mp4',
   'https://assets.example.com/3.mp4',
@@ -405,15 +428,37 @@ const wanVideoModel = normalizeAionModelConfig({
   name: 'wan2.7-video',
   options: {
     ...camelCaseVideoModel.options,
+    duration_options: Array.from({ length: 14 }, (_, index) => index + 2),
+    ref2video_duration_options: Array.from({ length: 9 }, (_, index) => index + 2),
     supported_params: ['prompt', 'duration', 'video_url', 'reference_video_urls', 'elements'],
   },
 });
 assert.equal(getGenerationReferenceVideoSupport(wanVideoModel).strategy, 'array_field');
 assert.equal(getGenerationReferenceVideoSupport(wanVideoModel).field, 'reference_video_urls');
-assert.deepEqual(
-  compileGenerationReferenceVideoInputs(wanVideoModel, ['https://assets.example.com/reference.mp4']).extraInputs,
-  { reference_video_urls: ['https://assets.example.com/reference.mp4'] },
+const wanReferenceInputs = compileGenerationReferenceVideoInputs(
+  wanVideoModel,
+  ['https://assets.example.com/reference.mp4'],
 );
+assert.deepEqual(wanReferenceInputs.extraInputs, {
+  reference_video_urls: ['https://assets.example.com/reference.mp4'],
+});
+const wanReferenceRequest = buildAionGenerationRequest(wanVideoModel, {
+  caseId: 'case-wan-reference-video',
+  datasetItemId: 'item-wan-reference-video',
+  rowIndex: 9,
+  prompt: 'Follow this motion.',
+  imageUrls: [],
+  audioUrls: [],
+  videoUrls: wanReferenceInputs.videoUrls,
+  controls: { duration: 10 },
+  extraInputs: wanReferenceInputs.extraInputs,
+  generationType: 'reference_to_video',
+});
+assert.deepEqual(wanReferenceRequest.body.reference_video_urls, [
+  'https://assets.example.com/reference.mp4',
+]);
+assert.equal(resolveReferenceAudioDuration(wanVideoModel, 10.2, 'reference_to_video').valid, false);
+assert.equal(resolveReferenceAudioDuration(wanVideoModel, 10.2, 'text_to_video').resolvedDuration, 11);
 
 const singleVideoModel = normalizeAionModelConfig({
   ...camelCaseVideoModel,

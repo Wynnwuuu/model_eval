@@ -245,6 +245,10 @@ export const buildGenerationCasesForPreflight = (
         && rawExtraInputs.elements !== null
         && rawExtraInputs.elements !== ''
         && (!Array.isArray(rawExtraInputs.elements) || rawExtraInputs.elements.length > 0);
+      const caseGenerationType = compiledVideos.generationType
+        || imageInputs.generationType
+        || (hasRawElements && model.outputModality === 'video' ? 'reference_to_video' : undefined)
+        || (model.outputModality === 'video' ? 'text_to_video' : undefined);
       if (usesKeyframes && (compiledVideos.videoUrls.length > 0 || hasRawElements)) {
         referenceConflictIssues.push({
           code: 'CONFLICTING_VIDEO_AND_KEYFRAMES',
@@ -308,12 +312,12 @@ export const buildGenerationCasesForPreflight = (
             message: `The probed audio URL does not match the selected reference audio for case ${caseId}.`,
           });
         } else {
-          const normalized = resolveReferenceAudioDuration(model, audit.detectedSeconds);
-          if (!normalized.ok) {
+          const normalized = resolveReferenceAudioDuration(model, audit.detectedSeconds, caseGenerationType);
+          if (!normalized.valid) {
             durationIssues.push({
               code: 'REFERENCE_AUDIO_DURATION_UNSUPPORTED',
               field: 'duration',
-              message: normalized.error,
+              message: normalized.error?.message || 'Reference audio duration is unsupported.',
             });
           } else if (Math.abs(normalized.resolvedDuration - Number(audit.resolvedDuration)) > 0.001) {
             durationIssues.push({
@@ -355,7 +359,7 @@ export const buildGenerationCasesForPreflight = (
         controls,
         seed,
         extraInputs,
-        generationType: compiledVideos.generationType || imageInputs.generationType,
+        generationType: caseGenerationType,
         ...(durationResolution ? { durationResolution } : {}),
       };
       return {
