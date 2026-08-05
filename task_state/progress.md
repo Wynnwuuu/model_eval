@@ -251,3 +251,14 @@
 - `lint`, `server:build`, and `build`: passed; only existing Vite mixed-import and chunk-size warnings remain.
 - Browser: live Hailuo H3 config exposed video-column/Raw-elements modes and all three duration sources. A 6.391-second reference audio resolved to 7 seconds; one valid and one multi-audio invalid case were isolated correctly, and the request/response snapshots contained stable item IDs, duration audit, and `elements[].video_url`.
 - Browser: 1440x900 and 390x844 layouts had no horizontal overflow. A fresh page had zero console errors. The confirmation button stayed disabled and no paid generation was submitted.
+## 2026-08-05: Fair scheduler and adaptive video capacity
+
+- Captured the live dev queue before deployment, including both in-flight provider task IDs and the previously starved Wan batch.
+- Replaced creation-time tie breaking with organization, dataset, and batch max-min rotation using active load, never-served priority, and least-recently-served timestamps.
+- Raised the video hard limit to 8 and added strict JSON model limits: Wan 2-6, Hailuo H3 2-8, Seedance 2.0 Fast/Pro 2-8, and unknown video models 2-4.
+- Added a 24-hour, last-12-valid-outcome adaptive policy with 30% and 60% capacity-failure thresholds and a 10-second cache.
+- Counts leased pending submissions toward global and model occupancy so concurrent workers and rolling deployments cannot over-claim before the provider POST starts.
+- Extended the queue API and task center with per-model active/pending counts, effective limits, samples, failure rates, and explicit global/model/fair-turn wait reasons.
+- Added migration `010_generation_scheduler_health.sql` for terminal-window lookups.
+
+Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone/column/import/table tests, Arena, rank ties, API smoke, `lint`, `server:build`, and `build` passed. Desktop browser QA verified global 6/8, Wan 6/6, the model-capacity wait reason, and no page-level horizontal overflow. Mobile browser QA was blocked by the browser localhost URL policy after applying the viewport override; no policy bypass was attempted.

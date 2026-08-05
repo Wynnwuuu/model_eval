@@ -170,3 +170,12 @@ Mode-specific duration options take precedence over global options when present.
 ## 2026-08-05: Required model inputs include resolved controls
 
 Live model `required_inputs` may list standard request controls such as duration and resolution. Preflight treats values in resolved controls as satisfying those requirements while preserving existing unsupported-input and control-range validation.
+## 2026-08-05: Scheduler capacity decisions
+
+The video concurrency value is a global hard ceiling, while each model receives an independent adaptive ceiling. Lowering the global limit alone is a valid emergency rollback even when configured model maxima remain higher.
+
+Only successful outcomes and capacity failures enter the adaptive denominator. Submission uncertainty, 429, provider overload/timeouts, Aion 1200-second timeouts, and the ManuEval generation timeout count as capacity failures. Seed, prompt-length, request-validation, input-preparation, archive, and content-policy failures are excluded.
+
+Pending items with an unexpired worker lease count as occupied submission slots. This closes the interval between claim and provider submission without treating terminal, skipped, or unleased pending items as active.
+
+Polling and archiving existing work remain eligible regardless of model capacity. Capacity changes never cancel, requeue, or resubmit provider tasks.

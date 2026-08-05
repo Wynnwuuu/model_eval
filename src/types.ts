@@ -476,7 +476,25 @@ export interface GenerationQueueLane {
   limit: number;
   active: number;
   pending: number;
+  models?: GenerationModelQueueState[];
 }
+
+export interface GenerationModelQueueState {
+  modelName: string;
+  active: number;
+  pending: number;
+  organizationActive: number;
+  organizationPending: number;
+  minLimit: number;
+  maxLimit: number;
+  effectiveLimit: number;
+  sampleSize: number;
+  capacityFailures: number;
+  capacityFailureRate: number;
+  mode: 'insufficient_sample' | 'maximum' | 'reduced' | 'minimum';
+  reason: string;
+}
+
 
 export interface GenerationQueueState {
   image: GenerationQueueLane;

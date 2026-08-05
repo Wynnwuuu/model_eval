@@ -50,6 +50,59 @@ import {
 } from '../src/features/generation/caseSelection.ts';
 import { DATASET_ITEM_ID_KEY } from '../src/datasetSync.ts';
 import { uniqueGenerationReferences } from '../src/features/generation/mediaReferences.ts';
+import {
+  computeGenerationConcurrencyPolicy,
+  parseGenerationVideoModelLimits,
+  resolveGenerationVideoModelLimit,
+} from '../server/generation/generationConcurrencyPolicy.ts';
+
+const capacityFailure = (code: string, message: string, httpStatus?: number) => ({
+  status: 'failed',
+  error: { code, message, httpStatus },
+});
+const successfulOutcome = () => ({ status: 'succeeded', error: {} });
+const concurrencyLimit = { min: 2, max: 6 };
+
+assert.equal(computeGenerationConcurrencyPolicy(concurrencyLimit, [
+  capacityFailure('AION_SUBMIT_REJECTED', 'Too many requests', 429),
+  capacityFailure('GENERATION_TIMEOUT', 'Generation timed out.'),
+  successfulOutcome(),
+  successfulOutcome(),
+  successfulOutcome(),
+]).effectiveLimit, 6, 'fewer than six valid samples must use the configured maximum');
+
+const outcomesAt = (failures: number, total = 10) => [
+  ...Array.from({ length: failures }, () => capacityFailure('PROVIDER_FAILED', 'Provider overloaded.')),
+  ...Array.from({ length: total - failures }, successfulOutcome),
+];
+assert.equal(computeGenerationConcurrencyPolicy(concurrencyLimit, outcomesAt(2)).effectiveLimit, 6);
+assert.equal(computeGenerationConcurrencyPolicy(concurrencyLimit, outcomesAt(3)).effectiveLimit, 4);
+assert.equal(computeGenerationConcurrencyPolicy(concurrencyLimit, outcomesAt(6)).effectiveLimit, 2);
+
+const deterministicFailures = [
+  capacityFailure('AION_SUBMIT_REJECTED', 'Wan3 seed must be an integer between 0 and 2147483647', 400),
+  capacityFailure('AION_SUBMIT_REJECTED', 'Prompt is too long', 400),
+  capacityFailure('PROVIDER_FAILED', 'Content policy rejection'),
+];
+const ignoredDeterministic = computeGenerationConcurrencyPolicy(concurrencyLimit, [
+  ...deterministicFailures,
+  ...Array.from({ length: 6 }, successfulOutcome),
+]);
+assert.equal(ignoredDeterministic.sampleSize, 6);
+assert.equal(ignoredDeterministic.capacityFailures, 0);
+assert.equal(ignoredDeterministic.effectiveLimit, 6);
+
+const configuredModelLimits = parseGenerationVideoModelLimits(JSON.stringify({
+  default: { min: 2, max: 4 },
+  models: { 'wan/wan3.0-video': { min: 2, max: 6 } },
+}), 8);
+assert.deepEqual(resolveGenerationVideoModelLimit(configuredModelLimits, 'wan/wan3.0-video'), { min: 2, max: 6 });
+assert.deepEqual(resolveGenerationVideoModelLimit(configuredModelLimits, 'future/video-model'), { min: 2, max: 4 });
+assert.throws(() => parseGenerationVideoModelLimits('{broken', 8), /valid JSON/);
+assert.throws(() => parseGenerationVideoModelLimits(JSON.stringify({
+  default: { min: 5, max: 4 }, models: {},
+}), 8), /minimum/);
+
 const selectionRows = [
   { [DATASET_ITEM_ID_KEY]: 'item-1', case_id: 'case-1', prompt: 'One' },
   { [DATASET_ITEM_ID_KEY]: 'item-2', case_id: 'case-2', prompt: 'Two' },

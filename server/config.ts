@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import { parseGenerationVideoModelLimits } from './generation/generationConcurrencyPolicy.ts';
+
 
 const DEFAULT_DATABASE_URL = 'postgresql://eval_studio:eval_studio_dev@localhost:5432/eval_studio';
 
@@ -12,6 +14,12 @@ const parsePort = (value: string | undefined, fallback: number): number => {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 };
+
+const generationVideoConcurrency = parsePort(process.env.GENERATION_VIDEO_CONCURRENCY, 8);
+const generationVideoModelLimits = parseGenerationVideoModelLimits(
+  process.env.GENERATION_VIDEO_MODEL_LIMITS_JSON,
+  generationVideoConcurrency,
+);
 
 export const serverConfig = {
   apiPort: parsePort(process.env.API_PORT, 8787),
@@ -36,7 +44,8 @@ export const serverConfig = {
   generationWorkerEnabled: process.env.GENERATION_WORKER_ENABLED !== 'false',
   generationMaxBatchSize: parsePort(process.env.GENERATION_MAX_BATCH_SIZE, 500),
   generationImageConcurrency: parsePort(process.env.GENERATION_IMAGE_CONCURRENCY, 4),
-  generationVideoConcurrency: parsePort(process.env.GENERATION_VIDEO_CONCURRENCY, 2),
+  generationVideoConcurrency,
+  generationVideoModelLimits,
   generationPollIntervalMs: parsePort(process.env.GENERATION_POLL_INTERVAL_MS, 5000),
   generationLeaseMs: parsePort(process.env.GENERATION_LEASE_MS, 60000),
   generationTaskTimeoutMs: parsePort(process.env.GENERATION_TASK_TIMEOUT_MS, 1500000),

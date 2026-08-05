@@ -13,6 +13,7 @@ import {
   findGenerationWritebackCandidate,
   listGenerationJobEvents,
   getGenerationBatch,
+  getGenerationQueueState,
   refreshGenerationJob,
   releaseGenerationItemLease,
   requestGenerationCancellation,
@@ -41,9 +42,19 @@ const teammate: RequestUser = {
   displayName: 'Generation DB Teammate',
   organizationId: 'default',
 };
+const otherOrganizationId = `generation-db-org-${suffix}`;
+const otherOrganizationUser: RequestUser = {
+  id: `generation-db-other-user-${suffix}`,
+  email: `generation-db-other-${suffix}@example.com`,
+  displayName: 'Generation DB Other Organization',
+  organizationId: otherOrganizationId,
+};
+
 const datasetId = `generation-db-dataset-${suffix}`;
 const fairnessDatasetId = `generation-db-fairness-dataset-${suffix}`;
 
+const fairnessDatasetCId = `generation-db-fairness-dataset-c-${suffix}`;
+const fairnessOtherOrganizationDatasetId = `generation-db-fairness-other-org-${suffix}`;
 const model = normalizeAionModelConfig({
   name: 'fake/image-model',
   displayName: 'Fake image model',
@@ -147,6 +158,10 @@ const createPreflightRecord = (
 
 try {
   await dbPool.query(
+    `DELETE FROM datasets WHERE id LIKE 'generation-db-%'`,
+  );
+
+  await dbPool.query(
     `INSERT INTO users (id, email, display_name) VALUES ($1, $2, $3)`,
     [user.id, user.email, user.displayName],
   );
@@ -162,6 +177,20 @@ try {
     `INSERT INTO organization_members (organization_id, user_id, role) VALUES ('default', $1, 'editor')`,
     [teammate.id],
   );
+  await dbPool.query(
+    `INSERT INTO organizations (id, name) VALUES ($1, $2)`,
+    [otherOrganizationId, 'Generation DB Other Organization'],
+  );
+  await dbPool.query(
+    `INSERT INTO users (id, email, display_name) VALUES ($1, $2, $3)`,
+    [otherOrganizationUser.id, otherOrganizationUser.email, otherOrganizationUser.displayName],
+  );
+  await dbPool.query(
+    `INSERT INTO organization_members (organization_id, user_id, role) VALUES ($1, $2, 'admin')`,
+    [otherOrganizationId, otherOrganizationUser.id],
+  );
+
+
 
   const now = Date.now();
   const savedDataset = await saveDataset({
@@ -612,6 +641,15 @@ try {
     createdAt: Date.now(),
     updatedAt: Date.now(),
   }, user.id);
+  const fairnessDatasetC = await saveDataset({
+    ...fairnessDataset,
+    id: fairnessDatasetCId,
+    name: 'Generation fairness integration test C',
+    version: 1,
+    versionHistory: [],
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  }, user.id);
   const fairnessPreflightA = createPreflightRecord(
     afterFillWriteback,
     `fairness_a_${suffix}`,
@@ -624,29 +662,220 @@ try {
     `request-${suffix}-fairness-b`,
     [0, 1, 2],
   );
-  fairnessPreflightA.result.model = { ...fairnessPreflightA.result.model, outputModality: 'video' };
-  fairnessPreflightB.result.model = { ...fairnessPreflightB.result.model, outputModality: 'video' };
-  await saveGenerationPreflight(fairnessPreflightA);
-  await saveGenerationPreflight(fairnessPreflightB);
+  const fairnessPreflightC = createPreflightRecord(
+    fairnessDatasetC,
+    `fairness_c_${suffix}`,
+    `request-${suffix}-fairness-c`,
+    [0, 1, 2],
+  );
+  for (const preflight of [fairnessPreflightA, fairnessPreflightB, fairnessPreflightC]) {
+    preflight.result.model = { ...preflight.result.model, outputModality: 'video' };
+    await saveGenerationPreflight(preflight);
+  }
   const fairnessJobA = await createGenerationBatchFromPreflight(fairnessPreflightA, user);
   const fairnessJobB = await createGenerationBatchFromPreflight(fairnessPreflightB, user);
-  const fairnessClaims = await Promise.all(Array.from(
-    { length: serverConfig.generationVideoConcurrency },
-    (_, index) => claimNextGenerationItem('video', `fairness-worker-${index}-${suffix}`),
-  ));
-  const fairnessDatasets = fairnessClaims.map(item => item?.job.datasetId).filter(Boolean);
-  const fairnessCountA = fairnessDatasets.filter(value => value === datasetId).length;
-  const fairnessCountB = fairnessDatasets.filter(value => value === fairnessDatasetId).length;
-  assert.equal(fairnessClaims.filter(Boolean).length, serverConfig.generationVideoConcurrency);
-  assert.ok(Math.abs(fairnessCountA - fairnessCountB) <= 1,
-    `available provider slots must be shared fairly across datasets, got ${fairnessCountA}/${fairnessCountB}`);
-  if (serverConfig.generationVideoConcurrency === 2) {
-    assert.equal(fairnessCountA, 1);
-    assert.equal(fairnessCountB, 1);
+  const fairnessJobC = await createGenerationBatchFromPreflight(fairnessPreflightC, user);
+  const originalVideoConcurrency = serverConfig.generationVideoConcurrency;
+  serverConfig.generationVideoConcurrency = 2;
+  const firstFairnessClaims = (await Promise.all([
+    claimNextGenerationItem('video', `fairness-worker-0-${suffix}`),
+    claimNextGenerationItem('video', `fairness-worker-1-${suffix}`),
+  ])).filter(Boolean);
+  assert.equal(firstFairnessClaims.length, 2);
+  const initiallyServed = new Set(firstFairnessClaims.map(item => item!.job.datasetId));
+  assert.equal(initiallyServed.size, 2, 'the first two slots must serve different datasets');
+
+  for (const [index, item] of firstFairnessClaims.entries()) {
+    const startedAt = Date.now() + index;
+    assert.equal(await beginGenerationSubmission(item!.id, 1, startedAt, startedAt), true);
+    await updateGenerationItem(item!.id, {
+      status: 'processing',
+      providerTaskId: `fairness-provider-${index}-${suffix}`,
+      providerStatus: 'processing',
+      nextPollAt: Date.now() + 60_000,
+    });
+    await releaseGenerationItemLease(item!.id);
   }
-  await Promise.all(fairnessClaims.filter(Boolean).map(item => releaseGenerationItemLease(item!.id)));
+  await updateGenerationItem(firstFairnessClaims[0]!.id, {
+    status: 'succeeded',
+    finishedAt: Date.now(),
+    nextPollAt: null,
+  });
+  const thirdFairnessClaim = await claimNextGenerationItem('video', `fairness-worker-2-${suffix}`);
+  const allFairnessDatasets = [datasetId, fairnessDatasetId, fairnessDatasetCId];
+  const neverServedDataset = allFairnessDatasets.find(id => !initiallyServed.has(id));
+  assert.equal(
+    thirdFairnessClaim?.job.datasetId,
+    neverServedDataset,
+    'a never-served dataset must receive a slot within the first three allocations',
+  );
+  serverConfig.generationVideoConcurrency = originalVideoConcurrency;
+
+  await releaseGenerationItemLease(thirdFairnessClaim!.id);
+  await updateGenerationItem(firstFairnessClaims[1]!.id, {
+    status: 'succeeded',
+    finishedAt: Date.now(),
+    nextPollAt: null,
+  });
   await requestGenerationCancellation(fairnessJobA.id, user);
   await requestGenerationCancellation(fairnessJobB.id, user);
+  await requestGenerationCancellation(fairnessJobC.id, user);
+
+
+  const fairnessOtherOrganizationDataset = await saveDataset({
+    ...fairnessDatasetC,
+    id: fairnessOtherOrganizationDatasetId,
+    name: 'Generation fairness other organization',
+    version: 1,
+    versionHistory: [],
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  }, otherOrganizationUser.id);
+  await dbPool.query(
+    'UPDATE datasets SET organization_id = $2 WHERE id = $1',
+    [fairnessOtherOrganizationDatasetId, otherOrganizationId],
+  );
+  const organizationFairnessPreflightA = createPreflightRecord(
+    (await getDataset(datasetId))!,
+    `organization_fairness_a_${suffix}`,
+    `request-${suffix}-organization-fairness-a`,
+  );
+  const organizationFairnessPreflightB = createPreflightRecord(
+    fairnessOtherOrganizationDataset,
+    `organization_fairness_b_${suffix}`,
+    `request-${suffix}-organization-fairness-b`,
+  );
+  for (const preflight of [organizationFairnessPreflightA, organizationFairnessPreflightB]) {
+    preflight.result.model = { ...preflight.result.model, outputModality: 'video' };
+    await saveGenerationPreflight(preflight);
+  }
+  const organizationFairnessJobA = await createGenerationBatchFromPreflight(
+    organizationFairnessPreflightA,
+    user,
+  );
+  const organizationFairnessJobB = await createGenerationBatchFromPreflight(
+    organizationFairnessPreflightB,
+    otherOrganizationUser,
+  );
+  const organizationFairnessConcurrency = serverConfig.generationVideoConcurrency;
+  serverConfig.generationVideoConcurrency = 2;
+  const organizationFairnessClaims = (await Promise.all([
+    claimNextGenerationItem('video', `organization-fairness-a-${suffix}`),
+    claimNextGenerationItem('video', `organization-fairness-b-${suffix}`),
+  ])).filter(Boolean);
+  assert.deepEqual(
+    new Set(organizationFairnessClaims.map(item => item!.job.datasetId)),
+    new Set([datasetId, fairnessOtherOrganizationDatasetId]),
+    'two organizations must each receive one of two free slots',
+  );
+  serverConfig.generationVideoConcurrency = organizationFairnessConcurrency;
+  await Promise.all(organizationFairnessClaims.map(item => releaseGenerationItemLease(item!.id)));
+  await requestGenerationCancellation(organizationFairnessJobA.id, user);
+  await requestGenerationCancellation(organizationFairnessJobB.id, otherOrganizationUser);
+
+
+
+  const modelCapPreflightA = createPreflightRecord(
+    (await getDataset(datasetId))!,
+    `model_cap_a_${suffix}`,
+    `request-${suffix}-model-cap-a`,
+  );
+  const modelCapBaseCase = modelCapPreflightA.result.cases[0];
+  modelCapPreflightA.result = {
+    ...modelCapPreflightA.result,
+    model: {
+      ...modelCapPreflightA.result.model,
+      id: 'test/video-a',
+      modelName: 'test/video-a',
+      outputModality: 'video',
+    },
+    validCount: 5,
+    total: 5,
+    cases: Array.from({ length: 5 }, (_, index) => ({
+      ...modelCapBaseCase,
+      resolvedCase: {
+        ...modelCapBaseCase.resolvedCase,
+        caseId: `model-cap-a-${index + 1}`,
+        datasetItemId: `${modelCapBaseCase.resolvedCase.datasetItemId}-model-cap-a-${index + 1}`,
+        rowIndex: index,
+      },
+    })),
+  };
+  await saveGenerationPreflight(modelCapPreflightA);
+  const modelCapJobA = await createGenerationBatchFromPreflight(modelCapPreflightA, user);
+  const modelCapAttempts = await Promise.all(Array.from(
+    { length: 5 },
+    (_, index) => claimNextGenerationItem('video', `model-cap-a-${index}-${suffix}`),
+  ));
+  const modelCapClaimsA = modelCapAttempts.filter(
+    (item): item is NonNullable<Awaited<ReturnType<typeof claimNextGenerationItem>>> => Boolean(item),
+  );
+  assert.equal(modelCapClaimsA.length, 4, 'concurrent workers must not over-claim a four-slot model');
+  for (const [index, claim] of modelCapClaimsA.entries()) {
+    assert.equal(claim.job.model.modelName, 'test/video-a');
+    assert.equal(await beginGenerationSubmission(claim.id, 1, Date.now(), Date.now()), true);
+    await updateGenerationItem(claim.id, {
+      status: 'processing',
+      providerTaskId: `model-cap-a-provider-${index}-${suffix}`,
+      providerStatus: 'processing',
+      nextPollAt: Date.now() + 60_000,
+    });
+    await releaseGenerationItemLease(claim.id);
+  }
+  await updateGenerationItem(modelCapClaimsA[0].id, { nextPollAt: Date.now() - 1 });
+  const dueAtModelCap = await claimNextGenerationItem('video', `model-cap-a-poll-${suffix}`);
+  assert.equal(
+    dueAtModelCap?.id,
+    modelCapClaimsA[0].id,
+    'polling an existing provider task must remain possible at the model limit',
+  );
+  await releaseGenerationItemLease(dueAtModelCap!.id);
+  await updateGenerationItem(modelCapClaimsA[0].id, { nextPollAt: Date.now() + 60_000 });
+
+  assert.equal(
+    await claimNextGenerationItem('video', `model-cap-a-blocked-${suffix}`),
+    null,
+    'the default per-model limit must block a fifth active submission',
+  );
+  const queueAtModelCap = await getGenerationQueueState(user.organizationId);
+  const modelAQueue = queueAtModelCap.video.models.find(item => item.modelName === 'test/video-a');
+  assert.equal(modelAQueue?.active, 4);
+  assert.equal(modelAQueue?.effectiveLimit, 4);
+
+  const modelCapPreflightB = createPreflightRecord(
+    fairnessDatasetC,
+    `model_cap_b_${suffix}`,
+    `request-${suffix}-model-cap-b`,
+  );
+  modelCapPreflightB.result.model = {
+    ...modelCapPreflightB.result.model,
+    id: 'test/video-b',
+    modelName: 'test/video-b',
+    outputModality: 'video',
+  };
+  await saveGenerationPreflight(modelCapPreflightB);
+  const modelCapJobB = await createGenerationBatchFromPreflight(modelCapPreflightB, user);
+  const otherModelClaim = await claimNextGenerationItem('video', `model-cap-b-${suffix}`);
+  assert.equal(
+    otherModelClaim?.job.model.modelName,
+    'test/video-b',
+    'another model must be able to use global capacity while the first model is capped',
+  );
+  await releaseGenerationItemLease(otherModelClaim!.id);
+  await updateGenerationItem(otherModelClaim!.id, {
+    status: 'succeeded',
+    finishedAt: Date.now(),
+    nextPollAt: null,
+  });
+  for (const claim of modelCapClaimsA) {
+    await updateGenerationItem(claim.id, {
+      status: 'succeeded',
+      finishedAt: Date.now(),
+      nextPollAt: null,
+    });
+  }
+  await requestGenerationCancellation(modelCapJobA.id, user);
+  await requestGenerationCancellation(modelCapJobB.id, user);
 
 
 
@@ -751,9 +980,12 @@ try {
 } finally {
   await dbPool.query('DELETE FROM datasets WHERE id = $1', [datasetId]).catch(() => undefined);
   await dbPool.query('DELETE FROM datasets WHERE id = $1', [fairnessDatasetId]).catch(() => undefined);
+  await dbPool.query('DELETE FROM datasets WHERE id = $1', [fairnessDatasetCId]).catch(() => undefined);
+  await dbPool.query('DELETE FROM datasets WHERE id = $1', [fairnessOtherOrganizationDatasetId]).catch(() => undefined);
   await dbPool.query(
     'DELETE FROM users WHERE id = ANY($1::text[])',
-    [[user.id, teammate.id]],
+    [[user.id, teammate.id, otherOrganizationUser.id]],
   ).catch(() => undefined);
+  await dbPool.query('DELETE FROM organizations WHERE id = $1', [otherOrganizationId]).catch(() => undefined);
   await closeDatabase();
 }

@@ -65,9 +65,9 @@ generationRoutes.get('/health', async (_req, res) => {
 });
 
 
-generationRoutes.get('/queue', async (_req, res) => {
+generationRoutes.get('/queue', async (req, res) => {
   try {
-    res.json({ queue: await getGenerationQueueState() });
+    res.json({ queue: await getGenerationQueueState(req.user.organizationId) });
   } catch (error) {
     sendError(res, error, 'Failed to load generation queue');
   }

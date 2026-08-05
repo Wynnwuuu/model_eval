@@ -4,6 +4,15 @@ import type { RequestUser } from '../auth/context.ts';
 import { dbPool } from '../db/client.ts';
 import { serverConfig } from '../config.ts';
 import { conflict } from '../http/errors.ts';
+import {
+  computeGenerationConcurrencyPolicy,
+  GENERATION_POLICY_CACHE_MS,
+  GENERATION_POLICY_WINDOW_HOURS,
+  resolveGenerationVideoModelLimit,
+  type GenerationConcurrencyPolicy,
+  type GenerationCapacityOutcome,
+} from './generationConcurrencyPolicy.ts';
+
 
 export type StoredGenerationPreflight = {
   id: string;
@@ -44,6 +53,100 @@ export type ClaimedGenerationItem = {
 
 const toTimestamp = (value: Date | string | number | null | undefined) =>
   value ? new Date(value).getTime() : undefined;
+const GENERATION_MODEL_NAME_SQL = `
+  COALESCE(
+    NULLIF(job.model_config_json->>'modelName', ''),
+    NULLIF(job.model_config_json->>'name', ''),
+    'unknown-video-model'
+  )
+`;
+
+type CachedVideoPolicies = {
+  expiresAt: number;
+  policies: Map<string, GenerationConcurrencyPolicy>;
+};
+
+let cachedVideoPolicies: CachedVideoPolicies | undefined;
+
+const normalizePolicyModelName = (value: string) => value.trim().toLowerCase();
+
+const policyForModel = (
+  policies: Map<string, GenerationConcurrencyPolicy>,
+  modelName: string,
+) => policies.get(normalizePolicyModelName(modelName)) || computeGenerationConcurrencyPolicy(
+  resolveGenerationVideoModelLimit(serverConfig.generationVideoModelLimits, modelName),
+  [],
+);
+
+const loadGenerationVideoPolicies = async (): Promise<Map<string, GenerationConcurrencyPolicy>> => {
+  if (cachedVideoPolicies && cachedVideoPolicies.expiresAt > Date.now()) {
+    return cachedVideoPolicies.policies;
+  }
+
+  const [modelResult, outcomeResult] = await Promise.all([
+    dbPool.query(
+      `
+        SELECT DISTINCT ${GENERATION_MODEL_NAME_SQL} AS model_name
+        FROM generation_jobs job
+        JOIN generation_job_items item ON item.job_id = job.id
+        WHERE job.model_config_json->>'outputModality' = 'video'
+          AND item.status IN ('pending', 'submitting', 'submitted', 'processing')
+      `,
+    ),
+    dbPool.query(
+      `
+        WITH ranked AS (
+          SELECT
+            ${GENERATION_MODEL_NAME_SQL} AS model_name,
+            item.status,
+            item.error_json,
+            item.finished_at,
+            row_number() OVER (
+              PARTITION BY ${GENERATION_MODEL_NAME_SQL}
+              ORDER BY item.finished_at DESC, item.id
+            ) AS outcome_rank
+          FROM generation_jobs job
+          JOIN generation_job_items item ON item.job_id = job.id
+          WHERE job.model_config_json->>'outputModality' = 'video'
+            AND item.status IN ('succeeded', 'completed', 'failed', 'submission_unknown')
+            AND item.finished_at >= now() - ($1::int * interval '1 hour')
+        )
+        SELECT model_name, status, error_json, finished_at
+        FROM ranked
+        WHERE outcome_rank <= 200
+        ORDER BY model_name, finished_at DESC
+      `,
+      [GENERATION_POLICY_WINDOW_HOURS],
+    ),
+  ]);
+
+  const outcomesByModel = new Map<string, GenerationCapacityOutcome[]>();
+  for (const row of outcomeResult.rows) {
+    const modelName = normalizePolicyModelName(String(row.model_name || 'unknown-video-model'));
+    const outcomes = outcomesByModel.get(modelName) || [];
+    outcomes.push({ status: row.status, error: row.error_json || {} });
+    outcomesByModel.set(modelName, outcomes);
+  }
+
+  const modelNames = new Set<string>([
+    ...modelResult.rows.map(row => normalizePolicyModelName(String(row.model_name || 'unknown-video-model'))),
+    ...outcomesByModel.keys(),
+  ]);
+  const policies = new Map<string, GenerationConcurrencyPolicy>();
+  for (const modelName of modelNames) {
+    policies.set(modelName, computeGenerationConcurrencyPolicy(
+      resolveGenerationVideoModelLimit(serverConfig.generationVideoModelLimits, modelName),
+      outcomesByModel.get(modelName) || [],
+    ));
+  }
+  cachedVideoPolicies = {
+    expiresAt: Date.now() + GENERATION_POLICY_CACHE_MS,
+    policies,
+  };
+  return policies;
+};
+
+
 
 export const saveGenerationPreflight = async (preflight: StoredGenerationPreflight) => {
   await dbPool.query(
@@ -423,6 +526,9 @@ export const claimNextGenerationItem = async (
   const concurrencyLimit = modality === 'image'
     ? serverConfig.generationImageConcurrency
     : serverConfig.generationVideoConcurrency;
+  const videoPolicies = modality === 'video'
+    ? await loadGenerationVideoPolicies()
+    : new Map<string, GenerationConcurrencyPolicy>();
   const client = await dbPool.connect();
   try {
     await client.query('BEGIN');
@@ -445,17 +551,49 @@ export const claimNextGenerationItem = async (
       return null;
     }
 
-    const providerActiveResult = await client.query(
-      `
-        SELECT count(*)::int AS active
-        FROM generation_job_items item
-        JOIN generation_jobs job ON job.id = item.job_id
-        WHERE job.model_config_json->>'outputModality' = $1
-          AND item.status IN ('submitting', 'submitted', 'processing')
-      `,
-      [modality],
-    );
-    const providerActive = Number(providerActiveResult.rows[0]?.active || 0);
+    let providerActive = 0;
+    let eligibleVideoModels: string[] = [];
+    if (modality === 'video') {
+      const modelCapacityResult = await client.query(
+        `
+          SELECT
+            ${GENERATION_MODEL_NAME_SQL} AS model_name,
+            count(*) FILTER (
+              WHERE item.status IN ('submitting', 'submitted', 'processing')
+                OR (item.status = 'pending' AND item.lease_expires_at > now())
+            )::int AS active
+          FROM generation_jobs job
+          JOIN generation_job_items item ON item.job_id = job.id
+          WHERE job.model_config_json->>'outputModality' = 'video'
+            AND item.status IN ('pending', 'submitting', 'submitted', 'processing')
+          GROUP BY ${GENERATION_MODEL_NAME_SQL}
+        `,
+      );
+      providerActive = modelCapacityResult.rows.reduce(
+        (total, row) => total + Number(row.active || 0),
+        0,
+      );
+      eligibleVideoModels = modelCapacityResult.rows
+        .filter(row => Number(row.active || 0) < policyForModel(
+          videoPolicies,
+          String(row.model_name || 'unknown-video-model'),
+        ).effectiveLimit)
+        .map(row => String(row.model_name || 'unknown-video-model'));
+    } else {
+      const providerActiveResult = await client.query(
+        `
+          SELECT count(*) FILTER (
+            WHERE item.status IN ('submitting', 'submitted', 'processing')
+              OR (item.status = 'pending' AND item.lease_expires_at > now())
+          )::int AS active
+          FROM generation_job_items item
+          JOIN generation_jobs job ON job.id = item.job_id
+          WHERE job.model_config_json->>'outputModality' = $1
+        `,
+        [modality],
+      );
+      providerActive = Number(providerActiveResult.rows[0]?.active || 0);
+    }
 
     const result = await client.query(
       `
@@ -471,13 +609,28 @@ export const claimNextGenerationItem = async (
           FOR UPDATE OF item SKIP LOCKED
           LIMIT 1
         ),
+        organization_load AS (
+          SELECT
+            dataset.organization_id,
+            count(*) FILTER (
+              WHERE item.status IN ('submitting', 'submitted', 'processing')
+                OR (item.status = 'pending' AND item.lease_expires_at > now())
+            )::int AS active_count,
+            max(item.submission_started_at) AS last_served_at
+          FROM generation_jobs job
+          JOIN datasets dataset ON dataset.id = job.dataset_id
+          JOIN generation_job_items item ON item.job_id = job.id
+          WHERE job.model_config_json->>'outputModality' = $1
+          GROUP BY dataset.organization_id
+        ),
         dataset_load AS (
           SELECT
             job.dataset_id,
             count(*) FILTER (
               WHERE item.status IN ('submitting', 'submitted', 'processing')
                 OR (item.status = 'pending' AND item.lease_expires_at > now())
-            )::int AS active_count
+            )::int AS active_count,
+            max(item.submission_started_at) AS last_served_at
           FROM generation_jobs job
           JOIN generation_job_items item ON item.job_id = job.id
           WHERE job.model_config_json->>'outputModality' = $1
@@ -489,7 +642,8 @@ export const claimNextGenerationItem = async (
             count(*) FILTER (
               WHERE item.status IN ('submitting', 'submitted', 'processing')
                 OR (item.status = 'pending' AND item.lease_expires_at > now())
-            )::int AS active_count
+            )::int AS active_count,
+            max(item.submission_started_at) AS last_served_at
           FROM generation_jobs job
           JOIN generation_job_items item ON item.job_id = job.id
           WHERE job.model_config_json->>'outputModality' = $1
@@ -499,19 +653,29 @@ export const claimNextGenerationItem = async (
           SELECT item.id
           FROM generation_job_items item
           JOIN generation_jobs job ON job.id = item.job_id
+          JOIN datasets dataset ON dataset.id = job.dataset_id
+          LEFT JOIN organization_load ON organization_load.organization_id = dataset.organization_id
           LEFT JOIN dataset_load ON dataset_load.dataset_id = job.dataset_id
           LEFT JOIN job_load ON job_load.job_id = job.id
           WHERE job.model_config_json->>'outputModality' = $1
             AND item.status = 'pending'
             AND $4::int < $5::int
+            AND (
+              $1 = 'image'
+              OR ${GENERATION_MODEL_NAME_SQL} = ANY($6::text[])
+            )
             AND (item.next_poll_at IS NULL OR item.next_poll_at <= now())
             AND (item.lease_expires_at IS NULL OR item.lease_expires_at < now())
             AND job.cancel_requested = false
           ORDER BY
+            COALESCE(organization_load.active_count, 0),
+            organization_load.last_served_at NULLS FIRST,
             COALESCE(dataset_load.active_count, 0),
+            dataset_load.last_served_at NULLS FIRST,
             COALESCE(job_load.active_count, 0),
-            item.created_at,
+            job_load.last_served_at NULLS FIRST,
             item.row_index,
+            item.created_at,
             item.id
           FOR UPDATE OF item SKIP LOCKED
           LIMIT 1
@@ -530,17 +694,51 @@ export const claimNextGenerationItem = async (
         WHERE item.id = candidate.id
         RETURNING item.*
       `,
-      [modality, owner, serverConfig.generationLeaseMs, providerActive, concurrencyLimit],
+      [
+        modality,
+        owner,
+        serverConfig.generationLeaseMs,
+        providerActive,
+        concurrencyLimit,
+        eligibleVideoModels,
+      ],
     );
     const row = result.rows[0];
     if (!row) {
       await client.query('COMMIT');
       return null;
     }
-    const jobResult = await client.query('SELECT * FROM generation_jobs WHERE id = $1', [row.job_id]);
+    const jobResult = await client.query(
+      `
+        SELECT job.*, dataset.organization_id
+        FROM generation_jobs job
+        JOIN datasets dataset ON dataset.id = job.dataset_id
+        WHERE job.id = $1
+      `,
+      [row.job_id],
+    );
     const job = jobResult.rows[0];
     await client.query('COMMIT');
     if (!job) return null;
+
+    if (row.status === 'pending' && modality === 'video') {
+      const modelName = String(
+        job.model_config_json?.modelName || job.model_config_json?.name || 'unknown-video-model',
+      );
+      const modelPolicy = modality === 'video'
+        ? policyForModel(videoPolicies, modelName)
+        : undefined;
+      console.info('[generation-scheduler] pending item claimed', {
+        modality,
+        modelName,
+        organizationId: job.organization_id,
+        datasetId: job.dataset_id,
+        batchId: job.id,
+        globalLimit: concurrencyLimit,
+        effectiveModelLimit: modelPolicy?.effectiveLimit,
+        policyMode: modelPolicy?.mode,
+      });
+    }
     return {
       id: row.id,
       jobId: row.job_id,
@@ -744,23 +942,68 @@ export const isGenerationDatasetInOrganization = async (datasetId: string, organ
   );
   return Boolean(result.rows[0]);
 };
-export const getGenerationQueueState = async () => {
-  const result = await dbPool.query(
-    `
-      SELECT
-        job.model_config_json->>'outputModality' AS modality,
-        count(*) FILTER (
-          WHERE item.status IN ('submitting', 'submitted', 'processing')
-        )::int AS active,
-        count(*) FILTER (
-          WHERE item.status = 'pending' AND job.cancel_requested = false
-        )::int AS pending
-      FROM generation_jobs job
-      JOIN generation_job_items item ON item.job_id = job.id
-      WHERE job.model_config_json->>'outputModality' IN ('image', 'video')
-      GROUP BY job.model_config_json->>'outputModality'
-    `,
-  );
+export const getGenerationQueueState = async (organizationId?: string) => {
+  const [result, modelResult, videoPolicies] = await Promise.all([
+    dbPool.query(
+      `
+        SELECT
+          job.model_config_json->>'outputModality' AS modality,
+          count(*) FILTER (
+            WHERE item.status IN ('submitting', 'submitted', 'processing')
+          )::int AS active,
+          count(*) FILTER (
+            WHERE item.status = 'pending' AND job.cancel_requested = false
+          )::int AS pending
+        FROM generation_jobs job
+        JOIN generation_job_items item ON item.job_id = job.id
+        WHERE job.model_config_json->>'outputModality' IN ('image', 'video')
+        GROUP BY job.model_config_json->>'outputModality'
+      `,
+    ),
+    dbPool.query(
+      `
+        WITH organization_models AS (
+          SELECT DISTINCT ${GENERATION_MODEL_NAME_SQL} AS model_name
+          FROM generation_jobs job
+          JOIN datasets dataset ON dataset.id = job.dataset_id
+          JOIN generation_job_items item ON item.job_id = job.id
+          WHERE job.model_config_json->>'outputModality' = 'video'
+            AND ($1::text IS NULL OR dataset.organization_id = $1)
+            AND item.status IN ('pending', 'submitting', 'submitted', 'processing')
+        ),
+        model_counts AS (
+          SELECT
+            ${GENERATION_MODEL_NAME_SQL} AS model_name,
+            count(*) FILTER (
+              WHERE item.status IN ('submitting', 'submitted', 'processing')
+            )::int AS active,
+            count(*) FILTER (
+              WHERE item.status = 'pending' AND job.cancel_requested = false
+            )::int AS pending,
+            count(*) FILTER (
+              WHERE item.status IN ('submitting', 'submitted', 'processing')
+                AND ($1::text IS NULL OR dataset.organization_id = $1)
+            )::int AS organization_active,
+            count(*) FILTER (
+              WHERE item.status = 'pending'
+                AND job.cancel_requested = false
+                AND ($1::text IS NULL OR dataset.organization_id = $1)
+            )::int AS organization_pending
+          FROM generation_jobs job
+          JOIN datasets dataset ON dataset.id = job.dataset_id
+          JOIN generation_job_items item ON item.job_id = job.id
+          WHERE job.model_config_json->>'outputModality' = 'video'
+          GROUP BY ${GENERATION_MODEL_NAME_SQL}
+        )
+        SELECT model_counts.*
+        FROM model_counts
+        JOIN organization_models USING (model_name)
+        ORDER BY model_name
+      `,
+      [organizationId || null],
+    ),
+    loadGenerationVideoPolicies(),
+  ]);
   const counts = new Map(result.rows.map(row => [row.modality, row]));
   const lane = (modality: 'image' | 'video', limit: number) => ({
     limit,
@@ -769,12 +1012,32 @@ export const getGenerationQueueState = async () => {
   });
   return {
     image: lane('image', serverConfig.generationImageConcurrency),
-    video: lane('video', serverConfig.generationVideoConcurrency),
+    video: {
+      ...lane('video', serverConfig.generationVideoConcurrency),
+      models: modelResult.rows.map(row => {
+        const modelName = String(row.model_name || 'unknown-video-model');
+        const policy = policyForModel(videoPolicies, modelName);
+        return {
+          modelName,
+          active: Number(row.active || 0),
+          pending: Number(row.pending || 0),
+          organizationActive: Number(row.organization_active || 0),
+          organizationPending: Number(row.organization_pending || 0),
+          minLimit: policy.min,
+          maxLimit: policy.max,
+          effectiveLimit: policy.effectiveLimit,
+          sampleSize: policy.sampleSize,
+          capacityFailures: policy.capacityFailures,
+          capacityFailureRate: policy.capacityFailureRate,
+          mode: policy.mode,
+          reason: policy.reason,
+        };
+      }),
+    },
     taskTimeoutMs: serverConfig.generationTaskTimeoutMs,
     updatedAt: Date.now(),
   };
 };
-
 const insertGenerationEvent = async (
   client: Pick<typeof dbPool, 'query'>,
   jobId: string,

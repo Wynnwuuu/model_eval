@@ -70,7 +70,14 @@ const formatTime = (value?: number) => value
   }).format(new Date(value))
   : '-';
 
-const queueReason = (job: DatasetGenerationJob) => {
+const modelPolicyLabel = (mode: NonNullable<GenerationQueueLane['models']>[number]['mode']) => ({
+  insufficient_sample: '\u6837\u672c\u4e0d\u8db3\uff0c\u4f7f\u7528\u6a21\u578b\u4e0a\u9650',
+  maximum: '\u5bb9\u91cf\u5065\u5eb7\uff0c\u4f7f\u7528\u6a21\u578b\u4e0a\u9650',
+  reduced: '\u8fd1 24 \u5c0f\u65f6\u5bb9\u91cf\u5931\u8d25\u8f83\u9ad8\uff0c\u5df2\u964d 2 \u4e2a\u69fd\u4f4d',
+  minimum: '\u8fd1 24 \u5c0f\u65f6\u5bb9\u91cf\u5931\u8d25\u8fc7\u9ad8\uff0c\u4f7f\u7528\u6700\u5c0f\u5e76\u53d1',
+}[mode]);
+
+const queueReason = (job: DatasetGenerationJob, queue?: GenerationQueueState) => {
   if ((job.unresolved || 0) > 0) return `${job.unresolved} \u4e2a case \u5f85\u5904\u7406`;
   const active = (job.statusCounts?.processing || 0) + (job.statusCounts?.submitted || 0) + (job.statusCounts?.submitting || 0);
   if (active > 0) {
@@ -78,11 +85,23 @@ const queueReason = (job: DatasetGenerationJob) => {
     return `\u5360\u7528 ${active} \u4e2a${modality}\u69fd\u4f4d`;
   }
   if ((job.statusCounts?.archiving || 0) > 0) return '\u6b63\u5728\u5f52\u6863\u751f\u6210\u7ed3\u679c';
-  if ((job.statusCounts?.pending || 0) > 0) return '\u7b49\u5f85\u516c\u5e73\u8c03\u5ea6';
+  if ((job.statusCounts?.pending || 0) > 0) {
+    const lane = job.modelConfig?.outputModality === 'video' ? queue?.video : queue?.image;
+    if (job.modelConfig?.outputModality === 'video') {
+      const modelName = String(job.modelConfig?.modelName || job.modelConfig?.id || '').toLowerCase();
+      const modelQueue = queue?.video.models?.find(item => item.modelName.toLowerCase() === modelName);
+      if (modelQueue && modelQueue.active >= modelQueue.effectiveLimit) {
+        return `\u7b49\u5f85\u6a21\u578b\u5bb9\u91cf ${modelQueue.active}/${modelQueue.effectiveLimit}`;
+      }
+    }
+    if (lane && lane.active >= lane.limit) {
+      return `\u7b49\u5f85\u5168\u5c40${job.modelConfig?.outputModality === 'video' ? '\u89c6\u9891' : '\u56fe\u7247'}\u5bb9\u91cf ${lane.active}/${lane.limit}`;
+    }
+    return '\u7b49\u5f85\u516c\u5e73\u8f6e\u8f6c';
+  }
   if (job.writebackStatus === 'pending' || job.writebackStatus === 'running') return '\u7b49\u5f85\u6570\u636e\u96c6\u56de\u586b';
   return '-';
 };
-
 const QueueLane: React.FC<{
   icon: React.ReactNode;
   label: string;
@@ -182,6 +201,40 @@ const GenerationTaskCenter: React.FC<GenerationTaskCenterProps> = ({
           <QueueLane icon={<Video size={14} />} label={'\u89c6\u9891\u5bb9\u91cf'} lane={queue?.video} />
         </div>
       </header>
+      {!!queue?.video.models?.length && (
+        <div className="border-b border-white/10">
+          <div className="flex items-center justify-between gap-3 px-4 py-2 text-xs text-slate-400">
+            <span>{'\u89c6\u9891\u6a21\u578b\u81ea\u9002\u5e94\u5bb9\u91cf'}</span>
+            <span>{'\u8fd1 24 \u5c0f\u65f6 / \u6700\u8fd1 12 \u6761\u6709\u6548\u7ed3\u679c'}</span>
+          </div>
+          <div className="overflow-x-auto">
+            <div className="min-w-[720px]">
+              {queue.video.models.map(modelQueue => (
+                <div key={modelQueue.modelName} className="grid grid-cols-[minmax(220px,1.4fr)_100px_110px_minmax(260px,1.6fr)] items-center gap-4 border-t border-white/10 px-4 py-2 text-xs">
+                  <span className="truncate font-medium text-slate-200" title={modelQueue.modelName}>{modelQueue.modelName}</span>
+                  <span className="tabular-nums text-slate-300">
+                    {'\u5728\u9014'} {modelQueue.active}/{modelQueue.effectiveLimit}
+                  </span>
+                  <span className="tabular-nums text-slate-400">
+                    {'\u7b49\u5f85'} {modelQueue.organizationPending}
+                  </span>
+                  <span className={modelQueue.mode === 'minimum' ? 'text-red-300' : modelQueue.mode === 'reduced' ? 'text-amber-300' : 'text-slate-400'}>
+                    {modelPolicyLabel(modelQueue.mode)}
+                    {' \u00b7 '}
+                    {modelQueue.sampleSize
+                      ? `${Math.round(modelQueue.capacityFailureRate * 100)}% (${modelQueue.capacityFailures}/${modelQueue.sampleSize})`
+                      : '\u65e0\u6709\u6548\u6837\u672c'}
+                    {' \u00b7 '}
+                    {modelQueue.minLimit}-{modelQueue.maxLimit}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+
 
       <div className="grid gap-3 border-b border-white/10 p-4 md:grid-cols-2 xl:grid-cols-[minmax(180px,1fr)_minmax(150px,0.7fr)_minmax(150px,0.7fr)_minmax(160px,0.7fr)_auto]">
         <label className="relative">
@@ -273,7 +326,7 @@ const GenerationTaskCenter: React.FC<GenerationTaskCenterProps> = ({
                   {!!job.failed && <div className="mt-1 text-xs text-red-300">{'\u5931\u8d25'} {job.failed}</div>}
                 </td>
                 <td className="px-4 py-3 text-xs">
-                  <div className="flex items-center gap-1.5 text-slate-300"><Clock3 size={13} /> {queueReason(job)}</div>
+                  <div className="flex items-center gap-1.5 text-slate-300"><Clock3 size={13} /> {queueReason(job, queue)}</div>
                   {!!job.retryOfJobId && <div className="mt-1 text-slate-500">Retry {'\u5b50\u6279\u6b21'}</div>}
                 </td>
                 <td className="px-4 py-3 text-xs text-slate-400">{job.createdBy || job.createdByUid || '-'}</td>
