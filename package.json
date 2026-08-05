@@ -26,6 +26,7 @@
     "test:dataset-sync": "tsx scripts/test-dataset-sync.ts",
     "test:dataset-column-deletion": "tsx scripts/test-dataset-column-deletion.ts",
     "test:dataset-import-mappings": "tsx scripts/test-dataset-import-mappings.ts",
+    "test:dataset-table-columns": "tsx scripts/test-dataset-table-columns.ts",
     "test:rank-ties": "tsx scripts/test-rank-ties.ts",
     "migrate:postgres": "tsx scripts/migrate-to-postgres.ts",
     "build": "vite build",

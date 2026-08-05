@@ -175,3 +175,20 @@
 - `npm.cmd run lint`, `npm.cmd run build`, and `npm.cmd run server:build`: passed. Existing Vite mixed-import and chunk-size warnings remain.
 - `npm.cmd run local:check`: web, API, and database health passed.
 - Browser: passed default/full/partial/empty selection, filtered header selection, batch-limit disabling, preflight summary, back-navigation persistence, fill-existing exclusion, request payload audit, and 390px horizontal containment. UI-only API route mocks were used because local Aion model configuration is intentionally absent; no generation was submitted.
+## 2026-08-05: Schema-driven dataset repository columns
+
+### Completed
+
+- Replaced the fixed ID/prompt/dimension/output/two-reference table with an `inputSchema`-ordered projection.
+- Defaulted all business roles to visible and `system` roles to hidden while keeping the case ID first and locked visible.
+- Appended valid legacy row-only columns, excluded trace/internal keys, and prevented duplicate projections.
+- Added per-dataset localStorage visibility preferences with grouped controls, show-all, and reset-default actions.
+- Added one-shot IntersectionObserver media mounting so off-screen horizontal media columns do not create requests.
+- Moved the column manager into a document-level portal after browser QA found the right inspector could intercept its controls at 1280px.
+
+### Validation
+
+- `test:dataset-table-columns`, dataset import/deletion/sync tests, and `lint`: passed.
+- `build`: passed outside the restricted sandbox; only existing mixed-import and chunk-size warnings remain.
+- Browser: 17/18 default columns, 10 reference columns, delayed media mounting, persistent system-column override, reset-default, 1280px interaction, and 390x844 containment passed.
+- `local:start`, `local:check`, and `test:api:smoke`: passed with the web app, API, and PostgreSQL healthy after starting Docker Desktop.

@@ -41,3 +41,8 @@ Regression coverage is in `scripts/test-generation.ts`. Generation tests, both T
 Generation now supports explicit per-case selection in step 2 and later filling the same output column without overwriting completed rows. Shared selection/target validation is in `src/features/generation/caseSelection.ts`; the UI table is `src/components/GenerationCaseSelector.tsx`; server canonicalization lives in `server/generation/generationPreflightService.ts`.
 
 All requested automated gates and browser regressions passed. Docker Desktop, PostgreSQL, the local web app, and the API were healthy at the end of validation. Browser preflight calls were intercepted only for UI verification because local Aion model configuration is absent, and no paid generation was submitted.
+## Completed work: schema-driven dataset repository columns
+
+The repository wide table now follows saved schema order and exposes every business field, including all reference images, videos, audio, additional inputs, and metadata. System fields default to hidden but can be enabled from the per-dataset column manager; preferences survive reload. Legacy row-only fields are appended, internal trace keys stay hidden, and the case ID remains sticky and non-hideable.
+
+Media requests are one-shot lazy mounted against the horizontal table viewport. Deterministic projection coverage lives in `scripts/test-dataset-table-columns.ts`. All requested dataset tests, lint, production build, desktop/mobile browser regression, local stack health, and API smoke passed. The shared app and API are available at `http://localhost:3000/` and `http://localhost:8787/`.

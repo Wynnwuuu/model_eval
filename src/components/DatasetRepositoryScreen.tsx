@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   AlertTriangle,
   ArrowRight,
@@ -7,10 +8,13 @@ import {
   Database,
   Download,
   Eye,
+  FileAudio,
   FileText,
+  FileVideo,
   Filter,
   GripVertical,
   History,
+  Image as ImageIcon,
   Info,
   Layers,
   Music,
@@ -50,6 +54,12 @@ import {
   getTaskColumnUsage,
   removeDatasetColumn,
 } from '../datasetColumnDeletion';
+import {
+  buildDatasetTableColumns,
+  getVisibleDatasetTableColumns,
+  isDatasetTableColumnVisible,
+} from '../datasetTableColumns';
+import type { DatasetColumnVisibilityOverrides, DatasetTableColumnDescriptor } from '../datasetTableColumns';
 import { subscribeTasks } from '../features/tasks/api';
 import { subscribeGenerationJobs } from '../features/generation/api';
 import {
@@ -193,6 +203,38 @@ const PREVIEW_SIZE_OPTIONS: Array<{ key: DatasetPreviewSize; label: string; desc
 
 const PREVIEW_SIZE_STORAGE_KEY = 'eval_studio_dataset_preview_size';
 const DATASET_LAYOUT_STORAGE_KEY = 'eval_studio_dataset_repository_layout';
+const DATASET_COLUMN_VISIBILITY_STORAGE_KEY = 'manueval_dataset_table_columns_v1';
+
+type DatasetColumnVisibilityStore = Record<string, DatasetColumnVisibilityOverrides>;
+
+const readStoredColumnVisibility = (): DatasetColumnVisibilityStore => {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(DATASET_COLUMN_VISIBILITY_STORAGE_KEY) || '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const writeStoredColumnVisibility = (store: DatasetColumnVisibilityStore) => {
+  try {
+    window.localStorage.setItem(DATASET_COLUMN_VISIBILITY_STORAGE_KEY, JSON.stringify(store));
+  } catch {
+    // Column visibility is a convenience preference; storage failures must not block the repository.
+  }
+};
+
+const TABLE_COLUMN_GROUPS: Array<{ role: DatasetFieldRole; label: string }> = [
+  { role: 'input', label: '\u8f93\u5165\u5217' },
+  { role: 'media', label: '\u5a92\u4f53\u8f93\u5165\u5217' },
+  { role: 'output', label: '\u6a21\u578b\u7ed3\u679c\u5217' },
+  { role: 'dimension', label: '\u8bc4\u6d4b\u7ef4\u5ea6\u5217' },
+  { role: 'reference', label: '\u53c2\u8003\u7d20\u6750\u5217' },
+  { role: 'rubric', label: 'Rubric \u5217' },
+  { role: 'metadata', label: '\u5143\u6570\u636e\u5217' },
+  { role: 'system', label: '\u7cfb\u7edf\u5ba1\u8ba1\u5217' },
+];
+
 const DEFAULT_LAYOUT_WIDTHS = { left: 280, right: 360 };
 
 const readStoredPreviewSize = (): DatasetPreviewSize => {
@@ -520,6 +562,49 @@ const mediaSizeClasses: Record<DatasetPreviewSize, { media: string; audio: strin
   },
 };
 
+const DeferredMedia: React.FC<{
+  children: React.ReactNode;
+  className?: string;
+  placeholder: React.ReactNode;
+}> = ({ children, className = '', placeholder }) => {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const element = rootRef.current;
+    if (!element) return undefined;
+    if (typeof IntersectionObserver === 'undefined') {
+      setVisible(true);
+      return undefined;
+    }
+
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) {
+        setVisible(true);
+        observer.disconnect();
+      }
+    }, { rootMargin: '180px 240px' });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <div ref={rootRef} className={className} data-media-mounted={visible ? 'true' : 'false'}>
+      {visible ? children : placeholder}
+    </div>
+  );
+};
+
+const serializeCellValue = (value: any) => {
+  if (value == null) return '';
+  if (typeof value !== 'object') return String(value).trim();
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+};
+
 const MediaCell = ({
   value,
   previewType,
@@ -529,33 +614,40 @@ const MediaCell = ({
   previewType?: DatasetPreviewType;
   previewSize: DatasetPreviewSize;
 }) => {
-  const url = firstUrl(value);
-  if (!url) return <span className="text-xs text-slate-500">空</span>;
+  const serializedValue = serializeCellValue(value);
+  const url = firstUrl(serializedValue);
+  if (!url) return <span className="text-xs text-slate-500">{'\u7a7a'}</span>;
 
-  const inferred = previewType && previewType !== 'none' ? previewType : inferPreviewType('', [url]);
+  const inferred = previewType === 'none' ? 'text' : previewType || inferPreviewType('', [url]);
   const sizeClass = mediaSizeClasses[previewSize];
   if (inferred === 'image' || inferred === 'video') {
+    const PlaceholderIcon = inferred === 'video' ? FileVideo : ImageIcon;
     return (
       <div className={`${sizeClass.media} rounded-lg overflow-hidden border border-white/10 bg-black/40`}>
-        <MediaRenderer
-          url={url}
-          isActive={false}
-          forceType={inferred}
-          videoPreload="metadata"
-          className="rounded-lg border-0 shadow-none"
-        />
+        <DeferredMedia
+          className="h-full w-full"
+          placeholder={<div className="flex h-full w-full items-center justify-center text-slate-600"><PlaceholderIcon size={22} aria-hidden="true" /></div>}
+        >
+          <MediaRenderer
+            url={url}
+            isActive={false}
+            forceType={inferred}
+            videoPreload="metadata"
+            className="rounded-lg border-0 shadow-none"
+          />
+        </DeferredMedia>
       </div>
     );
   }
 
   if (inferred === 'audio') {
     return (
-      <audio
-        controls
-        preload="metadata"
-        src={normalizeUrl(url)}
+      <DeferredMedia
         className={`${sizeClass.audio} h-9`}
-      />
+        placeholder={<div className="flex h-full w-full items-center justify-center border border-white/10 bg-black/30 text-slate-600"><FileAudio size={18} aria-hidden="true" /></div>}
+      >
+        <audio controls preload="metadata" src={normalizeUrl(url)} className="h-9 w-full" />
+      </DeferredMedia>
     );
   }
 
@@ -567,7 +659,18 @@ const MediaCell = ({
     );
   }
 
-  return <span className={`text-xs text-slate-300 ${sizeClass.text} whitespace-pre-wrap`}>{String(value)}</span>;
+  return <span className={`text-xs text-slate-300 ${sizeClass.text} whitespace-pre-wrap`}>{serializedValue}</span>;
+};
+
+const tableColumnWidthClass = (column: DatasetTableColumnDescriptor, previewSize: DatasetPreviewSize) => {
+  if (column.lockedVisible) return 'min-w-[150px]';
+  if (column.previewType === 'image' || column.previewType === 'video') {
+    if (previewSize === 'large') return 'min-w-[440px]';
+    if (previewSize === 'medium') return 'min-w-[280px]';
+    return 'min-w-[180px]';
+  }
+  if (column.previewType === 'audio') return previewSize === 'large' ? 'min-w-[440px]' : 'min-w-[260px]';
+  return column.role === 'input' || column.role === 'rubric' ? 'min-w-[280px]' : 'min-w-[180px]';
 };
 
 const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
@@ -603,6 +706,8 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   const [isDeletingColumn, setIsDeletingColumn] = useState(false);
   const [columnDeleteSource, setColumnDeleteSource] = useState<'header' | 'manager'>('manager');
   const [previewSize, setPreviewSize] = useState<DatasetPreviewSize>(readStoredPreviewSize);
+  const [columnVisibilityByDataset, setColumnVisibilityByDataset] = useState<DatasetColumnVisibilityStore>(readStoredColumnVisibility);
+  const [columnManagerOpen, setColumnManagerOpen] = useState(false);
   const [layoutWidths, setLayoutWidths] = useState(readStoredLayoutWidths);
   const [resizingPane, setResizingPane] = useState<'left' | 'right' | null>(null);
   const resizeStateRef = useRef<{ pane: 'left' | 'right'; startX: number; startLeft: number; startRight: number } | null>(null);
@@ -759,7 +864,44 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   const selectedRows = tableDataset?.items || [];
   const selectedRow = selectedRows[Math.min(selectedRowIndex, Math.max(selectedRows.length - 1, 0))];
   const outputColumns = selectedMappings.outputColumns;
-  const referenceColumns = selectedMappings.referenceColumns;
+  const tableColumns = useMemo(() => buildDatasetTableColumns(tableDataset), [tableDataset]);
+  const columnVisibilityOverrides = selectedDataset
+    ? columnVisibilityByDataset[selectedDataset.id] || {}
+    : {};
+  const visibleTableColumns = useMemo(
+    () => getVisibleDatasetTableColumns(tableColumns, columnVisibilityOverrides),
+    [columnVisibilityOverrides, tableColumns]
+  );
+  const tableColumnGroups = useMemo(() => TABLE_COLUMN_GROUPS
+    .map(group => ({
+      ...group,
+      columns: tableColumns.filter(column => !column.lockedVisible && column.role === group.role),
+    }))
+    .filter(group => group.columns.length > 0), [tableColumns]);
+  const hiddenTableColumnCount = tableColumns.length - visibleTableColumns.length;
+
+  const saveColumnVisibilityOverrides = (overrides: DatasetColumnVisibilityOverrides) => {
+    if (!selectedDataset) return;
+    setColumnVisibilityByDataset(current => {
+      const next = { ...current, [selectedDataset.id]: overrides };
+      writeStoredColumnVisibility(next);
+      return next;
+    });
+  };
+
+  const resetColumnVisibility = () => {
+    if (!selectedDataset) return;
+    setColumnVisibilityByDataset(current => {
+      const next = { ...current };
+      delete next[selectedDataset.id];
+      writeStoredColumnVisibility(next);
+      return next;
+    });
+  };
+
+  const showAllTableColumns = () => saveColumnVisibilityOverrides(Object.fromEntries(
+    tableColumns.filter(column => !column.lockedVisible).map(column => [column.key, true])
+  ));
   const currentColumnKeys = useMemo(() => getDatasetActiveColumnKeys(selectedDataset), [selectedDataset]);
   const linkedTasks = useMemo(
     () => tasks.filter(task => task.datasetId === selectedDataset?.id),
@@ -816,17 +958,8 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
       requiresRiskAcceptance: risks.length > 0 || linkedTasks.length > 0,
     };
   }, [columnToDelete, linkedTasks, selectedDataset]);
-  const promptKeys = [
-    selectedMappings.standard.full_prompt,
-    selectedMappings.standard.zh_prompt,
-    '完整Prompt',
-    '中文Prompt',
-    'prompt',
-    'Prompt'
-  ].filter(Boolean) as string[];
   const idKeys = [selectedMappings.standard.case_id, selectedMappings.caseId, '用例ID', 'id', 'Case_ID']
     .filter((key): key is string => Boolean(key) && key !== DATASET_ITEM_ID_KEY && !key.startsWith('__'));
-  const tagKeys = [selectedMappings.standard.tags, '标签', 'tags'].filter(Boolean) as string[];
 
   useEffect(() => {
     if (!selectedDataset?.id) {
@@ -1700,10 +1833,10 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     }
   };
 
-  const renderEditableHeader = (column: string, className = 'px-4 py-3') => {
+  const renderEditableHeader = (column: string, className = 'px-4 py-3', displayLabel = column) => {
     const isEditing = inlineRenameColumn === column;
     return (
-      <th key={column} className={className}>
+      <th key={column} data-column-key={column} className={className}>
         {isEditing ? (
           <div className="min-w-[180px] space-y-1">
             <input
@@ -1731,7 +1864,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
             title={isViewingHistoricalVersion ? '历史版本为只读' : '双击修改列名'}
             className="group flex max-w-[260px] items-center gap-1 text-left uppercase tracking-wide text-slate-400 disabled:cursor-not-allowed"
           >
-            <span className="truncate">{column}</span>
+            <span className="truncate">{displayLabel}</span>
             {!isViewingHistoricalVersion && <Pencil size={12} className="opacity-0 transition-opacity group-hover:opacity-70" />}
           </button>
             {!isViewingHistoricalVersion && (
@@ -2582,6 +2715,22 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                       </button>
                     ))}
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => setColumnManagerOpen(open => !open)}
+                    className="flex items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-300 hover:bg-white/10"
+                    aria-label={'\u7ba1\u7406\u8868\u683c\u663e\u793a\u5217'}
+                    aria-expanded={columnManagerOpen}
+                    aria-controls="dataset-column-visibility-panel"
+                  >
+                    <Eye size={16} aria-hidden="true" />
+                    <span>{'\u5df2\u663e\u793a'} {visibleTableColumns.length} / {tableColumns.length} {'\u5217'}</span>
+                    {hiddenTableColumnCount > 0 && (
+                      <span className="border border-amber-400/20 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-200">
+                        {'\u9690\u85cf'} {hiddenTableColumnCount}
+                      </span>
+                    )}
+                  </button>
                   {isViewingHistoricalVersion && (
                     <button onClick={() => { setViewingVersionDataset(null); setSelectedRowIndex(0); }} className="px-3 py-2 rounded-xl bg-purple-500/10 hover:bg-purple-500/20 text-purple-200 text-sm flex items-center gap-2 border border-purple-400/20">
                       <RotateCcw size={16} /> 返回当前版本
@@ -2604,80 +2753,122 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                   </button>
                 </div>
               </div>
+              {columnManagerOpen && createPortal(
+                <div className="fixed inset-0 z-[100]">
+                  <button
+                    type="button"
+                    className="absolute inset-0 cursor-default bg-black/55"
+                    onClick={() => setColumnManagerOpen(false)}
+                    aria-label={'\u5173\u95ed\u5217\u663e\u793a\u9762\u677f'}
+                    tabIndex={-1}
+                  />
+                  <section
+                    id="dataset-column-visibility-panel"
+                    role="dialog"
+                    aria-modal="false"
+                    aria-label={'\u5217\u663e\u793a'}
+                    onKeyDown={event => {
+                      if (event.key === 'Escape') setColumnManagerOpen(false);
+                    }}
+                    className="fixed inset-x-3 top-20 z-[101] max-h-[calc(100vh-6rem)] overflow-y-auto border border-white/15 bg-slate-950 p-4 shadow-2xl sm:left-auto sm:right-6 sm:w-[380px]"
+                  >
+                    <div className="flex items-start justify-between gap-3 border-b border-white/10 pb-3">
+                      <div>
+                        <div className="text-sm font-semibold text-slate-100">{'\u5217\u663e\u793a'}</div>
+                        <div className="mt-1 text-[11px] text-slate-500">{'\u7528\u4f8b ID \u59cb\u7ec8\u53ef\u89c1\uff1b\u7cfb\u7edf\u5ba1\u8ba1\u5217\u9ed8\u8ba4\u9690\u85cf'}</div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setColumnManagerOpen(false)}
+                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center border border-white/10 text-slate-400 hover:border-amber-400/40 hover:text-amber-200"
+                        aria-label={'\u5173\u95ed\u5217\u663e\u793a\u9762\u677f'}
+                      >
+                        <X size={16} aria-hidden="true" />
+                      </button>
+                    </div>
+                    <div className="mt-3 flex items-center justify-between gap-3 border-b border-white/10 pb-3">
+                      <span className="text-xs text-slate-500">{'\u5df2\u663e\u793a'} {visibleTableColumns.length} / {tableColumns.length} {'\u5217'}</span>
+                      <div className="flex shrink-0 gap-3">
+                        <button type="button" onClick={showAllTableColumns} className="text-xs text-amber-300 hover:text-amber-200">{'\u663e\u793a\u5168\u90e8'}</button>
+                        <button type="button" onClick={resetColumnVisibility} className="text-xs text-slate-400 hover:text-slate-200">{'\u6062\u590d\u9ed8\u8ba4'}</button>
+                      </div>
+                    </div>
+                    <div className="mt-3 space-y-4">
+                      {tableColumnGroups.map(group => (
+                        <section key={group.role}>
+                          <div className="mb-2 flex items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                            <span>{group.label}</span>
+                            <span>{group.columns.filter(column => isDatasetTableColumnVisible(column, columnVisibilityOverrides)).length}/{group.columns.length}</span>
+                          </div>
+                          <div className="space-y-1">
+                            {group.columns.map(column => (
+                              <label key={column.key} className="flex cursor-pointer items-center gap-2 px-2 py-1.5 text-xs text-slate-300 hover:bg-white/5">
+                                <input
+                                  type="checkbox"
+                                  checked={isDatasetTableColumnVisible(column, columnVisibilityOverrides)}
+                                  onChange={event => saveColumnVisibilityOverrides({ ...columnVisibilityOverrides, [column.key]: event.target.checked })}
+                                  className="h-4 w-4 accent-amber-400"
+                                />
+                                <span className="min-w-0 flex-1 truncate" title={column.label}>{column.label}</span>
+                                <span className="shrink-0 text-[10px] text-slate-600">{column.previewType}</span>
+                              </label>
+                            ))}
+                          </div>
+                        </section>
+                      ))}
+                    </div>
+                  </section>
+                </div>,
+                document.body
+              )}
               {isViewingHistoricalVersion && (
                 <div className="border-b border-purple-400/20 bg-purple-500/10 px-5 py-3 text-sm text-purple-100">
                   当前表格是 v{tableDataset?.version} 的只读快照。若要恢复，请在右侧版本记录点击“回退”，系统会复制该快照生成新的当前版本。
                 </div>
               )}
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead className="bg-black/20 text-xs uppercase tracking-wide text-slate-400">
+              <div className="max-h-[calc(100vh-250px)] min-h-[360px] overflow-auto" data-testid="dataset-schema-table">
+                <table className="w-full min-w-max border-collapse text-left">
+                  <thead className="sticky top-0 z-20 bg-slate-950 text-xs uppercase tracking-wide text-slate-400">
                     <tr>
-                      <th className="px-4 py-3 sticky left-0 bg-black/40 z-10">用例ID</th>
-                      <th className="px-4 py-3 min-w-[260px]">Prompt</th>
-                      <th className="px-4 py-3 min-w-[180px]">评测维度</th>
-                      {outputColumns.map(column => renderEditableHeader(column, `${previewSize === 'large' ? 'min-w-[440px]' : previewSize === 'medium' ? 'min-w-[280px]' : 'min-w-[180px]'} px-4 py-3`))}
-                      {referenceColumns.slice(0, 2).map(column => renderEditableHeader(column, `${previewSize === 'large' ? 'min-w-[440px]' : previewSize === 'medium' ? 'min-w-[280px]' : 'min-w-[180px]'} px-4 py-3`))}
-                      <th className="px-4 py-3">标签</th>
-                      <th className="px-4 py-3">校验</th>
-                      <th className="px-4 py-3">操作</th>
+                      {visibleTableColumns.map(column => renderEditableHeader(
+                        column.key,
+                        `${tableColumnWidthClass(column, previewSize)} px-4 py-3 ${column.lockedVisible ? 'sticky left-0 z-30 bg-slate-950' : 'bg-slate-950'}`,
+                        column.label
+                      ))}
+                      <th className="min-w-[72px] bg-slate-950 px-4 py-3">{'\u6821\u9a8c'}</th>
+                      <th className="min-w-[88px] bg-slate-950 px-4 py-3">{'\u64cd\u4f5c'}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/10">
                     {selectedRows.map((row, index) => {
-                      const dimensions = selectedMappings.dimensionColumns.map(column => [column, row[column]]).filter(([, value]) => String(value || '').trim());
                       const rowSelected = index === selectedRowIndex;
                       return (
                         <tr key={`${getDatasetDisplayValue(row, idKeys) || index}-${index}`} onClick={() => setSelectedRowIndex(index)} className={`cursor-pointer ${rowSelected ? 'bg-amber-500/10' : 'hover:bg-white/[0.04]'}`}>
-                          <td
-                            className="px-4 py-3 sticky left-0 bg-slate-950/95 z-10 text-sm font-mono text-slate-200"
-                            onDoubleClick={() => openCaseEditor(index, idKeys.find(key => row[key] !== undefined) || '用例ID')}
-                            title={isViewingHistoricalVersion ? '历史版本只读' : '双击编辑用例 ID'}
-                          >{getDatasetDisplayValue(row, idKeys) || `case-${index + 1}`}</td>
-                          <td
-                            className="px-4 py-3 text-sm text-slate-200"
-                            onDoubleClick={() => openCaseEditor(index, promptKeys.find(key => row[key] !== undefined) || '完整Prompt')}
-                            title={isViewingHistoricalVersion ? '历史版本只读' : '双击编辑 Prompt'}
-                          >
-                            <div className="line-clamp-4 whitespace-pre-wrap max-w-[360px]">{getDatasetDisplayValue(row, promptKeys) || '无 Prompt'}</div>
-                          </td>
-                          <td className="px-4 py-3">
-                            <div className="flex flex-wrap gap-1.5">
-                              {dimensions.length ? dimensions.map(([key, value]) => (
-                                <span
-                                  key={`${key}-${value}`}
-                                  onDoubleClick={event => { event.stopPropagation(); openCaseEditor(index, String(key)); }}
-                                  title={isViewingHistoricalVersion ? '历史版本只读' : `双击编辑 ${key}`}
-                                  className="text-[11px] bg-blue-500/10 text-blue-200 border border-blue-500/20 px-2 py-1 rounded-md"
-                                >{key}: {String(value)}</span>
-                              )) : <span className="text-xs text-slate-500">无</span>}
-                            </div>
-                          </td>
-                          {outputColumns.map(column => (
-                            <td
-                              key={column}
-                              className="px-4 py-3 align-top"
-                              onDoubleClick={() => openCaseEditor(index, column)}
-                              title={isViewingHistoricalVersion ? '历史版本只读' : `双击编辑 ${column}`}
-                            >
-                              <MediaCell value={row[column]} previewType={tableDataset?.inputSchema.find(field => field.key === column)?.previewType} previewSize={previewSize} />
-                            </td>
-                          ))}
-                          {referenceColumns.slice(0, 2).map(column => (
-                            <td
-                              key={column}
-                              className="px-4 py-3 align-top"
-                              onDoubleClick={() => openCaseEditor(index, column)}
-                              title={isViewingHistoricalVersion ? '历史版本只读' : `双击编辑 ${column}`}
-                            >
-                              <MediaCell value={row[column]} previewType={tableDataset?.inputSchema.find(field => field.key === column)?.previewType} previewSize={previewSize} />
-                            </td>
-                          ))}
-                          <td
-                            className="px-4 py-3 text-xs text-slate-300"
-                            onDoubleClick={() => openCaseEditor(index, tagKeys.find(key => row[key] !== undefined) || '标签')}
-                            title={isViewingHistoricalVersion ? '历史版本只读' : '双击编辑标签'}
-                          >{getDatasetDisplayValue(row, tagKeys) || '-'}</td>
+                          {visibleTableColumns.map(column => {
+                            const value = row[column.key];
+                            const caseIdValue = column.lockedVisible
+                              ? serializeCellValue(value) || getDatasetDisplayValue(row, idKeys) || `case-${index + 1}`
+                              : '';
+                            return (
+                              <td
+                                key={column.key}
+                                data-column-key={column.key}
+                                className={`px-4 py-3 align-top ${column.lockedVisible ? 'sticky left-0 z-10 bg-slate-950/95 font-mono text-sm text-slate-200' : ''}`}
+                                onDoubleClick={() => openCaseEditor(index, column.key)}
+                                title={isViewingHistoricalVersion ? '\u5386\u53f2\u7248\u672c\u53ea\u8bfb' : `\u53cc\u51fb\u7f16\u8f91 ${column.label}`}
+                              >
+                                {column.lockedVisible ? caseIdValue : column.role === 'dimension' ? (
+                                  serializeCellValue(value) ? (
+                                    <span className="inline-flex border border-blue-500/20 bg-blue-500/10 px-2 py-1 text-[11px] text-blue-200">
+                                      {serializeCellValue(value)}
+                                    </span>
+                                  ) : <span className="text-xs text-slate-500">{'\u7a7a'}</span>
+                                ) : (
+                                  <MediaCell value={value} previewType={column.previewType} previewSize={previewSize} />
+                                )}
+                              </td>
+                            );
+                          })}
                           <td className="px-4 py-3">
                             <CheckCircle2 size={16} className="text-emerald-400" />
                           </td>
@@ -2692,7 +2883,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                               title={isViewingHistoricalVersion ? '历史版本为只读' : '删除这一行'}
                               className="inline-flex items-center gap-1 rounded-lg border border-red-400/20 bg-red-500/10 px-2 py-1 text-xs text-red-200 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-40"
                             >
-                              <Trash2 size={13} /> 删除
+                              <Trash2 size={13} /> {'\u5220\u9664'}
                             </button>
                           </td>
                         </tr>

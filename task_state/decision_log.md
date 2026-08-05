@@ -131,3 +131,8 @@ A fill-existing batch may target only compatible output columns and only empty r
 ## 2026-08-04: Unselected rows receive no generation audit fields
 
 The output schema is dataset-wide, but result, status, error, seed, request ID, and parameter metadata are written only for actual batch items. Retrying stays scoped to failed items from that batch; previously unselected rows require a new fill-existing batch.
+## 2026-08-05: Dataset table visibility follows schema roles
+
+The repository table is projected from `inputSchema` order instead of special-casing prompt, dimensions, outputs, and the first two references. Input, output, dimension, reference/media, rubric, and ordinary metadata fields are visible by default. System audit fields remain available through column management but default to hidden. The case ID is first and cannot be hidden.
+
+Visibility is a per-dataset local preference rather than persisted dataset data, so it does not change exports, versions, tasks, generation writeback, or shared API contracts. Media cells mount once when they approach the table viewport to avoid issuing requests for wide columns the reviewer has not reached.
