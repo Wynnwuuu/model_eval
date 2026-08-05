@@ -181,6 +181,21 @@ export const stableJson = (value: unknown) => JSON.stringify(stableValue(value))
 export const fingerprintConfig = (value: unknown) =>
   createHash('sha256').update(stableJson(value)).digest('hex');
 
+export const MAX_PORTABLE_GENERATION_SEED = 0x7fffffff;
+
+export const deriveGenerationSeed = (value: string) =>
+  Number.parseInt(fingerprintConfig(value).slice(0, 8), 16) & MAX_PORTABLE_GENERATION_SEED;
+
+export const generationSeedIssue = (value: unknown): PreflightIssue | undefined => {
+  const seed = Number(value);
+  if (Number.isInteger(seed) && seed >= 0 && seed <= MAX_PORTABLE_GENERATION_SEED) return undefined;
+  return {
+    code: 'INVALID_SEED',
+    field: 'seed',
+    message: `Seed must be an integer between 0 and ${MAX_PORTABLE_GENERATION_SEED}.`,
+  };
+};
+
 const valueArray = (value: unknown): Array<string | number> =>
   Array.isArray(value)
     ? value.filter(item => typeof item === 'string' || typeof item === 'number')

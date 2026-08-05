@@ -13,9 +13,12 @@ import { getDatasetVersion } from '../datasets/datasetRepository.ts';
 import { ApiError, badRequest, conflict, notFound } from '../http/errors.ts';
 import { aionGenerationClient } from './aionGenerationClient.ts';
 import {
+  deriveGenerationSeed,
   estimateGenerationCost,
   fingerprintConfig,
+  generationSeedIssue,
   matchUploadedAsset,
+  MAX_PORTABLE_GENERATION_SEED,
   preflightGenerationCase,
   resolveGenerationImageInputs,
   stableJson,
@@ -84,11 +87,6 @@ const flattenReferences = (value: unknown): string[] => {
   const urls = raw.match(/(?:https?:\/\/|asset:\/\/)[^\s"'\t|,;<>]+/g);
   if (urls?.length) return urls.map(url => url.replace(/[)\],;]+$/g, ''));
   return raw.split(/[\n\r|;,]+/).map(item => item.trim()).filter(Boolean);
-};
-
-const deriveSeed = (value: string) => {
-  const hash = fingerprintConfig(value).slice(0, 8);
-  return Number.parseInt(hash, 16) >>> 0;
 };
 
 const coerceControl = (value: unknown, definition: NormalizedGenerationModel['controls'][number] | undefined) => {
@@ -219,12 +217,31 @@ const buildCases = (
         endUrls: end.urls,
       });
       const prompt = input.promptColumn ? text(row[input.promptColumn]) : '';
-      const seed = request.seedMode === 'fixed'
+      const seedMode = request.seedMode || 'derive_from_case';
+      const seedColumnValue = seedMode === 'column' && request.seedColumn
+        ? row[request.seedColumn]
+        : undefined;
+      const seed = seedMode === 'fixed'
         ? Number(request.fixedSeed ?? 42)
-        : request.seedMode === 'column' && request.seedColumn
-          ? Number(row[request.seedColumn]) || deriveSeed(`${dataset.id}:${caseId}:${prompt}`)
-          : deriveSeed(`${dataset.id}:${caseId}:${request.targetColumn}:${prompt}`);
-
+        : seedMode === 'column'
+          ? Number(seedColumnValue)
+          : deriveGenerationSeed(`${dataset.id}:${caseId}:${request.targetColumn}:${prompt}`);
+      const seedIssues: PreflightIssue[] = [];
+      if (seedMode === 'column' && (!request.seedColumn || seedColumnValue == null || text(seedColumnValue) === '')) {
+        seedIssues.push({
+          code: 'INVALID_SEED',
+          field: request.seedColumn || 'seedColumn',
+          message: `The seed column must contain an integer between 0 and ${MAX_PORTABLE_GENERATION_SEED} for case ${caseId}.`,
+        });
+      } else {
+        const issue = generationSeedIssue(seed);
+        if (issue) {
+          seedIssues.push({
+            ...issue,
+            field: seedMode === 'fixed' ? 'fixedSeed' : request.seedColumn || issue.field,
+          });
+        }
+      }
       const resolvedCase: GenerationCase = {
         caseId,
         datasetItemId,
@@ -239,7 +256,7 @@ const buildCases = (
       };
       return {
         resolvedCase,
-        preparationIssues: [...start.issues, ...end.issues, ...references.issues, ...audios.issues, ...extraInputIssues, ...imageInputs.issues],
+        preparationIssues: [...start.issues, ...end.issues, ...references.issues, ...audios.issues, ...extraInputIssues, ...imageInputs.issues, ...seedIssues],
       };
     });
 };

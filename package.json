@@ -19,7 +19,7 @@
     "api:start": "node dist-server/server/index.js",
     "server:build": "tsc -p tsconfig.server.json && node scripts/copy-server-assets.mjs",
     "dev:full": "tsx scripts/dev-full.ts",
-    "test:generation": "tsx scripts/test-generation.ts",
+    "test:generation": "tsx scripts/test-generation.ts && tsx scripts/test-generation-seed.ts",
     "test:generation:db": "tsx scripts/test-generation-db.ts",
     "test:api:smoke": "tsx scripts/smoke-postgres-api.ts",
     "test:arena": "tsx scripts/test-arena.ts",
