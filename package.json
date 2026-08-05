@@ -24,6 +24,7 @@
     "test:api:smoke": "tsx scripts/smoke-postgres-api.ts",
     "test:arena": "tsx scripts/test-arena.ts",
     "test:dataset-sync": "tsx scripts/test-dataset-sync.ts",
+    "test:dataset-clone": "tsx scripts/test-dataset-clone.ts",
     "test:dataset-column-deletion": "tsx scripts/test-dataset-column-deletion.ts",
     "test:dataset-import-mappings": "tsx scripts/test-dataset-import-mappings.ts",
     "test:dataset-table-columns": "tsx scripts/test-dataset-table-columns.ts",

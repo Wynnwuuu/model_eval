@@ -1,6 +1,7 @@
 import { Router } from 'express';
 
 import {
+  cloneDataset,
   deleteDataset,
   getDataset,
   getDatasetVersion,
@@ -11,7 +12,7 @@ import {
   updateDatasetManifest,
 } from './datasetRepository.ts';
 import { badRequest, notFound, sendError } from '../http/errors.ts';
-import { requireBodyObject, validateDatasetPayload } from '../http/validation.ts';
+import { requireBodyObject, requireNonEmptyString, validateDatasetPayload } from '../http/validation.ts';
 
 export const datasetRoutes = Router();
 
@@ -50,6 +51,29 @@ datasetRoutes.get('/:datasetId/versions/:version', async (req, res) => {
     sendError(res, error, 'Failed to load dataset version');
   }
 });
+
+datasetRoutes.post('/:datasetId/clone', async (req, res) => {
+  try {
+    const sourceVersion = Number(req.body?.sourceVersion);
+    if (!Number.isInteger(sourceVersion) || sourceVersion < 1) {
+      throw badRequest('sourceVersion must be a positive integer');
+    }
+    const name = requireNonEmptyString(req.body?.name, 'name');
+    const dataset = await cloneDataset(
+      req.params.datasetId,
+      sourceVersion,
+      name,
+      req.user
+    );
+    if (!dataset) {
+      throw notFound('Dataset version');
+    }
+    res.status(201).json({ dataset });
+  } catch (error) {
+    sendError(res, error, 'Failed to clone dataset');
+  }
+});
+
 
 datasetRoutes.post('/:datasetId/rollback', async (req, res) => {
   try {

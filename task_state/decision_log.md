@@ -1,5 +1,12 @@
 # Arena Decision Log
 
+## 2026-08-05: Dataset copies are independent version forks
+
+A dataset copy is built from the exact immutable version the user is viewing. It preserves all business content and visible case IDs, but receives a new dataset ID and regenerated stable item IDs so later task propagation, edits, evidence, and generation writeback cannot cross into the source dataset.
+
+The copy starts at v1 with one version entry and a `copiedFrom` manifest reference. It does not inherit source snapshots, synchronization summaries, linked projects/tasks/votes, or generation jobs. Media objects are not duplicated; their URLs are copied as ordinary cell values.
+
+Both shared and offline modes call the same pure clone builder. The server persists the target dataset and rows in the existing transaction, so partial copies are not exposed and no schema migration is required.
 ## 2026-08-03: Reuse Aion-materialized VidMuse user assets
 
 Aion Model API already materializes successful image/video outputs into the dedicated VidMuse user asset directory and returns `local_path`. ManuEval will use that existing copy instead of downloading and uploading the media again.

@@ -1,45 +1,40 @@
 {
-    "feature":  "manueval_vidmuse_direct_generation",
-    "requirements":  [
-                         {
-                             "id":  "live-model-config",
-                             "status":  "completed",
-                             "description":  "Read current Aion image/video model configuration and fail closed before execution"
-                         },
-                         {
-                             "id":  "generation-preflight",
-                             "status":  "completed",
-                             "description":  "Validate cases, controls, target column, config fingerprint, and cost before confirmation"
-                         },
-                         {
-                             "id":  "durable-worker",
-                             "status":  "completed",
-                             "description":  "PostgreSQL-backed image/video execution with leases, polling, cancellation, recovery, and conservative retries"
-                         },
-                         {
-                             "id":  "oss-assets",
-                             "status":  "completed",
-                             "description":  "Direct uploads, local path matching, input/output archival, and stable media URLs"
-                         },
-                         {
-                             "id":  "atomic-writeback",
-                             "status":  "completed",
-                             "description":  "One dataset version per terminal batch with stable-ID merge and no historical overwrite"
-                         },
-                         {
-                             "id":  "generation-ui",
-                             "status":  "completed",
-                             "description":  "Dynamic model controls, preflight confirmation, reload-safe status, and evaluation-task shortcut"
-                         },
-                         {
-                             "id":  "dev-deployment",
-                             "status":  "completed",
-                             "description":  "Dev-only Aion, OSS, public URL, limits, and worker configuration"
-                         },
-                         {
-                             "id":  "verification",
-                             "status":  "completed",
-                             "description":  "Deterministic and PostgreSQL tests plus a real browser image smoke; OSS durability is a later upgrade"
-                         }
-                     ]
+  "feature": "independent_dataset_clone",
+  "requirements": [
+    {
+      "id": "version-exact-copy",
+      "status": "completed",
+      "description": "Clone the exact current or historical dataset version with all business fields and original data"
+    },
+    {
+      "id": "identity-isolation",
+      "status": "completed",
+      "description": "Generate a new dataset ID and stable item IDs while preserving visible case IDs"
+    },
+    {
+      "id": "provenance-and-version-reset",
+      "status": "completed",
+      "description": "Start the copy at v1 with one source record and visible copiedFrom metadata"
+    },
+    {
+      "id": "workflow-isolation",
+      "status": "completed",
+      "description": "Exclude linked projects, tasks, votes, generation jobs, sync summaries, and source history"
+    },
+    {
+      "id": "shared-offline-parity",
+      "status": "completed",
+      "description": "Expose matching POST API and localStorage clone behavior through one pure builder"
+    },
+    {
+      "id": "repository-interaction",
+      "status": "completed",
+      "description": "Provide collision-aware naming, historical-version context, guarded submission, auto-selection, and provenance display"
+    },
+    {
+      "id": "verification",
+      "status": "completed",
+      "description": "Cover deterministic cloning, API errors/source isolation, refresh persistence, and desktop/mobile browser flows"
+    }
+  ]
 }

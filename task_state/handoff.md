@@ -1,6 +1,13 @@
 # Arena And Arena-rank Handoff
 
-## Current work: VidMuse stable generated assets
+## Current work: independent dataset copies
+
+Dataset cloning is implemented on the latest ManuEval baseline. The repository can clone the current dataset or the historical version currently being viewed. Shared API and offline localStorage semantics match: new dataset/item identities, v1 reset, visible provenance, copied business content, and no linked task/vote/generation history.
+
+Core logic is in `src/datasetClone.ts`, server persistence is in `server/datasets/datasetRepository.ts`, the route is `POST /api/datasets/:datasetId/clone`, and repository interaction is in `src/components/DatasetRepositoryScreen.tsx`. Deterministic coverage is available through `npm.cmd run test:dataset-clone`; the API smoke now covers validation and source isolation.
+
+Browser verification covered current v2 and historical v1 copies, automatic unique naming, editable names, refresh persistence, source display, independent case deletion, and 390x844 layout. No database migration or production-workbench entry was added.
+## Completed work: VidMuse stable generated assets
 
 ManuEval dev now consumes Aion `local_path`/`file_path` results and emits trusted VidMuse image/video CDN URLs for the dedicated evaluation user. Provider URLs remain audit metadata and per-case fallback only. No Aion, VidMuse upload, OSS credential, or schema change is required.
 

@@ -5,6 +5,7 @@ import {
   ArrowRight,
   CheckCircle2,
   ClipboardList,
+  Copy,
   Database,
   Download,
   Eye,
@@ -39,6 +40,7 @@ import MediaRenderer from './MediaRenderer';
 import DatasetGenerationExecutionModal from './DatasetGenerationExecutionModal';
 import { normalizeUrl } from '../utils';
 import {
+  cloneDataset as persistDatasetClone,
   deleteDataset,
   loadDatasetVersion,
   rollbackDataset,
@@ -104,6 +106,22 @@ interface DatasetEditTarget {
   editor: DatasetValueEditor;
   previewType?: DatasetPreviewType;
   originalValue: unknown;
+}
+
+interface DatasetCloneTarget {
+  datasetId: string;
+  datasetName: string;
+  sourceVersion: number;
+  itemCount: number;
+}
+
+const suggestDatasetCloneName = (sourceName: string, datasets: EvalDataset[]) => {
+  const existingNames = new Set(datasets.map(dataset => dataset.name.trim().toLocaleLowerCase()));
+  const baseName = `${sourceName} - 副本`;
+  if (!existingNames.has(baseName.toLocaleLowerCase())) return baseName;
+  let sequence = 2;
+  while (existingNames.has(`${baseName} ${sequence}`.toLocaleLowerCase())) sequence += 1;
+  return `${baseName} ${sequence}`;
 }
 
 interface DatasetFormState {
@@ -682,6 +700,11 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   const [datasets, setDatasets] = useState<EvalDataset[]>([]);
   const [tasks, setTasks] = useState<EvalTask[]>([]);
   const [datasetToDelete, setDatasetToDelete] = useState<string | null>(null);
+  const [cloneTarget, setCloneTarget] = useState<DatasetCloneTarget | null>(null);
+  const [cloneName, setCloneName] = useState('');
+  const [cloneError, setCloneError] = useState('');
+  const [cloneNotice, setCloneNotice] = useState('');
+  const [isCloningDataset, setIsCloningDataset] = useState(false);
   const [selectedDatasetId, setSelectedDatasetId] = useState('');
   const [selectedRowIndex, setSelectedRowIndex] = useState(0);
   const [searchTerm, setSearchTerm] = useState('');
@@ -1769,6 +1792,65 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     }
   };
 
+  const openCloneDialog = () => {
+    if (!selectedDataset || !tableDataset) return;
+    setCloneTarget({
+      datasetId: selectedDataset.id,
+      datasetName: tableDataset.name,
+      sourceVersion: tableDataset.version || selectedDataset.version || 1,
+      itemCount: tableDataset.items.length,
+    });
+    setCloneName(suggestDatasetCloneName(tableDataset.name, normalizedDatasets));
+    setCloneError('');
+    setCloneNotice('');
+  };
+
+  const closeCloneDialog = () => {
+    if (isCloningDataset) return;
+    setCloneTarget(null);
+    setCloneName('');
+    setCloneError('');
+  };
+
+  const confirmCloneDataset = async () => {
+    if (!cloneTarget || isCloningDataset) return;
+    const nextName = cloneName.trim();
+    if (!nextName) {
+      setCloneError('请输入副本名称。');
+      return;
+    }
+
+    try {
+      setIsCloningDataset(true);
+      setCloneError('');
+      const clonedDataset = await persistDatasetClone(
+        cloneTarget.datasetId,
+        cloneTarget.sourceVersion,
+        nextName
+      );
+      setDatasets(current => [
+        clonedDataset,
+        ...current.filter(dataset => dataset.id !== clonedDataset.id),
+      ]);
+      setSearchTerm('');
+      setModalityFilter('all');
+      setTagFilter('');
+      setDimensionFilter('');
+      setSelectedDatasetId(clonedDataset.id);
+      setViewingVersionDataset(null);
+      setSelectedRowIndex(0);
+      setSyncNotice('');
+      setCloneNotice(`已从「${cloneTarget.datasetName}」v${cloneTarget.sourceVersion} 创建独立副本「${clonedDataset.name}」。`);
+      setCloneTarget(null);
+      setCloneName('');
+    } catch (error: any) {
+      console.error('Error cloning dataset:', error);
+      setCloneError(`创建副本失败：${error?.message || error}`);
+    } finally {
+      setIsCloningDataset(false);
+    }
+  };
+
   const handleViewVersion = async (version: number) => {
     if (!selectedDataset) return;
     if (version === selectedDataset.version) {
@@ -2739,6 +2821,16 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                   <button onClick={openNewGeneration} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-sm flex items-center gap-2 border border-amber-500/20 disabled:opacity-40">
                     <Wand2 size={16} /> 批量生产
                   </button>
+                  {!isGenerationMode && (
+                    <button
+                      type="button"
+                      onClick={openCloneDialog}
+                      disabled={isCloningDataset}
+                      className="px-3 py-2 rounded-xl bg-blue-500/10 hover:bg-blue-500/20 text-blue-200 text-sm flex items-center gap-2 border border-blue-400/20 disabled:opacity-40"
+                    >
+                      <Copy size={16} /> 创建副本
+                    </button>
+                  )}
                   <button onClick={() => tableDataset && downloadCsv(tableDataset.items.length ? `${selectedDataset.name}_v${tableDataset.version || selectedDataset.version || 1}_data.csv` : `template_${selectedDataset.id}.csv`, tableDataset.items.length ? tableDataset.items : tableDataset.inputSchema.map(field => field.key))} className="px-3 py-2 rounded-xl bg-white/5 glass-panel-hover text-slate-300 text-sm flex items-center gap-2 border border-white/10">
                     <Download size={16} /> {tableDataset?.items.length ? '下载数据' : '下载模板'}
                   </button>
@@ -2753,6 +2845,12 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                   </button>
                 </div>
               </div>
+              {cloneNotice && (
+                <div role="status" className="flex items-start justify-between gap-3 border-b border-emerald-400/20 bg-emerald-500/10 px-5 py-3 text-sm text-emerald-100">
+                  <span className="flex items-start gap-2"><CheckCircle2 size={16} className="mt-0.5 shrink-0" /> {cloneNotice}</span>
+                  <button type="button" onClick={() => setCloneNotice('')} aria-label="关闭副本创建提示" className="shrink-0 text-emerald-200/70 hover:text-emerald-100"><X size={16} /></button>
+                </div>
+              )}
               {columnManagerOpen && createPortal(
                 <div className="fixed inset-0 z-[100]">
                   <button
@@ -2940,6 +3038,15 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                 </div>
                 <dl className="mt-4 space-y-2 text-sm">
                   <div onDoubleClick={() => openManifestEditor('datasetCard.source', '样本来源', tableDataset?.datasetCard?.source || '')} title={isViewingHistoricalVersion ? '历史版本只读' : '双击编辑'}><dt className="text-slate-400">来源</dt><dd className="text-slate-200 break-words">{tableDataset?.datasetCard?.source || '-'}</dd></div>
+                  {tableDataset?.copiedFrom && (
+                    <div className="border-l-2 border-blue-400/50 pl-3">
+                      <dt className="text-slate-400">副本来源</dt>
+                      <dd className="text-slate-200 break-words">
+                        「{tableDataset.copiedFrom.datasetName}」v{tableDataset.copiedFrom.datasetVersion}
+                        <span className="mt-0.5 block text-xs text-slate-500">复制于 {formatDate(tableDataset.copiedFrom.copiedAt)}</span>
+                      </dd>
+                    </div>
+                  )}
                   <div onDoubleClick={() => openManifestEditor('datasetCard.rubricBinding', 'Rubric 绑定', tableDataset?.datasetCard?.rubricBinding || '')} title={isViewingHistoricalVersion ? '历史版本只读' : '双击编辑'}><dt className="text-slate-400">Rubric</dt><dd className="text-slate-200 break-words">{tableDataset?.datasetCard?.rubricBinding || '-'}</dd></div>
                   <div onDoubleClick={() => openManifestEditor('categoryPath', '分类路径', tableDataset?.categoryPath || [], 'list')} title={isViewingHistoricalVersion ? '历史版本只读' : '双击编辑'}><dt className="text-slate-400">分类路径</dt><dd className="text-slate-200 break-words">{tableDataset?.categoryPath?.join(' / ') || '-'}</dd></div>
                   <div onDoubleClick={() => openManifestEditor('datasetCard.applicableTasks', '适用任务', tableDataset?.datasetCard?.applicableTasks || [], 'list')} title={isViewingHistoricalVersion ? '历史版本只读' : '双击编辑'}><dt className="text-slate-400">适用任务</dt><dd className="text-slate-200 break-words">{tableDataset?.datasetCard?.applicableTasks?.join('、') || '-'}</dd></div>
@@ -3080,6 +3187,76 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
           onCreateEvaluation={onCreateEvaluation}
           onClose={() => { setGenerationModalOpen(false); setSelectedGenerationBatchId(undefined); }}
         />
+      )}
+
+      {cloneTarget && (
+        <div
+          className="fixed inset-0 z-[125] flex items-center justify-center bg-black/75 p-4"
+          onMouseDown={event => { if (event.target === event.currentTarget) closeCloneDialog(); }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="dataset-clone-title"
+            className="w-full max-w-xl border border-white/15 bg-slate-950 shadow-2xl"
+            onKeyDown={event => {
+              if (event.key === 'Escape') closeCloneDialog();
+              if (event.key === 'Enter' && event.target instanceof HTMLInputElement) void confirmCloneDataset();
+            }}
+          >
+            <header className="flex items-start justify-between gap-4 border-b border-white/10 px-5 py-4">
+              <div className="flex min-w-0 items-start gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center border border-blue-400/30 bg-blue-500/10 text-blue-200">
+                  <Copy size={19} />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-xs uppercase tracking-[0.16em] text-blue-300">Dataset Fork</div>
+                  <h3 id="dataset-clone-title" className="mt-1 text-lg font-semibold text-slate-100">创建评测集副本</h3>
+                  <p className="mt-1 text-sm text-slate-400">副本创建后与原评测集完全独立，可直接删改。</p>
+                </div>
+              </div>
+              <button type="button" onClick={closeCloneDialog} disabled={isCloningDataset} aria-label="关闭创建副本弹窗" className="p-2 text-slate-400 hover:text-white disabled:opacity-40"><X size={18} /></button>
+            </header>
+
+            <div className="space-y-5 p-5">
+              <div className="grid grid-cols-2 gap-px border border-white/10 bg-white/10 text-sm">
+                <div className="bg-slate-950 p-3">
+                  <div className="text-xs text-slate-500">来源版本</div>
+                  <div className="mt-1 truncate text-slate-100" title={cloneTarget.datasetName}>{cloneTarget.datasetName} · v{cloneTarget.sourceVersion}</div>
+                </div>
+                <div className="bg-slate-950 p-3">
+                  <div className="text-xs text-slate-500">Case 数量</div>
+                  <div className="mt-1 text-slate-100">{cloneTarget.itemCount}</div>
+                </div>
+              </div>
+
+              <label className="block">
+                <span className="mb-2 block text-sm font-medium text-slate-200">副本名称</span>
+                <input
+                  autoFocus
+                  value={cloneName}
+                  onChange={event => { setCloneName(event.target.value); setCloneError(''); }}
+                  className="glass-input w-full px-3 py-3 text-sm"
+                  placeholder="请输入副本名称"
+                  disabled={isCloningDataset}
+                />
+              </label>
+
+              <div className="border border-amber-400/20 bg-amber-500/[0.06] p-4 text-xs leading-6 text-slate-300">
+                将复制全部 case、字段映射、Dataset Card、生成结果 URL 和元数据列。不会复制关联项目、评测任务、投票结果、生产批次或旧版本历史；媒体 URL 按值复用，不会重复上传底层文件。
+              </div>
+
+              {cloneError && <div role="alert" className="border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">{cloneError}</div>}
+            </div>
+
+            <footer className="flex justify-end gap-3 border-t border-white/10 px-5 py-4">
+              <button type="button" onClick={closeCloneDialog} disabled={isCloningDataset} className="btn-secondary px-4 py-2 text-sm">取消</button>
+              <button type="button" onClick={() => { void confirmCloneDataset(); }} disabled={isCloningDataset || !cloneName.trim()} className="btn-primary inline-flex items-center gap-2 px-4 py-2 text-sm disabled:opacity-40">
+                {isCloningDataset ? <><span className="h-4 w-4 animate-spin rounded-full border-2 border-black/30 border-t-black" /> 创建中</> : <><Copy size={16} /> 创建独立副本</>}
+              </button>
+            </footer>
+          </section>
+        </div>
       )}
 
       {editTarget && (

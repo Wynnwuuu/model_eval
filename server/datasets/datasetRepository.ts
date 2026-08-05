@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 
 import type { EvalDataset } from '../../src/types.ts';
+import { buildDatasetClone } from '../../src/datasetClone.ts';
 import {
   DATASET_ITEM_ID_KEY,
   ensureStableDatasetItemIds,
@@ -123,6 +124,7 @@ const mapDataset = (
     syncSummary: currentVersion?.sync_summary_json && Object.keys(currentVersion.sync_summary_json).length
       ? currentVersion.sync_summary_json
       : undefined,
+    copiedFrom: manifest.copiedFrom,
     createdAt: toTimestamp(row.created_at),
     updatedAt: targetVersionNumber && currentVersion ? toTimestamp(currentVersion.created_at) : toTimestamp(row.updated_at),
   };
@@ -248,6 +250,7 @@ const persistVersionSnapshot = async (client: PoolClient, dataset: EvalDataset, 
         categoryPath: dataset.categoryPath || [],
         standardFields: dataset.standardFields || [],
         datasetCard: dataset.datasetCard ?? null,
+        copiedFrom: dataset.copiedFrom,
       }),
       JSON.stringify(dataset.syncSummary || {}),
       latestHistory?.changeSummary || '',
@@ -403,6 +406,24 @@ export const saveDataset = async (
   if (!saved) throw new Error('Saved dataset was not found');
   return saved;
 };
+
+export const cloneDataset = async (
+  datasetId: string,
+  sourceVersion: number,
+  name: string,
+  user: RequestUser
+): Promise<EvalDataset | null> => {
+  const source = await getDatasetVersion(datasetId, sourceVersion);
+  if (!source) return null;
+  const clone = buildDatasetClone(source, {
+    id: `ds-${randomUUID()}`,
+    name,
+    actorId: user.id,
+    actorName: user.displayName || user.email || user.id,
+  });
+  return saveDataset(clone, user.id, { deferPropagation: true });
+};
+
 
 const summarizeValue = (value: unknown) => {
   const serialized = typeof value === 'string' ? value : JSON.stringify(value);

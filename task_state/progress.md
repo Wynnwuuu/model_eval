@@ -1,5 +1,18 @@
 # Arena Implementation Progress
 
+## 2026-08-05: Independent dataset copies
+
+- Added independent dataset copies for the current dataset or any immutable historical version.
+- Copies preserve business rows, original data, schema, mappings, Dataset Card, generated media URLs, and metadata while regenerating dataset/item identities.
+- Copies start at v1 with visible provenance and do not inherit projects, tasks, votes, generation jobs, synchronization summaries, or source version history.
+- Shared PostgreSQL/API and offline localStorage paths use the same pure clone builder.
+- The repository dialog suggests collision-aware names, supports edits, and automatically selects the new copy after creation.
+
+### Validation
+
+- Passed deterministic clone coverage and the extended API smoke for specified-version cloning, validation errors, source isolation, and clone edits.
+- Browser regression passed for current v2 and historical v1 copies, persistence after refresh, provenance display, regenerated internal IDs, and mobile 390x844 layout.
+- Deleting a case from the historical copy advanced only that copy to v2; the source remained unchanged at v2 with three cases.
 ## 2026-08-03: VidMuse stable generated assets
 
 - ManuEval now prefers Aion-materialized user assets over expiring provider URLs in `temporary_url` mode.

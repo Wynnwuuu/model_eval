@@ -1,6 +1,7 @@
 import { collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, orderBy, query, setDoc } from '../../datastore';
-import { db } from '../../auth';
+import { auth, db } from '../../auth';
 import { DatasetSyncSummary, DatasetVersionSnapshot, EvalDataset, EvalTask, EvaluationItem, VoteRecord } from '../../types';
+import { buildDatasetClone } from '../../datasetClone';
 import {
   detectDatasetColumnRenames,
   ensureStableDatasetItemIds,
@@ -90,6 +91,7 @@ const toVersionSnapshot = (dataset: EvalDataset): DatasetVersionSnapshot => ({
   validationSummary: dataset.validationSummary,
   standardFields: dataset.standardFields,
   syncSummary: dataset.syncSummary,
+  copiedFrom: dataset.copiedFrom,
   updatedAt: dataset.updatedAt || Date.now(),
 });
 
@@ -120,6 +122,7 @@ const datasetFromSnapshot = (dataset: EvalDataset, snapshot: DatasetVersionSnaps
   validationSummary: snapshot.validationSummary,
   standardFields: snapshot.standardFields,
   syncSummary: snapshot.syncSummary,
+  copiedFrom: snapshot.copiedFrom ?? dataset.copiedFrom,
   version: snapshot.version,
   updatedAt: snapshot.updatedAt || dataset.updatedAt,
 });
@@ -316,6 +319,44 @@ export async function createDataset(dataset: Omit<EvalDataset, 'id'> & Partial<P
   } as EvalDataset);
   await setDoc(doc(db, 'evalDatasets', localId), sanitizeDatasetValue(datasetWithSnapshot));
   return localId;
+}
+
+export async function cloneDataset(datasetId: string, sourceVersion: number, name: string) {
+  const cloneName = name.trim();
+  if (!cloneName) throw new Error('请输入副本名称');
+  if (!Number.isInteger(sourceVersion) || sourceVersion < 1) {
+    throw new Error('来源版本无效');
+  }
+
+  if (USE_SHARED_DATA_SOURCE) {
+    const response = await requestJson<{ dataset: EvalDataset }>(`/api/datasets/${datasetId}/clone`, {
+      method: 'POST',
+      body: JSON.stringify({ sourceVersion, name: cloneName }),
+    });
+    notifyDatasetReloaders();
+    return response.dataset;
+  }
+
+  const sourceSnap = await getDoc(doc(db, 'evalDatasets', datasetId));
+  if (!sourceSnap.exists) throw new Error('来源评测集不存在');
+  const current = sourceSnap.data() as EvalDataset;
+  let source = current;
+  if ((current.version || 1) !== sourceVersion) {
+    const snapshot = current.versionSnapshots?.[String(sourceVersion)];
+    if (!snapshot) throw new Error('来源评测集版本不存在');
+    source = datasetFromSnapshot(current, snapshot);
+  }
+
+  const currentUser = auth.currentUser;
+  const clone = buildDatasetClone(source, {
+    id: `ds-${crypto.randomUUID()}`,
+    name: cloneName,
+    actorId: currentUser?.uid || 'local-user',
+    actorName: currentUser?.displayName || currentUser?.email || 'Local',
+  });
+  const cloneWithSnapshot = attachLocalVersionSnapshot(clone);
+  await setDoc(doc(db, 'evalDatasets', clone.id), sanitizeDatasetValue(cloneWithSnapshot));
+  return cloneWithSnapshot;
 }
 
 export async function saveDataset(

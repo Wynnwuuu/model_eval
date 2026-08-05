@@ -389,6 +389,13 @@ export interface DatasetValidationSummary {
   warnings: string[];
 }
 
+export interface DatasetCopySource {
+  datasetId: string;
+  datasetName: string;
+  datasetVersion: number;
+  copiedAt: number;
+}
+
 export interface ArenaSamplingConfig {
   suggestedBattlesPerReviewer: number;
   warmupBattlesPerModel: number;
@@ -412,6 +419,7 @@ export interface DatasetVersionSnapshot {
   validationSummary?: DatasetValidationSummary;
   standardFields?: DatasetStandardFieldDefinition[];
   syncSummary?: DatasetSyncSummary;
+  copiedFrom?: DatasetCopySource;
   updatedAt: number;
 }
 
@@ -433,6 +441,7 @@ export interface EvalDataset {
   versionSnapshots?: Record<string, DatasetVersionSnapshot>;
   validationSummary?: DatasetValidationSummary;
   syncSummary?: DatasetSyncSummary;
+  copiedFrom?: DatasetCopySource;
   creatorUid?: string;
   creatorName?: string;
   createdAt: number;

@@ -71,8 +71,11 @@ const main = async () => {
     job: `job-${RUN_ID}`,
   };
 
+  let clonedDatasetId = '';
+
   const cleanup = async () => {
     await Promise.allSettled([
+      ...(clonedDatasetId ? [sendJson(`/api/datasets/${clonedDatasetId}`, 'DELETE')] : []),
       sendJson(`/api/generation/jobs/${ids.job}`, 'DELETE'),
       sendJson(`/api/tasks/${ids.task}`, 'DELETE'),
       sendJson(`/api/tasks/${ids.benchmarkTask}`, 'DELETE'),
@@ -218,6 +221,54 @@ const main = async () => {
     const preservedVersionTwo = await request<{ dataset: any }>(`/api/datasets/${ids.dataset}/versions/2`);
     assert(preservedVersionTwo.dataset.items.length === 1, 'dataset version 2 snapshot was not preserved after rollback');
 
+    const cloneResponse = await sendJson<{ dataset: any }>(`/api/datasets/${ids.dataset}/clone`, 'POST', {
+      sourceVersion: 1,
+      name: `Smoke Dataset Copy ${RUN_ID}`,
+    });
+    const clonedDataset = cloneResponse.dataset;
+    clonedDatasetId = clonedDataset.id;
+    assert(clonedDataset.id !== ids.dataset, 'dataset clone must receive a new dataset ID');
+    assert(clonedDataset.version === 1, 'dataset clone must restart at version 1');
+    assert(clonedDataset.versionHistory?.length === 1, 'dataset clone must not inherit source version history');
+    assert(clonedDataset.items.length === 2, 'dataset clone must copy the requested historical snapshot');
+    assert(clonedDataset.copiedFrom?.datasetId === ids.dataset, 'dataset clone lineage dataset ID was not persisted');
+    assert(clonedDataset.copiedFrom?.datasetVersion === 1, 'dataset clone lineage version was not persisted');
+    assert(
+      clonedDataset.items[0].__datasetItemId !== preservedVersionOne.dataset.items[0].__datasetItemId,
+      'dataset clone must regenerate internal item identities'
+    );
+
+    const clonedStableItemId = encodeURIComponent(clonedDataset.items[0].__datasetItemId);
+    const editedClone = await sendJson<{ dataset: any }>(
+      `/api/datasets/${clonedDataset.id}/items/${clonedStableItemId}`,
+      'PATCH',
+      { fieldKey: 'prompt', value: 'changed only in clone', expectedVersion: 1 }
+    );
+    assert(editedClone.dataset.version === 2, 'editing a clone must create its own next version');
+    assert(editedClone.dataset.items[0].prompt === 'changed only in clone', 'clone edit was not persisted');
+
+    const sourceVersionOneAfterCloneEdit = await request<{ dataset: any }>(`/api/datasets/${ids.dataset}/versions/1`);
+    const sourceCurrentAfterCloneEdit = await request<{ dataset: any }>(`/api/datasets/${ids.dataset}`);
+    assert(sourceVersionOneAfterCloneEdit.dataset.items[0].prompt === 'hello', 'clone edit mutated the source historical version');
+    assert(sourceCurrentAfterCloneEdit.dataset.items[0].prompt === 'hello', 'clone edit mutated the source current version');
+
+    const emptyCloneName = await expectJsonFailure(`/api/datasets/${ids.dataset}/clone`, 400, {
+      method: 'POST',
+      body: JSON.stringify({ sourceVersion: 1, name: '   ' }),
+    });
+    assert(emptyCloneName.error?.code === 'BAD_REQUEST', 'empty clone name did not return BAD_REQUEST');
+    await expectJsonFailure(`/api/datasets/${ids.dataset}/clone`, 400, {
+      method: 'POST',
+      body: JSON.stringify({ sourceVersion: 0, name: 'invalid version' }),
+    });
+    await expectJsonFailure(`/api/datasets/${ids.dataset}/clone`, 404, {
+      method: 'POST',
+      body: JSON.stringify({ sourceVersion: 999, name: 'missing version' }),
+    });
+    await expectJsonFailure('/api/datasets/missing-dataset/clone', 404, {
+      method: 'POST',
+      body: JSON.stringify({ sourceVersion: 1, name: 'missing dataset' }),
+    });
     await sendJson(`/api/templates/${ids.template}`, 'PUT', {
       template: {
         id: ids.template,
