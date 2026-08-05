@@ -53,3 +53,9 @@ All requested automated gates and browser regressions passed. Docker Desktop, Po
 The repository wide table now follows saved schema order and exposes every business field, including all reference images, videos, audio, additional inputs, and metadata. System fields default to hidden but can be enabled from the per-dataset column manager; preferences survive reload. Legacy row-only fields are appended, internal trace keys stay hidden, and the case ID remains sticky and non-hideable.
 
 Media requests are one-shot lazy mounted against the horizontal table viewport. Deterministic projection coverage lives in `scripts/test-dataset-table-columns.ts`. All requested dataset tests, lint, production build, desktop/mobile browser regression, local stack health, and API smoke passed. The shared app and API are available at `http://localhost:3000/` and `http://localhost:8787/`.
+
+## Completed work: reference video and audio-follow duration
+
+The generation modal now supports simple reference-video columns or mutually exclusive Raw elements JSON, plus uniform, column, and reference-audio duration sources. Live-model contracts drive field compilation; Hailuo H3 compiles videos to ordered `elements[].video_url`. Audio metadata probing is browser-only and the server verifies per-case audit data before producing final controls.
+
+No schema migration, Aion change, OSS activation, or paid generation was used. All generation/database/dataset/Arena/API tests, TypeScript checks, both builds, and live H3 desktop/mobile browser preflight passed on the latest main baseline. The live browser request demonstrated one valid 6.391s-to-7s case and one isolated multi-audio invalid case.

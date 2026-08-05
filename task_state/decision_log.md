@@ -143,3 +143,17 @@ The output schema is dataset-wide, but result, status, error, seed, request ID, 
 The repository table is projected from `inputSchema` order instead of special-casing prompt, dimensions, outputs, and the first two references. Input, output, dimension, reference/media, rubric, and ordinary metadata fields are visible by default. System audit fields remain available through column management but default to hidden. The case ID is first and cannot be hidden.
 
 Visibility is a per-dataset local preference rather than persisted dataset data, so it does not change exports, versions, tasks, generation writeback, or shared API contracts. Media cells mount once when they approach the table viewport to avoid issuing requests for wide columns the reviewer has not reached.
+
+## 2026-08-05: Reference video input remains contract-driven
+
+Simple reference-video columns are exposed only when the live configuration declares `reference_video_urls`, `video_urls`, `video_url`, an element video count range, or the verified Hailuo H3 contract. H3 compiles ordered URLs into `elements[].video_url` with a three-video maximum. Raw elements remains a mutually exclusive advanced mode so existing `@ElementN` numbering is never rewritten.
+
+## 2026-08-05: Duration source is explicit and per case
+
+Uniform, column, and reference-audio duration sources cannot be combined. Audio metadata is measured in the browser without adding server media dependencies, then keyed by stable dataset item ID. The server verifies the URL and case identity and recalculates the supported duration. Missing, multiple, failed, mismatched, or out-of-range audio invalidates only that case.
+
+Mode-specific duration options take precedence over global options when present. Discrete durations snap within 0.15 seconds or round upward; continuous numeric controls retain millisecond precision. The source, detected value, and final value are saved in existing JSON snapshots and `_params_json`, so no migration is required.
+
+## 2026-08-05: Required model inputs include resolved controls
+
+Live model `required_inputs` may list standard request controls such as duration and resolution. Preflight treats values in resolved controls as satisfying those requirements while preserving existing unsupported-input and control-range validation.

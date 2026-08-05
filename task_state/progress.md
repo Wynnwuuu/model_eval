@@ -205,3 +205,20 @@
 - `build`: passed outside the restricted sandbox; only existing mixed-import and chunk-size warnings remain.
 - Browser: 17/18 default columns, 10 reference columns, delayed media mounting, persistent system-column override, reset-default, 1280px interaction, and 390x844 containment passed.
 - `local:start`, `local:check`, and `test:api:smoke`: passed with the web app, API, and PostgreSQL healthy after starting Docker Desktop.
+
+## 2026-08-05: Reference video and audio-follow duration
+
+### Completed
+
+- Added an explicit reference-video/Raw-elements input area. Simple video columns compile through verified live model contracts; Hailuo H3 uses `elements[].video_url`, explicit array/single fields remain model-driven, and Raw elements stays available for advanced `@ElementN` prompts.
+- Added uniform, dataset-column, and reference-audio duration sources. Browser metadata probes are HTTP(S)-only, deduplicated, cached, concurrency-limited, timed out, and cancelled when model/mapping/selection changes.
+- Recomputed audio duration per case on the server, including mode-specific duration options, 0.15-second codec-tail snapping, upward discrete selection, continuous millisecond precision, and per-case audit snapshots.
+- Preserved old mappings, preflights, jobs, Worker behavior, stable assets, writeback, and human-evaluation handoff without a database migration.
+- Fixed live `required_inputs` validation so resolved standard controls such as duration and resolution satisfy the model contract.
+
+### Validation
+
+- `test:generation`, `test:generation:db`, `test:dataset-sync`, `test:dataset-import-mappings`, `test:dataset-column-deletion`, `test:dataset-table-columns`, `test:dataset-clone`, `test:arena`, `test:rank-ties`, and `test:api:smoke`: passed on latest `origin/main`.
+- `lint`, `server:build`, and `build`: passed; only existing Vite mixed-import and chunk-size warnings remain.
+- Browser: live Hailuo H3 config exposed video-column/Raw-elements modes and all three duration sources. A 6.391-second reference audio resolved to 7 seconds; one valid and one multi-audio invalid case were isolated correctly, and the request/response snapshots contained stable item IDs, duration audit, and `elements[].video_url`.
+- Browser: 1440x900 and 390x844 layouts had no horizontal overflow. A fresh page had zero console errors. The confirmation button stayed disabled and no paid generation was submitted.

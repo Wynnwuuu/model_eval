@@ -1,40 +1,40 @@
 {
-  "feature": "independent_dataset_clone",
+  "feature": "generation_reference_video_audio_duration",
   "requirements": [
     {
-      "id": "version-exact-copy",
+      "id": "reference-video-columns",
       "status": "completed",
-      "description": "Clone the exact current or historical dataset version with all business fields and original data"
+      "description": "Build ordered reference-video inputs only through verified live model contracts"
     },
     {
-      "id": "identity-isolation",
+      "id": "raw-elements-compatibility",
       "status": "completed",
-      "description": "Generate a new dataset ID and stable item IDs while preserving visible case IDs"
+      "description": "Keep Raw elements JSON as a mutually exclusive advanced mode"
     },
     {
-      "id": "provenance-and-version-reset",
+      "id": "duration-source-modes",
       "status": "completed",
-      "description": "Start the copy at v1 with one source record and visible copiedFrom metadata"
+      "description": "Support uniform, dataset-column, and reference-audio duration sources"
     },
     {
-      "id": "workflow-isolation",
+      "id": "audio-metadata-probing",
       "status": "completed",
-      "description": "Exclude linked projects, tasks, votes, generation jobs, sync summaries, and source history"
+      "description": "Probe public audio metadata with URL deduplication, cache, concurrency, timeout, and cancellation"
     },
     {
-      "id": "shared-offline-parity",
+      "id": "server-validation-and-audit",
       "status": "completed",
-      "description": "Expose matching POST API and localStorage clone behavior through one pure builder"
+      "description": "Recalculate per-case duration, reject mismatches, and persist source/detected/final audit data"
     },
     {
-      "id": "repository-interaction",
+      "id": "backward-compatibility",
       "status": "completed",
-      "description": "Provide collision-aware naming, historical-version context, guarded submission, auto-selection, and provenance display"
+      "description": "Preserve old snapshots, jobs, Worker, writeback, assets, and evaluation handoff without migration"
     },
     {
       "id": "verification",
       "status": "completed",
-      "description": "Cover deterministic cloning, API errors/source isolation, refresh persistence, and desktop/mobile browser flows"
+      "description": "Pass full automated tests, builds, live-config preflight, and desktop/mobile browser QA without paid generation"
     }
   ]
 }
