@@ -23,6 +23,7 @@ import {
   GenerationReferenceAudioDuration,
   GenerationModelConfig,
   GenerationPreflightResult,
+  GenerationQueueState,
   GenerationSeedMode,
   GenerationTargetMode,
 } from '../types';
@@ -45,6 +46,7 @@ import {
   createRetryPreflight,
   skipExecutionItems,
   getExecutionBatch,
+  getGenerationQueue,
   getGenerationRuntimeHealth,
   isTerminalGenerationBatch,
   listExecutionModels,
@@ -249,6 +251,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const [preflight, setPreflight] = useState<GenerationPreflightResult | null>(null);
   const [confirmed, setConfirmed] = useState(false);
   const [batch, setBatch] = useState<GenerationBatch | null>(null);
+  const [queue, setQueue] = useState<GenerationQueueState>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const pollController = useRef<AbortController | null>(null);
@@ -310,6 +313,22 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const selectedHasDuplicateBillingRisk = selectedBatchItems.some(item =>
     item.status === 'submission_unknown' || item.error?.code === 'GENERATION_TIMEOUT');
   const selectableBatchSignature = selectableBatchItems.map(item => item.id).join('|');
+  const pendingQueueLabel = useMemo(() => {
+    if (!batch) return '\u7b49\u5f85\u516c\u5e73\u8c03\u5ea6';
+    const modality = batch.modelConfig.outputModality;
+    const lane = modality === 'video' ? queue?.video : queue?.image;
+    if (modality === 'video') {
+      const modelName = String(batch.modelConfig.modelName || batch.modelConfig.id || '').toLowerCase();
+      const modelQueue = queue?.video.models?.find(item => item.modelName.toLowerCase() === modelName);
+      if (modelQueue && modelQueue.active >= modelQueue.effectiveLimit) {
+        return `\u7b49\u5f85\u6a21\u578b\u5bb9\u91cf ${modelQueue.active}/${modelQueue.effectiveLimit}`;
+      }
+    }
+    if (lane && lane.active >= lane.limit) {
+      return `\u7b49\u5f85\u5168\u5c40${modality === 'video' ? '\u89c6\u9891' : '\u56fe\u7247'}\u5bb9\u91cf ${lane.active}/${lane.limit}`;
+    }
+    return '\u7b49\u5f85\u516c\u5e73\u8c03\u5ea6';
+  }, [batch, queue]);
 
 
   const applyModel = (model?: GenerationModelConfig) => {
@@ -501,6 +520,21 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     setClock(Date.now());
     const interval = window.setInterval(() => setClock(Date.now()), 30_000);
     return () => window.clearInterval(interval);
+  }, [batch?.id, batch?.status, batch?.writebackStatus]);
+  useEffect(() => {
+    if (!batch || isTerminalGenerationBatch(batch)) return undefined;
+    let mounted = true;
+    const refreshQueue = () => {
+      void getGenerationQueue()
+        .then(value => { if (mounted) setQueue(value); })
+        .catch(() => undefined);
+    };
+    refreshQueue();
+    const interval = window.setInterval(refreshQueue, 5_000);
+    return () => {
+      mounted = false;
+      window.clearInterval(interval);
+    };
   }, [batch?.id, batch?.status, batch?.writebackStatus]);
 
   useEffect(() => {
@@ -1506,7 +1540,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                                   {'ManuEval \u622a\u6b62'} {new Date(item.timeoutAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
                                 </div>
                               )}
-                              {item.status === 'pending' && <div className="mt-1 text-slate-500">{'\u7b49\u5f85\u516c\u5e73\u8c03\u5ea6'}</div>}
+                              {item.status === 'pending' && <div className="mt-1 text-slate-500">{pendingQueueLabel}</div>}
                               {item.status === 'archiving' && <div className="mt-1 text-slate-500">{'\u5df2\u91ca\u653e\u6a21\u578b\u69fd\u4f4d\uff0c\u6b63\u5728\u5f52\u6863'}</div>}
                               {released && <div className="mt-1 text-slate-500">{'\u5df2\u91ca\u653e\u5e76\u53d1\u4f4d'}</div>}
                             </div>
