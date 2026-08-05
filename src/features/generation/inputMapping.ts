@@ -10,6 +10,7 @@ const emptyMapping = (): GenerationInputMapping => ({
   promptColumn: '',
   referenceImageColumns: [],
   referenceAudioColumns: [],
+  referenceVideoColumns: [],
   startImageColumn: '',
   endImageColumn: '',
   lyricsOrDialogueColumn: '',

@@ -6,13 +6,19 @@ import {
   resolveGenerationCaseSelection,
   type GenerationSelectionRow,
 } from '../../src/features/generation/caseSelection.ts';
-import type { GenerationTargetMode } from '../../src/types.ts';
+import { resolveReferenceAudioDuration } from '../../src/features/generation/audioDuration.ts';
+import {
+  flattenGenerationReferences,
+  parseStructuredGenerationValue,
+} from '../../src/features/generation/mediaReferences.ts';
+import type { GenerationDurationSource, GenerationTargetMode } from '../../src/types.ts';
 import type { RequestUser } from '../auth/context.ts';
 import { serverConfig } from '../config.ts';
 import { getDatasetVersion } from '../datasets/datasetRepository.ts';
 import { ApiError, badRequest, conflict, notFound } from '../http/errors.ts';
 import { aionGenerationClient } from './aionGenerationClient.ts';
 import {
+  compileGenerationReferenceVideoInputs,
   deriveGenerationSeed,
   estimateGenerationCost,
   fingerprintConfig,
@@ -45,6 +51,7 @@ export type GenerationPreflightRequest = {
     promptColumn?: string;
     referenceImageColumns?: string[];
     referenceAudioColumns?: string[];
+    referenceVideoColumns?: string[];
     startImageColumn?: string;
     endImageColumn?: string;
     lyricsOrDialogueColumn?: string;
@@ -53,6 +60,7 @@ export type GenerationPreflightRequest = {
   };
   defaultControls?: Record<string, any>;
   perCaseControlColumns?: Record<string, string>;
+  durationSource?: GenerationDurationSource;
   seedMode?: 'fixed' | 'derive_from_case' | 'column';
   fixedSeed?: number;
   seedColumn?: string;
@@ -63,35 +71,17 @@ export type GenerationPreflightRequest = {
 
 const text = (value: unknown) => String(value ?? '').trim();
 
-const parseStructured = (value: unknown): unknown => {
-  if (typeof value !== 'string') return value;
-  const trimmed = value.trim();
-  if (!trimmed || (!trimmed.startsWith('[') && !trimmed.startsWith('{'))) return value;
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return value;
-  }
-};
-
-const flattenReferences = (value: unknown): string[] => {
-  if (value == null) return [];
-  const parsed = parseStructured(value);
-  if (Array.isArray(parsed)) return parsed.flatMap(flattenReferences);
-  if (parsed && typeof parsed === 'object') {
-    const record = parsed as Record<string, unknown>;
-    return flattenReferences(record.url || record.src || record.path || record.file);
-  }
-  const raw = text(parsed);
-  if (!raw) return [];
-  const urls = raw.match(/(?:https?:\/\/|asset:\/\/)[^\s"'\t|,;<>]+/g);
-  if (urls?.length) return urls.map(url => url.replace(/[)\],;]+$/g, ''));
-  return raw.split(/[\n\r|;,]+/).map(item => item.trim()).filter(Boolean);
-};
+const parseStructured = parseStructuredGenerationValue;
+const flattenReferences = flattenGenerationReferences;
 
 const coerceControl = (value: unknown, definition: NormalizedGenerationModel['controls'][number] | undefined) => {
   if (!definition) return value;
   if (definition.type === 'number') return Number(value);
+  if (definition.type === 'select'
+    && definition.options?.length
+    && definition.options.every(option => Number.isFinite(Number(option)))) {
+    return Number(value);
+  }
   if (definition.type === 'toggle') {
     if (typeof value === 'boolean') return value;
     return ['true', '1', 'yes', 'on', 'enabled'].includes(text(value).toLowerCase());
@@ -166,7 +156,10 @@ const resolveStructuredAssets = (
   };
 };
 
-const buildCases = (
+const hasMappedValue = (value: unknown) =>
+  value !== undefined && value !== null && text(value) !== '';
+
+export const buildGenerationCasesForPreflight = (
   dataset: Awaited<ReturnType<typeof getDatasetVersion>> extends infer T ? Exclude<T, null> : never,
   request: GenerationPreflightRequest,
   model: NormalizedGenerationModel,
@@ -187,16 +180,38 @@ const buildCases = (
         (input.referenceAudioColumns || []).map(column => row[column]),
         assets,
       );
+      const videos = resolveReferences(
+        (input.referenceVideoColumns || []).map(column => row[column]),
+        assets,
+      );
+
+      const durationIssues: PreflightIssue[] = [];
+      const durationSource = request.durationSource;
       const controls = { ...(request.defaultControls || {}) };
+      if (durationSource && durationSource.mode !== 'uniform') delete controls.duration;
       for (const [key, column] of Object.entries(request.perCaseControlColumns || {})) {
+        if (durationSource && key === 'duration') continue;
         const value = row[column];
-        if (value !== undefined && value !== null && text(value) !== '') controls[key] = value;
+        if (hasMappedValue(value)) controls[key] = value;
+      }
+      if (durationSource?.mode === 'column') {
+        const value = durationSource.column ? row[durationSource.column] : undefined;
+        if (!hasMappedValue(value)) {
+          durationIssues.push({
+            code: 'MISSING_DURATION_COLUMN_VALUE',
+            field: durationSource.column || 'duration',
+            message: `The duration column is empty for case ${caseId}.`,
+          });
+        } else {
+          controls.duration = value;
+        }
       }
       for (const definition of model.controls) {
         if (controls[definition.key] !== undefined) {
           controls[definition.key] = coerceControl(controls[definition.key], definition);
         }
       }
+
       const rawExtraInputs = Object.fromEntries([
         ...(input.extraInputColumns || []).map(column => [column, parseStructured(row[column])]),
         ...Object.entries(input.extraInputMappings || {}).map(([key, column]) => [key, parseStructured(row[column])]),
@@ -204,6 +219,11 @@ const buildCases = (
       if (input.lyricsOrDialogueColumn) {
         rawExtraInputs.lyrics_or_dialogue = row[input.lyricsOrDialogueColumn];
       }
+      const compiledVideos = compileGenerationReferenceVideoInputs(
+        model,
+        videos.urls,
+        rawExtraInputs.elements,
+      );
       const extraInputs: Record<string, unknown> = {};
       const extraInputIssues: PreflightIssue[] = [];
       for (const [key, value] of Object.entries(rawExtraInputs)) {
@@ -211,11 +231,28 @@ const buildCases = (
         extraInputs[key] = resolved.value;
         extraInputIssues.push(...resolved.issues);
       }
+      Object.assign(extraInputs, compiledVideos.extraInputs);
+
       const imageInputs = resolveGenerationImageInputs(model.outputModality, {
         referenceUrls: references.urls,
         startUrls: start.urls,
         endUrls: end.urls,
       });
+      const referenceConflictIssues: PreflightIssue[] = [];
+      const usesKeyframes = imageInputs.generationType === 'image_to_video'
+        || imageInputs.generationType === 'images_to_video';
+      const hasRawElements = rawExtraInputs.elements !== undefined
+        && rawExtraInputs.elements !== null
+        && rawExtraInputs.elements !== ''
+        && (!Array.isArray(rawExtraInputs.elements) || rawExtraInputs.elements.length > 0);
+      if (usesKeyframes && (compiledVideos.videoUrls.length > 0 || hasRawElements)) {
+        referenceConflictIssues.push({
+          code: 'CONFLICTING_VIDEO_AND_KEYFRAMES',
+          field: 'referenceVideoColumns',
+          message: 'A case cannot combine start/end keyframes with reference videos or raw elements.',
+        });
+      }
+
       const prompt = input.promptColumn ? text(row[input.promptColumn]) : '';
       const seedMode = request.seedMode || 'derive_from_case';
       const seedColumnValue = seedMode === 'column' && request.seedColumn
@@ -242,6 +279,71 @@ const buildCases = (
           });
         }
       }
+
+      let durationResolution: GenerationCase['durationResolution'];
+      if (durationSource?.mode === 'reference_audio') {
+        const audit = durationSource.referenceAudio?.[datasetItemId];
+        if (audios.urls.length !== 1) {
+          durationIssues.push({
+            code: audios.urls.length ? 'MULTIPLE_REFERENCE_AUDIOS' : 'MISSING_REFERENCE_AUDIO',
+            field: 'referenceAudioColumns',
+            message: `Audio-follow duration requires exactly one reference audio for case ${caseId}.`,
+          });
+        } else if (!/^https?:\/\//i.test(audios.urls[0])) {
+          durationIssues.push({
+            code: 'REFERENCE_AUDIO_NOT_PUBLIC',
+            field: 'referenceAudioColumns',
+            message: 'Audio-follow duration only supports public HTTP(S) reference audio.',
+          });
+        } else if (!audit) {
+          durationIssues.push({
+            code: 'UNKNOWN_AUDIO_DURATION',
+            field: 'duration',
+            message: `No audio metadata duration was provided for case ${caseId}.`,
+          });
+        } else if (audit.audioUrl !== audios.urls[0]) {
+          durationIssues.push({
+            code: 'AUDIO_DURATION_URL_MISMATCH',
+            field: 'duration',
+            message: `The probed audio URL does not match the selected reference audio for case ${caseId}.`,
+          });
+        } else {
+          const normalized = resolveReferenceAudioDuration(model, audit.detectedSeconds);
+          if (!normalized.ok) {
+            durationIssues.push({
+              code: 'REFERENCE_AUDIO_DURATION_UNSUPPORTED',
+              field: 'duration',
+              message: normalized.error,
+            });
+          } else if (Math.abs(normalized.resolvedDuration - Number(audit.resolvedDuration)) > 0.001) {
+            durationIssues.push({
+              code: 'AUDIO_DURATION_RESOLUTION_MISMATCH',
+              field: 'duration',
+              message: `The submitted duration does not match the server resolution for case ${caseId}.`,
+            });
+          } else {
+            controls.duration = normalized.resolvedDuration;
+            durationResolution = {
+              source: 'reference_audio',
+              audioUrl: audit.audioUrl,
+              detectedSeconds: normalized.detectedSeconds,
+              resolvedDuration: normalized.resolvedDuration,
+            };
+          }
+        }
+      } else if (durationSource?.mode === 'column' && Number.isFinite(Number(controls.duration))) {
+        durationResolution = {
+          source: 'column',
+          column: durationSource.column,
+          resolvedDuration: Number(controls.duration),
+        };
+      } else if (durationSource?.mode === 'uniform' && Number.isFinite(Number(controls.duration))) {
+        durationResolution = {
+          source: 'uniform',
+          resolvedDuration: Number(controls.duration),
+        };
+      }
+
       const resolvedCase: GenerationCase = {
         caseId,
         datasetItemId,
@@ -249,16 +351,66 @@ const buildCases = (
         prompt,
         imageUrls: imageInputs.imageUrls,
         audioUrls: audios.urls,
+        videoUrls: compiledVideos.videoUrls,
         controls,
         seed,
         extraInputs,
-        generationType: imageInputs.generationType,
+        generationType: compiledVideos.generationType || imageInputs.generationType,
+        ...(durationResolution ? { durationResolution } : {}),
       };
       return {
         resolvedCase,
-        preparationIssues: [...start.issues, ...end.issues, ...references.issues, ...audios.issues, ...extraInputIssues, ...imageInputs.issues, ...seedIssues],
+        preparationIssues: [
+          ...start.issues,
+          ...end.issues,
+          ...references.issues,
+          ...audios.issues,
+          ...videos.issues,
+          ...extraInputIssues,
+          ...imageInputs.issues,
+          ...compiledVideos.issues,
+          ...referenceConflictIssues,
+          ...durationIssues,
+          ...seedIssues,
+        ],
       };
     });
+};
+
+export const validateDurationSourceConfiguration = (
+  request: GenerationPreflightRequest,
+  model: NormalizedGenerationModel,
+) => {
+  const source = request.durationSource;
+  if (!source) return;
+  if (!['uniform', 'column', 'reference_audio'].includes(source.mode)) {
+    throw badRequest('Unknown duration source mode.');
+  }
+  if (model.outputModality !== 'video') {
+    throw badRequest('Duration source selection is only available for video generation.');
+  }
+
+  const hasDefaultDuration = hasMappedValue(request.defaultControls?.duration);
+  const hasPerCaseDuration = hasMappedValue(request.perCaseControlColumns?.duration);
+  if (source.mode === 'uniform') {
+    if (hasPerCaseDuration || source.column || source.referenceAudio) {
+      throw badRequest('Uniform duration cannot be combined with another duration source.');
+    }
+    return;
+  }
+  if (source.mode === 'column') {
+    if (!source.column?.trim()) throw badRequest('A duration column is required.');
+    if (hasDefaultDuration || hasPerCaseDuration || source.referenceAudio) {
+      throw badRequest('Column duration cannot be combined with another duration source.');
+    }
+    return;
+  }
+  if (hasDefaultDuration || hasPerCaseDuration || source.column) {
+    throw badRequest('Reference-audio duration cannot be combined with another duration source.');
+  }
+  if (source.referenceAudio && typeof source.referenceAudio !== 'object') {
+    throw badRequest('Reference-audio duration metadata must be keyed by stable dataset item ID.');
+  }
 };
 
 export const createGenerationPreflight = async (
@@ -276,6 +428,7 @@ export const createGenerationPreflight = async (
   if (!dataset) throw notFound('Dataset version');
   const model = await aionGenerationClient.getModel(request.modelName);
   if (!model) throw notFound('Enabled Aion model');
+  validateDurationSourceConfiguration(request, model);
 
   const targetMode = request.targetMode || 'new';
   const targetInspection = inspectGenerationTargetColumn(dataset, {
@@ -302,6 +455,20 @@ export const createGenerationPreflight = async (
   if (selection.errors.length) {
     throw badRequest(selection.errors[0].message, { issues: selection.errors });
   }
+  if (request.durationSource?.mode === 'column'
+    && !dataset.items.some(row => Object.prototype.hasOwnProperty.call(row, request.durationSource?.column || ''))) {
+    throw badRequest('The selected duration column does not exist in this dataset version.');
+  }
+  if (request.durationSource?.mode === 'reference_audio') {
+    const selectedIds = new Set(selection.normalizedIds);
+    const unknownDurationIds = Object.keys(request.durationSource.referenceAudio || {})
+      .filter(datasetItemId => !selectedIds.has(datasetItemId));
+    if (unknownDurationIds.length) {
+      throw badRequest('Reference-audio duration metadata contains unknown or unselected case IDs.', {
+        datasetItemIds: unknownDurationIds,
+      });
+    }
+  }
   request = {
     ...request,
     targetMode,
@@ -318,7 +485,7 @@ export const createGenerationPreflight = async (
   }
   request = { ...request, assetBindings: verifiedAssets };
 
-  const prepared = buildCases(dataset, request, model, selection.rows);
+  const prepared = buildGenerationCasesForPreflight(dataset, request, model, selection.rows);
   if (!prepared.length) throw badRequest('No dataset cases were selected.');
   if (prepared.length > serverConfig.generationMaxBatchSize) {
     throw badRequest(`A generation batch is limited to ${serverConfig.generationMaxBatchSize} cases.`);
@@ -370,6 +537,7 @@ export const createGenerationPreflight = async (
     inputMapping: request.inputMapping,
     defaultControls: request.defaultControls || {},
     perCaseControlColumns: request.perCaseControlColumns || {},
+    durationSource: request.durationSource,
     retryOfJobId: request.retryOfJobId,
     seedMode: request.seedMode,
     fixedSeed: request.fixedSeed,

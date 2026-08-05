@@ -78,6 +78,7 @@ const mappedMediaColumns = (mapping: GenerationInputMapping) => Array.from(new S
   ...(mapping.startImageColumn ? [mapping.startImageColumn] : []),
   ...(mapping.endImageColumn ? [mapping.endImageColumn] : []),
   ...(mapping.referenceAudioColumns || []),
+  ...(mapping.referenceVideoColumns || []),
 ]));
 
 const GenerationCaseSelector: React.FC<GenerationCaseSelectorProps> = ({

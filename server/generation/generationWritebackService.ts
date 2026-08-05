@@ -116,6 +116,7 @@ export const writeGenerationBatchToDataset = async (jobId: string) => {
         configFingerprint: batch.modelConfig.configFingerprint,
         generationType: item.resolvedInputs?.generationType,
         controls: item.resolvedControls || {},
+        duration: item.resolvedInputs?.durationResolution,
         seed: item.seed,
         originalResultUrl: item.originalResultUrl,
         durability: item.durability,

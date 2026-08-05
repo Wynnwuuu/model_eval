@@ -260,6 +260,22 @@ try {
     'stable_result',
     `request-${suffix}-stable`,
   );
+  stablePreflight.payload.durationSource = {
+    mode: 'reference_audio',
+    referenceAudio: {
+      [String(stablePreflight.result.cases[0].resolvedCase.datasetItemId)]: {
+        audioUrl: 'https://assets.example.com/reference.mp3',
+        detectedSeconds: 8.516,
+        resolvedDuration: 9,
+      },
+    },
+  };
+  stablePreflight.result.cases[0].resolvedCase.durationResolution = {
+    source: 'reference_audio',
+    audioUrl: 'https://assets.example.com/reference.mp3',
+    detectedSeconds: 8.516,
+    resolvedDuration: 9,
+  };
   await saveGenerationPreflight(stablePreflight);
   const stableJob = await createGenerationBatchFromPreflight(stablePreflight, user);
   const stableClaim = await claimNextGenerationItem('image', `worker-stable-${suffix}`);
@@ -283,11 +299,18 @@ try {
   const stableBatch = await getGenerationBatch(stableJob.id);
   assert.equal(stableBatch?.items[0].durability, 'vidmuse_asset');
   assert.equal(stableBatch?.items[0].originalResultUrl, stableProviderUrl);
+  assert.equal(stableBatch?.controls.durationSource?.mode, 'reference_audio');
   const afterStableWriteback = await getDataset(datasetId);
   assert.equal(afterStableWriteback?.items[0].stable_result, stableAssetUrl);
   const stableParams = JSON.parse(String(afterStableWriteback?.items[0].stable_result_params_json || '{}'));
   assert.equal(stableParams.durability, 'vidmuse_asset');
   assert.equal(stableParams.originalResultUrl, stableProviderUrl);
+  assert.deepEqual(stableParams.duration, {
+    source: 'reference_audio',
+    audioUrl: 'https://assets.example.com/reference.mp3',
+    detectedSeconds: 8.516,
+    resolvedDuration: 9,
+  });
   const partialColumn = 'partial_result';
   const partialPreflight = createPreflightRecord(
     (await getDataset(datasetId))!,

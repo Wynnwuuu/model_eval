@@ -2,6 +2,7 @@ import {
   DatasetGenerationJob,
   DatasetGenerationJobItem,
   GenerationAssetBinding,
+  GenerationDurationSource,
   GenerationInputMapping,
   GenerationModelConfig,
   GenerationPreflightResult,
@@ -21,6 +22,7 @@ export interface GenerationPreflightRequest {
   inputMapping: GenerationInputMapping;
   defaultControls: Record<string, unknown>;
   perCaseControlColumns: Record<string, string>;
+  durationSource?: GenerationDurationSource;
   seedMode: GenerationSeedMode;
   fixedSeed?: number;
   seedColumn?: string;

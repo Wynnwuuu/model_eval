@@ -500,6 +500,7 @@ export interface GenerationInputMapping {
   promptColumn?: string;
   referenceImageColumns: string[];
   referenceAudioColumns: string[];
+  referenceVideoColumns?: string[];
   startImageColumn?: string;
   endImageColumn?: string;
   lyricsOrDialogueColumn?: string;
@@ -507,6 +508,19 @@ export interface GenerationInputMapping {
   extraInputMappings?: Record<string, string>;
 }
 
+export type GenerationDurationSourceMode = 'uniform' | 'column' | 'reference_audio';
+
+export interface GenerationReferenceAudioDuration {
+  audioUrl: string;
+  detectedSeconds: number;
+  resolvedDuration: number;
+}
+
+export interface GenerationDurationSource {
+  mode: GenerationDurationSourceMode;
+  column?: string;
+  referenceAudio?: Record<string, GenerationReferenceAudioDuration>;
+}
 export interface DatasetGenerationJob {
   id: string;
   datasetId: string;

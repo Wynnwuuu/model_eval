@@ -17,7 +17,9 @@ import {
   EvalDataset,
   GenerationAssetDurability,
   GenerationAssetBinding,
+  GenerationDurationSourceMode,
   GenerationInputMapping,
+  GenerationReferenceAudioDuration,
   GenerationModelConfig,
   GenerationPreflightResult,
   GenerationSeedMode,
@@ -55,8 +57,15 @@ import {
 } from '../features/generation/inputMapping';
 import {
   GenerationImageRole,
+  getGenerationReferenceVideoSupport,
   getSupportedGenerationImageRoles,
+  modelDeclaresGenerationInput,
 } from '../features/generation/modelCapabilities';
+import {
+  probeAudioDurations,
+  resolveReferenceAudioDuration,
+} from '../features/generation/audioDuration';
+import { uniqueGenerationReferences } from '../features/generation/mediaReferences';
 
 interface DatasetGenerationExecutionModalProps {
   dataset: EvalDataset;
@@ -82,6 +91,14 @@ const copy = {
   imageRole: '\u56fe\u50cf',
   unsupportedRole: '\u5f53\u524d\u6a21\u578b\u4e0d\u652f\u6301',
   refAudios: '\u53c2\u8003\u97f3\u9891\u5217',
+  refVideosAndElements: '\u53c2\u8003\u89c6\u9891 / \u5143\u7d20',
+  videoColumns: '\u4ece\u89c6\u9891\u5217\u6784\u5efa',
+  rawElements: '\u4ece elements JSON \u5217\u8bfb\u53d6',
+  durationSource: '\u65f6\u957f\u6765\u6e90',
+  uniformDuration: '\u7edf\u4e00\u503c',
+  durationColumn: '\u4ece\u5217\u8bfb\u53d6',
+  followAudioDuration: '\u8ddf\u968f\u53c2\u8003\u97f3\u9891',
+  probingAudio: '\u6b63\u5728\u8bfb\u53d6\u97f3\u9891\u65f6\u957f...',
   none: '\u4e0d\u4f7f\u7528',
   controls: '\u751f\u6210\u53c2\u6570',
   caseColumn: '\u9010 case \u8986\u76d6\u5217',
@@ -111,6 +128,7 @@ const emptyMapping: GenerationInputMapping = {
   promptColumn: '',
   referenceImageColumns: [],
   referenceAudioColumns: [],
+  referenceVideoColumns: [],
   startImageColumn: '',
   endImageColumn: '',
   lyricsOrDialogueColumn: '',
@@ -174,8 +192,8 @@ const advancedInputKeysFor = (model?: GenerationModelConfig) => {
     value.flatMap(group => Array.isArray(group) ? group : [group]).forEach(key => keys.add(String(key)));
   });
   [
-    'prompt', 'image_urls', 'audio_url', 'audios', 'generation_type',
-    'model_name', 'features', 'extra_params',
+    'prompt', 'image_urls', 'audio_url', 'audios', 'video_url', 'video_urls',
+    'reference_video_urls', 'elements', 'generation_type', 'model_name', 'features', 'extra_params',
   ].forEach(key => keys.delete(key));
   return Array.from(keys).sort();
 };
@@ -197,6 +215,9 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const [inputMapping, setInputMapping] = useState<GenerationInputMapping>(emptyMapping);
   const [defaultControls, setDefaultControls] = useState<Record<string, unknown>>({});
   const [perCaseControlColumns, setPerCaseControlColumns] = useState<Record<string, string>>({});
+  const [durationMode, setDurationMode] = useState<GenerationDurationSourceMode>('uniform');
+  const [durationColumn, setDurationColumn] = useState('');
+  const [referenceInputMode, setReferenceInputMode] = useState<'video_columns' | 'raw_elements'>('video_columns');
   const [seedMode, setSeedMode] = useState<GenerationSeedMode>('derive_from_case');
   const [fixedSeed, setFixedSeed] = useState(42);
   const [seedColumn, setSeedColumn] = useState('');
@@ -209,6 +230,13 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const pollController = useRef<AbortController | null>(null);
+  const audioProbeController = useRef<AbortController | null>(null);
+  const audioDurationCache = useRef(new Map<string, number>());
+  const [audioProbe, setAudioProbe] = useState<{
+    status: 'idle' | 'probing' | 'ready';
+    values: Record<string, GenerationReferenceAudioDuration>;
+    issues: Record<string, string>;
+  }>({ status: 'idle', values: {}, issues: {} });
 
   const mappings = useMemo(() => getDatasetColumnMappings(dataset), [dataset]);
   const headers = useMemo(() => Array.from(new Set([
@@ -242,6 +270,9 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const selectionTooLarge = selectedDatasetItemIds.length > maxBatchSize;
   const advancedInputKeys = useMemo(() => advancedInputKeysFor(selectedModel), [selectedModel]);
   const imageRoles = useMemo(() => getSupportedGenerationImageRoles(selectedModel), [selectedModel]);
+  const referenceVideoSupport = useMemo(() => getGenerationReferenceVideoSupport(selectedModel), [selectedModel]);
+  const supportsRawElements = modelDeclaresGenerationInput(selectedModel, 'elements');
+  const durationControl = selectedModel?.controls.find(control => control.key === 'duration');
   const hasUnknownSubmission = batch?.items.some(item => item.status === 'submission_unknown') || false;
 
   const applyModel = (model?: GenerationModelConfig) => {
@@ -252,7 +283,17 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
       (model?.controls || []).map(control => [control.key, control.defaultValue ?? '']),
     ));
     setPerCaseControlColumns({});
-    setInputMapping(current => ({ ...current, extraInputMappings: {} }));
+    setDurationMode('uniform');
+    setDurationColumn('');
+    const videoSupport = getGenerationReferenceVideoSupport(model);
+    setReferenceInputMode(videoSupport.supported ? 'video_columns' : 'raw_elements');
+    audioProbeController.current?.abort();
+    setAudioProbe({ status: 'idle', values: {}, issues: {} });
+    setInputMapping(current => ({
+      ...current,
+      referenceVideoColumns: [],
+      extraInputMappings: {},
+    }));
     setPreflight(null);
     setConfirmed(false);
   };
@@ -285,6 +326,84 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     return () => { active = false; };
   }, [initialBatchId]);
 
+  const selectedAudioCases = useMemo(() => {
+    const selectedIds = new Set(selectedDatasetItemIds);
+    return (dataset.items || []).flatMap(row => {
+      const datasetItemId = String(row[DATASET_ITEM_ID_KEY] || '').trim();
+      if (!datasetItemId || !selectedIds.has(datasetItemId)) return [];
+      const audioUrls = uniqueGenerationReferences(
+        (inputMapping.referenceAudioColumns || []).map(column => row[column]),
+      );
+      return [{ datasetItemId, audioUrls }];
+    });
+  }, [dataset.items, inputMapping.referenceAudioColumns, selectedDatasetItemIds]);
+
+  useEffect(() => {
+    audioProbeController.current?.abort();
+    if (durationMode !== 'reference_audio' || !selectedModel || !durationControl) {
+      setAudioProbe({ status: 'idle', values: {}, issues: {} });
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    audioProbeController.current = controller;
+    setAudioProbe({ status: 'probing', values: {}, issues: {} });
+    const probeableUrls = selectedAudioCases
+      .filter(item => item.audioUrls.length === 1)
+      .map(item => item.audioUrls[0]);
+
+    void probeAudioDurations(probeableUrls, {
+      cache: audioDurationCache.current,
+      concurrency: 4,
+      timeoutMs: 12_000,
+      signal: controller.signal,
+    }).then(results => {
+      if (controller.signal.aborted) return;
+      const values: Record<string, GenerationReferenceAudioDuration> = {};
+      const issues: Record<string, string> = {};
+      for (const item of selectedAudioCases) {
+        if (item.audioUrls.length !== 1) {
+          issues[item.datasetItemId] = item.audioUrls.length
+            ? '\u8ddf\u968f\u65f6\u957f\u6bcf\u4e2a case \u53ea\u80fd\u9009\u4e2d\u4e00\u6761\u53c2\u8003\u97f3\u9891\u3002'
+            : '\u8ddf\u968f\u65f6\u957f\u9700\u8981\u4e00\u6761\u53c2\u8003\u97f3\u9891\u3002';
+          continue;
+        }
+        const audioUrl = item.audioUrls[0];
+        const probed = results[audioUrl];
+        if (!probed?.seconds) {
+          issues[item.datasetItemId] = probed?.error || '\u65e0\u6cd5\u8bfb\u53d6\u97f3\u9891\u65f6\u957f\u3002';
+          continue;
+        }
+        const normalized = resolveReferenceAudioDuration(selectedModel, probed.seconds);
+        if (!normalized.valid || normalized.resolvedDuration === undefined) {
+          issues[item.datasetItemId] = normalized.error?.message || '\u97f3\u9891\u65f6\u957f\u4e0d\u53d7\u5f53\u524d\u6a21\u578b\u652f\u6301\u3002';
+          continue;
+        }
+        values[item.datasetItemId] = {
+          audioUrl,
+          detectedSeconds: normalized.detectedSeconds,
+          resolvedDuration: normalized.resolvedDuration,
+        };
+      }
+      setAudioProbe({ status: 'ready', values, issues });
+    }).catch(reason => {
+      if ((reason as Error)?.name === 'AbortError' || controller.signal.aborted) return;
+      const message = errorMessage(reason);
+      setAudioProbe({
+        status: 'ready',
+        values: {},
+        issues: Object.fromEntries(selectedAudioCases.map(item => [item.datasetItemId, message])),
+      });
+    });
+
+    return () => controller.abort();
+  }, [
+    durationMode,
+    durationControl,
+    selectedModel,
+    selectedAudioCases,
+  ]);
+
   const startPolling = (batchId: string) => {
     pollController.current?.abort();
     const controller = new AbortController();
@@ -308,7 +427,10 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     return () => pollController.current?.abort();
   }, [initialBatchId]);
 
-  useEffect(() => () => pollController.current?.abort(), []);
+  useEffect(() => () => {
+    pollController.current?.abort();
+    audioProbeController.current?.abort();
+  }, []);
 
   const invalidatePreflight = () => {
     setPreflight(null);
@@ -335,7 +457,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   };
 
   const toggleMappingColumn = (
-    field: 'referenceImageColumns' | 'referenceAudioColumns' | 'extraInputColumns',
+    field: 'referenceImageColumns' | 'referenceAudioColumns' | 'referenceVideoColumns' | 'extraInputColumns',
     column: string,
   ) => {
     const values = inputMapping[field] || [];
@@ -379,8 +501,58 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     updateMapping(setGenerationImageRole(inputMapping, column, role));
   };
 
+  const changeDurationMode = (mode: GenerationDurationSourceMode) => {
+    setDurationMode(mode);
+    if (mode !== 'column') setDurationColumn('');
+    invalidatePreflight();
+  };
+
+  const changeReferenceInputMode = (mode: 'video_columns' | 'raw_elements') => {
+    setReferenceInputMode(mode);
+    if (mode === 'video_columns') {
+      const nextMappings = { ...(inputMapping.extraInputMappings || {}) };
+      delete nextMappings.elements;
+      updateMapping({ extraInputMappings: nextMappings });
+      return;
+    }
+    updateMapping({ referenceVideoColumns: [] });
+  };
+
+  const changeRawElementsColumn = (column: string) => {
+    const nextMappings = { ...(inputMapping.extraInputMappings || {}) };
+    if (column) nextMappings.elements = column;
+    else delete nextMappings.elements;
+    updateMapping({
+      extraInputMappings: nextMappings,
+      referenceVideoColumns: [],
+    });
+  };
+
   const buildRequest = (): GenerationPreflightRequest => {
     if (!selectedModel) throw new Error('Select a model before preflight.');
+    const requestDefaultControls = { ...defaultControls };
+    const requestPerCaseControlColumns = { ...perCaseControlColumns };
+    delete requestPerCaseControlColumns.duration;
+
+    let durationSource: GenerationPreflightRequest['durationSource'];
+    if (durationControl) {
+      if (durationMode === 'uniform') {
+        durationSource = { mode: 'uniform' };
+      } else if (durationMode === 'column') {
+        delete requestDefaultControls.duration;
+        durationSource = { mode: 'column', column: durationColumn };
+      } else {
+        delete requestDefaultControls.duration;
+        if (audioProbe.status !== 'ready') {
+          throw new Error(copy.probingAudio);
+        }
+        durationSource = {
+          mode: 'reference_audio',
+          referenceAudio: audioProbe.values,
+        };
+      }
+    }
+
     return {
       datasetId: dataset.id,
       datasetVersion: dataset.version || 1,
@@ -389,9 +561,13 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
       targetColumn: targetColumn.trim(),
       targetMode,
       selectedDatasetItemIds,
-      inputMapping,
-      defaultControls,
-      perCaseControlColumns,
+      inputMapping: {
+        ...inputMapping,
+        referenceVideoColumns: inputMapping.referenceVideoColumns || [],
+      },
+      defaultControls: requestDefaultControls,
+      perCaseControlColumns: requestPerCaseControlColumns,
+      durationSource,
       seedMode,
       fixedSeed: seedMode === 'fixed' ? fixedSeed : undefined,
       seedColumn: seedMode === 'column' ? seedColumn : undefined,
@@ -560,7 +736,11 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const temporaryResultCount = batch?.items.filter(item => item.status === 'succeeded' && item.durability === 'temporary').length || 0;
   const progress = batch?.total ? Math.round((completedItems / batch.total) * 100) : 0;
   const targetBlocked = Boolean(targetInspection?.errors.length);
-  const selectionBlocked = !selectedDatasetItemIds.length || selectionTooLarge;
+  const durationBlocked = Boolean(durationControl && (
+    (durationMode === 'column' && !durationColumn)
+    || (durationMode === 'reference_audio' && audioProbe.status !== 'ready')
+  ));
+  const selectionBlocked = !selectedDatasetItemIds.length || selectionTooLarge || durationBlocked;
 
   return (
     <div className="fixed inset-0 z-[130] flex items-center justify-center bg-black/80 p-3 md:p-6">
@@ -805,6 +985,58 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                     </div>
                   </div>
                 </div>
+                {selectedModel.outputModality === 'video'
+                  && (referenceVideoSupport.supported || supportsRawElements)
+                  && (
+                    <div className="mt-4 border-t border-white/10 pt-4">
+                      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                        <div className="text-xs font-medium text-slate-300">{copy.refVideosAndElements}</div>
+                        {referenceVideoSupport.supported && supportsRawElements && (
+                          <div className="flex border border-white/10 bg-black/20 p-1" role="group" aria-label={copy.refVideosAndElements}>
+                            <button
+                              type="button"
+                              aria-pressed={referenceInputMode === 'video_columns'}
+                              onClick={() => changeReferenceInputMode('video_columns')}
+                              className={`px-3 py-1.5 text-xs ${referenceInputMode === 'video_columns' ? 'bg-amber-400 text-black' : 'text-slate-300 hover:bg-white/5'}`}
+                            >
+                              {copy.videoColumns}
+                            </button>
+                            <button
+                              type="button"
+                              aria-pressed={referenceInputMode === 'raw_elements'}
+                              onClick={() => changeReferenceInputMode('raw_elements')}
+                              className={`px-3 py-1.5 text-xs ${referenceInputMode === 'raw_elements' ? 'bg-amber-400 text-black' : 'text-slate-300 hover:bg-white/5'}`}
+                            >
+                              {copy.rawElements}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      {referenceVideoSupport.supported && referenceInputMode === 'video_columns' ? (
+                        <div data-testid="generation-video-input-columns" className="max-h-44 space-y-1 overflow-auto border border-white/10 p-2">
+                          {headers.map(header => (
+                            <label key={header} className="flex min-h-8 items-center gap-2 px-1 py-1 text-xs text-slate-300">
+                              <input
+                                type="checkbox"
+                                checked={(inputMapping.referenceVideoColumns || []).includes(header)}
+                                onChange={() => toggleMappingColumn('referenceVideoColumns', header)}
+                              />
+                              <span className="truncate" title={header}>{header}</span>
+                            </label>
+                          ))}
+                        </div>
+                      ) : supportsRawElements ? (
+                        <div className="max-w-xl">
+                          {renderColumnSelect(
+                            inputMapping.extraInputMappings?.elements,
+                            changeRawElementsColumn,
+                            'elements JSON',
+                            'elements',
+                          )}
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
                 {!!advancedInputKeys.length && (
                   <div className="mt-4">
                     <div className="mb-2 text-xs text-slate-400">Advanced model inputs</div>
@@ -882,14 +1114,62 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
 
               <section>
                 <h3 className="mb-3 text-sm font-semibold text-slate-100">{copy.controls}</h3>
+                {durationControl && (
+                  <div className="mb-5 border-b border-white/10 pb-5">
+                    <div className="mb-2 text-xs text-slate-400">{copy.durationSource}</div>
+                    <div className="mb-3 flex w-fit max-w-full flex-wrap border border-white/10 bg-black/20 p-1" role="group" aria-label={copy.durationSource}>
+                      {([
+                        ['uniform', copy.uniformDuration],
+                        ['column', copy.durationColumn],
+                        ['reference_audio', copy.followAudioDuration],
+                      ] as const).map(([mode, label]) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          aria-pressed={durationMode === mode}
+                          onClick={() => changeDurationMode(mode)}
+                          className={`px-3 py-1.5 text-xs ${durationMode === mode ? 'bg-amber-400 text-black' : 'text-slate-300 hover:bg-white/5'}`}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="max-w-sm">
+                      {durationMode === 'uniform' && renderControl(durationControl)}
+                      {durationMode === 'column' && renderColumnSelect(
+                        durationColumn,
+                        value => { setDurationColumn(value); invalidatePreflight(); },
+                        copy.durationColumn,
+                        'duration-source-column',
+                      )}
+                      {durationMode === 'reference_audio' && (
+                        <div className="text-xs text-slate-400">
+                          {audioProbe.status === 'probing' ? (
+                            <span className="inline-flex items-center gap-2 text-blue-300">
+                              <Loader2 size={14} className="animate-spin" /> {copy.probingAudio}
+                            </span>
+                          ) : audioProbe.status === 'ready' ? (
+                            <span>
+                              <span className="text-emerald-300">{Object.keys(audioProbe.values).length} {'\u6761\u5df2\u89e3\u6790'}</span>
+                              {' / '}
+                              <span className={Object.keys(audioProbe.issues).length ? 'text-red-300' : 'text-slate-500'}>
+                                {Object.keys(audioProbe.issues).length} {'\u6761\u65e0\u6548'}
+                              </span>
+                            </span>
+                          ) : <span>-</span>}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
                 <div className="grid gap-3 md:grid-cols-3">
-                  {(selectedModel.controls || []).map(renderControl)}
+                  {(selectedModel.controls || []).filter(control => control.key !== 'duration').map(renderControl)}
                 </div>
-                {!!selectedModel.controls.length && (
+                {!!selectedModel.controls.filter(control => control.key !== 'duration').length && (
                   <div className="mt-5">
                     <div className="mb-2 text-xs text-slate-400">{copy.caseColumn}</div>
                     <div className="grid gap-3 md:grid-cols-3">
-                      {selectedModel.controls.map(control => renderColumnSelect(
+                      {selectedModel.controls.filter(control => control.key !== 'duration').map(control => renderColumnSelect(
                         perCaseControlColumns[control.key],
                         value => { setPerCaseControlColumns(current => ({ ...current, [control.key]: value })); invalidatePreflight(); },
                         control.label,
@@ -986,7 +1266,13 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                           <div className="space-y-1 text-slate-400">
                             {item.errors.map(issue => <div key={`${issue.code}-${issue.field || ''}`} className="text-red-300">[{issue.code}] {issue.message}</div>)}
                             {item.warnings.map(issue => <div key={`${issue.code}-${issue.field || ''}`} className="text-amber-300">[{issue.code}] {issue.message}</div>)}
-                            {!item.errors.length && !item.warnings.length && <span>-</span>}
+                            {item.resolvedCase.durationResolution?.source === 'reference_audio' && (
+                              <div className="text-sky-300">
+                                {'音频 '}{item.resolvedCase.durationResolution.detectedSeconds}s
+                                {' → 请求 '}{item.resolvedCase.durationResolution.resolvedDuration}s
+                              </div>
+                            )}
+                            {!item.errors.length && !item.warnings.length && !item.resolvedCase.durationResolution && <span>-</span>}
                           </div>
                         </div>
                       ))}

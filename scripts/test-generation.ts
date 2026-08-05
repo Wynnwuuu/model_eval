@@ -3,6 +3,7 @@ import { Readable } from 'node:stream';
 
 import {
   buildAionGenerationRequest,
+  compileGenerationReferenceVideoInputs,
   estimateGenerationCost,
   fingerprintConfig,
   matchUploadedAsset,
@@ -24,6 +25,10 @@ import {
   unarchivedGenerationResult,
 } from '../server/generation/generationWorker.ts';
 import { createByteLimitStream, generationAssetService } from '../server/generation/generationAssetService.ts';
+import {
+  buildGenerationCasesForPreflight,
+  validateDurationSourceConfiguration,
+} from '../server/generation/generationPreflightService.ts';
 import { inferDatasetMappings } from '../src/datasetManifest.ts';
 import {
   defaultGenerationInputMapping,
@@ -31,7 +36,14 @@ import {
   inferGenerationImageRole,
   setGenerationImageRole,
 } from '../src/features/generation/inputMapping.ts';
-import { getSupportedGenerationImageRoles } from '../src/features/generation/modelCapabilities.ts';
+import {
+  getGenerationReferenceVideoSupport,
+  getSupportedGenerationImageRoles,
+} from '../src/features/generation/modelCapabilities.ts';
+import {
+  probeAudioDurations,
+  resolveReferenceAudioDuration,
+} from '../src/features/generation/audioDuration.ts';
 import {
   inspectGenerationTargetColumn,
   resolveGenerationCaseSelection,
@@ -42,6 +54,7 @@ const selectionRows = [
   { [DATASET_ITEM_ID_KEY]: 'item-2', case_id: 'case-2', prompt: 'Two' },
   { [DATASET_ITEM_ID_KEY]: 'item-3', case_id: 'case-3', prompt: 'Three' },
 ];
+
 
 const legacyFullSelection = resolveGenerationCaseSelection(selectionRows);
 assert.deepEqual(legacyFullSelection.rows.map(item => item.datasetItemId), ['item-1', 'item-2', 'item-3']);
@@ -148,6 +161,7 @@ const emptyMediaMapping = defaultGenerationInputMapping(
 assert.equal(emptyMediaMapping.promptColumn, '完整Prompt');
 assert.deepEqual(emptyMediaMapping.referenceImageColumns, []);
 assert.deepEqual(emptyMediaMapping.referenceAudioColumns, []);
+assert.deepEqual(emptyMediaMapping.referenceVideoColumns, []);
 assert.equal(emptyMediaMapping.startImageColumn, '');
 assert.equal(emptyMediaMapping.endImageColumn, '');
 assert.equal(inferGenerationImageRole('参考图_URLs', mappingDataset.inputSchema), 'reference');
@@ -328,6 +342,262 @@ assert.equal(cliShapeModel.outputModality, 'video');
 assert.deepEqual(getSupportedGenerationImageRoles(cliShapeModel), ['reference', 'start']);
 assert.equal(cliShapeModel.controls.find(item => item.key === 'resolution')?.defaultValue, '1080p');
 assert.deepEqual(cliShapeModel.inputSchema?.required_inputs, camelCaseVideoModel.options.required_params);
+const hailuoH3Model = normalizeAionModelConfig({
+  ...camelCaseVideoModel,
+  name: 'minimax/hailuo-h3',
+  options: {
+    ...camelCaseVideoModel.options,
+    duration_options: Array.from({ length: 12 }, (_, index) => index + 4),
+    supported_params: ['prompt', 'duration', 'elements', 'audios'],
+  },
+});
+assert.deepEqual(getGenerationReferenceVideoSupport(hailuoH3Model), {
+  supported: true,
+  strategy: 'elements',
+  field: 'elements',
+  min: 0,
+  max: 3,
+  source: 'hailuo_h3_contract',
+});
+const h3VideoInputs = compileGenerationReferenceVideoInputs(hailuoH3Model, [
+  'https://assets.example.com/reference-a.mp4',
+  'https://assets.example.com/reference-b.mp4',
+]);
+assert.equal(h3VideoInputs.generationType, 'reference_to_video');
+assert.deepEqual(h3VideoInputs.extraInputs.elements, [
+  { video_url: 'https://assets.example.com/reference-a.mp4' },
+  { video_url: 'https://assets.example.com/reference-b.mp4' },
+]);
+assert.deepEqual(h3VideoInputs.issues, []);
+const h3ReferenceCase = preflightGenerationCase(hailuoH3Model, {
+  caseId: 'case-h3-reference-video',
+  datasetItemId: 'item-h3-reference-video',
+  rowIndex: 8,
+  prompt: 'Follow the reference video.',
+  imageUrls: [],
+  audioUrls: [],
+  videoUrls: h3VideoInputs.videoUrls,
+  controls: { duration: 9, resolution: '1080p' },
+  extraInputs: h3VideoInputs.extraInputs,
+  generationType: h3VideoInputs.generationType,
+});
+assert.equal(h3ReferenceCase.valid, true);
+const h3ReferenceRequest = buildAionGenerationRequest(hailuoH3Model, h3ReferenceCase.resolvedCase);
+assert.equal(h3ReferenceRequest.body.generation_type, 'reference_to_video');
+assert.deepEqual(h3ReferenceRequest.body.elements, h3VideoInputs.extraInputs.elements);
+assert.equal(h3ReferenceRequest.body.duration, 9);
+
+const keyframeVideoConflict = preflightGenerationCase(hailuoH3Model, {
+  ...h3ReferenceCase.resolvedCase,
+  caseId: 'case-keyframe-video-conflict',
+  imageUrls: ['https://assets.example.com/start.png'],
+  generationType: 'image_to_video',
+});
+assert.ok(keyframeVideoConflict.errors.some(issue => issue.code === 'CONFLICTING_VIDEO_AND_KEYFRAMES'));assert.ok(compileGenerationReferenceVideoInputs(hailuoH3Model, [
+  'https://assets.example.com/1.mp4',
+  'https://assets.example.com/2.mp4',
+  'https://assets.example.com/3.mp4',
+  'https://assets.example.com/4.mp4',
+]).issues.some(issue => issue.code === 'REFERENCE_VIDEO_COUNT_OUT_OF_RANGE'));
+
+const wanVideoModel = normalizeAionModelConfig({
+  ...camelCaseVideoModel,
+  name: 'wan2.7-video',
+  options: {
+    ...camelCaseVideoModel.options,
+    supported_params: ['prompt', 'duration', 'video_url', 'reference_video_urls', 'elements'],
+  },
+});
+assert.equal(getGenerationReferenceVideoSupport(wanVideoModel).strategy, 'array_field');
+assert.equal(getGenerationReferenceVideoSupport(wanVideoModel).field, 'reference_video_urls');
+assert.deepEqual(
+  compileGenerationReferenceVideoInputs(wanVideoModel, ['https://assets.example.com/reference.mp4']).extraInputs,
+  { reference_video_urls: ['https://assets.example.com/reference.mp4'] },
+);
+
+const singleVideoModel = normalizeAionModelConfig({
+  ...camelCaseVideoModel,
+  name: 'single-video-model',
+  options: {
+    ...camelCaseVideoModel.options,
+    supported_params: ['prompt', 'duration', 'video_url'],
+  },
+});
+assert.equal(getGenerationReferenceVideoSupport(singleVideoModel).strategy, 'single_field');
+assert.ok(compileGenerationReferenceVideoInputs(singleVideoModel, [
+  'https://assets.example.com/one.mp4',
+  'https://assets.example.com/two.mp4',
+]).issues.some(issue => issue.code === 'REFERENCE_VIDEO_COUNT_OUT_OF_RANGE'));
+
+const uncertainElementsModel = normalizeAionModelConfig({
+  ...camelCaseVideoModel,
+  name: 'uncertain-elements-model',
+  options: {
+    ...camelCaseVideoModel.options,
+    supported_params: ['prompt', 'duration', 'elements'],
+  },
+});
+assert.equal(getGenerationReferenceVideoSupport(uncertainElementsModel).supported, false);
+assert.ok(compileGenerationReferenceVideoInputs(uncertainElementsModel, [
+  'https://assets.example.com/reference.mp4',
+]).issues.some(issue => issue.code === 'REFERENCE_VIDEO_NOT_SUPPORTED'));
+assert.ok(compileGenerationReferenceVideoInputs(hailuoH3Model, [
+  'https://assets.example.com/reference.mp4',
+], [{ video_url: 'https://assets.example.com/raw.mp4' }]).issues.some(
+  issue => issue.code === 'CONFLICTING_REFERENCE_VIDEO_INPUTS',
+));
+
+const discreteAudioDuration = resolveReferenceAudioDuration(hailuoH3Model, 8.515917);
+assert.equal(discreteAudioDuration.valid, true);
+assert.equal(discreteAudioDuration.resolvedDuration, 9);
+assert.equal(resolveReferenceAudioDuration(hailuoH3Model, 5.1).resolvedDuration, 5);
+assert.equal(resolveReferenceAudioDuration(hailuoH3Model, 5.2).resolvedDuration, 6);
+assert.equal(resolveReferenceAudioDuration(hailuoH3Model, 15.16).valid, false);
+assert.equal(resolveReferenceAudioDuration(hailuoH3Model, 3.8).valid, false);
+
+const continuousDurationModel = normalizeAionModelConfig({
+  ...camelCaseVideoModel,
+  name: 'continuous-duration-model',
+  options: {
+    supported_params: ['prompt', 'duration'],
+    parameter_schema: {
+      properties: {
+        duration: { type: 'number', minimum: 2, maximum: 20 },
+      },
+    },
+  },
+});
+assert.equal(resolveReferenceAudioDuration(continuousDurationModel, 8.515917).resolvedDuration, 8.516);
+
+let probeCalls = 0;
+const audioProbeCache = new Map<string, number>();
+const probedAudio = await probeAudioDurations([
+  'https://assets.example.com/audio.mp3',
+  'https://assets.example.com/audio.mp3',
+], {
+  cache: audioProbeCache,
+  concurrency: 2,
+  timeoutMs: 100,
+  probe: async () => {
+    probeCalls += 1;
+    return 8.515917;
+  },
+});
+assert.equal(probeCalls, 1);
+assert.equal(probedAudio['https://assets.example.com/audio.mp3'].seconds, 8.515917);
+await probeAudioDurations(['https://assets.example.com/audio.mp3'], {
+  cache: audioProbeCache,
+  probe: async () => {
+    probeCalls += 1;
+    return 9;
+  },
+});
+assert.equal(probeCalls, 1, 'successful metadata probes should be cached by URL');
+const timedOutAudio = await probeAudioDurations(['https://assets.example.com/timeout.mp3'], {
+  timeoutMs: 5,
+  probe: async () => new Promise<number>(() => undefined),
+});
+assert.match(timedOutAudio['https://assets.example.com/timeout.mp3'].error || '', /timed out/i);
+const serviceDataset = {
+  id: 'dataset-duration-service',
+  items: [
+    {
+      [DATASET_ITEM_ID_KEY]: 'duration-item-1',
+      case_id: 'duration-case-1',
+      prompt: 'Use the reference media.',
+      audio: 'https://assets.example.com/audio.mp3',
+      video: 'https://assets.example.com/reference.mp4',
+      duration_column: '11',
+    },
+    {
+      [DATASET_ITEM_ID_KEY]: 'duration-item-2',
+      case_id: 'duration-case-2',
+      prompt: 'Invalid multiple audio case.',
+      audio: 'https://assets.example.com/one.mp3;https://assets.example.com/two.mp3',
+      video: 'https://assets.example.com/reference-2.mp4',
+      duration_column: '',
+    },
+  ],
+} as any;
+const serviceSelection = serviceDataset.items.map((row: Record<string, unknown>, rowIndex: number) => ({
+  row,
+  rowIndex,
+  datasetItemId: String(row[DATASET_ITEM_ID_KEY]),
+}));
+const audioFollowingCases = buildGenerationCasesForPreflight(serviceDataset, {
+  datasetId: serviceDataset.id,
+  datasetVersion: 1,
+  modelName: hailuoH3Model.modelName,
+  targetColumn: 'result',
+  inputMapping: {
+    promptColumn: 'prompt',
+    referenceImageColumns: [],
+    referenceAudioColumns: ['audio'],
+    referenceVideoColumns: ['video'],
+    extraInputColumns: [],
+  },
+  defaultControls: { resolution: '1080p' },
+  perCaseControlColumns: {},
+  durationSource: {
+    mode: 'reference_audio',
+    referenceAudio: {
+      'duration-item-1': {
+        audioUrl: 'https://assets.example.com/audio.mp3',
+        detectedSeconds: 8.515917,
+        resolvedDuration: 9,
+      },
+    },
+  },
+}, hailuoH3Model, serviceSelection);
+assert.equal(audioFollowingCases[0].resolvedCase.controls.duration, 9);
+assert.equal(audioFollowingCases[0].resolvedCase.durationResolution?.detectedSeconds, 8.516);
+assert.equal(audioFollowingCases[0].resolvedCase.durationResolution?.resolvedDuration, 9);
+assert.equal(audioFollowingCases[0].resolvedCase.generationType, 'reference_to_video');
+assert.deepEqual(audioFollowingCases[0].resolvedCase.extraInputs?.elements, [
+  { video_url: 'https://assets.example.com/reference.mp4' },
+]);
+assert.deepEqual(audioFollowingCases[0].preparationIssues, []);
+assert.ok(audioFollowingCases[1].preparationIssues.some(
+  issue => issue.code === 'MULTIPLE_REFERENCE_AUDIOS',
+));
+
+const durationColumnCases = buildGenerationCasesForPreflight(serviceDataset, {
+  datasetId: serviceDataset.id,
+  datasetVersion: 1,
+  modelName: hailuoH3Model.modelName,
+  targetColumn: 'result',
+  inputMapping: {
+    promptColumn: 'prompt',
+    referenceImageColumns: [],
+    referenceAudioColumns: [],
+    referenceVideoColumns: [],
+    extraInputColumns: [],
+  },
+  defaultControls: { resolution: '1080p' },
+  perCaseControlColumns: {},
+  durationSource: { mode: 'column', column: 'duration_column' },
+}, hailuoH3Model, serviceSelection);
+assert.equal(durationColumnCases[0].resolvedCase.controls.duration, 11);
+assert.equal(durationColumnCases[0].resolvedCase.durationResolution?.source, 'column');
+assert.ok(durationColumnCases[1].preparationIssues.some(
+  issue => issue.code === 'MISSING_DURATION_COLUMN_VALUE',
+));
+assert.throws(() => validateDurationSourceConfiguration({
+  datasetId: serviceDataset.id,
+  datasetVersion: 1,
+  modelName: hailuoH3Model.modelName,
+  targetColumn: 'result',
+  inputMapping: {
+    referenceImageColumns: [],
+    referenceAudioColumns: [],
+    extraInputColumns: [],
+  },
+  defaultControls: { duration: 9 },
+  perCaseControlColumns: { duration: 'duration_column' },
+  durationSource: { mode: 'uniform' },
+}, hailuoH3Model), /Uniform duration cannot be combined/);
+
+
 const cliShapeCase = preflightGenerationCase(cliShapeModel, {
   caseId: 'case-cli-shape',
   datasetItemId: 'item-cli-shape',

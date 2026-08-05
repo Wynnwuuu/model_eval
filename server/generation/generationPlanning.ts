@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto';
 
-import { supportsGenerationMode, type GenerationMode } from '../../src/features/generation/modelCapabilities.ts';
+import {
+  getGenerationReferenceVideoSupport,
+  supportsGenerationMode,
+  type GenerationMode,
+} from '../../src/features/generation/modelCapabilities.ts';
 
 export type GenerationModality = 'image' | 'video';
 
@@ -42,7 +46,15 @@ export type GenerationCase = {
   prompt?: string;
   imageUrls: string[];
   audioUrls: string[];
+  videoUrls?: string[];
   controls: Record<string, any>;
+  durationResolution?: {
+    source: 'uniform' | 'column' | 'reference_audio';
+    column?: string;
+    audioUrl?: string;
+    detectedSeconds?: number;
+    resolvedDuration: number;
+  };
   seed?: number;
   extraInputs?: Record<string, any>;
   generationType?: string;
@@ -142,6 +154,67 @@ export const resolveGenerationImageInputs = (
   return { imageUrls: [], issues };
 };
 
+export type CompiledGenerationReferenceVideoInputs = {
+  videoUrls: string[];
+  extraInputs: Record<string, any>;
+  generationType?: 'reference_to_video';
+  issues: PreflightIssue[];
+};
+
+const hasConfiguredValue = (value: unknown) =>
+  value !== undefined
+  && value !== null
+  && value !== ''
+  && (!Array.isArray(value) || value.length > 0);
+
+export const compileGenerationReferenceVideoInputs = (
+  model: NormalizedGenerationModel,
+  rawVideoUrls: string[],
+  rawElements?: unknown,
+): CompiledGenerationReferenceVideoInputs => {
+  const videoUrls = uniqueUrls(rawVideoUrls);
+  const issues: PreflightIssue[] = [];
+  if (!videoUrls.length) return { videoUrls, extraInputs: {}, issues };
+
+  if (hasConfiguredValue(rawElements)) {
+    issues.push({
+      code: 'CONFLICTING_REFERENCE_VIDEO_INPUTS',
+      field: 'referenceVideoColumns',
+      message: 'A case cannot combine reference-video columns with a raw elements JSON column.',
+    });
+    return { videoUrls, extraInputs: {}, generationType: 'reference_to_video', issues };
+  }
+
+  const support = getGenerationReferenceVideoSupport(model);
+  if (!support.supported) {
+    issues.push({
+      code: 'REFERENCE_VIDEO_NOT_SUPPORTED',
+      field: 'referenceVideoColumns',
+      message: 'The live model configuration does not verify simple reference-video input support.',
+    });
+    return { videoUrls, extraInputs: {}, generationType: 'reference_to_video', issues };
+  }
+  if (videoUrls.length < support.min || (support.max !== undefined && videoUrls.length > support.max)) {
+    const range = support.max === undefined ? `at least ${support.min}` : `${support.min}-${support.max}`;
+    issues.push({
+      code: 'REFERENCE_VIDEO_COUNT_OUT_OF_RANGE',
+      field: 'referenceVideoColumns',
+      message: `Reference video count ${videoUrls.length} is outside the supported range ${range}.`,
+    });
+  }
+
+  const extraInputs = support.strategy === 'elements'
+    ? { elements: videoUrls.map(video_url => ({ video_url })) }
+    : support.strategy === 'single_field'
+      ? { [support.field]: videoUrls[0] }
+      : { [support.field]: videoUrls };
+  return {
+    videoUrls,
+    extraInputs,
+    generationType: 'reference_to_video',
+    issues,
+  };
+};
 const STANDARD_CONTROLS: Record<string, Omit<GenerationControl, 'key'>> = {
   aspect_ratio: { label: 'Aspect ratio', type: 'select' },
   resolution: { label: 'Resolution', type: 'select' },
@@ -241,6 +314,9 @@ const STANDARD_INPUT_PARAMS = new Set([
   'image_urls',
   'audio_url',
   'audios',
+  'video_url',
+  'video_urls',
+  'reference_video_urls',
   'elements',
   'generation_type',
 ]);
@@ -275,10 +351,16 @@ const controlFor = (key: string, options: Record<string, any>): GenerationContro
           : key.endsWith('_json') || key === 'extra_params'
             ? 'json'
             : 'text';
-  const base = STANDARD_CONTROLS[key] || {
-    label: key.replaceAll('_', ' '),
-    type: inferredType,
-  };
+  const standard = STANDARD_CONTROLS[key];
+  const base = standard
+    ? {
+        ...standard,
+        ...(schema.type || Array.isArray(schema.enum) ? { type: inferredType } : {}),
+      }
+    : {
+        label: key.replaceAll('_', ' '),
+        type: inferredType,
+      };
   const configuredOptions = OPTION_KEYS[key] ? firstOptionArray(options, OPTION_KEYS[key]) : [];
   const optionValues = Array.isArray(schema.enum) ? schema.enum : configuredOptions;
   const configuredDefault = DEFAULT_KEYS[key] ? firstDefined(options, DEFAULT_KEYS[key]) : base.defaultValue;
@@ -317,7 +399,8 @@ export const normalizeAionModelConfig = (raw: Record<string, any>): NormalizedGe
   }
   const controls = Array.from(new Set(controlKeys))
     .filter(key => ![
-      'prompt', 'image_urls', 'audio_url', 'audios', 'elements', 'generation_type', 'model_name', 'features', 'extra_params',
+      'prompt', 'image_urls', 'audio_url', 'audios', 'video_url', 'video_urls', 'reference_video_urls',
+      'elements', 'generation_type', 'model_name', 'features', 'extra_params',
     ].includes(key))
     .map(key => controlFor(key, options));
 
@@ -379,7 +462,7 @@ const resolveGenerationType = (model: NormalizedGenerationModel, item: Generatio
     return item.imageUrls.length ? 'image_to_image' : 'text_to_image';
   }
   if (item.generationType) return item.generationType;
-  if (item.extraInputs?.elements) return 'reference_to_video';
+  if (item.videoUrls?.length || item.extraInputs?.elements) return 'reference_to_video';
   if (item.imageUrls.length >= 2 && supportsGenerationMode(model, 'images_to_video')) {
     return 'images_to_video';
   }
@@ -470,8 +553,23 @@ export const preflightGenerationCase = (
   const generationType = resolveGenerationType(model, item);
   const resolvedCase = { ...item, generationType };
   const inputs = suppliedInputs(model, item, generationType);
+  const hasReferenceVideos = Boolean(item.videoUrls?.length);
+  const hasRawElements = hasConfiguredValue(item.extraInputs?.elements);
 
-  for (const [kind, urls] of [['image', item.imageUrls], ['audio', item.audioUrls]] as const) {
+  if ((item.generationType === 'image_to_video' || item.generationType === 'images_to_video')
+    && (hasReferenceVideos || hasRawElements)) {
+    errors.push({
+      code: 'CONFLICTING_VIDEO_AND_KEYFRAMES',
+      field: 'videoUrls',
+      message: 'A case cannot combine start/end keyframes with reference videos or raw elements.',
+    });
+  }
+
+  for (const [kind, urls] of [
+    ['image', item.imageUrls],
+    ['audio', item.audioUrls],
+    ['video', item.videoUrls || []],
+  ] as const) {
     urls.forEach((url, index) => {
       if (!isUsableAssetUrl(url)) {
         errors.push({
