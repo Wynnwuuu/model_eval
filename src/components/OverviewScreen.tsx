@@ -13,7 +13,7 @@ interface OverviewScreenProps {
   onGoToTasks: (statusFilter?: EvalTask['status']) => void;
   onOpenTask: (taskId: string) => void;
   onGoToInsights: (statusFilter?: EvalTask['status']) => void;
-  onGoToGeneration: () => void;
+  onGoToGeneration: (batchId?: string) => void;
 }
 
 const taskStatusTone = (status?: string) => {
@@ -230,7 +230,13 @@ const OverviewScreen: React.FC<OverviewScreenProps> = ({
 
         <SectionPanel title="生产任务状态" description="评测集内批量生成图像、视频或音频的最近批次。">
           {jobs.length ? (
-            <DataTableShell data={jobs.slice(0, 6)} columns={jobColumns as any} searchPlaceholder="搜索生产任务..." emptyTitle="暂无生产任务" />
+            <DataTableShell
+              data={jobs.slice(0, 6)}
+              columns={jobColumns as any}
+              searchPlaceholder="搜索生产任务..."
+              emptyTitle="暂无生产任务"
+              onRowClick={(job: DatasetGenerationJob) => onGoToGeneration(job.id)}
+            />
           ) : (
             <EmptyState icon={<Wand2 size={32} />} title="暂无生产任务" description="进入评测集仓库选择数据集后，可批量生产模型输出列。" action={<button onClick={onGoToGeneration} className="btn-primary">前往生产</button>} />
           )}

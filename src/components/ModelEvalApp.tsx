@@ -778,7 +778,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
           onGoToTasks={(statusFilter) => navigate('tasks', { materialStatusFilter: statusFilter })}
           onOpenTask={(taskId) => navigate('tasks', { taskId, materialId: taskId, source: 'task', taskBuilderMode: 'list' })}
           onGoToInsights={(statusFilter) => navigate('insights', { materialStatusFilter: statusFilter })}
-          onGoToGeneration={() => navigate('generation')}
+          onGoToGeneration={(batchId) => navigate('generation', { generationBatchId: batchId })}
         />
       );
     }

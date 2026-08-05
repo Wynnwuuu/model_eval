@@ -247,6 +247,7 @@ export interface RouteContext {
   materialId?: string;
   materialStatusFilter?: 'draft' | 'active' | 'completed';
   datasetId?: string;
+  generationBatchId?: string;
   taskDatasetId?: string;
   taskModelColumns?: string[];
   source?: 'dashboard' | 'task' | 'dataset';
@@ -456,6 +457,44 @@ export type GenerationItemStatus =
 export type GenerationSeedMode = 'fixed' | 'derive_from_case' | 'column';
 export type GenerationTargetMode = 'new' | 'fill_existing';
 export type GenerationAssetDurability = 'vidmuse_asset' | 'temporary' | 'manueval_oss';
+export type GenerationItemResolutionStatus = 'open' | 'skipped' | 'retrying' | 'resolved';
+
+export interface GenerationStatusCounts {
+  pending: number;
+  submitting: number;
+  submitted: number;
+  processing: number;
+  archiving: number;
+  succeeded: number;
+  failed: number;
+  submissionUnknown: number;
+  cancelled: number;
+  unresolved: number;
+}
+
+export interface GenerationQueueLane {
+  limit: number;
+  active: number;
+  pending: number;
+}
+
+export interface GenerationQueueState {
+  image: GenerationQueueLane;
+  video: GenerationQueueLane;
+  taskTimeoutMs: number;
+  updatedAt: number;
+}
+
+export interface GenerationJobEvent {
+  id: string;
+  jobId: string;
+  action: string;
+  itemIds: string[];
+  actorId?: string;
+  actorName?: string;
+  details?: Record<string, any>;
+  createdAt: number;
+}
 
 export interface GenerationSelectionSummary {
   datasetTotal: number;
@@ -543,6 +582,10 @@ export interface DatasetGenerationJob {
   writebackDatasetVersion?: number;
   succeeded: number;
   failed: number;
+  statusCounts?: GenerationStatusCounts;
+  unresolved?: number;
+  queueReason?: string;
+  retryOfJobId?: string;
   createdByUid?: string;
   createdBy?: string;
   createdAt: number;
@@ -555,6 +598,11 @@ export interface DatasetGenerationJobItem {
   datasetId: string;
   rowIndex: number;
   caseId: string;
+  datasetItemId?: string;
+  retryOfItemId?: string;
+  resolutionStatus?: GenerationItemResolutionStatus;
+  resolutionBy?: string;
+  resolutionAt?: number;
   status: GenerationItemStatus;
   requestId?: string;
   providerJobId?: string;
@@ -573,6 +621,8 @@ export interface DatasetGenerationJobItem {
     message: string;
   };
   startedAt?: number;
+  submissionStartedAt?: number;
+  timeoutAt?: number;
   finishedAt?: number;
 }
 

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useSearchParams } from 'react-router-dom';
 import {
   AlertTriangle,
   ArrowRight,
@@ -39,6 +40,7 @@ import { ConfirmModal } from './ConfirmModal';
 import MediaRenderer from './MediaRenderer';
 import DatasetGenerationExecutionModal from './DatasetGenerationExecutionModal';
 import { normalizeUrl } from '../utils';
+import GenerationTaskCenter from './GenerationTaskCenter';
 import {
   cloneDataset as persistDatasetClone,
   deleteDataset,
@@ -63,6 +65,7 @@ import {
 } from '../datasetTableColumns';
 import type { DatasetColumnVisibilityOverrides, DatasetTableColumnDescriptor } from '../datasetTableColumns';
 import { subscribeTasks } from '../features/tasks/api';
+import { getExecutionBatch } from '../features/generation/executionApi';
 import { subscribeGenerationJobs } from '../features/generation/api';
 import {
   DATASET_MODALITIES,
@@ -697,6 +700,9 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   initialDatasetId,
   onCreateEvaluation,
 }) => {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const batchQueryId = mode === 'generation' ? searchParams.get('batch') : null;
+  const [generationWorkspaceView, setGenerationWorkspaceView] = useState<'tasks' | 'new'>('tasks');
   const [datasets, setDatasets] = useState<EvalDataset[]>([]);
   const [tasks, setTasks] = useState<EvalTask[]>([]);
   const [datasetToDelete, setDatasetToDelete] = useState<string | null>(null);
@@ -713,9 +719,28 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   const [dimensionFilter, setDimensionFilter] = useState('');
   const [generationModalOpen, setGenerationModalOpen] = useState(false);
   const [selectedGenerationBatchId, setSelectedGenerationBatchId] = useState<string | undefined>();
+  const clearGenerationBatchQuery = () => {
+    setSearchParams(current => {
+      const next = new URLSearchParams(current);
+      next.delete('batch');
+      return next;
+    }, { replace: true });
+  };
+  const setGenerationBatchQuery = (batchId: string) => {
+    setSelectedGenerationBatchId(batchId);
+    setSearchParams({ batch: batchId }, { replace: true });
+  };
   const openNewGeneration = () => {
+    setGenerationWorkspaceView('new');
     setSelectedGenerationBatchId(undefined);
     setGenerationModalOpen(true);
+    clearGenerationBatchQuery();
+  };
+  const openGenerationBatch = (job: DatasetGenerationJob) => {
+    setGenerationWorkspaceView('tasks');
+    setSelectedDatasetId(job.datasetId);
+    setGenerationModalOpen(true);
+    setGenerationBatchQuery(job.id);
   };
 
   const [generationJobs, setGenerationJobs] = useState<DatasetGenerationJob[]>([]);
@@ -879,6 +904,26 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
       setSelectedDatasetId(initialDatasetId);
     }
   }, [initialDatasetId, normalizedDatasets]);
+
+  useEffect(() => {
+    if (!batchQueryId || mode !== 'generation') return;
+    if (generationModalOpen && selectedGenerationBatchId === batchQueryId) return;
+    let active = true;
+    void getExecutionBatch(batchQueryId)
+      .then(loaded => {
+        if (!active) return;
+        setGenerationWorkspaceView('tasks');
+        setSelectedDatasetId(loaded.datasetId);
+        setSelectedGenerationBatchId(loaded.id);
+        setGenerationModalOpen(true);
+      })
+      .catch(error => {
+        console.error('Error loading generation batch deep link:', error);
+      });
+    return () => {
+      active = false;
+    };
+  }, [batchQueryId, generationModalOpen, mode, selectedGenerationBatchId]);
 
   const selectedDataset = normalizedDatasets.find(dataset => dataset.id === selectedDatasetId) || filteredDatasets[0];
   const tableDataset = viewingVersionDataset || selectedDataset;
@@ -2619,6 +2664,11 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
           </div>
         </div>
         <div className="flex flex-wrap gap-3">
+          {isGenerationMode && generationWorkspaceView === 'new' && (
+            <button type="button" onClick={() => setGenerationWorkspaceView('tasks')} className="flex items-center gap-2 rounded-md border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-slate-300 hover:bg-white/10">
+              <ClipboardList size={18} /> {'\u4efb\u52a1\u5217\u8868'}
+            </button>
+          )}
           <button onClick={openNewGeneration} disabled={!selectedDataset || isViewingHistoricalVersion} className={`${isGenerationMode ? 'bg-gradient-accent text-black shadow-lg shadow-amber-500/20 hover:opacity-90' : 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/20'} flex items-center gap-2 px-4 py-2.5 rounded-xl font-medium text-sm disabled:opacity-40`}>
             <Wand2 size={18} /> {isGenerationMode ? '开始批量生产' : '批量生产产物'}
           </button>
@@ -2634,6 +2684,15 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
         </div>
       </div>
 
+      {isGenerationMode && generationWorkspaceView === 'tasks' && (
+        <GenerationTaskCenter
+          datasets={normalizedDatasets}
+          onOpenBatch={openGenerationBatch}
+          onNewGeneration={() => setGenerationWorkspaceView('new')}
+        />
+      )}
+
+      <div className={isGenerationMode && generationWorkspaceView === 'tasks' ? 'hidden' : undefined}>
       {isGenerationMode && (
         <div className="mb-5 rounded-2xl border border-amber-500/20 bg-amber-500/[0.06] p-5">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
@@ -3080,7 +3139,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                     <button
                       type="button"
                       key={job.id}
-                      onClick={() => { setSelectedGenerationBatchId(job.id); setGenerationModalOpen(true); }}
+                      onClick={() => openGenerationBatch(job)}
                       className="w-full rounded-xl border border-white/10 bg-white/5 p-3 text-left text-xs hover:bg-white/10"
                     >
                       <div className="flex items-start justify-between gap-2">
@@ -3180,12 +3239,14 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
       {renderWizard()}
       {renderColumnRenameModal()}
       {renderColumnDeleteModal()}
+      </div>
       {generationModalOpen && selectedDataset && !isViewingHistoricalVersion && (
         <DatasetGenerationExecutionModal
           dataset={selectedDataset}
           initialBatchId={selectedGenerationBatchId}
+          onBatchChange={setGenerationBatchQuery}
           onCreateEvaluation={onCreateEvaluation}
-          onClose={() => { setGenerationModalOpen(false); setSelectedGenerationBatchId(undefined); }}
+          onClose={() => { setGenerationModalOpen(false); setSelectedGenerationBatchId(undefined); clearGenerationBatchQuery(); }}
         />
       )}
 

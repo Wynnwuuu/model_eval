@@ -37,6 +37,7 @@ import {
   createGenerationBatchFromPreflight,
   getGenerationPreflight,
   getGenerationAssetsForPreflight,
+  isGenerationDatasetInOrganization,
   saveGenerationPreflight,
 } from './generationExecutionRepository.ts';
 
@@ -66,6 +67,8 @@ export type GenerationPreflightRequest = {
   seedColumn?: string;
   selectedDatasetItemIds?: string[];
   retryOfJobId?: string;
+  retrySourceItemIds?: Record<string, string>;
+  retryDuplicateBillingRiskConfirmed?: boolean;
   assetBindings?: UploadedAssetCandidate[];
 };
 
@@ -428,6 +431,9 @@ export const createGenerationPreflight = async (
     throw badRequest('The target column is reserved for internal fields.');
   }
 
+  if (!await isGenerationDatasetInOrganization(request.datasetId, user.organizationId)) {
+    throw new ApiError(403, 'FORBIDDEN', 'This dataset is outside your organization.');
+  }
   const dataset = await getDatasetVersion(request.datasetId, Number(request.datasetVersion));
   if (!dataset) throw notFound('Dataset version');
   const model = await aionGenerationClient.getModel(request.modelName);
@@ -543,6 +549,7 @@ export const createGenerationPreflight = async (
     perCaseControlColumns: request.perCaseControlColumns || {},
     durationSource: request.durationSource,
     retryOfJobId: request.retryOfJobId,
+    retryDuplicateBillingRiskConfirmed: request.retryDuplicateBillingRiskConfirmed === true,
     seedMode: request.seedMode,
     fixedSeed: request.fixedSeed,
     seedColumn: request.seedColumn,
@@ -593,6 +600,9 @@ export const confirmGenerationPreflight = async (
   const preflight = await getGenerationPreflight(preflightId);
   if (!preflight) throw new ApiError(410, 'PREFLIGHT_EXPIRED', 'The preflight expired; run it again.');
   if (preflight.createdBy !== user.id) throw new ApiError(403, 'FORBIDDEN', 'This preflight belongs to another user.');
+  if (!await isGenerationDatasetInOrganization(preflight.datasetId, user.organizationId)) {
+    throw new ApiError(403, 'FORBIDDEN', 'This preflight is outside your organization.');
+  }
 
   const currentModel = await aionGenerationClient.getModel(preflight.modelName);
   if (!currentModel) throw notFound('Enabled Aion model');

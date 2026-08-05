@@ -1,5 +1,18 @@
 # Arena Decision Log
 
+## 2026-08-05: Generation capacity is shared but submission slots are dataset-fair
+
+ManuEval keeps global image/video provider limits because every batch uses the same dedicated VidMuse evaluation account. New submission slots are allocated by least current dataset load, then least current job load, while due polling and archiving remain higher priority. Failed and ambiguous-terminal items never consume provider capacity.
+
+## 2026-08-05: Failed-case skip is an acknowledgement, not an execution rewrite
+
+Pending cases may be cancelled before submission. Failed and `submission_unknown` cases retain their factual execution status; a separate resolution state records that a team member chose not to retry. Selective retries remain child batches so every paid attempt keeps an immutable request/config/cost audit trail.
+
+## 2026-08-05: Retry generation may run early but writeback remains parent-first
+
+A retry child may enter the fair provider queue while its parent is still active, but it cannot write the dataset until the parent writeback succeeds. This preserves the parent's atomic result version and lets the child fill only the selected empty rows without overwriting prior results.
+
+
 ## 2026-08-05: Dataset copies are independent version forks
 
 A dataset copy is built from the exact immutable version the user is viewing. It preserves all business content and visible case IDs, but receives a new dataset ID and regenerated stable item IDs so later task propagation, edits, evidence, and generation writeback cannot cross into the source dataset.

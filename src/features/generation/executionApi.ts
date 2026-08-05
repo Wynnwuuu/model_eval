@@ -6,6 +6,9 @@ import {
   GenerationInputMapping,
   GenerationModelConfig,
   GenerationPreflightResult,
+  GenerationJobEvent,
+  GenerationJobStatus,
+  GenerationQueueState,
   GenerationSeedMode,
   GenerationTargetMode,
 } from '../../types';
@@ -40,6 +43,9 @@ export interface GenerationRuntimeHealth {
   localUploadsEnabled: boolean;
   workerEnabled: boolean;
   maxBatchSize: number;
+  imageConcurrency: number;
+  videoConcurrency: number;
+  taskTimeoutMs: number;
 }
 
 export interface GenerationBatch extends DatasetGenerationJob {
@@ -142,16 +148,63 @@ export const cancelExecutionBatch = async (batchId: string) => {
 
 export const createRetryPreflight = async (
   batchId: string,
-  forceSubmissionUnknown: boolean,
+  itemIds: string[],
+  forceDuplicateBillingRisk = false,
 ): Promise<GenerationPreflightResult> => {
   const response = await requestJson<{ preflight: GenerationPreflightResult }>(
     `/api/generation/batches/${encodeURIComponent(batchId)}/retry`,
     {
       method: 'POST',
-      body: JSON.stringify({ forceSubmissionUnknown }),
+      body: JSON.stringify({ itemIds, forceDuplicateBillingRisk }),
     },
   );
   return response.preflight;
+};
+
+export type GenerationJobListFilters = {
+  datasetId?: string;
+  status?: GenerationJobStatus | '';
+  model?: string;
+  createdBy?: string;
+  page?: number;
+  limit?: number;
+};
+
+export const listExecutionJobs = async (filters: GenerationJobListFilters = {}) => {
+  const search = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value !== undefined && value !== '') search.set(key, String(value));
+  });
+  const suffix = search.toString();
+  return requestJson<{
+    jobs: DatasetGenerationJob[];
+    total: number;
+    page: number;
+    limit: number;
+  }>(`/api/generation/jobs${suffix ? `?${suffix}` : ''}`);
+};
+
+export const getGenerationQueue = async (): Promise<GenerationQueueState> => {
+  const response = await requestJson<{ queue: GenerationQueueState }>('/api/generation/queue');
+  return response.queue;
+};
+
+export const skipExecutionItems = async (batchId: string, itemIds: string[]) => {
+  const response = await requestJson<{ accepted: boolean; batch: GenerationBatch }>(
+    `/api/generation/batches/${encodeURIComponent(batchId)}/items/skip`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ itemIds }),
+    },
+  );
+  return response.batch;
+};
+
+export const listExecutionBatchEvents = async (batchId: string): Promise<GenerationJobEvent[]> => {
+  const response = await requestJson<{ events: GenerationJobEvent[] }>(
+    `/api/generation/batches/${encodeURIComponent(batchId)}/events`,
+  );
+  return response.events;
 };
 
 const initiateUpload = async (datasetId: string, file: File, relativePath: string) => {

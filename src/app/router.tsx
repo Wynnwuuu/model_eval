@@ -15,6 +15,9 @@ const buildRoutePath = (route: AppRoute, context: RouteContext = {}) => {
     search.set('datasetId', context.taskDatasetId);
   }
   (context.taskModelColumns || []).forEach(column => search.append('modelColumn', column));
+  if (route === 'generation' && context.generationBatchId) {
+    search.set('batch', context.generationBatchId);
+  }
 
   if (route === 'tasks' && context.taskBuilderMode === 'create' && context.projectId) {
     search.set('projectId', context.projectId);
@@ -31,7 +34,7 @@ const buildRoutePath = (route: AppRoute, context: RouteContext = {}) => {
     case 'datasets':
       return context.datasetId ? `/datasets/${context.datasetId}` : '/datasets';
     case 'generation':
-      return context.datasetId ? `/datasets/${context.datasetId}/generation` : '/generation';
+      return withSearch(context.datasetId ? `/datasets/${context.datasetId}/generation` : '/generation');
     case 'templates':
       return context.templateId ? `/templates/${context.templateId}` : '/templates';
     case 'tasks':
@@ -66,12 +69,14 @@ const withSearchContext = (context: RouteContext, searchParams: URLSearchParams)
   const status = searchParams.get('status');
   const projectId = searchParams.get('projectId') || context.projectId;
   const taskDatasetId = searchParams.get('datasetId') || context.taskDatasetId;
+  const generationBatchId = searchParams.get('batch') || context.generationBatchId;
   const taskModelColumns = searchParams.getAll('modelColumn').filter(Boolean);
 
   return {
     ...context,
     projectId,
     taskDatasetId,
+    generationBatchId,
     taskModelColumns: taskModelColumns.length ? taskModelColumns : context.taskModelColumns,
     materialStatusFilter: isStatusFilter(status) ? status : context.materialStatusFilter,
   };

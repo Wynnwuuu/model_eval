@@ -7,6 +7,11 @@ import { generationAssetService } from './generationAssetService.ts';
 import {
   getGenerationBatch,
   refreshGenerationJob,
+  getGenerationQueueState,
+  isGenerationBatchInOrganization,
+  isGenerationDatasetInOrganization,
+  listGenerationJobEvents,
+  skipGenerationItems,
   requestGenerationCancellation,
 } from './generationExecutionRepository.ts';
 import {
@@ -28,7 +33,11 @@ import { requireBodyObject, validateGenerationJobItemPayload, validateGeneration
 
 export const generationRoutes = Router();
 
-const assertLegacyJobMutable = async (jobId: string) => {
+const assertLegacyJobMutable = async (jobId: string, organizationId: string) => {
+  const existing = await getGenerationBatch(jobId);
+  if (existing && !await isGenerationBatchInOrganization(jobId, organizationId)) {
+    throw notFound('Generation job');
+  }
   if (await isExecutionManagedGenerationJob(jobId)) {
     throw new ApiError(409, 'EXECUTION_MANAGED_JOB', 'This batch is managed by the generation worker.');
   }
@@ -49,9 +58,20 @@ generationRoutes.get('/health', async (_req, res) => {
     localUploadsEnabled: assetMode === 'oss' && ossConfigured,
     workerEnabled: serverConfig.generationWorkerEnabled && configured,
     maxBatchSize: serverConfig.generationMaxBatchSize,
+    imageConcurrency: serverConfig.generationImageConcurrency,
+    videoConcurrency: serverConfig.generationVideoConcurrency,
+    taskTimeoutMs: serverConfig.generationTaskTimeoutMs,
   });
 });
 
+
+generationRoutes.get('/queue', async (_req, res) => {
+  try {
+    res.json({ queue: await getGenerationQueueState() });
+  } catch (error) {
+    sendError(res, error, 'Failed to load generation queue');
+  }
+});
 generationRoutes.get('/models', async (_req, res) => {
   try {
     const models = await aionGenerationClient.listModels();
@@ -86,7 +106,7 @@ generationRoutes.post('/batches', async (req, res) => {
 
 generationRoutes.get('/batches/:batchId', async (req, res) => {
   try {
-    const batch = await getGenerationBatch(req.params.batchId);
+    const batch = await getGenerationBatch(req.params.batchId, req.user.organizationId);
     if (!batch) throw notFound('Generation batch');
     res.json({ batch });
   } catch (error) {
@@ -96,10 +116,9 @@ generationRoutes.get('/batches/:batchId', async (req, res) => {
 
 generationRoutes.post('/batches/:batchId/cancel', async (req, res) => {
   try {
-    const batch = await getGenerationBatch(req.params.batchId);
+    const batch = await getGenerationBatch(req.params.batchId, req.user.organizationId);
     if (!batch) throw notFound('Generation batch');
-    if (batch.createdBy !== req.user.id) throw new ApiError(403, 'FORBIDDEN', 'Only the batch creator can cancel it.');
-    const cancelled = await requestGenerationCancellation(req.params.batchId);
+    const cancelled = await requestGenerationCancellation(req.params.batchId, req.user);
     if (!cancelled) throw notFound('Generation batch');
     const aggregate = await refreshGenerationJob(req.params.batchId);
     if (aggregate?.terminal) await writeGenerationBatchToDataset(req.params.batchId);
@@ -111,19 +130,40 @@ generationRoutes.post('/batches/:batchId/cancel', async (req, res) => {
 
 generationRoutes.post('/batches/:batchId/retry', async (req, res) => {
   try {
-    const batch = await getGenerationBatch(req.params.batchId);
+    const batch = await getGenerationBatch(req.params.batchId, req.user.organizationId);
     if (!batch) throw notFound('Generation batch');
-    if (batch.createdBy !== req.user.id) throw new ApiError(403, 'FORBIDDEN', 'Only the batch creator can retry it.');
-    const retryable = batch.items.filter(item => ['failed', 'submission_unknown', 'cancelled'].includes(item.status));
-    const ambiguous = retryable.filter(item => item.status === 'submission_unknown');
-    if (ambiguous.length && req.body?.forceSubmissionUnknown !== true) {
-      throw badRequest('submission_unknown cases require an explicit duplicate-billing acknowledgement.', {
-        caseIds: ambiguous.map(item => item.caseId),
+    const itemIds = Array.isArray(req.body?.itemIds)
+      ? [...new Set(req.body.itemIds.filter((id: unknown) => typeof id === 'string' && id))]
+      : [];
+    if (!itemIds.length) throw badRequest('Select at least one case to retry.');
+    const selected = itemIds
+      .map((itemId: string) => batch.items.find(item => item.id === itemId))
+      .filter(Boolean);
+    if (selected.length !== itemIds.length) {
+      throw badRequest('One or more selected cases do not belong to this batch.');
+    }
+    const retryable = selected.filter(item =>
+      item
+      && ['failed', 'submission_unknown', 'cancelled'].includes(item.status)
+      && item.resolutionStatus !== 'retrying');
+    if (retryable.length !== selected.length) {
+      throw badRequest('One or more selected cases are not currently retryable.');
+    }
+    const duplicateRisk = retryable.filter(item =>
+      item!.status === 'submission_unknown' || item!.error?.code === 'GENERATION_TIMEOUT');
+    const duplicateRiskAcknowledged = req.body?.forceDuplicateBillingRisk === true
+      || req.body?.forceSubmissionUnknown === true;
+    if (duplicateRisk.length && !duplicateRiskAcknowledged) {
+      throw badRequest('These cases may already have been charged. Confirm the duplicate-billing risk to retry.', {
+        caseIds: duplicateRisk.map(item => item!.caseId),
       });
     }
-    if (!retryable.length) throw badRequest('The batch has no retryable cases.');
     const currentDataset = await getDataset(batch.datasetId);
     if (!currentDataset) throw notFound('Dataset');
+    const stableDatasetItemIds = retryable.map(item => item!.datasetItemId).filter(Boolean) as string[];
+    if (stableDatasetItemIds.length !== retryable.length) {
+      throw badRequest('One or more selected cases no longer have a stable dataset item ID.');
+    }
     const preflight = await createGenerationPreflight({
       datasetId: batch.datasetId,
       datasetVersion: currentDataset.version || 1,
@@ -136,15 +176,51 @@ generationRoutes.post('/batches/:batchId/retry', async (req, res) => {
       perCaseControlColumns: batch.controls.perCaseControlColumns || {},
       durationSource: batch.controls.durationSource,
       retryOfJobId: batch.id,
+      retrySourceItemIds: Object.fromEntries(
+        retryable.map(item => [item!.datasetItemId, item!.id]),
+      ),
+      retryDuplicateBillingRiskConfirmed: duplicateRiskAcknowledged,
       seedMode: batch.controls.seedMode,
       fixedSeed: batch.controls.fixedSeed,
       seedColumn: batch.controls.seedColumn,
-      selectedDatasetItemIds: retryable.map(item => item.datasetItemId),
+      selectedDatasetItemIds: stableDatasetItemIds,
       assetBindings: batch.controls.assetBindings || [],
     }, req.user);
     res.status(201).json({ preflight });
   } catch (error) {
     sendError(res, error, 'Failed to preflight generation retry');
+  }
+});
+
+generationRoutes.post('/batches/:batchId/items/skip', async (req, res) => {
+  try {
+    const batch = await getGenerationBatch(req.params.batchId, req.user.organizationId);
+    if (!batch) throw notFound('Generation batch');
+    const itemIds = Array.isArray(req.body?.itemIds)
+      ? req.body.itemIds.filter((id: unknown) => typeof id === 'string' && id)
+      : [];
+    await skipGenerationItems(req.params.batchId, itemIds, req.user);
+    const aggregate = await refreshGenerationJob(req.params.batchId);
+    if (aggregate?.terminal) await writeGenerationBatchToDataset(req.params.batchId);
+    res.json({
+      accepted: true,
+      batch: await getGenerationBatch(req.params.batchId, req.user.organizationId),
+    });
+  } catch (error) {
+    sendError(res, error, 'Failed to skip generation cases');
+  }
+});
+
+generationRoutes.get('/batches/:batchId/events', async (req, res) => {
+  try {
+    if (!await isGenerationBatchInOrganization(req.params.batchId, req.user.organizationId)) {
+      throw notFound('Generation batch');
+    }
+    res.json({
+      events: await listGenerationJobEvents(req.params.batchId, req.user.organizationId),
+    });
+  } catch (error) {
+    sendError(res, error, 'Failed to load generation batch events');
   }
 });
 
@@ -180,7 +256,20 @@ generationRoutes.post('/assets/:assetId/complete', async (req, res) => {
 generationRoutes.get('/jobs', async (req, res) => {
   try {
     const datasetId = typeof req.query.datasetId === 'string' ? req.query.datasetId : undefined;
-    res.json({ jobs: await listGenerationJobs({ datasetId }) });
+    const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+    const model = typeof req.query.model === 'string' ? req.query.model : undefined;
+    const createdBy = typeof req.query.createdBy === 'string' ? req.query.createdBy : undefined;
+    const page = typeof req.query.page === 'string' ? Number(req.query.page) : undefined;
+    const limit = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
+    res.json(await listGenerationJobs({
+      organizationId: req.user.organizationId,
+      datasetId,
+      status,
+      model,
+      createdBy,
+      page,
+      limit,
+    }));
   } catch (error) {
     sendError(res, error, 'Failed to list generation jobs');
   }
@@ -188,9 +277,12 @@ generationRoutes.get('/jobs', async (req, res) => {
 
 generationRoutes.put('/jobs/:jobId', async (req, res) => {
   try {
-    await assertLegacyJobMutable(req.params.jobId);
+    await assertLegacyJobMutable(req.params.jobId, req.user.organizationId);
     const payload = requireBodyObject(req.body, 'job');
     validateGenerationJobPayload(payload);
+    if (!await isGenerationDatasetInOrganization(String(payload.datasetId || ''), req.user.organizationId)) {
+      throw new ApiError(403, 'FORBIDDEN', 'This dataset is outside your organization.');
+    }
     const job = await saveGenerationJob({ ...payload, id: req.params.jobId } as any);
     res.json({ job });
   } catch (error) {
@@ -200,7 +292,10 @@ generationRoutes.put('/jobs/:jobId', async (req, res) => {
 
 generationRoutes.get('/jobs/:jobId/items', async (req, res) => {
   try {
-    res.json({ items: await listGenerationJobItems(req.params.jobId) });
+    if (!await isGenerationBatchInOrganization(req.params.jobId, req.user.organizationId)) {
+      throw notFound('Generation job');
+    }
+    res.json({ items: await listGenerationJobItems(req.params.jobId, req.user.organizationId) });
   } catch (error) {
     sendError(res, error, 'Failed to list generation job items');
   }
@@ -208,7 +303,7 @@ generationRoutes.get('/jobs/:jobId/items', async (req, res) => {
 
 generationRoutes.put('/jobs/:jobId/items/:itemId', async (req, res) => {
   try {
-    await assertLegacyJobMutable(req.params.jobId);
+    await assertLegacyJobMutable(req.params.jobId, req.user.organizationId);
     const payload = requireBodyObject(req.body, 'item');
     validateGenerationJobItemPayload(payload);
     const item = await saveGenerationJobItem({ ...payload, id: req.params.itemId, jobId: req.params.jobId } as any);
@@ -220,7 +315,7 @@ generationRoutes.put('/jobs/:jobId/items/:itemId', async (req, res) => {
 
 generationRoutes.delete('/jobs/:jobId', async (req, res) => {
   try {
-    await assertLegacyJobMutable(req.params.jobId);
+    await assertLegacyJobMutable(req.params.jobId, req.user.organizationId);
     const deleted = await deleteGenerationJob(req.params.jobId);
     if (!deleted) {
       throw notFound('Generation job');

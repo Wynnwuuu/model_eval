@@ -17,6 +17,7 @@ import {
   EvalDataset,
   GenerationAssetDurability,
   GenerationAssetBinding,
+  GenerationJobEvent,
   GenerationDurationSourceMode,
   GenerationInputMapping,
   GenerationReferenceAudioDuration,
@@ -39,8 +40,10 @@ import {
   GenerationPreflightRequest,
   cancelExecutionBatch,
   confirmExecutionPreflight,
+  listExecutionBatchEvents,
   createExecutionPreflight,
   createRetryPreflight,
+  skipExecutionItems,
   getExecutionBatch,
   getGenerationRuntimeHealth,
   isTerminalGenerationBatch,
@@ -74,6 +77,7 @@ interface DatasetGenerationExecutionModalProps {
   dataset: EvalDataset;
   initialBatchId?: string;
   onClose: () => void;
+  onBatchChange?: (batchId: string) => void;
   onCreateEvaluation?: (datasetId: string, resultColumn: string) => void;
 }
 
@@ -177,6 +181,13 @@ const durabilityClass = (durability?: GenerationAssetDurability) => durability =
     ? 'text-emerald-300'
     : 'text-sky-300';
 
+const formatElapsed = (milliseconds: number) => {
+  const totalMinutes = Math.max(0, Math.floor(milliseconds / 60_000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return hours ? `${hours}h ${minutes}m` : `${minutes}m`;
+};
+
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 const hasConfiguredInputValue = (value: unknown) => {
@@ -212,6 +223,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   dataset,
   initialBatchId,
   onClose,
+  onBatchChange,
   onCreateEvaluation,
 }) => {
   const [step, setStep] = useState<GenerationStep>(initialBatchId ? 3 : 1);
@@ -240,6 +252,9 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const pollController = useRef<AbortController | null>(null);
+  const [selectedBatchItemIds, setSelectedBatchItemIds] = useState<string[]>([]);
+  const [batchEvents, setBatchEvents] = useState<GenerationJobEvent[]>([]);
+  const [clock, setClock] = useState(Date.now());
   const audioProbeController = useRef<AbortController | null>(null);
   const audioDurationCache = useRef(new Map<string, number>());
   const [audioProbe, setAudioProbe] = useState<{
@@ -283,7 +298,19 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const referenceVideoSupport = useMemo(() => getGenerationReferenceVideoSupport(selectedModel), [selectedModel]);
   const supportsRawElements = modelDeclaresGenerationInput(selectedModel, 'elements');
   const durationControl = selectedModel?.controls.find(control => control.key === 'duration');
-  const hasUnknownSubmission = batch?.items.some(item => item.status === 'submission_unknown') || false;
+  const selectedBatchItems = batch?.items.filter(item => selectedBatchItemIds.includes(item.id)) || [];
+  const selectableBatchItems = batch?.items.filter(item =>
+    ['pending', 'failed', 'submission_unknown', 'cancelled'].includes(item.status)
+    && item.resolutionStatus !== 'retrying') || [];
+  const canSkipSelected = selectedBatchItems.length > 0 && selectedBatchItems.every(item =>
+    ['pending', 'failed', 'submission_unknown'].includes(item.status));
+  const canRetrySelected = selectedBatchItems.length > 0 && selectedBatchItems.every(item =>
+    ['failed', 'submission_unknown', 'cancelled'].includes(item.status)
+    && item.resolutionStatus !== 'retrying');
+  const selectedHasDuplicateBillingRisk = selectedBatchItems.some(item =>
+    item.status === 'submission_unknown' || item.error?.code === 'GENERATION_TIMEOUT');
+  const selectableBatchSignature = selectableBatchItems.map(item => item.id).join('|');
+
 
   const applyModel = (model?: GenerationModelConfig) => {
     setModelId(model?.id || '');
@@ -322,6 +349,10 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   ]);
 
   useEffect(() => {
+    if (initialBatchId) {
+      setModelsLoading(false);
+      return undefined;
+    }
     let active = true;
     setModelsLoading(true);
     Promise.all([listExecutionModels(), getGenerationRuntimeHealth()])
@@ -455,6 +486,32 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
       .finally(() => setBusy(false));
     return () => pollController.current?.abort();
   }, [initialBatchId]);
+
+  useEffect(() => {
+    setSelectedBatchItemIds([]);
+  }, [batch?.id]);
+
+  useEffect(() => {
+    const selectable = new Set(selectableBatchItems.map(item => item.id));
+    setSelectedBatchItemIds(current => current.filter(itemId => selectable.has(itemId)));
+  }, [selectableBatchSignature]);
+
+  useEffect(() => {
+    if (!batch || isTerminalGenerationBatch(batch)) return undefined;
+    setClock(Date.now());
+    const interval = window.setInterval(() => setClock(Date.now()), 30_000);
+    return () => window.clearInterval(interval);
+  }, [batch?.id, batch?.status, batch?.writebackStatus]);
+
+  useEffect(() => {
+    if (!batch?.id) {
+      setBatchEvents([]);
+      return;
+    }
+    void listExecutionBatchEvents(batch.id)
+      .then(setBatchEvents)
+      .catch(reason => console.error('Failed to load generation batch events:', reason));
+  }, [batch?.id, batch?.updatedAt]);
 
   useEffect(() => () => {
     pollController.current?.abort();
@@ -628,6 +685,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
       const loaded = await getExecutionBatch(created.batchId);
       setBatch(loaded);
       setPreflight(null);
+      onBatchChange?.(loaded.id);
       setConfirmed(false);
       if (!isTerminalGenerationBatch(loaded)) startPolling(loaded.id);
     } catch (reason) {
@@ -657,19 +715,38 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     }
   };
 
-  const retryFailed = async () => {
-    if (!batch) return;
-    if (hasUnknownSubmission) {
+  const skipSelectedItems = async () => {
+    if (!batch || !canSkipSelected) return;
+    setBusy(true);
+    setError('');
+    try {
+      const loaded = await skipExecutionItems(batch.id, selectedBatchItemIds);
+      setBatch(loaded);
+      setSelectedBatchItemIds([]);
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const retrySelectedItems = async () => {
+    if (!batch || !canRetrySelected) return;
+    if (selectedHasDuplicateBillingRisk) {
       const accepted = window.confirm(
-        '\u90e8\u5206 case \u7684 Aion \u63d0\u4ea4\u7ed3\u679c\u672a\u77e5\u3002\u5f3a\u5236\u91cd\u8bd5\u53ef\u80fd\u4ea7\u751f\u91cd\u590d\u8ba1\u8d39\uff0c\u786e\u5b9a\u7ee7\u7eed\u5417\uff1f',
+        '\u9009\u4e2d case \u53ef\u80fd\u5df2\u7ecf\u6263\u8d39\u3002\u91cd\u8bd5\u53ef\u80fd\u4ea7\u751f\u91cd\u590d\u8ba1\u8d39\uff0c\u786e\u5b9a\u7ee7\u7eed\u5417\uff1f',
       );
       if (!accepted) return;
     }
     setBusy(true);
     setError('');
     try {
-      const next = await createRetryPreflight(batch.id, hasUnknownSubmission);
-      setPreflight(next);
+      const nextPreflight = await createRetryPreflight(
+        batch.id,
+        selectedBatchItemIds,
+        selectedHasDuplicateBillingRisk,
+      );
+      setPreflight(nextPreflight);
       setConfirmed(false);
     } catch (reason) {
       setError(errorMessage(reason));
@@ -1354,35 +1431,123 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
 
                   <section>
                     <h3 className="mb-3 text-sm font-semibold text-slate-100">Case execution</h3>
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-3 border-y border-white/10 py-2">
+                      <label className="flex items-center gap-2 text-xs text-slate-400">
+                        <input
+                          type="checkbox"
+                          checked={selectableBatchItems.length > 0 && selectedBatchItemIds.length === selectableBatchItems.length}
+                          onChange={event => setSelectedBatchItemIds(
+                            event.target.checked ? selectableBatchItems.map(item => item.id) : [],
+                          )}
+                          disabled={!selectableBatchItems.length}
+                        />
+                        {'\u5df2\u9009'} {selectedBatchItemIds.length} / {selectableBatchItems.length}
+                      </label>
+                      <div className="flex flex-wrap gap-2">
+                        <button type="button" disabled={busy || !canSkipSelected} onClick={() => { void skipSelectedItems(); }} className="inline-flex items-center gap-2 rounded-md border border-amber-400/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-100 disabled:opacity-30">
+                          <Square size={13} /> {'\u8df3\u8fc7 / \u4e0d\u518d\u91cd\u8bd5'}
+                        </button>
+                        <button type="button" disabled={busy || !canRetrySelected} onClick={() => { void retrySelectedItems(); }} className="inline-flex items-center gap-2 rounded-md border border-blue-400/30 bg-blue-500/10 px-3 py-1.5 text-xs text-blue-100 disabled:opacity-30">
+                          <RefreshCw size={13} /> {'\u91cd\u8bd5\u9009\u4e2d case'}
+                        </button>
+                      </div>
+                    {batch.items.some(item => ['submitting', 'submitted', 'processing', 'archiving'].includes(item.status)) && (
+                      <div className="mb-3 text-xs text-slate-500">
+                        {'\u8fd0\u884c\u4e2d\u548c\u5f52\u6863\u4e2d\u7684 case \u4e0d\u80fd\u8df3\u8fc7\uff1aAion \u6682\u65e0\u901a\u7528\u53d6\u6d88\u63a5\u53e3\uff0c\u5df2\u63d0\u4ea4\u4efb\u52a1\u4f1a\u7ee7\u7eed\u8f6e\u8be2\u5e76\u5f52\u6863\u3002'}
+                      </div>
+                    )}
+                    </div>
                     <div className="max-h-[380px] overflow-auto border border-white/10">
-                      {batch.items.map(item => (
-                        <div key={item.id} className="grid min-h-[72px] gap-3 border-b border-white/5 px-3 py-3 text-xs last:border-0 md:grid-cols-[180px_120px_minmax(0,1fr)_180px]">
-                          <div className="min-w-0">
-                            <div className="truncate text-slate-200" title={item.caseId}>{item.caseId}</div>
-                            <div className="mt-1 truncate text-slate-500" title={item.providerJobId}>{item.providerJobId || item.requestId || '-'}</div>
-                          </div>
-                          <div>
-                            <div className={item.status === 'succeeded' ? 'text-emerald-300' : item.status === 'failed' || item.status === 'submission_unknown' ? 'text-red-300' : 'text-blue-300'}>{statusLabel(item.status)}</div>
-                            {item.status === 'succeeded' && item.durability && (
-                              <div className={'mt-1 ' + durabilityClass(item.durability)}>{durabilityLabel(item.durability)}</div>
-                            )}
-                          </div>
-                          <div className="min-w-0 break-words text-slate-400">{item.error?.message || item.providerStatus || '-'}</div>
-                          <div className="h-20 w-44 overflow-hidden bg-black/30">
-                            {item.resultUrl ? (
-                              <MediaRenderer
-                                url={item.resultUrl}
-                                isActive={false}
-                                forceType={(item.mediaType || batch.modelConfig.outputModality) as DatasetPreviewType}
-                                videoPreload="metadata"
-                                className="h-full w-full border-0 object-cover shadow-none"
+                      {batch.items.map(item => {
+                        const isSelectable = selectableBatchItems.some(candidate => candidate.id === item.id);
+                        const providerActive = ['submitting', 'submitted', 'processing'].includes(item.status);
+                        const startedAt = item.submissionStartedAt || item.startedAt;
+                        const released = ['failed', 'submission_unknown', 'cancelled', 'succeeded', 'completed'].includes(item.status);
+                        return (
+                          <div key={item.id} className="grid min-h-[72px] gap-3 border-b border-white/5 px-3 py-3 text-xs last:border-0 md:grid-cols-[28px_170px_120px_minmax(0,1fr)_180px]">
+                            <div className="pt-1">
+                              <input
+                                type="checkbox"
+                                checked={selectedBatchItemIds.includes(item.id)}
+                                disabled={!isSelectable}
+                                onChange={event => setSelectedBatchItemIds(current => event.target.checked
+                                  ? [...current, item.id]
+                                  : current.filter(itemId => itemId !== item.id))}
+                                aria-label={`Select ${item.caseId}`}
                               />
-                            ) : <div className="flex h-full items-center justify-center text-slate-600">-</div>}
+                            </div>
+                            <div className="min-w-0">
+                              <div className="truncate text-slate-200" title={item.caseId}>{item.caseId}</div>
+                              <div className="mt-1 truncate text-slate-500" title={item.providerJobId}>{item.providerJobId || item.requestId || '-'}</div>
+                            </div>
+                            <div>
+                              <div className={item.status === 'succeeded' ? 'text-emerald-300' : item.status === 'failed' || item.status === 'submission_unknown' ? 'text-red-300' : 'text-blue-300'}>{statusLabel(item.status)}</div>
+                              {item.status === 'succeeded' && item.durability && (
+                                <div className={'mt-1 ' + durabilityClass(item.durability)}>{durabilityLabel(item.durability)}</div>
+                              )}
+                              {item.resolutionStatus === 'skipped' && (
+                                <div className="mt-1 text-slate-500">{'\u5df2\u786e\u8ba4\u4e0d\u518d\u91cd\u8bd5'}</div>
+                              )}
+                              {item.resolutionStatus === 'retrying' && (
+                                <div className="mt-1 text-blue-300">{'\u5df2\u5efa\u7acb retry \u6279\u6b21'}</div>
+                              )}
+                            </div>
+                            <div className="min-w-0 break-words text-slate-400">
+                              <div>{item.error?.message || item.providerStatus || '-'}</div>
+                              {providerActive && startedAt && (
+                                <div className="mt-1 text-blue-300">
+                                  {'\u63d0\u4ea4'} {new Date(startedAt).toLocaleString('zh-CN')}
+                                  {' / \u5df2\u8fd0\u884c'} {formatElapsed(clock - startedAt)}
+                                  {' / \u5360\u7528'} {batch.modelConfig.outputModality === 'video' ? '\u89c6\u9891' : '\u56fe\u7247'} {'\u69fd\u4f4d'}
+                                </div>
+                              )}
+                              {providerActive && item.timeoutAt && (
+                                <div className="mt-1 text-slate-500">
+                                  {'ManuEval \u622a\u6b62'} {new Date(item.timeoutAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+                                </div>
+                              )}
+                              {item.status === 'pending' && <div className="mt-1 text-slate-500">{'\u7b49\u5f85\u516c\u5e73\u8c03\u5ea6'}</div>}
+                              {item.status === 'archiving' && <div className="mt-1 text-slate-500">{'\u5df2\u91ca\u653e\u6a21\u578b\u69fd\u4f4d\uff0c\u6b63\u5728\u5f52\u6863'}</div>}
+                              {released && <div className="mt-1 text-slate-500">{'\u5df2\u91ca\u653e\u5e76\u53d1\u4f4d'}</div>}
+                            </div>
+                            <div className="h-20 w-44 overflow-hidden bg-black/30">
+                              {item.resultUrl ? (
+                                <MediaRenderer
+                                  url={item.resultUrl}
+                                  isActive={false}
+                                  forceType={(item.mediaType || batch.modelConfig.outputModality) as DatasetPreviewType}
+                                  videoPreload="metadata"
+                                  className="h-full w-full border-0 object-cover shadow-none"
+                                />
+                              ) : <div className="flex h-full items-center justify-center text-slate-600">-</div>}
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </section>
+                  {!!batchEvents.length && (
+                    <details className="border border-white/10 bg-black/20">
+                      <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-slate-300">
+                        {'\u4efb\u52a1\u4e8b\u4ef6'} ({batchEvents.length})
+                      </summary>
+                      <div className="max-h-44 divide-y divide-white/5 overflow-auto border-t border-white/10">
+                        {batchEvents.map(event => (
+                          <div key={event.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-xs">
+                            <span className="text-slate-300">{({
+                              batch_created: '\u521b\u5efa\u6279\u6b21',
+                              retry_batch_created: '\u521b\u5efa retry \u6279\u6b21',
+                              retry_created: '\u521b\u5efa case retry',
+                              items_skipped: '\u8df3\u8fc7 case',
+                              batch_cancelled: '\u53d6\u6d88\u672a\u63d0\u4ea4 case',
+                              writeback_finished: '\u56de\u586b\u5b8c\u6210',
+                            } as Record<string, string>)[event.action] || event.action}</span>
+                            <span className="text-slate-500">{event.actorName || '\u7cfb\u7edf'} ? {new Date(event.createdAt).toLocaleString('zh-CN')}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
                 </>
               )}
             </div>
@@ -1413,9 +1578,6 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
             )}
             {batch && !terminal && (
               <button type="button" disabled={busy || batch.cancelRequested} onClick={() => { void cancelBatch(); }} className="inline-flex items-center gap-2 border border-red-400/30 bg-red-500/10 px-4 py-2 text-sm text-red-200 disabled:opacity-40"><Square size={15} /> {copy.cancel}</button>
-            )}
-            {batch && terminal && batch.items.some(item => ['failed', 'submission_unknown', 'cancelled'].includes(item.status)) && (
-              <button type="button" disabled={busy} onClick={() => { void retryFailed(); }} className="inline-flex items-center gap-2 border border-blue-400/30 bg-blue-500/10 px-4 py-2 text-sm text-blue-200 disabled:opacity-40"><RefreshCw size={15} /> {copy.retry}</button>
             )}
             {batch?.writebackStatus === 'completed' && onCreateEvaluation && (
               <button type="button" onClick={() => onCreateEvaluation(dataset.id, batch.targetColumn)} className="inline-flex items-center gap-2 bg-emerald-500 px-5 py-2 text-sm font-medium text-black"><CheckCircle2 size={16} /> {copy.createEvaluation}</button>

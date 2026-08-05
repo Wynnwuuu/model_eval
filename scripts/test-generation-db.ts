@@ -7,18 +7,22 @@ import { serverConfig } from '../server/config.ts';
 import { getDataset, saveDataset } from '../server/datasets/datasetRepository.ts';
 import {
   beginGenerationSubmission,
+  claimGenerationWriteback,
   claimNextGenerationItem,
   createGenerationBatchFromPreflight,
   findGenerationWritebackCandidate,
+  listGenerationJobEvents,
   getGenerationBatch,
   refreshGenerationJob,
   releaseGenerationItemLease,
   requestGenerationCancellation,
   saveGenerationPreflight,
+  skipGenerationItems,
   renewGenerationItemLease,
   updateGenerationItem,
   type StoredGenerationPreflight,
 } from '../server/generation/generationExecutionRepository.ts';
+import { listGenerationJobs } from '../server/generation/generationRepository.ts';
 import { normalizeAionModelConfig } from '../server/generation/generationPlanning.ts';
 import { writeGenerationBatchToDataset } from '../server/generation/generationWritebackService.ts';
 import { DATASET_ITEM_ID_KEY } from '../src/datasetSync.ts';
@@ -31,7 +35,14 @@ const user: RequestUser = {
   displayName: 'Generation DB Test',
   organizationId: 'default',
 };
+const teammate: RequestUser = {
+  id: `generation-db-teammate-${suffix}`,
+  email: `generation-db-teammate-${suffix}@example.com`,
+  displayName: 'Generation DB Teammate',
+  organizationId: 'default',
+};
 const datasetId = `generation-db-dataset-${suffix}`;
+const fairnessDatasetId = `generation-db-fairness-dataset-${suffix}`;
 
 const model = normalizeAionModelConfig({
   name: 'fake/image-model',
@@ -81,13 +92,13 @@ const createPreflightRecord = (
   const now = Date.now();
   return {
     id: `preflight-${randomUUID()}`,
-    datasetId,
+    datasetId: savedDataset.id,
     datasetVersion: savedDataset.version || 1,
     modelName: model.modelName,
     configFingerprint: model.configFingerprint,
     requestHash,
     payload: {
-      datasetId,
+      datasetId: savedDataset.id,
       datasetVersion: savedDataset.version || 1,
       datasetName: savedDataset.name,
       modelName: model.modelName,
@@ -142,6 +153,14 @@ try {
   await dbPool.query(
     `INSERT INTO organization_members (organization_id, user_id, role) VALUES ('default', $1, 'admin')`,
     [user.id],
+  );
+  await dbPool.query(
+    `INSERT INTO users (id, email, display_name) VALUES ($1, $2, $3)`,
+    [teammate.id, teammate.email, teammate.displayName],
+  );
+  await dbPool.query(
+    `INSERT INTO organization_members (organization_id, user_id, role) VALUES ('default', $1, 'editor')`,
+    [teammate.id],
   );
 
   const now = Date.now();
@@ -200,7 +219,7 @@ try {
   assert.equal(claimedItems.length, 1, 'SKIP LOCKED must allow only one worker to claim the case');
   const claimedItem = claimedItems[0]!;
 
-  assert.equal(await requestGenerationCancellation(cancelledJob.id), true);
+  assert.equal(await requestGenerationCancellation(cancelledJob.id, user), true);
   const maySubmitAfterCancellation = await beginGenerationSubmission(
     claimedItem.id,
     claimedItem.attempt + 1,
@@ -228,6 +247,154 @@ try {
   assert.equal(await writeGenerationBatchToDataset(cancelledJob.id), true);
   const afterRecoveredWriteback = await getDataset(datasetId);
   assert.equal(afterRecoveredWriteback?.version, 2, 'writeback recovery must not create a duplicate dataset version');
+
+  const skipPreflight = createPreflightRecord(
+    afterRecoveredWriteback!,
+    'skip_result',
+    `request-${suffix}-skip`,
+    [0, 1],
+  );
+  await saveGenerationPreflight(skipPreflight);
+  const skipJob = await createGenerationBatchFromPreflight(skipPreflight, user);
+  const skipBefore = await getGenerationBatch(skipJob.id);
+  await updateGenerationItem(skipBefore!.items[1].id, {
+    status: 'failed',
+    error: { code: 'PROVIDER_FAILED', message: 'Provider returned a terminal failure.' },
+    finishedAt: Date.now(),
+  });
+  await skipGenerationItems(
+    skipJob.id,
+    skipBefore!.items.map(item => item.id),
+    teammate,
+  );
+  await refreshGenerationJob(skipJob.id);
+  const skipAfter = await getGenerationBatch(skipJob.id, teammate.organizationId);
+  assert.equal(skipAfter?.items[0].status, 'cancelled');
+  assert.equal(skipAfter?.items[0].resolutionStatus, 'skipped');
+  assert.equal(skipAfter?.items[1].status, 'failed');
+  assert.equal(skipAfter?.items[1].resolutionStatus, 'skipped');
+  assert.equal(await getGenerationBatch(skipJob.id, 'another-organization'), null);
+  const organizationJobs = await listGenerationJobs({
+    organizationId: 'default',
+    datasetId,
+    limit: 100,
+  });
+  const firstJobsPage = await listGenerationJobs({
+    organizationId: 'default',
+    datasetId,
+    page: 1,
+    limit: 1,
+  });
+  const secondJobsPage = await listGenerationJobs({
+    organizationId: 'default',
+    datasetId,
+    page: 2,
+    limit: 1,
+  });
+  assert.ok(firstJobsPage.total >= 2);
+  assert.notEqual(firstJobsPage.jobs[0]?.id, secondJobsPage.jobs[0]?.id);
+  const filteredJobs = await listGenerationJobs({
+    organizationId: 'default',
+    datasetId,
+    status: skipAfter!.status,
+    createdBy: 'Generation DB Test',
+  });
+  assert.ok(filteredJobs.jobs.some(job => job.id === skipJob.id));
+  assert.ok(organizationJobs.jobs.some(job => job.id === skipJob.id));
+  const isolatedJobs = await listGenerationJobs({
+    organizationId: 'another-organization',
+    datasetId,
+  });
+  assert.equal(isolatedJobs.total, 0);
+  const skipEvents = await listGenerationJobEvents(skipJob.id, 'default');
+  assert.ok(skipEvents.some(event =>
+    event.action === 'items_skipped' && event.actorId === teammate.id));
+  assert.equal(await writeGenerationBatchToDataset(skipJob.id), true);
+
+  const retryBaseDataset = (await getDataset(datasetId))!;
+  const retryParentPreflight = createPreflightRecord(
+    retryBaseDataset,
+    'retry_result',
+    `request-${suffix}-retry-parent`,
+  );
+  await saveGenerationPreflight(retryParentPreflight);
+  const retryParent = await createGenerationBatchFromPreflight(retryParentPreflight, user);
+  const retryParentBatch = await getGenerationBatch(retryParent.id);
+  const retryParentItem = retryParentBatch!.items[0];
+  await updateGenerationItem(retryParentItem.id, {
+    status: 'failed',
+    error: { code: 'PROVIDER_FAILED', message: 'Safe terminal provider failure.' },
+    finishedAt: Date.now(),
+  });
+  await refreshGenerationJob(retryParent.id);
+  const isolatedRetryPreflight = createPreflightRecord(
+    retryBaseDataset,
+    'retry_result',
+    `request-${suffix}-retry-cross-org`,
+  );
+  isolatedRetryPreflight.payload.retryOfJobId = retryParent.id;
+  isolatedRetryPreflight.payload.retrySourceItemIds = {
+    [retryParentItem.datasetItemId]: retryParentItem.id,
+  };
+  await assert.rejects(
+    createGenerationBatchFromPreflight(isolatedRetryPreflight, {
+      ...user,
+      organizationId: 'another-organization',
+    }),
+    /source cases are unavailable/,
+  );
+
+  const retryChildPreflight = createPreflightRecord(
+    retryBaseDataset,
+    'retry_result',
+    `request-${suffix}-retry-child`,
+  );
+  retryChildPreflight.payload.retryOfJobId = retryParent.id;
+  retryChildPreflight.payload.retrySourceItemIds = {
+    [retryParentItem.datasetItemId]: retryParentItem.id,
+  };
+  await saveGenerationPreflight(retryChildPreflight);
+  const retryChild = await createGenerationBatchFromPreflight(retryChildPreflight, teammate);
+  const retryChildBatch = await getGenerationBatch(retryChild.id);
+  assert.equal(retryChildBatch?.retryOfJobId, retryParent.id);
+  assert.equal(retryChildBatch?.items[0].retryOfItemId, retryParentItem.id);
+
+  const duplicateRetryPreflight = createPreflightRecord(
+    retryBaseDataset,
+    'retry_result',
+    `request-${suffix}-retry-duplicate`,
+  );
+  duplicateRetryPreflight.payload.retryOfJobId = retryParent.id;
+  duplicateRetryPreflight.payload.retrySourceItemIds = {
+    [retryParentItem.datasetItemId]: retryParentItem.id,
+  };
+  await saveGenerationPreflight(duplicateRetryPreflight);
+  await assert.rejects(
+    createGenerationBatchFromPreflight(duplicateRetryPreflight, teammate),
+    /unfinished retry/,
+  );
+
+  await updateGenerationItem(retryChildBatch!.items[0].id, {
+    status: 'succeeded',
+    result: {
+      resultUrl: 'https://example.com/retry-result.png',
+      mediaType: 'image',
+      durability: 'temporary',
+    },
+    finishedAt: Date.now(),
+  });
+  await refreshGenerationJob(retryChild.id);
+  assert.equal(
+    await claimGenerationWriteback(retryChild.id),
+    null,
+    'retry writeback must wait until its parent writeback completes',
+  );
+  assert.equal(await writeGenerationBatchToDataset(retryParent.id), true);
+  assert.equal(await writeGenerationBatchToDataset(retryChild.id), true);
+  const retryWrittenDataset = await getDataset(datasetId);
+  assert.equal(retryWrittenDataset?.items[0].retry_result, 'https://example.com/retry-result.png');
+  const retryResolvedParent = await getGenerationBatch(retryParent.id);
+  assert.equal(retryResolvedParent?.items[0].resolutionStatus, 'resolved');
 
   const unknownPreflight = createPreflightRecord(
     afterRecoveredWriteback!,
@@ -431,6 +598,56 @@ try {
   const afterOverwriteAttempt = await getDataset(datasetId);
   assert.equal(afterOverwriteAttempt?.items[0][partialColumn], firstResult);
   assert.equal((await getGenerationBatch(overwriteJob.id))?.writebackStatus, 'conflict');
+  const fairnessDataset = await saveDataset({
+    ...afterFillWriteback,
+    id: fairnessDatasetId,
+    name: 'Generation fairness integration test',
+    items: [
+      { case_id: 'fairness-1', prompt: 'Fairness test one.' },
+      { case_id: 'fairness-2', prompt: 'Fairness test two.' },
+      { case_id: 'fairness-3', prompt: 'Fairness test three.' },
+    ],
+    version: 1,
+    versionHistory: [],
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  }, user.id);
+  const fairnessPreflightA = createPreflightRecord(
+    afterFillWriteback,
+    `fairness_a_${suffix}`,
+    `request-${suffix}-fairness-a`,
+    [0, 1, 2],
+  );
+  const fairnessPreflightB = createPreflightRecord(
+    fairnessDataset,
+    `fairness_b_${suffix}`,
+    `request-${suffix}-fairness-b`,
+    [0, 1, 2],
+  );
+  fairnessPreflightA.result.model = { ...fairnessPreflightA.result.model, outputModality: 'video' };
+  fairnessPreflightB.result.model = { ...fairnessPreflightB.result.model, outputModality: 'video' };
+  await saveGenerationPreflight(fairnessPreflightA);
+  await saveGenerationPreflight(fairnessPreflightB);
+  const fairnessJobA = await createGenerationBatchFromPreflight(fairnessPreflightA, user);
+  const fairnessJobB = await createGenerationBatchFromPreflight(fairnessPreflightB, user);
+  const fairnessClaims = await Promise.all(Array.from(
+    { length: serverConfig.generationVideoConcurrency },
+    (_, index) => claimNextGenerationItem('video', `fairness-worker-${index}-${suffix}`),
+  ));
+  const fairnessDatasets = fairnessClaims.map(item => item?.job.datasetId).filter(Boolean);
+  const fairnessCountA = fairnessDatasets.filter(value => value === datasetId).length;
+  const fairnessCountB = fairnessDatasets.filter(value => value === fairnessDatasetId).length;
+  assert.equal(fairnessClaims.filter(Boolean).length, serverConfig.generationVideoConcurrency);
+  assert.ok(Math.abs(fairnessCountA - fairnessCountB) <= 1,
+    `available provider slots must be shared fairly across datasets, got ${fairnessCountA}/${fairnessCountB}`);
+  if (serverConfig.generationVideoConcurrency === 2) {
+    assert.equal(fairnessCountA, 1);
+    assert.equal(fairnessCountB, 1);
+  }
+  await Promise.all(fairnessClaims.filter(Boolean).map(item => releaseGenerationItemLease(item!.id)));
+  await requestGenerationCancellation(fairnessJobA.id, user);
+  await requestGenerationCancellation(fairnessJobB.id, user);
+
 
 
   const capacityPreflight = createPreflightRecord(
@@ -500,7 +717,7 @@ try {
   assert.equal(resumedClaim?.status, 'pending',
     'a terminal provider task must release capacity for the next pending submission');
   await releaseGenerationItemLease(resumedClaim!.id);
-  await requestGenerationCancellation(capacityJob.id);
+  await requestGenerationCancellation(capacityJob.id, user);
   const partlyInvalidPreflight = createPreflightRecord(
     (await getDataset(datasetId))!,
     'partly_invalid_result',
@@ -527,12 +744,16 @@ try {
   assert.equal(partlyInvalidBatch?.total, 1);
   assert.equal(partlyInvalidBatch?.items.length, 1);
   assert.equal(partlyInvalidBatch?.items[0].caseId, 'case-1');
-  await requestGenerationCancellation(partlyInvalidJob.id);
+  await requestGenerationCancellation(partlyInvalidJob.id, user);
 
 
   console.log('Generation PostgreSQL integration tests passed.');
 } finally {
   await dbPool.query('DELETE FROM datasets WHERE id = $1', [datasetId]).catch(() => undefined);
-  await dbPool.query('DELETE FROM users WHERE id = $1', [user.id]).catch(() => undefined);
+  await dbPool.query('DELETE FROM datasets WHERE id = $1', [fairnessDatasetId]).catch(() => undefined);
+  await dbPool.query(
+    'DELETE FROM users WHERE id = ANY($1::text[])',
+    [[user.id, teammate.id]],
+  ).catch(() => undefined);
   await closeDatabase();
 }

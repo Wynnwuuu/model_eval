@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { RequestUser } from '../auth/context.ts';
 import { dbPool } from '../db/client.ts';
 import { serverConfig } from '../config.ts';
+import { conflict } from '../http/errors.ts';
 
 export type StoredGenerationPreflight = {
   id: string;
@@ -110,6 +111,74 @@ export const createGenerationBatchFromPreflight = async (
     const jobId = `gen-${randomUUID()}`;
     const allCases = Array.isArray(preflight.result.cases) ? preflight.result.cases : [];
     const cases = allCases.filter((item: any) => item.valid);
+    const retryOfJobId = typeof preflight.payload.retryOfJobId === 'string'
+      ? preflight.payload.retryOfJobId
+      : undefined;
+    const retrySourceItemIds = preflight.payload.retrySourceItemIds || {};
+    const sourceItemIds = retryOfJobId
+      ? cases.map((item: any) => retrySourceItemIds[item.resolvedCase.datasetItemId]).filter(Boolean)
+      : [];
+    if (retryOfJobId) {
+      if (sourceItemIds.length !== cases.length || new Set(sourceItemIds).size !== cases.length) {
+        throw conflict('Retry cases no longer match the source batch. Please preflight again.');
+      }
+      const sourceResult = await client.query(
+        `
+          SELECT
+            item.id,
+            item.stable_dataset_item_id,
+            item.status,
+            item.resolution_status
+          FROM generation_job_items item
+          JOIN generation_jobs source_job ON source_job.id = item.job_id
+          JOIN datasets source_dataset ON source_dataset.id = source_job.dataset_id
+          WHERE source_job.id = $1
+            AND item.id = ANY($2::text[])
+            AND source_job.dataset_id = $3
+            AND source_dataset.organization_id = $4
+            AND source_job.target_column = $5
+            AND source_job.model_config_json->>'modelName' = $6
+          FOR UPDATE OF item, source_job
+        `,
+        [
+          retryOfJobId,
+          sourceItemIds,
+          preflight.datasetId,
+          user.organizationId,
+          preflight.payload.targetColumn,
+          preflight.modelName,
+        ],
+      );
+      if (sourceResult.rowCount !== sourceItemIds.length) {
+        throw conflict('One or more retry source cases are unavailable.');
+      }
+      const sourceRows = new Map(sourceResult.rows.map(row => [row.id, row]));
+      const invalidSource = cases.find((item: any) => {
+        const source = sourceRows.get(retrySourceItemIds[item.resolvedCase.datasetItemId]);
+        return !source
+          || source.stable_dataset_item_id !== item.resolvedCase.datasetItemId
+          || !['failed', 'submission_unknown', 'cancelled'].includes(source.status)
+          || (source.status !== 'cancelled' && source.resolution_status === 'resolved');
+      });
+      if (invalidSource) {
+        throw conflict('A retry source case changed or was already resolved. Refresh the task.');
+      }
+      const activeRetry = await client.query(
+        `
+          SELECT retry.id
+          FROM generation_job_items retry
+          JOIN generation_jobs retry_job ON retry_job.id = retry.job_id
+          WHERE retry.retry_of_item_id = ANY($1::text[])
+            AND retry_job.writeback_status NOT IN ('completed', 'conflict', 'failed')
+          LIMIT 1
+        `,
+        [sourceItemIds],
+      );
+      if (activeRetry.rows[0]) throw conflict('A selected case already has an unfinished retry.');
+      if (sourceResult.rows.some(row => row.resolution_status === 'retrying')) {
+        throw conflict('A retry source case is still marked as retrying. Refresh the task.');
+      }
+    }
     const controls = {
       defaultControls: preflight.payload.defaultControls || {},
       perCaseControlColumns: preflight.payload.perCaseControlColumns || {},
@@ -146,7 +215,7 @@ export const createGenerationBatchFromPreflight = async (
         preflight.datasetVersion,
         preflight.id,
         preflight.requestHash,
-        preflight.payload.retryOfJobId || null,
+        retryOfJobId || null,
         JSON.stringify(preflight.result.model || {}),
         preflight.payload.targetColumn,
         JSON.stringify(preflight.payload.inputMapping || {}),
@@ -172,19 +241,20 @@ export const createGenerationBatchFromPreflight = async (
       await client.query(
         `
           INSERT INTO generation_job_items (
-            id, job_id, stable_dataset_item_id, row_index, case_key, status,
+            id, job_id, stable_dataset_item_id, retry_of_item_id, row_index, case_key, status,
             request_json, error_json, next_poll_at, finished_at
           )
           VALUES (
-            $1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb,
-            CASE WHEN $6 = 'pending' THEN now() ELSE NULL END,
-            CASE WHEN $6 = 'failed' THEN now() ELSE NULL END
+            $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb,
+            CASE WHEN $7 = 'pending' THEN now() ELSE NULL END,
+            CASE WHEN $7 = 'failed' THEN now() ELSE NULL END
           )
         `,
         [
           itemId,
           jobId,
           item.resolvedCase.datasetItemId,
+          retrySourceItemIds[item.resolvedCase.datasetItemId] || null,
           item.resolvedCase.rowIndex,
           item.resolvedCase.caseId,
           item.valid ? 'pending' : 'failed',
@@ -197,6 +267,59 @@ export const createGenerationBatchFromPreflight = async (
         ],
       );
     }
+
+    if (retryOfJobId) {
+      await client.query(
+        `
+          UPDATE generation_job_items
+          SET resolution_status = 'retrying',
+              resolution_by = $2,
+              resolution_at = now(),
+              updated_at = now()
+          WHERE id = ANY($1::text[])
+        `,
+        [sourceItemIds, user.id],
+      );
+      await client.query(
+        `
+          INSERT INTO generation_job_events (
+            id, organization_id, job_id, action, item_ids_json, actor_id, actor_name, details_json
+          )
+          VALUES ($1, $2, $3, 'retry_created', $4::jsonb, $5, $6, $7::jsonb)
+        `,
+        [
+          `gen-event-${randomUUID()}`,
+          user.organizationId,
+          retryOfJobId,
+          JSON.stringify(sourceItemIds),
+          user.id,
+          user.displayName,
+          JSON.stringify({
+            retryJobId: jobId,
+            costEstimate: preflight.result.costEstimate || {},
+            duplicateBillingRiskConfirmed: preflight.payload.retryDuplicateBillingRiskConfirmed === true,
+          }),
+        ],
+      );
+    }
+    await client.query(
+      `
+        INSERT INTO generation_job_events (
+          id, organization_id, job_id, action, item_ids_json, actor_id, actor_name, details_json
+        )
+        VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb)
+      `,
+      [
+        `gen-event-${randomUUID()}`,
+        user.organizationId,
+        jobId,
+        retryOfJobId ? 'retry_batch_created' : 'batch_created',
+        JSON.stringify([]),
+        user.id,
+        user.displayName,
+        JSON.stringify(retryOfJobId ? { retryOfJobId } : {}),
+      ],
+    );
 
     await client.query('COMMIT');
     return { id: jobId, reused: false };
@@ -230,6 +353,7 @@ const mapBatch = (job: any, items: any[]) => ({
   total: job.total,
   succeeded: job.succeeded,
   failed: job.failed,
+  retryOfJobId: job.retry_of_job_id || undefined,
   cancelRequested: job.cancel_requested,
   writebackStatus: job.writeback_status,
   writebackDatasetVersion: job.writeback_dataset_version,
@@ -245,6 +369,10 @@ const mapBatch = (job: any, items: any[]) => ({
     datasetItemId: item.stable_dataset_item_id,
     rowIndex: item.row_index,
     caseId: item.case_key,
+    retryOfItemId: item.retry_of_item_id || undefined,
+    resolutionStatus: item.resolution_status || undefined,
+    resolutionBy: item.resolution_by || undefined,
+    resolutionAt: toTimestamp(item.resolution_at),
     status: item.status,
     attempt: item.attempt,
     providerTaskId: item.provider_task_id,
@@ -261,12 +389,24 @@ const mapBatch = (job: any, items: any[]) => ({
     error: item.error_json || {},
     startedAt: toTimestamp(item.started_at),
     finishedAt: toTimestamp(item.finished_at),
+    submissionStartedAt: toTimestamp(item.submission_started_at),
+    timeoutAt: toTimestamp(item.submission_started_at)
+      ? toTimestamp(item.submission_started_at)! + serverConfig.generationTaskTimeoutMs : undefined,
   })),
 });
 
-export const getGenerationBatch = async (jobId: string) => {
+export const getGenerationBatch = async (jobId: string, organizationId?: string) => {
   const [jobResult, itemResult] = await Promise.all([
-    dbPool.query('SELECT * FROM generation_jobs WHERE id = $1', [jobId]),
+    dbPool.query(
+      `
+        SELECT job.*
+        FROM generation_jobs job
+        JOIN datasets dataset ON dataset.id = job.dataset_id
+        WHERE job.id = $1
+          AND ($2::text IS NULL OR dataset.organization_id = $2)
+      `,
+      [jobId, organizationId || null],
+    ),
     dbPool.query(
       'SELECT * FROM generation_job_items WHERE job_id = $1 ORDER BY row_index, id',
       [jobId],
@@ -319,20 +459,67 @@ export const claimNextGenerationItem = async (
 
     const result = await client.query(
       `
-        WITH candidate AS (
+        WITH due_active AS (
           SELECT item.id
           FROM generation_job_items item
           JOIN generation_jobs job ON job.id = item.job_id
           WHERE job.model_config_json->>'outputModality' = $1
-            AND (
-              item.status IN ('submitting', 'submitted', 'processing', 'archiving')
-              OR (item.status = 'pending' AND $4::int < $5::int)
-            )
+            AND item.status IN ('submitting', 'submitted', 'processing', 'archiving')
             AND (item.next_poll_at IS NULL OR item.next_poll_at <= now())
             AND (item.lease_expires_at IS NULL OR item.lease_expires_at < now())
-            AND NOT (job.cancel_requested AND item.status = 'pending')
-          ORDER BY CASE WHEN item.status = 'pending' THEN 1 ELSE 0 END, item.next_poll_at NULLS FIRST, item.created_at
+          ORDER BY item.next_poll_at NULLS FIRST, item.created_at
           FOR UPDATE OF item SKIP LOCKED
+          LIMIT 1
+        ),
+        dataset_load AS (
+          SELECT
+            job.dataset_id,
+            count(*) FILTER (
+              WHERE item.status IN ('submitting', 'submitted', 'processing')
+                OR (item.status = 'pending' AND item.lease_expires_at > now())
+            )::int AS active_count
+          FROM generation_jobs job
+          JOIN generation_job_items item ON item.job_id = job.id
+          WHERE job.model_config_json->>'outputModality' = $1
+          GROUP BY job.dataset_id
+        ),
+        job_load AS (
+          SELECT
+            job.id AS job_id,
+            count(*) FILTER (
+              WHERE item.status IN ('submitting', 'submitted', 'processing')
+                OR (item.status = 'pending' AND item.lease_expires_at > now())
+            )::int AS active_count
+          FROM generation_jobs job
+          JOIN generation_job_items item ON item.job_id = job.id
+          WHERE job.model_config_json->>'outputModality' = $1
+          GROUP BY job.id
+        ),
+        pending_candidate AS (
+          SELECT item.id
+          FROM generation_job_items item
+          JOIN generation_jobs job ON job.id = item.job_id
+          LEFT JOIN dataset_load ON dataset_load.dataset_id = job.dataset_id
+          LEFT JOIN job_load ON job_load.job_id = job.id
+          WHERE job.model_config_json->>'outputModality' = $1
+            AND item.status = 'pending'
+            AND $4::int < $5::int
+            AND (item.next_poll_at IS NULL OR item.next_poll_at <= now())
+            AND (item.lease_expires_at IS NULL OR item.lease_expires_at < now())
+            AND job.cancel_requested = false
+          ORDER BY
+            COALESCE(dataset_load.active_count, 0),
+            COALESCE(job_load.active_count, 0),
+            item.created_at,
+            item.row_index,
+            item.id
+          FOR UPDATE OF item SKIP LOCKED
+          LIMIT 1
+        ),
+        candidate AS (
+          SELECT id FROM due_active
+          UNION ALL
+          SELECT id FROM pending_candidate WHERE NOT EXISTS (SELECT 1 FROM due_active)
           LIMIT 1
         )
         UPDATE generation_job_items item
@@ -397,18 +584,29 @@ const ITEM_COLUMNS: Record<string, string> = {
   submissionStartedAt: 'submission_started_at',
   startedAt: 'started_at',
   finishedAt: 'finished_at',
+  resolutionStatus: 'resolution_status',
+  resolutionBy: 'resolution_by',
+  resolutionAt: 'resolution_at',
   archivedAssetId: 'archived_asset_id',
   leaseOwner: 'lease_owner',
   leaseExpiresAt: 'lease_expires_at',
 };
 
 export const updateGenerationItem = async (itemId: string, values: Record<string, any>) => {
-  const entries = Object.entries(values).filter(([key]) => ITEM_COLUMNS[key]);
+  const nextValues = { ...values };
+  if (!Object.prototype.hasOwnProperty.call(nextValues, 'resolutionStatus')) {
+    if (['failed', 'submission_unknown'].includes(nextValues.status)) {
+      nextValues.resolutionStatus = 'open';
+    } else if (['succeeded', 'completed', 'cancelled'].includes(nextValues.status)) {
+      nextValues.resolutionStatus = 'resolved';
+    }
+  }
+  const entries = Object.entries(nextValues).filter(([key]) => ITEM_COLUMNS[key]);
   if (!entries.length) return;
   const assignments = entries.map(([key], index) => {
     const column = ITEM_COLUMNS[key];
     if (['request', 'result', 'error'].includes(key)) return `${column} = $${index + 2}::jsonb`;
-    if (['nextPollAt', 'submissionStartedAt', 'startedAt', 'finishedAt', 'leaseExpiresAt'].includes(key)) {
+    if (['nextPollAt', 'submissionStartedAt', 'startedAt', 'finishedAt', 'leaseExpiresAt', 'resolutionAt'].includes(key)) {
       return `${column} = CASE WHEN $${index + 2}::bigint IS NULL THEN NULL ELSE to_timestamp($${index + 2} / 1000.0) END`;
     }
     return `${column} = $${index + 2}`;
@@ -523,19 +721,195 @@ export const refreshGenerationJob = async (jobId: string) => {
   );
   return { ...counts, terminal, status };
 };
+export const isGenerationBatchInOrganization = async (jobId: string, organizationId: string) => {
+  const result = await dbPool.query(
+    `
+      SELECT 1
+      FROM generation_jobs job
+      JOIN datasets dataset ON dataset.id = job.dataset_id
+      WHERE job.id = $1 AND dataset.organization_id = $2
+    `,
+    [jobId, organizationId],
+  );
+  return Boolean(result.rows[0]);
+};
 
-export const requestGenerationCancellation = async (jobId: string) => {
+export const isGenerationDatasetInOrganization = async (datasetId: string, organizationId: string) => {
+  const result = await dbPool.query(
+    `
+      SELECT 1 FROM datasets
+      WHERE id = $1 AND organization_id = $2 AND deleted_at IS NULL
+    `,
+    [datasetId, organizationId],
+  );
+  return Boolean(result.rows[0]);
+};
+export const getGenerationQueueState = async () => {
+  const result = await dbPool.query(
+    `
+      SELECT
+        job.model_config_json->>'outputModality' AS modality,
+        count(*) FILTER (
+          WHERE item.status IN ('submitting', 'submitted', 'processing')
+        )::int AS active,
+        count(*) FILTER (
+          WHERE item.status = 'pending' AND job.cancel_requested = false
+        )::int AS pending
+      FROM generation_jobs job
+      JOIN generation_job_items item ON item.job_id = job.id
+      WHERE job.model_config_json->>'outputModality' IN ('image', 'video')
+      GROUP BY job.model_config_json->>'outputModality'
+    `,
+  );
+  const counts = new Map(result.rows.map(row => [row.modality, row]));
+  const lane = (modality: 'image' | 'video', limit: number) => ({
+    limit,
+    active: Number(counts.get(modality)?.active || 0),
+    pending: Number(counts.get(modality)?.pending || 0),
+  });
+  return {
+    image: lane('image', serverConfig.generationImageConcurrency),
+    video: lane('video', serverConfig.generationVideoConcurrency),
+    taskTimeoutMs: serverConfig.generationTaskTimeoutMs,
+    updatedAt: Date.now(),
+  };
+};
+
+const insertGenerationEvent = async (
+  client: Pick<typeof dbPool, 'query'>,
+  jobId: string,
+  organizationId: string,
+  action: string,
+  itemIds: string[],
+  user: RequestUser,
+  details: Record<string, any> = {},
+) => {
+  await client.query(
+    `
+      INSERT INTO generation_job_events (
+        id, organization_id, job_id, action, item_ids_json, actor_id, actor_name, details_json
+      )
+      VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb)
+    `,
+    [
+      `gen-event-${randomUUID()}`,
+      organizationId,
+      jobId,
+      action,
+      JSON.stringify(itemIds),
+      user.id,
+      user.displayName,
+      JSON.stringify(details),
+    ],
+  );
+};
+
+export const listGenerationJobEvents = async (jobId: string, organizationId: string) => {
+  const result = await dbPool.query(
+    `
+      SELECT event.*
+      FROM generation_job_events event
+      WHERE event.job_id = $1 AND event.organization_id = $2
+      ORDER BY event.created_at DESC, event.id DESC
+    `,
+    [jobId, organizationId],
+  );
+  return result.rows.map(row => ({
+    id: row.id,
+    jobId: row.job_id,
+    action: row.action,
+    itemIds: Array.isArray(row.item_ids_json) ? row.item_ids_json : [],
+    actorId: row.actor_id || undefined,
+    actorName: row.actor_name || undefined,
+    details: row.details_json || {},
+    createdAt: toTimestamp(row.created_at) || Date.now(),
+  }));
+};
+
+export const skipGenerationItems = async (
+  jobId: string,
+  itemIds: string[],
+  user: RequestUser,
+) => {
+  const uniqueItemIds = [...new Set(itemIds.filter(Boolean))];
+  if (!uniqueItemIds.length) throw conflict('Select at least one case to skip.');
+  const client = await dbPool.connect();
+  try {
+    await client.query('BEGIN');
+    const jobResult = await client.query(
+      `
+        SELECT job.id
+        FROM generation_jobs job
+        JOIN datasets dataset ON dataset.id = job.dataset_id
+        WHERE job.id = $1 AND dataset.organization_id = $2
+        FOR UPDATE OF job
+      `,
+      [jobId, user.organizationId],
+    );
+    if (!jobResult.rows[0]) throw conflict('Generation batch is unavailable.');
+    const itemResult = await client.query(
+      `
+        SELECT id, status
+        FROM generation_job_items
+        WHERE job_id = $1 AND id = ANY($2::text[])
+        FOR UPDATE
+      `,
+      [jobId, uniqueItemIds],
+    );
+    const invalid = itemResult.rows.filter(row =>
+      !['pending', 'failed', 'submission_unknown'].includes(row.status));
+    if (itemResult.rowCount !== uniqueItemIds.length || invalid.length) {
+      throw conflict('Case status changed. Refresh the task before trying again.', {
+        invalid: invalid.map(row => ({ id: row.id, status: row.status })),
+      });
+    }
+    await client.query(
+      `
+        UPDATE generation_job_items
+        SET status = CASE WHEN status = 'pending' THEN 'cancelled' ELSE status END,
+            resolution_status = 'skipped',
+            resolution_by = $3,
+            resolution_at = now(),
+            finished_at = CASE WHEN status = 'pending' THEN now() ELSE finished_at END,
+            updated_at = now()
+        WHERE job_id = $1 AND id = ANY($2::text[])
+      `,
+      [jobId, uniqueItemIds, user.id],
+    );
+    await insertGenerationEvent(
+      client,
+      jobId,
+      user.organizationId,
+      'items_skipped',
+      uniqueItemIds,
+      user,
+    );
+    await client.query('COMMIT');
+    return true;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
+
+export const requestGenerationCancellation = async (jobId: string, user: RequestUser) => {
   const client = await dbPool.connect();
   try {
     await client.query('BEGIN');
     const result = await client.query(
       `
-        UPDATE generation_jobs
+        UPDATE generation_jobs job
         SET cancel_requested = true, status = 'running', updated_at = now()
-        WHERE id = $1 AND status IN ('queued', 'running')
-        RETURNING id
+        FROM datasets dataset
+        WHERE job.id = $1 AND job.status IN ('queued', 'running')
+          AND dataset.id = job.dataset_id
+          AND dataset.organization_id = $2
+        RETURNING job.id
       `,
-      [jobId],
+      [jobId, user.organizationId],
     );
     if (!result.rows[0]) {
       await client.query('ROLLBACK');
@@ -544,10 +918,20 @@ export const requestGenerationCancellation = async (jobId: string) => {
     await client.query(
       `
         UPDATE generation_job_items
-        SET status = 'cancelled', finished_at = now(), updated_at = now()
+        SET status = 'cancelled', resolution_status = 'resolved',
+            resolution_by = $2, resolution_at = now(),
+            finished_at = now(), updated_at = now()
         WHERE job_id = $1 AND status = 'pending'
       `,
-      [jobId],
+      [jobId, user.id],
+    );
+    await insertGenerationEvent(
+      client,
+      jobId,
+      user.organizationId,
+      'batch_cancelled',
+      [],
+      user,
     );
     await client.query('COMMIT');
     return true;
@@ -560,16 +944,34 @@ export const requestGenerationCancellation = async (jobId: string) => {
 };
 
 export const findGenerationWritebackCandidate = async () => {
+  await dbPool.query(
+    `
+      UPDATE generation_jobs child
+      SET writeback_status = 'conflict',
+          status = 'writeback_conflict',
+          execution_error_json = jsonb_build_object(
+            'code', 'PARENT_WRITEBACK_BLOCKED',
+            'message', 'The retry parent could not be written back safely.'
+          ),
+          updated_at = now()
+      FROM generation_jobs parent
+      WHERE child.retry_of_job_id = parent.id
+        AND child.writeback_status IN ('pending', 'running')
+        AND parent.writeback_status IN ('conflict', 'failed')
+    `,
+  );
   const result = await dbPool.query(
     `
-      SELECT id
-      FROM generation_jobs
-      WHERE status IN ('completed', 'partial', 'failed', 'cancelled')
+      SELECT job.id
+      FROM generation_jobs job
+      LEFT JOIN generation_jobs parent ON parent.id = job.retry_of_job_id
+      WHERE job.status IN ('completed', 'partial', 'failed', 'cancelled')
         AND (
-          writeback_status = 'pending'
-          OR (writeback_status = 'running' AND updated_at < now() - ($1::bigint * interval '1 millisecond'))
+          job.writeback_status = 'pending'
+          OR (job.writeback_status = 'running' AND job.updated_at < now() - ($1::bigint * interval '1 millisecond'))
         )
-      ORDER BY updated_at, created_at
+        AND (job.retry_of_job_id IS NULL OR parent.writeback_status = 'completed')
+      ORDER BY job.updated_at, job.created_at
       LIMIT 1
     `,
     [serverConfig.generationLeaseMs * 5],
@@ -580,13 +982,20 @@ export const findGenerationWritebackCandidate = async () => {
 export const claimGenerationWriteback = async (jobId: string) => {
   const result = await dbPool.query(
     `
-      UPDATE generation_jobs
+      UPDATE generation_jobs job
       SET writeback_status = 'running', updated_at = now()
-      WHERE id = $1
+      WHERE job.id = $1
         AND status IN ('completed', 'partial', 'failed', 'cancelled')
         AND (
-          writeback_status = 'pending'
-          OR (writeback_status = 'running' AND updated_at < now() - ($2::bigint * interval '1 millisecond'))
+          job.writeback_status = 'pending'
+          OR (job.writeback_status = 'running' AND job.updated_at < now() - ($2::bigint * interval '1 millisecond'))
+        )
+        AND (
+          job.retry_of_job_id IS NULL
+          OR EXISTS (
+            SELECT 1 FROM generation_jobs parent
+            WHERE parent.id = job.retry_of_job_id AND parent.writeback_status = 'completed'
+          )
         )
       RETURNING *
     `,
@@ -601,18 +1010,59 @@ export const finishGenerationWriteback = async (
   datasetVersion?: number,
   error?: Record<string, any>,
 ) => {
-  await dbPool.query(
-    `
-      UPDATE generation_jobs
-      SET writeback_status = $2,
-          writeback_dataset_version = $3,
-          execution_error_json = $4::jsonb,
-          status = CASE WHEN $2 = 'conflict' THEN 'writeback_conflict' ELSE status END,
-          updated_at = now()
-      WHERE id = $1
-    `,
-    [jobId, status, datasetVersion || null, JSON.stringify(error || {})],
-  );
+  const client = await dbPool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      `
+        UPDATE generation_jobs
+        SET writeback_status = $2,
+            writeback_dataset_version = $3,
+            execution_error_json = $4::jsonb,
+            status = CASE WHEN $2 = 'conflict' THEN 'writeback_conflict' ELSE status END,
+            updated_at = now()
+        WHERE id = $1
+        RETURNING retry_of_job_id
+      `,
+      [jobId, status, datasetVersion || null, JSON.stringify(error || {})],
+    );
+    if (result.rows[0]?.retry_of_job_id) {
+      await client.query(
+        `
+          UPDATE generation_job_items source
+          SET resolution_status = 'resolved', updated_at = now()
+          WHERE source.id IN (
+            SELECT retry.retry_of_item_id
+            FROM generation_job_items retry
+            WHERE retry.job_id = $1 AND retry.retry_of_item_id IS NOT NULL
+          )
+        `,
+        [jobId],
+      );
+    }
+    await client.query(
+      `
+        INSERT INTO generation_job_events (
+          id, organization_id, job_id, action, item_ids_json, details_json
+        )
+        SELECT $1, dataset.organization_id, job.id, 'writeback_finished', '[]'::jsonb, $3::jsonb
+        FROM generation_jobs job
+        JOIN datasets dataset ON dataset.id = job.dataset_id
+        WHERE job.id = $2
+      `,
+      [
+        `gen-event-${randomUUID()}`,
+        jobId,
+        JSON.stringify({ status, datasetVersion, error: error || {} }),
+      ],
+    );
+    await client.query('COMMIT');
+  } catch (writebackError) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw writebackError;
+  } finally {
+    client.release();
+  }
 };
 
 export type NewGenerationAsset = {

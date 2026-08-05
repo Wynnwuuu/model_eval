@@ -1,5 +1,34 @@
 # Arena Implementation Progress
 
+## 2026-08-05: Generation task center and fair scheduling (implementation complete)
+
+- Isolated clone: `ManuEval-generation-task-center`, branch `agent/generation-task-center`, based on `origin/main` at `e874eb7`.
+- Preserved the original dirty `main` worktree without modifying or stashing it.
+- Added an organization-wide paginated generation task center with status, dataset, model and creator filters, queue capacity, deep links, and Overview/dataset-history entry points.
+- Added dataset-then-batch max-min submission scheduling while preserving polling priority and global image/video limits (4/2).
+- Added atomic pending skip, failed-case acknowledgement, selective retry child batches, duplicate-billing confirmation, audit events and organization isolation.
+- Retry children can execute early but wait for parent writeback, then fill only empty source cases without replacing prior results.
+- Existing batch detail no longer depends on live model configuration; new generation and retry preflight still re-read live Aion configuration.
+- No Aion, VidMuse, plugin, OSS or production-environment code was changed, and no paid generation was submitted during verification.
+
+### Validation
+
+- `npm.cmd run lint`
+- `npm.cmd run test:generation`
+- `npm.cmd run test:generation:db`
+- `npm.cmd run test:api:smoke` against isolated API port 8788 with the generation worker disabled
+- Dataset sync, clone, import mapping, column deletion and table-column tests
+- Arena and rank-tie tests
+- `npm.cmd run server:build`
+- `npm.cmd run build`
+- Playwright desktop/mobile checks for task list, creator filter, batch selection, Overview deep link and refresh recovery
+
+### Release
+
+- Confirmed GitHub `main` is still `e874eb7`, so no rebase was required.
+- The complete post-sync regression passed; release uses a non-force push to `world-sim-dev/ManuEval` `main`.
+
+
 ## 2026-08-05: Independent dataset copies
 
 - Added independent dataset copies for the current dataset or any immutable historical version.
