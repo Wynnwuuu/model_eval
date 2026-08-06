@@ -294,3 +294,14 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Added initial/ramp/reset concurrency policy, two-hour non-submitting reconciliation, prompt-limit policy, migration 011, queue diagnostics, and task detail status.
 - Passed generation/MCP tests, PostgreSQL generation tests, API smoke, dataset sync/clone/import/column tests, Arena/rank tests, lint, server build, and frontend build.
 - Remaining: desktop/mobile browser QA, publish full fix, observe dev, and run exactly one paid Wan smoke.
+
+### Deployment, browser QA, and smoke
+
+- Published the recovery implementation in `cb3d832` and its dev settings in `3d09d31`; both test and dev deployment workflows passed.
+- Browser QA passed task-center deep links, refresh recovery, reconciliation status details, and desktop/mobile horizontal containment.
+- Submitted exactly one Wan smoke batch, `gen-61830611-865e-4553-949f-63f623c247db`, using a previously successful prompt/reference-image pair and a two-second 480p request.
+- The smoke entered `submission_unknown` immediately without an Aion task ID or result. It was not a 1200-second provider timeout and was not retried.
+- Wan remains held at dev `min/initial/max = 1/1/1`; the planned restoration of max 6 is intentionally not performed.
+- Local Aion SLS and database evidence could not be queried because this workspace has neither the SLS account configuration nor `AION_DEV_DB_URL`.
+- Added safe submission diagnostics for HTTP status, error name, and transport code plus an execution timeline. Prompt, media URLs, credentials, and provider response bodies are never logged or returned.
+- Diagnostic patch validation passed `lint`, `test:generation`, `test:generation:db`, `server:build`, and `build`.

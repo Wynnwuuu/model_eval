@@ -1712,6 +1712,22 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                             </div>
                             <div className="min-w-0 break-words text-slate-400">
                               <div>{item.error?.message || item.providerStatus || '-'}</div>
+                              {item.error?.code && (
+                                <div className="mt-1 font-mono text-[11px] text-slate-500">
+                                  {item.error.code}
+                                  {item.error.httpStatus ? ' / HTTP ' + item.error.httpStatus : ''}
+                                  {item.error.transportCode ? ' / ' + item.error.transportCode : ''}
+                                  {item.error.errorName ? ' / ' + item.error.errorName : ''}
+                                </div>
+                              )}
+
+                              {released && startedAt && item.finishedAt && (
+                                <div className="mt-1 text-slate-500">
+                                  {'\u63d0\u4ea4'} {new Date(startedAt).toLocaleString('zh-CN')}
+                                  {' / \u7ec8\u6b62'} {new Date(item.finishedAt).toLocaleString('zh-CN')}
+                                  {' / \u8017\u65f6'} {formatElapsed(item.finishedAt - startedAt)}
+                                </div>
+                              )}
                               {providerActive && startedAt && (
                                 <div className="mt-1 text-blue-300">
                                   {'\u63d0\u4ea4'} {new Date(startedAt).toLocaleString('zh-CN')}

@@ -194,3 +194,11 @@ The task center and organization/dataset/batch max-min scheduler remain in place
 Model limits now have minimum, initial, and maximum values. Cold or stale models start at the initial value instead of the maximum. Every three consecutive successful capacity outcomes raise the effective limit by one; a capacity failure resets it to the minimum. Deterministic request and content failures remain excluded.
 
 ManuEval will not treat a lost final poll as a confirmed generation failure. After the normal task deadline it performs one final Aion query, then uses a non-capacity `reconciling` lane for at most two hours. No reconciliation path resubmits a provider POST.
+
+## 2026-08-06: Failed Wan smoke stays single-shot and concurrency stays at one
+
+The only post-recovery Wan smoke failed at provider submission before ManuEval received a task ID. It is preserved as `submission_unknown`; no automatic or manual paid retry is performed as part of this release.
+
+Wan dev remains fixed at `1/1/1`. A successful single-case smoke is still required before restoring the configured maximum to 6 and allowing the success-streak policy to ramp above one.
+
+Submission diagnostics expose only bounded tokens: HTTP status, Error name, and transport code. Arbitrary error text, response bodies, prompts, media URLs, and credentials are excluded from logs and API diagnostics.

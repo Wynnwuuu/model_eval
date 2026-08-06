@@ -649,6 +649,9 @@ export interface DatasetGenerationJobItem {
   error?: {
     code?: string;
     message: string;
+    httpStatus?: number;
+    errorName?: string;
+    transportCode?: string;
   };
   startedAt?: number;
   submissionStartedAt?: number;

@@ -372,6 +372,36 @@ const handleProviderPayload = async (
   });
 };
 
+export type GenerationSubmissionErrorDiagnostics = {
+  httpStatus?: number;
+  errorName?: string;
+  transportCode?: string;
+  definitelyRejected: boolean;
+};
+
+const safeDiagnosticToken = (value: unknown) => {
+  const token = typeof value === 'string' ? value.trim() : '';
+  return token && /^[A-Za-z0-9_.-]{1,64}$/.test(token) ? token : undefined;
+};
+
+export const generationSubmissionErrorDiagnostics = (
+  error: unknown,
+): GenerationSubmissionErrorDiagnostics => {
+  const rawStatus = Number((error as any)?.status);
+  const httpStatus = Number.isInteger(rawStatus) && rawStatus >= 100 && rawStatus <= 599
+    ? rawStatus
+    : undefined;
+  const errorName = safeDiagnosticToken(error instanceof Error ? error.name : undefined);
+  const transportCode = safeDiagnosticToken((error as any)?.code)
+    || safeDiagnosticToken((error as any)?.cause?.code);
+  return {
+    ...(httpStatus ? { httpStatus } : {}),
+    ...(errorName ? { errorName } : {}),
+    ...(transportCode ? { transportCode } : {}),
+    definitelyRejected: Boolean(httpStatus && httpStatus >= 400 && httpStatus < 500),
+  };
+};
+
 const submitItem = async (item: ClaimedGenerationItem) => {
   const generationCase = item.request.resolvedInputs as GenerationCase & { generationType: string };
   let request: ReturnType<typeof buildAionGenerationRequest>;
@@ -412,8 +442,18 @@ const submitItem = async (item: ClaimedGenerationItem) => {
       submissionStartedAt,
     }, payload);
   } catch (error) {
-    const status = Number((error as any)?.status);
-    const definitelyRejected = Number.isFinite(status) && status >= 400 && status < 500;
+    const diagnostics = generationSubmissionErrorDiagnostics(error);
+    const { definitelyRejected } = diagnostics;
+    console.error('[generation-worker] provider submission failed', {
+      modelName: String(item.job.model.modelName || item.job.model.name || 'unknown-model'),
+      batchId: item.job.id,
+      itemId: item.id,
+      endpointPath: request.path,
+      httpStatus: diagnostics.httpStatus,
+      errorName: diagnostics.errorName,
+      transportCode: diagnostics.transportCode,
+      definitelyRejected,
+    });
     await updateGenerationItem(item.id, {
       status: definitelyRejected ? 'failed' : 'submission_unknown',
       error: {
@@ -421,7 +461,9 @@ const submitItem = async (item: ClaimedGenerationItem) => {
         message: definitelyRejected
           ? (error instanceof Error ? error.message : String(error))
           : 'The Aion submission response was lost; automatic retry is disabled to prevent duplicate billing.',
-        ...(status ? { httpStatus: status } : {}),
+        ...(diagnostics.httpStatus ? { httpStatus: diagnostics.httpStatus } : {}),
+        ...(diagnostics.errorName ? { errorName: diagnostics.errorName } : {}),
+        ...(diagnostics.transportCode ? { transportCode: diagnostics.transportCode } : {}),
       },
       finishedAt: Date.now(),
       nextPollAt: null,

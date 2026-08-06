@@ -20,6 +20,7 @@ import {
 } from '../server/generation/aionGenerationClient.ts';
 import {
   generationPollPhase,
+  generationSubmissionErrorDiagnostics,
   archivedGenerationResult,
   normalizeProviderPayload,
   providerResult,
@@ -136,6 +137,27 @@ assert.equal(generationPollPhase({
   timeoutAt: 1_000,
   reconciliationDeadlineAt: 2_000,
 }), 'expired');
+
+assert.deepEqual(generationSubmissionErrorDiagnostics(Object.assign(new Error('service unavailable'), {
+  status: 503,
+})), {
+  httpStatus: 503,
+  errorName: 'Error',
+  definitelyRejected: false,
+});
+assert.equal(generationSubmissionErrorDiagnostics(Object.assign(new Error('bad request'), {
+  status: 400,
+})).definitelyRejected, true);
+assert.deepEqual(generationSubmissionErrorDiagnostics(Object.assign(new Error('connection refused'), {
+  cause: { code: 'ECONNREFUSED' },
+})), {
+  errorName: 'Error',
+  transportCode: 'ECONNREFUSED',
+  definitelyRejected: false,
+});
+assert.equal(generationSubmissionErrorDiagnostics(Object.assign(new Error('unsafe code'), {
+  code: 'https://internal.example/path with spaces',
+})).transportCode, undefined, 'diagnostics must not expose arbitrary error text as a transport code');
 
 
 
