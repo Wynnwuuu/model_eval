@@ -202,3 +202,5 @@ The only post-recovery Wan smoke failed at provider submission before ManuEval r
 Wan dev remains fixed at `1/1/1`. A successful single-case smoke is still required before restoring the configured maximum to 6 and allowing the success-streak policy to ramp above one.
 
 Submission diagnostics expose only bounded tokens: HTTP status, Error name, and transport code. Arbitrary error text, response bodies, prompts, media URLs, and credentials are excluded from logs and API diagnostics.
+
+The deployed diagnostic view recovered an HTTP 500 from the existing smoke row. The incident should therefore be investigated as an Aion Manager submission-path failure. It must not be counted as evidence that the new reconciliation path or concurrency-one setting caused a provider generation timeout.

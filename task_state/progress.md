@@ -305,3 +305,6 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Local Aion SLS and database evidence could not be queried because this workspace has neither the SLS account configuration nor `AION_DEV_DB_URL`.
 - Added safe submission diagnostics for HTTP status, error name, and transport code plus an execution timeline. Prompt, media URLs, credentials, and provider response bodies are never logged or returned.
 - Diagnostic patch validation passed `lint`, `test:generation`, `test:generation:db`, `server:build`, and `build`.
+- After diagnostic deployment, the preserved smoke record displayed `AION_SUBMISSION_UNKNOWN / HTTP 500`; submission and termination were both `2026-08-06 10:37:59`, and no provider task ID existed.
+- This proves the smoke failed at the Aion submission boundary rather than from the 1200-second Wan task timeout, reconciliation, fair scheduling, or model concurrency.
+- Public detail QA passed at a 524px viewport with no horizontal overflow. CI, image build, migration validation, and dev rollout for `9f06bca` all succeeded.
