@@ -40,6 +40,10 @@ export type ClaimedGenerationItem = {
   error: Record<string, any>;
   startedAt?: number;
   submissionStartedAt?: number;
+  reconciliationStartedAt?: number;
+  reconciliationDeadlineAt?: number;
+  lastPollSucceededAt?: number;
+  consecutivePollFailures: number;
   job: {
     id: string;
     datasetId: string;
@@ -90,7 +94,7 @@ const loadGenerationVideoPolicies = async (): Promise<Map<string, GenerationConc
         FROM generation_jobs job
         JOIN generation_job_items item ON item.job_id = job.id
         WHERE job.model_config_json->>'outputModality' = 'video'
-          AND item.status IN ('pending', 'submitting', 'submitted', 'processing')
+          AND item.status IN ('pending', 'submitting', 'submitted', 'processing', 'reconciling')
       `,
     ),
     dbPool.query(
@@ -113,7 +117,7 @@ const loadGenerationVideoPolicies = async (): Promise<Map<string, GenerationConc
         )
         SELECT model_name, status, error_json, finished_at
         FROM ranked
-        WHERE outcome_rank <= 200
+        WHERE outcome_rank <= 24
         ORDER BY model_name, finished_at DESC
       `,
       [GENERATION_POLICY_WINDOW_HOURS],
@@ -124,7 +128,11 @@ const loadGenerationVideoPolicies = async (): Promise<Map<string, GenerationConc
   for (const row of outcomeResult.rows) {
     const modelName = normalizePolicyModelName(String(row.model_name || 'unknown-video-model'));
     const outcomes = outcomesByModel.get(modelName) || [];
-    outcomes.push({ status: row.status, error: row.error_json || {} });
+    outcomes.push({
+      status: row.status,
+      error: row.error_json || {},
+      finishedAt: toTimestamp(row.finished_at),
+    });
     outcomesByModel.set(modelName, outcomes);
   }
 
@@ -493,6 +501,10 @@ const mapBatch = (job: any, items: any[]) => ({
     startedAt: toTimestamp(item.started_at),
     finishedAt: toTimestamp(item.finished_at),
     submissionStartedAt: toTimestamp(item.submission_started_at),
+    reconciliationStartedAt: toTimestamp(item.reconciliation_started_at),
+    reconciliationDeadlineAt: toTimestamp(item.reconciliation_deadline_at),
+    lastPollSucceededAt: toTimestamp(item.last_poll_succeeded_at),
+    consecutivePollFailures: Number(item.consecutive_poll_failures || 0),
     timeoutAt: toTimestamp(item.submission_started_at)
       ? toTimestamp(item.submission_started_at)! + serverConfig.generationTaskTimeoutMs : undefined,
   })),
@@ -542,6 +554,7 @@ export const claimNextGenerationItem = async (
         FROM generation_job_items item
         JOIN generation_jobs job ON job.id = item.job_id
         WHERE job.model_config_json->>'outputModality' = $1
+          AND item.status <> 'reconciling'
           AND item.lease_expires_at > now()
       `,
       [modality],
@@ -602,7 +615,7 @@ export const claimNextGenerationItem = async (
           FROM generation_job_items item
           JOIN generation_jobs job ON job.id = item.job_id
           WHERE job.model_config_json->>'outputModality' = $1
-            AND item.status IN ('submitting', 'submitted', 'processing', 'archiving')
+            AND item.status IN ('submitting', 'submitted', 'processing', 'reconciling', 'archiving')
             AND (item.next_poll_at IS NULL OR item.next_poll_at <= now())
             AND (item.lease_expires_at IS NULL OR item.lease_expires_at < now())
           ORDER BY item.next_poll_at NULLS FIRST, item.created_at
@@ -752,6 +765,10 @@ export const claimNextGenerationItem = async (
       error: row.error_json || {},
       startedAt: toTimestamp(row.started_at),
       submissionStartedAt: toTimestamp(row.submission_started_at),
+      reconciliationStartedAt: toTimestamp(row.reconciliation_started_at),
+      reconciliationDeadlineAt: toTimestamp(row.reconciliation_deadline_at),
+      lastPollSucceededAt: toTimestamp(row.last_poll_succeeded_at),
+      consecutivePollFailures: Number(row.consecutive_poll_failures || 0),
       job: {
         id: job.id,
         datasetId: job.dataset_id,
@@ -785,6 +802,10 @@ const ITEM_COLUMNS: Record<string, string> = {
   resolutionStatus: 'resolution_status',
   resolutionBy: 'resolution_by',
   resolutionAt: 'resolution_at',
+  reconciliationStartedAt: 'reconciliation_started_at',
+  reconciliationDeadlineAt: 'reconciliation_deadline_at',
+  lastPollSucceededAt: 'last_poll_succeeded_at',
+  consecutivePollFailures: 'consecutive_poll_failures',
   archivedAssetId: 'archived_asset_id',
   leaseOwner: 'lease_owner',
   leaseExpiresAt: 'lease_expires_at',
@@ -804,7 +825,7 @@ export const updateGenerationItem = async (itemId: string, values: Record<string
   const assignments = entries.map(([key], index) => {
     const column = ITEM_COLUMNS[key];
     if (['request', 'result', 'error'].includes(key)) return `${column} = $${index + 2}::jsonb`;
-    if (['nextPollAt', 'submissionStartedAt', 'startedAt', 'finishedAt', 'leaseExpiresAt', 'resolutionAt'].includes(key)) {
+    if (['nextPollAt', 'submissionStartedAt', 'startedAt', 'finishedAt', 'reconciliationStartedAt', 'reconciliationDeadlineAt', 'lastPollSucceededAt', 'leaseExpiresAt', 'resolutionAt'].includes(key)) {
       return `${column} = CASE WHEN $${index + 2}::bigint IS NULL THEN NULL ELSE to_timestamp($${index + 2} / 1000.0) END`;
     }
     return `${column} = $${index + 2}`;
@@ -882,7 +903,7 @@ export const refreshGenerationJob = async (jobId: string) => {
         count(*) FILTER (WHERE status IN ('failed', 'submission_unknown'))::int AS failed,
         count(*) FILTER (WHERE status = 'cancelled')::int AS cancelled,
         count(*) FILTER (
-          WHERE status IN ('pending', 'submitting', 'submitted', 'processing', 'archiving')
+          WHERE status IN ('pending', 'submitting', 'submitted', 'processing', 'reconciling', 'archiving')
         )::int AS active
       FROM generation_job_items
       WHERE job_id = $1
@@ -953,7 +974,10 @@ export const getGenerationQueueState = async (organizationId?: string) => {
           )::int AS active,
           count(*) FILTER (
             WHERE item.status = 'pending' AND job.cancel_requested = false
-          )::int AS pending
+          )::int AS pending,
+          count(*) FILTER (
+            WHERE item.status = 'reconciling'
+          )::int AS reconciling
         FROM generation_jobs job
         JOIN generation_job_items item ON item.job_id = job.id
         WHERE job.model_config_json->>'outputModality' IN ('image', 'video')
@@ -969,7 +993,7 @@ export const getGenerationQueueState = async (organizationId?: string) => {
           JOIN generation_job_items item ON item.job_id = job.id
           WHERE job.model_config_json->>'outputModality' = 'video'
             AND ($1::text IS NULL OR dataset.organization_id = $1)
-            AND item.status IN ('pending', 'submitting', 'submitted', 'processing')
+            AND item.status IN ('pending', 'submitting', 'submitted', 'processing', 'reconciling')
         ),
         model_counts AS (
           SELECT
@@ -988,7 +1012,10 @@ export const getGenerationQueueState = async (organizationId?: string) => {
               WHERE item.status = 'pending'
                 AND job.cancel_requested = false
                 AND ($1::text IS NULL OR dataset.organization_id = $1)
-            )::int AS organization_pending
+            )::int AS organization_pending,
+            count(*) FILTER (
+              WHERE item.status = 'reconciling'
+            )::int AS reconciling
           FROM generation_jobs job
           JOIN datasets dataset ON dataset.id = job.dataset_id
           JOIN generation_job_items item ON item.job_id = job.id
@@ -1009,6 +1036,7 @@ export const getGenerationQueueState = async (organizationId?: string) => {
     limit,
     active: Number(counts.get(modality)?.active || 0),
     pending: Number(counts.get(modality)?.pending || 0),
+    reconciling: Number(counts.get(modality)?.reconciling || 0),
   });
   return {
     image: lane('image', serverConfig.generationImageConcurrency),
@@ -1024,8 +1052,12 @@ export const getGenerationQueueState = async (organizationId?: string) => {
           organizationActive: Number(row.organization_active || 0),
           organizationPending: Number(row.organization_pending || 0),
           minLimit: policy.min,
+          initialLimit: policy.initial,
           maxLimit: policy.max,
           effectiveLimit: policy.effectiveLimit,
+          successStreak: policy.successStreak,
+          lastCapacityFailureAt: policy.lastCapacityFailureAt,
+          reconciling: Number(row.reconciling || 0),
           sampleSize: policy.sampleSize,
           capacityFailures: policy.capacityFailures,
           capacityFailureRate: policy.capacityFailureRate,

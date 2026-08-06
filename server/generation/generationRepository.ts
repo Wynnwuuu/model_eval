@@ -35,6 +35,7 @@ type GenerationJobRow = {
   submitted_count?: number;
   processing_count?: number;
   archiving_count?: number;
+  reconciling_count?: number;
   succeeded_count?: number;
   failed_count?: number;
   submission_unknown_count?: number;
@@ -56,6 +57,10 @@ type GenerationJobItemRow = {
   resolution_by: string | null;
   resolution_at: Date | null;
   submission_started_at: Date | null;
+  reconciliation_started_at: Date | null;
+  reconciliation_deadline_at: Date | null;
+  last_poll_succeeded_at: Date | null;
+  consecutive_poll_failures: number;
   stable_dataset_item_id: string | null;
   status: DatasetGenerationJobItem['status'];
   request_json: any;
@@ -84,6 +89,7 @@ const mapJob = (row: GenerationJobRow): DatasetGenerationJob => {
     processing: Number(row.processing_count || 0),
     archiving: Number(row.archiving_count || 0),
     succeeded: Number(row.succeeded_count ?? row.succeeded ?? 0),
+    reconciling: Number(row.reconciling_count || 0),
     failed: Number(row.failed_count ?? row.failed ?? 0),
     submissionUnknown: Number(row.submission_unknown_count || 0),
     cancelled: Number(row.cancelled_count || 0),
@@ -143,6 +149,10 @@ const mapJobItem = (row: GenerationJobItemRow): DatasetGenerationJobItem => ({
   resultUrl: row.result_json?.resultUrl,
   originalResultUrl: row.result_json?.originalResultUrl,
   durability: row.result_json?.durability,
+  reconciliationStartedAt: toTimestamp(row.reconciliation_started_at),
+  reconciliationDeadlineAt: toTimestamp(row.reconciliation_deadline_at),
+  lastPollSucceededAt: toTimestamp(row.last_poll_succeeded_at),
+  consecutivePollFailures: Number(row.consecutive_poll_failures || 0),
   resultText: row.result_json?.resultText,
   mediaType: row.result_json?.mediaType,
   error: row.error_json || undefined,
@@ -186,6 +196,7 @@ export const listGenerationJobs = async (params: GenerationJobListParams) => {
           count(*) FILTER (WHERE item.status = 'archiving')::int AS archiving_count,
           count(*) FILTER (WHERE item.status = 'succeeded')::int AS succeeded_count,
           count(*) FILTER (WHERE item.status = 'failed')::int AS failed_count,
+          count(*) FILTER (WHERE item.status = 'reconciling')::int AS reconciling_count,
           count(*) FILTER (WHERE item.status = 'submission_unknown')::int AS submission_unknown_count,
           count(*) FILTER (WHERE item.status = 'cancelled')::int AS cancelled_count,
           count(*) FILTER (

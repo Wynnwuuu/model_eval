@@ -71,14 +71,17 @@ const formatTime = (value?: number) => value
   : '-';
 
 const modelPolicyLabel = (mode: NonNullable<GenerationQueueLane['models']>[number]['mode']) => ({
-  insufficient_sample: '\u6837\u672c\u4e0d\u8db3\uff0c\u4f7f\u7528\u6a21\u578b\u4e0a\u9650',
-  maximum: '\u5bb9\u91cf\u5065\u5eb7\uff0c\u4f7f\u7528\u6a21\u578b\u4e0a\u9650',
-  reduced: '\u8fd1 24 \u5c0f\u65f6\u5bb9\u91cf\u5931\u8d25\u8f83\u9ad8\uff0c\u5df2\u964d 2 \u4e2a\u69fd\u4f4d',
-  minimum: '\u8fd1 24 \u5c0f\u65f6\u5bb9\u91cf\u5931\u8d25\u8fc7\u9ad8\uff0c\u4f7f\u7528\u6700\u5c0f\u5e76\u53d1',
+  initial: '\u65e0\u8fd1\u671f\u5bb9\u91cf\u6837\u672c\uff0c\u4f7f\u7528\u521d\u59cb\u5e76\u53d1',
+  ramping: '\u6309\u8fde\u7eed\u6210\u529f\u9010\u7ea7\u6062\u590d\u5e76\u53d1',
+  maximum: '\u5df2\u6062\u590d\u5230\u6a21\u578b\u4e0a\u9650',
+  minimum: '\u6700\u8fd1\u5bb9\u91cf\u5931\u8d25\u540e\u56de\u5230\u6700\u5c0f\u5e76\u53d1',
 }[mode]);
 
 const queueReason = (job: DatasetGenerationJob, queue?: GenerationQueueState) => {
   if ((job.unresolved || 0) > 0) return `${job.unresolved} \u4e2a case \u5f85\u5904\u7406`;
+  if ((job.statusCounts?.reconciling || 0) > 0) {
+    return `${job.statusCounts?.reconciling || 0} \u4e2a case \u72b6\u6001\u5f85\u6838\u5bf9\uff0c\u5df2\u91ca\u653e\u751f\u6210\u69fd\u4f4d`;
+  }
   const active = (job.statusCounts?.processing || 0) + (job.statusCounts?.submitted || 0) + (job.statusCounts?.submitting || 0);
   if (active > 0) {
     const modality = job.modelConfig?.outputModality === 'video' ? '\u89c6\u9891' : '\u56fe\u7247';
@@ -119,7 +122,10 @@ const QueueLane: React.FC<{
       <div className="mt-2 h-1.5 overflow-hidden rounded-sm bg-white/10">
         <div className="h-full bg-amber-400 transition-[width]" style={{ width: `${percentage}%` }} />
       </div>
-      <div className="mt-2 text-xs text-slate-500">{'\u7b49\u5f85'} {lane?.pending || 0}</div>
+      <div className="mt-2 text-xs text-slate-500">
+        {'\u7b49\u5f85'} {lane?.pending || 0}
+        {' / \u5f85\u6838\u5bf9'} {lane?.reconciling || 0}
+      </div>
     </div>
   );
 };
@@ -205,12 +211,12 @@ const GenerationTaskCenter: React.FC<GenerationTaskCenterProps> = ({
         <div className="border-b border-white/10">
           <div className="flex items-center justify-between gap-3 px-4 py-2 text-xs text-slate-400">
             <span>{'\u89c6\u9891\u6a21\u578b\u81ea\u9002\u5e94\u5bb9\u91cf'}</span>
-            <span>{'\u8fd1 24 \u5c0f\u65f6 / \u6700\u8fd1 12 \u6761\u6709\u6548\u7ed3\u679c'}</span>
+            <span>{'\u8fd1 24 \u5c0f\u65f6 / \u6700\u8fd1 24 \u6761\u6709\u6548\u7ed3\u679c'}</span>
           </div>
           <div className="overflow-x-auto">
             <div className="min-w-[720px]">
               {queue.video.models.map(modelQueue => (
-                <div key={modelQueue.modelName} className="grid grid-cols-[minmax(220px,1.4fr)_100px_110px_minmax(260px,1.6fr)] items-center gap-4 border-t border-white/10 px-4 py-2 text-xs">
+                <div key={modelQueue.modelName} className="grid grid-cols-[minmax(220px,1.4fr)_100px_120px_minmax(300px,1.8fr)] items-center gap-4 border-t border-white/10 px-4 py-2 text-xs">
                   <span className="truncate font-medium text-slate-200" title={modelQueue.modelName}>{modelQueue.modelName}</span>
                   <span className="tabular-nums text-slate-300">
                     {'\u5728\u9014'} {modelQueue.active}/{modelQueue.effectiveLimit}
@@ -218,14 +224,15 @@ const GenerationTaskCenter: React.FC<GenerationTaskCenterProps> = ({
                   <span className="tabular-nums text-slate-400">
                     {'\u7b49\u5f85'} {modelQueue.organizationPending}
                   </span>
-                  <span className={modelQueue.mode === 'minimum' ? 'text-red-300' : modelQueue.mode === 'reduced' ? 'text-amber-300' : 'text-slate-400'}>
+                  <span className={modelQueue.mode === 'minimum' ? 'text-red-300' : modelQueue.mode === 'ramping' ? 'text-amber-300' : 'text-slate-400'}>
                     {modelPolicyLabel(modelQueue.mode)}
                     {' \u00b7 '}
-                    {modelQueue.sampleSize
-                      ? `${Math.round(modelQueue.capacityFailureRate * 100)}% (${modelQueue.capacityFailures}/${modelQueue.sampleSize})`
-                      : '\u65e0\u6709\u6548\u6837\u672c'}
+                    {'\u8fde\u80dc'} {modelQueue.successStreak}
                     {' \u00b7 '}
-                    {modelQueue.minLimit}-{modelQueue.maxLimit}
+                    {modelQueue.minLimit}/{modelQueue.initialLimit}/{modelQueue.maxLimit}
+                    {' \u00b7 '}
+                    {'\u5f53\u524d'} {modelQueue.effectiveLimit}
+                    {modelQueue.reconciling ? ` \u00b7 \u5f85\u6838\u5bf9 ${modelQueue.reconciling}` : ''}
                   </span>
                 </div>
               ))}

@@ -627,6 +627,10 @@ try {
   const afterOverwriteAttempt = await getDataset(datasetId);
   assert.equal(afterOverwriteAttempt?.items[0][partialColumn], firstResult);
   assert.equal((await getGenerationBatch(overwriteJob.id))?.writebackStatus, 'conflict');
+  serverConfig.generationVideoModelLimits.models[model.modelName] = {
+    min: 2, initial: 2, max: 2,
+  };
+
   const fairnessDataset = await saveDataset({
     ...afterFillWriteback,
     id: fairnessDatasetId,
@@ -775,6 +779,9 @@ try {
 
 
 
+  serverConfig.generationVideoModelLimits.models['test/video-a'] = {
+    min: 4, initial: 4, max: 4,
+  };
   const modelCapPreflightA = createPreflightRecord(
     (await getDataset(datasetId))!,
     `model_cap_a_${suffix}`,
@@ -830,6 +837,42 @@ try {
     'polling an existing provider task must remain possible at the model limit',
   );
   await releaseGenerationItemLease(dueAtModelCap!.id);
+  const reconciliationStartedAt = Date.now();
+  await updateGenerationItem(modelCapClaimsA[0].id, {
+    status: 'reconciling',
+    reconciliationStartedAt,
+    reconciliationDeadlineAt: reconciliationStartedAt + 120_000,
+    lastPollSucceededAt: reconciliationStartedAt,
+    consecutivePollFailures: 0,
+    nextPollAt: Date.now() + 60_000,
+  });
+  const queueDuringReconciliation = await getGenerationQueueState(user.organizationId);
+  const reconcilingModelQueue = queueDuringReconciliation.video.models.find(
+    item => item.modelName === 'test/video-a',
+  );
+  assert.equal(reconcilingModelQueue?.active, 3);
+  assert.equal(reconcilingModelQueue?.reconciling, 1);
+
+  const replacementClaim = await claimNextGenerationItem(
+    'video',
+    `model-cap-a-replacement-${suffix}`,
+  );
+  assert.ok(replacementClaim, 'a reconciling item must release its provider concurrency slot');
+  assert.equal(replacementClaim?.job.model.modelName, 'test/video-a');
+  assert.equal(await beginGenerationSubmission(
+    replacementClaim!.id,
+    1,
+    Date.now(),
+    Date.now(),
+  ), true);
+  await updateGenerationItem(replacementClaim!.id, {
+    status: 'processing',
+    providerTaskId: `model-cap-a-replacement-provider-${suffix}`,
+    providerStatus: 'processing',
+    nextPollAt: Date.now() + 60_000,
+  });
+  await releaseGenerationItemLease(replacementClaim!.id);
+
   await updateGenerationItem(modelCapClaimsA[0].id, { nextPollAt: Date.now() + 60_000 });
 
   assert.equal(
@@ -847,6 +890,7 @@ try {
     `model_cap_b_${suffix}`,
     `request-${suffix}-model-cap-b`,
   );
+  assert.equal(modelAQueue?.reconciling, 1);
   modelCapPreflightB.result.model = {
     ...modelCapPreflightB.result.model,
     id: 'test/video-b',
@@ -876,6 +920,11 @@ try {
   }
   await requestGenerationCancellation(modelCapJobA.id, user);
   await requestGenerationCancellation(modelCapJobB.id, user);
+  await updateGenerationItem(replacementClaim!.id, {
+    status: 'succeeded',
+    finishedAt: Date.now(),
+    nextPollAt: null,
+  });
 
 
 

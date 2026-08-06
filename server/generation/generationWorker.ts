@@ -132,6 +132,42 @@ export const archivedGenerationResult = (
 const nextPollAt = (attempt: number) =>
   Date.now() + Math.min(30000, serverConfig.generationPollIntervalMs * Math.max(1, 2 ** Math.min(attempt, 3)));
 
+
+export type GenerationPollPhase = 'normal' | 'start_reconciling' | 'reconciling' | 'expired';
+
+export const generationPollPhase = ({
+  status,
+  now,
+  timeoutAt,
+  reconciliationDeadlineAt,
+}: {
+  status: string;
+  now: number;
+  timeoutAt: number;
+  reconciliationDeadlineAt?: number;
+}): GenerationPollPhase => {
+  if (status === 'reconciling') {
+    return reconciliationDeadlineAt && now >= reconciliationDeadlineAt ? 'expired' : 'reconciling';
+  }
+  return now >= timeoutAt ? 'start_reconciling' : 'normal';
+};
+
+const reconciliationNextPollAt = (consecutiveFailures: number) => {
+  const exponent = Math.min(Math.max(0, consecutiveFailures), 6);
+  const delay = Math.max(
+    30_000,
+    serverConfig.generationPollIntervalMs * (2 ** exponent),
+  );
+  return Date.now() + Math.min(serverConfig.generationReconciliationPollMaxMs, delay);
+};
+
+type ProviderPollContext = {
+  polledAt?: number;
+  nonTerminalPhase?: 'normal' | 'reconciling' | 'expired';
+  reconciliationStartedAt?: number;
+  reconciliationDeadlineAt?: number;
+  consecutivePollFailures?: number;
+};
 const prepareInputs = async (item: ClaimedGenerationItem, generationCase: GenerationCase) => {
   const resolve = async (value: string) => {
     if (generationAssetService.usesTemporaryUrls()) {
@@ -225,6 +261,7 @@ const archiveResult = async (
 const handleProviderPayload = async (
   item: ClaimedGenerationItem,
   payload: Record<string, any>,
+  context: ProviderPollContext = {},
 ) => {
   payload = normalizeProviderPayload(payload);
   const providerStatus = String(payload.task_status || payload.status || '').toLowerCase();
@@ -233,6 +270,10 @@ const handleProviderPayload = async (
   });
   const endpointType = payload.endpoint_type ? String(payload.endpoint_type) : item.providerEndpointType;
   const taskId = payload.task_id ? String(payload.task_id) : item.providerTaskId;
+  const successfulPoll = context.polledAt ? {
+    lastPollSucceededAt: context.polledAt,
+    consecutivePollFailures: 0,
+  } : {};
 
   if (result && (TERMINAL_PROVIDER_STATUSES.has(providerStatus) || !providerStatus)) {
     await updateGenerationItem(item.id, {
@@ -242,6 +283,7 @@ const handleProviderPayload = async (
       providerStatus: providerStatus || 'succeed',
       result: { ...item.result, ...result },
       nextPollAt: Date.now(),
+      ...successfulPoll,
     });
     await archiveResult(
       { ...item, providerTaskId: taskId, providerEndpointType: endpointType, result: { ...item.result, ...result } },
@@ -264,6 +306,7 @@ const handleProviderPayload = async (
       },
       finishedAt: Date.now(),
       nextPollAt: null,
+      ...successfulPoll,
     });
     return;
   }
@@ -279,6 +322,42 @@ const handleProviderPayload = async (
       },
       finishedAt: Date.now(),
       nextPollAt: null,
+      ...successfulPoll,
+    });
+    return;
+  }
+
+  if (context.nonTerminalPhase === 'expired') {
+    await updateGenerationItem(item.id, {
+      status: 'submission_unknown',
+      providerTaskId: taskId,
+      providerEndpointType: endpointType,
+      providerStatus: providerStatus || item.providerStatus || 'unknown',
+      error: {
+        code: 'RECONCILIATION_EXPIRED',
+        message: 'Aion remained non-terminal after the two-hour reconciliation window. Automatic retry is disabled.',
+      },
+      finishedAt: Date.now(),
+      nextPollAt: null,
+      ...successfulPoll,
+    });
+    return;
+  }
+
+  if (context.nonTerminalPhase === 'reconciling') {
+    await updateGenerationItem(item.id, {
+      status: 'reconciling',
+      providerTaskId: taskId,
+      providerEndpointType: endpointType,
+      providerStatus: providerStatus || item.providerStatus || 'processing',
+      error: {
+        code: 'STATUS_RECONCILING',
+        message: 'The local timeout was reached; ManuEval is still reconciling the existing Aion task and will not resubmit it.',
+      },
+      reconciliationStartedAt: context.reconciliationStartedAt,
+      reconciliationDeadlineAt: context.reconciliationDeadlineAt,
+      nextPollAt: reconciliationNextPollAt(0),
+      ...successfulPoll,
     });
     return;
   }
@@ -289,6 +368,7 @@ const handleProviderPayload = async (
     providerEndpointType: endpointType,
     providerStatus: providerStatus || 'submitted',
     nextPollAt: nextPollAt(item.attempt),
+    ...successfulPoll,
   });
 };
 
@@ -362,30 +442,83 @@ const pollItem = async (item: ClaimedGenerationItem) => {
     });
     return;
   }
-  if ((item.submissionStartedAt || item.startedAt || Date.now()) + serverConfig.generationTaskTimeoutMs < Date.now()) {
-    await updateGenerationItem(item.id, {
-      status: 'failed',
-      error: { code: 'GENERATION_TIMEOUT', message: 'The generation task exceeded the configured timeout.' },
-      finishedAt: Date.now(),
-      nextPollAt: null,
+
+  const now = Date.now();
+  const timeoutAt = (item.submissionStartedAt || item.startedAt || now)
+    + serverConfig.generationTaskTimeoutMs;
+  const phase = generationPollPhase({
+    status: item.status,
+    now,
+    timeoutAt,
+    reconciliationDeadlineAt: item.reconciliationDeadlineAt,
+  });
+  const reconciliationStartedAt = item.reconciliationStartedAt || now;
+  const reconciliationDeadlineAt = item.reconciliationDeadlineAt
+    || reconciliationStartedAt + serverConfig.generationReconciliationTimeoutMs;
+  const modelName = String(item.job.model.modelName || item.job.model.name || 'unknown-model');
+
+  if (phase !== 'normal') {
+    console.info('[generation-worker] reconciling provider task', {
+      modelName,
+      taskId: item.providerTaskId,
+      phase,
     });
-    return;
   }
 
   try {
     const payload = await aionGenerationClient.getTask(
       item.providerTaskId,
-      String(item.job.model.modelName),
+      modelName,
       item.providerEndpointType,
     );
-    await handleProviderPayload(item, payload);
+    const polledAt = Date.now();
+    await handleProviderPayload(item, payload, {
+      polledAt,
+      nonTerminalPhase: phase === 'normal'
+        ? 'normal'
+        : phase === 'expired' ? 'expired' : 'reconciling',
+      reconciliationStartedAt,
+      reconciliationDeadlineAt,
+      consecutivePollFailures: 0,
+    });
   } catch (error) {
+    const consecutivePollFailures = item.consecutivePollFailures + 1;
+    if (phase === 'expired') {
+      await updateGenerationItem(item.id, {
+        status: 'submission_unknown',
+        error: {
+          code: 'RECONCILIATION_EXPIRED',
+          message: 'The final Aion reconciliation query failed after the two-hour window. Automatic retry is disabled.',
+        },
+        consecutivePollFailures,
+        finishedAt: Date.now(),
+        nextPollAt: null,
+      });
+      return;
+    }
+
+    if (phase === 'start_reconciling' || phase === 'reconciling') {
+      await updateGenerationItem(item.id, {
+        status: 'reconciling',
+        error: {
+          code: 'AION_RECONCILIATION_POLL_RETRY',
+          message: error instanceof Error ? error.message : String(error),
+        },
+        reconciliationStartedAt,
+        reconciliationDeadlineAt,
+        consecutivePollFailures,
+        nextPollAt: reconciliationNextPollAt(consecutivePollFailures),
+      });
+      return;
+    }
+
     await updateGenerationItem(item.id, {
       status: item.status === 'processing' ? 'processing' : 'submitted',
       error: {
         code: 'AION_POLL_RETRY',
         message: error instanceof Error ? error.message : String(error),
       },
+      consecutivePollFailures,
       nextPollAt: nextPollAt(item.attempt + 1),
     });
   }
@@ -444,7 +577,7 @@ const processClaimedItem = async (item: ClaimedGenerationItem, owner: string) =>
         finishedAt: Date.now(),
         nextPollAt: null,
       });
-    } else if (item.status === 'submitted' || item.status === 'processing') await pollItem(item);
+    } else if (item.status === 'submitted' || item.status === 'processing' || item.status === 'reconciling') await pollItem(item);
     else if (item.status === 'archiving') await resumeArchive(item);
   } finally {
     clearInterval(leaseHeartbeat);

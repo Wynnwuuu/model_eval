@@ -48,6 +48,7 @@ import {
   isGenerationDatasetInOrganization,
   saveGenerationPreflight,
 } from './generationExecutionRepository.ts';
+import { generationValidationForModel } from './generationValidationPolicy.ts';
 
 export type GenerationPreflightRequest = {
   datasetId: string;
@@ -590,7 +591,11 @@ export const createGenerationPreflight = async (
   }
 
   const cases = prepared.map(({ resolvedCase, preparationIssues, preparationWarnings }) => {
-    const result = preflightGenerationCase(model, resolvedCase);
+    const result = preflightGenerationCase(
+      model,
+      resolvedCase,
+      generationValidationForModel(model, serverConfig.generationModelValidationOverrides),
+    );
     const sourceRow = dataset.items[resolvedCase.rowIndex] || {};
     const targetValue = text(sourceRow[request.targetColumn]);
     const errors = [...preparationIssues, ...result.errors];

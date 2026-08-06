@@ -63,7 +63,13 @@ spec:
             - name: GENERATION_VIDEO_CONCURRENCY
               value: "8"
             - name: GENERATION_VIDEO_MODEL_LIMITS_JSON
-              value: '{"default":{"min":2,"max":4},"models":{"wan/wan3.0-video":{"min":1,"max":1},"minimax/hailuo-h3":{"min":2,"max":8},"seedance-2.0-fast":{"min":2,"max":8},"seedance-2.0-pro":{"min":2,"max":8}}}'
+              value: '{"default":{"min":1,"initial":1,"max":4},"models":{"wan/wan3.0-video":{"min":1,"initial":1,"max":1},"minimax/hailuo-h3":{"min":2,"initial":4,"max":8},"seedance-2.0-fast":{"min":2,"initial":4,"max":8},"seedance-2.0-pro":{"min":2,"initial":4,"max":8}}}'
+            - name: GENERATION_MODEL_VALIDATION_OVERRIDES_JSON
+              value: '{"wan/wan3.0-video":{"promptMaxLength":5000}}'
+            - name: GENERATION_RECONCILIATION_TIMEOUT_MS
+              value: "7200000"
+            - name: GENERATION_RECONCILIATION_POLL_MAX_MS
+              value: "600000"
             - name: GENERATION_POLL_INTERVAL_MS
               value: "5000"
             - name: GENERATION_LEASE_MS

@@ -280,3 +280,9 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - `npm.cmd run lint`, `npm.cmd run build`, and `npm.cmd run server:build`: passed. Existing Vite mixed-import and chunk-size warnings remain unchanged.
 - Browser: passed structured JSON import, exact MCP field auto-mapping, mixed per-case generation modes, ordered `elements`/`audios`, audio range preservation, request preview, desktop layout, and 390x844 containment with no console errors.
 - PostgreSQL generation and API smoke tests were not rerun because the local Docker Desktop Linux engine was unavailable. No schema, Worker, queue, writeback, or API-route behavior was changed, and no paid generation was submitted.
+## 2026-08-06: Wan conservative recovery (in progress)
+
+- Diagnosis confirmed the max-on-cold-start policy amplified Wan timeout failures, while pre-policy batches already showed Aion 1200-second failures.
+- Implementation is isolated to ManuEval dev on the latest GitHub main; Aion, VidMuse, historical terminal tasks, and automatic paid retry remain out of scope.
+- Locked decisions: Wan stays at concurrency 1 during repair; adaptive limits ramp by one slot per three consecutive successes; capacity failures return to the configured minimum; local timeout uncertainty enters a two-hour reconciliation lane.
+- Current phase: add failing regression coverage for scheduler cold start/ramp-down, prompt limits, reconciliation claiming, and timeout transition behavior before implementation.

@@ -187,3 +187,10 @@ ManuEval accepts VidMuse MCP-standard inputs and deterministically compiles them
 MCP direct mapping is the default for new preflights, while missing `mappingMode` continues to mean assisted mapping for historical clients and saved snapshots. JSON import preserves structured values and arbitrary metadata; only explicitly mapped fields participate in generation.
 
 Strict mode rejects incompatible keyframe/reference combinations. Seedance and H3 expose an explicit reference fallback that converts keyframes into appended elements and rewrites only the corresponding `@imageN` tokens. Unknown model combinations may proceed after generic and live-config validation with a visible unverified-combination warning; undeclared inputs and invalid prompt references are never silently dropped.
+## 2026-08-06: Wan recovery keeps fairness and replaces aggressive adaptation
+
+The task center and organization/dataset/batch max-min scheduler remain in place. They did not create the earliest Wan failures and reverting them would restore starvation without resolving Aion timeouts.
+
+Model limits now have minimum, initial, and maximum values. Cold or stale models start at the initial value instead of the maximum. Every three consecutive successful capacity outcomes raise the effective limit by one; a capacity failure resets it to the minimum. Deterministic request and content failures remain excluded.
+
+ManuEval will not treat a lost final poll as a confirmed generation failure. After the normal task deadline it performs one final Aion query, then uses a non-capacity `reconciling` lane for at most two hours. No reconciliation path resubmits a provider POST.

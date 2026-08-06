@@ -162,6 +162,7 @@ const statusLabel = (status?: string) => ({
   submitting: '\u63d0\u4ea4\u4e2d',
   submitted: '\u5df2\u63d0\u4ea4',
   processing: '\u751f\u6210\u4e2d',
+  reconciling: '\u72b6\u6001\u5f85\u6838\u5bf9',
   archiving: '\u5f52\u6863\u4e2d',
   succeeded: '\u6210\u529f',
   failed: '\u5931\u8d25',
@@ -1668,7 +1669,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                           <RefreshCw size={13} /> {'\u91cd\u8bd5\u9009\u4e2d case'}
                         </button>
                       </div>
-                    {batch.items.some(item => ['submitting', 'submitted', 'processing', 'archiving'].includes(item.status)) && (
+                    {batch.items.some(item => ['submitting', 'submitted', 'processing', 'reconciling', 'archiving'].includes(item.status)) && (
                       <div className="mb-3 text-xs text-slate-500">
                         {'\u8fd0\u884c\u4e2d\u548c\u5f52\u6863\u4e2d\u7684 case \u4e0d\u80fd\u8df3\u8fc7\uff1aAion \u6682\u65e0\u901a\u7528\u53d6\u6d88\u63a5\u53e3\uff0c\u5df2\u63d0\u4ea4\u4efb\u52a1\u4f1a\u7ee7\u7eed\u8f6e\u8be2\u5e76\u5f52\u6863\u3002'}
                       </div>
@@ -1698,7 +1699,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                               <div className="mt-1 truncate text-slate-500" title={item.providerJobId}>{item.providerJobId || item.requestId || '-'}</div>
                             </div>
                             <div>
-                              <div className={item.status === 'succeeded' ? 'text-emerald-300' : item.status === 'failed' || item.status === 'submission_unknown' ? 'text-red-300' : 'text-blue-300'}>{statusLabel(item.status)}</div>
+                              <div className={item.status === 'succeeded' ? 'text-emerald-300' : item.status === 'failed' || item.status === 'submission_unknown' ? 'text-red-300' : item.status === 'reconciling' ? 'text-amber-300' : 'text-blue-300'}>{statusLabel(item.status)}</div>
                               {item.status === 'succeeded' && item.durability && (
                                 <div className={'mt-1 ' + durabilityClass(item.durability)}>{durabilityLabel(item.durability)}</div>
                               )}
@@ -1721,6 +1722,21 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                               {providerActive && item.timeoutAt && (
                                 <div className="mt-1 text-slate-500">
                                   {'ManuEval \u622a\u6b62'} {new Date(item.timeoutAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+                                </div>
+                              )}
+                              {item.status === 'reconciling' && (
+                                <div className="mt-1 space-y-1 text-amber-200">
+                                  <div>{'\u4ec5\u6838\u5bf9\u5df2\u63d0\u4ea4\u7684 Aion \u4efb\u52a1\uff0c\u4e0d\u4f1a\u81ea\u52a8\u91cd\u63d0\uff0c\u4e14\u4e0d\u5360\u7528\u751f\u6210\u69fd\u4f4d\u3002'}</div>
+                                  {item.reconciliationDeadlineAt && (
+                                    <div className="text-slate-400">
+                                      {'\u6838\u5bf9\u622a\u6b62'} {new Date(item.reconciliationDeadlineAt).toLocaleString('zh-CN')}
+                                    </div>
+                                  )}
+                                  <div className="text-slate-500">
+                                    {'\u6700\u8fd1\u6210\u529f\u8f6e\u8be2'} {item.lastPollSucceededAt ? new Date(item.lastPollSucceededAt).toLocaleString('zh-CN') : '-'}
+                                    {' / \u8fde\u7eed\u8f6e\u8be2\u5931\u8d25'} {item.consecutivePollFailures || 0}
+                                  </div>
+                                  <div className="text-slate-500">{'\u5df2\u91ca\u653e\u5e76\u53d1\u4f4d\uff0c\u540e\u53f0\u7ee7\u7eed\u6838\u5bf9'}</div>
                                 </div>
                               )}
                               {item.status === 'pending' && <div className="mt-1 text-slate-500">{pendingQueueLabel}</div>}

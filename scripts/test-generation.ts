@@ -19,6 +19,7 @@ import {
   taskWorkerFilePathToUrl,
 } from '../server/generation/aionGenerationClient.ts';
 import {
+  generationPollPhase,
   archivedGenerationResult,
   normalizeProviderPayload,
   providerResult,
@@ -55,29 +56,31 @@ import {
   parseGenerationVideoModelLimits,
   resolveGenerationVideoModelLimit,
 } from '../server/generation/generationConcurrencyPolicy.ts';
+import {
+  generationValidationForModel,
+  parseGenerationModelValidationOverrides,
+} from '../server/generation/generationValidationPolicy.ts';
 
 const capacityFailure = (code: string, message: string, httpStatus?: number) => ({
   status: 'failed',
   error: { code, message, httpStatus },
 });
 const successfulOutcome = () => ({ status: 'succeeded', error: {} });
-const concurrencyLimit = { min: 2, max: 6 };
+const concurrencyLimit = { min: 1, initial: 1, max: 6 };
 
+assert.equal(computeGenerationConcurrencyPolicy(concurrencyLimit, []).effectiveLimit, 1,
+  'a model without recent capacity evidence must use its initial limit');
+assert.equal(computeGenerationConcurrencyPolicy(concurrencyLimit, [successfulOutcome()]).effectiveLimit, 1);
+assert.equal(computeGenerationConcurrencyPolicy(concurrencyLimit, Array.from({ length: 3 }, successfulOutcome)).effectiveLimit, 2);
+assert.equal(computeGenerationConcurrencyPolicy(concurrencyLimit, Array.from({ length: 6 }, successfulOutcome)).effectiveLimit, 3);
 assert.equal(computeGenerationConcurrencyPolicy(concurrencyLimit, [
-  capacityFailure('AION_SUBMIT_REJECTED', 'Too many requests', 429),
   capacityFailure('GENERATION_TIMEOUT', 'Generation timed out.'),
-  successfulOutcome(),
-  successfulOutcome(),
-  successfulOutcome(),
-]).effectiveLimit, 6, 'fewer than six valid samples must use the configured maximum');
-
-const outcomesAt = (failures: number, total = 10) => [
-  ...Array.from({ length: failures }, () => capacityFailure('PROVIDER_FAILED', 'Provider overloaded.')),
-  ...Array.from({ length: total - failures }, successfulOutcome),
-];
-assert.equal(computeGenerationConcurrencyPolicy(concurrencyLimit, outcomesAt(2)).effectiveLimit, 6);
-assert.equal(computeGenerationConcurrencyPolicy(concurrencyLimit, outcomesAt(3)).effectiveLimit, 4);
-assert.equal(computeGenerationConcurrencyPolicy(concurrencyLimit, outcomesAt(6)).effectiveLimit, 2);
+  ...Array.from({ length: 12 }, successfulOutcome),
+]).effectiveLimit, 1, 'the newest capacity failure must immediately reset capacity to the minimum');
+assert.equal(computeGenerationConcurrencyPolicy(concurrencyLimit, [
+  ...Array.from({ length: 3 }, successfulOutcome),
+  capacityFailure('PROVIDER_FAILED', 'Provider overloaded.'),
+]).effectiveLimit, 2, 'three successes after the latest capacity failure may restore one slot');
 
 const deterministicFailures = [
   capacityFailure('AION_SUBMIT_REJECTED', 'Wan3 seed must be an integer between 0 and 2147483647', 400),
@@ -90,24 +93,50 @@ const ignoredDeterministic = computeGenerationConcurrencyPolicy(concurrencyLimit
 ]);
 assert.equal(ignoredDeterministic.sampleSize, 6);
 assert.equal(ignoredDeterministic.capacityFailures, 0);
-assert.equal(ignoredDeterministic.effectiveLimit, 6);
+assert.equal(ignoredDeterministic.effectiveLimit, 3);
 
 const configuredModelLimits = parseGenerationVideoModelLimits(JSON.stringify({
-  default: { min: 2, max: 4 },
-  models: { 'wan/wan3.0-video': { min: 2, max: 6 } },
+  default: { min: 1, initial: 1, max: 4 },
+  models: { 'wan/wan3.0-video': { min: 1, initial: 1, max: 6 } },
 }), 8);
-assert.deepEqual(resolveGenerationVideoModelLimit(configuredModelLimits, 'wan/wan3.0-video'), { min: 2, max: 6 });
-assert.deepEqual(resolveGenerationVideoModelLimit(configuredModelLimits, 'future/video-model'), { min: 2, max: 4 });
+assert.deepEqual(resolveGenerationVideoModelLimit(configuredModelLimits, 'wan/wan3.0-video'), { min: 1, initial: 1, max: 6 });
+assert.deepEqual(resolveGenerationVideoModelLimit(configuredModelLimits, 'future/video-model'), { min: 1, initial: 1, max: 4 });
 assert.throws(() => parseGenerationVideoModelLimits('{broken', 8), /valid JSON/);
 assert.throws(() => parseGenerationVideoModelLimits(JSON.stringify({
-  default: { min: 5, max: 4 }, models: {},
+  default: { min: 1, initial: 5, max: 4 }, models: {},
 }), 8), /minimum/);
+
+const validationOverrides = parseGenerationModelValidationOverrides(JSON.stringify({
+  'wan/wan3.0-video': { promptMaxLength: 5000 },
+}));
+assert.deepEqual(validationOverrides['wan/wan3.0-video'], { promptMaxLength: 5000 });
+assert.throws(() => parseGenerationModelValidationOverrides(JSON.stringify({
+  'wan/wan3.0-video': { promptMaxLength: 0 },
+})), /positive integer/);
 
 const selectionRows = [
   { [DATASET_ITEM_ID_KEY]: 'item-1', case_id: 'case-1', prompt: 'One' },
   { [DATASET_ITEM_ID_KEY]: 'item-2', case_id: 'case-2', prompt: 'Two' },
   { [DATASET_ITEM_ID_KEY]: 'item-3', case_id: 'case-3', prompt: 'Three' },
 ];
+assert.equal(generationPollPhase({
+  status: 'processing',
+  now: 1_500,
+  timeoutAt: 1_000,
+}), 'start_reconciling');
+assert.equal(generationPollPhase({
+  status: 'reconciling',
+  now: 1_500,
+  timeoutAt: 1_000,
+  reconciliationDeadlineAt: 2_000,
+}), 'reconciling');
+assert.equal(generationPollPhase({
+  status: 'reconciling',
+  now: 2_000,
+  timeoutAt: 1_000,
+  reconciliationDeadlineAt: 2_000,
+}), 'expired');
+
 
 
 const legacyFullSelection = resolveGenerationCaseSelection(selectionRows);
@@ -907,6 +936,28 @@ const validTextCase = preflightGenerationCase(videoModel, {
 });
 assert.equal(validTextCase.valid, true);
 assert.equal(validTextCase.generationType, 'text_to_video');
+
+const promptTooLongCase = preflightGenerationCase(videoModel, {
+  ...validTextCase.resolvedCase,
+  caseId: 'case-prompt-too-long',
+  datasetItemId: 'item-prompt-too-long',
+  prompt: '123456',
+}, { promptMaxLength: 5 });
+assert.equal(promptTooLongCase.valid, false);
+assert.ok(promptTooLongCase.errors.some(item => (
+  item.code === 'PROMPT_TOO_LONG' && item.field === 'prompt'
+)));
+
+const structuredPromptModel = {
+  ...videoModel,
+  inputSchema: {
+    ...videoModel.inputSchema,
+    properties: { prompt: { type: 'string', maxLength: 5 } },
+  },
+};
+assert.deepEqual(generationValidationForModel(structuredPromptModel, {
+  [videoModel.modelName]: { promptMaxLength: 10 },
+}), { promptMaxLength: 5 });
 
 const invalidDuration = preflightGenerationCase(videoModel, {
   caseId: 'case-2',

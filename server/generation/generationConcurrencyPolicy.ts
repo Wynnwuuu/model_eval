@@ -1,5 +1,6 @@
 export type GenerationModelConcurrencyLimit = {
   min: number;
+  initial: number;
   max: number;
 };
 
@@ -11,12 +12,13 @@ export type GenerationVideoModelLimits = {
 export type GenerationCapacityOutcome = {
   status?: string;
   error?: Record<string, unknown> | null;
+  finishedAt?: number;
 };
 
 export type GenerationConcurrencyMode =
-  | 'insufficient_sample'
+  | 'initial'
+  | 'ramping'
   | 'maximum'
-  | 'reduced'
   | 'minimum';
 
 export type GenerationConcurrencyPolicy = GenerationModelConcurrencyLimit & {
@@ -24,22 +26,24 @@ export type GenerationConcurrencyPolicy = GenerationModelConcurrencyLimit & {
   sampleSize: number;
   capacityFailures: number;
   capacityFailureRate: number;
+  successStreak: number;
+  lastCapacityFailureAt?: number;
   mode: GenerationConcurrencyMode;
   reason: string;
 };
 
 export const GENERATION_POLICY_WINDOW_HOURS = 24;
-export const GENERATION_POLICY_SAMPLE_SIZE = 12;
-export const GENERATION_POLICY_MIN_SAMPLES = 6;
+export const GENERATION_POLICY_SAMPLE_SIZE = 24;
+export const GENERATION_POLICY_SUCCESSES_PER_STEP = 3;
 export const GENERATION_POLICY_CACHE_MS = 10_000;
 
 export const DEFAULT_GENERATION_VIDEO_MODEL_LIMITS: GenerationVideoModelLimits = {
-  default: { min: 2, max: 4 },
+  default: { min: 1, initial: 1, max: 4 },
   models: {
-    'wan/wan3.0-video': { min: 2, max: 6 },
-    'minimax/hailuo-h3': { min: 2, max: 8 },
-    'seedance-2.0-fast': { min: 2, max: 8 },
-    'seedance-2.0-pro': { min: 2, max: 8 },
+    'wan/wan3.0-video': { min: 1, initial: 1, max: 6 },
+    'minimax/hailuo-h3': { min: 2, initial: 4, max: 8 },
+    'seedance-2.0-fast': { min: 2, initial: 4, max: 8 },
+    'seedance-2.0-pro': { min: 2, initial: 4, max: 8 },
   },
 };
 
@@ -50,17 +54,21 @@ const validateLimit = (
   label: string,
 ): GenerationModelConcurrencyLimit => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`${label} must be an object with integer min and max values.`);
+    throw new Error(`${label} must be an object with integer min, initial, and max values.`);
   }
   const min = Number((value as Record<string, unknown>).min);
+  const rawInitial = (value as Record<string, unknown>).initial;
+  const initial = rawInitial === undefined ? min : Number(rawInitial);
   const max = Number((value as Record<string, unknown>).max);
-  if (!Number.isInteger(min) || min <= 0 || !Number.isInteger(max) || max <= 0) {
-    throw new Error(`${label} minimum and maximum must be positive integers.`);
+  if (!Number.isInteger(min) || min <= 0
+    || !Number.isInteger(initial) || initial <= 0
+    || !Number.isInteger(max) || max <= 0) {
+    throw new Error(`${label} minimum, initial, and maximum must be positive integers.`);
   }
-  if (min > max) {
-    throw new Error(`${label} minimum cannot exceed maximum.`);
+  if (min > initial || initial > max) {
+    throw new Error(`${label} minimum cannot exceed initial, and initial cannot exceed maximum.`);
   }
-  return { min, max };
+  return { min, initial, max };
 };
 
 export const parseGenerationVideoModelLimits = (
@@ -148,53 +156,59 @@ export const computeGenerationConcurrencyPolicy = (
   outcomes: GenerationCapacityOutcome[],
 ): GenerationConcurrencyPolicy => {
   const validOutcomes = outcomes
-    .map(classifyGenerationCapacityOutcome)
-    .filter((value): value is 'success' | 'capacity_failure' => Boolean(value))
+    .map(outcome => ({ kind: classifyGenerationCapacityOutcome(outcome), finishedAt: outcome.finishedAt }))
+    .filter((value): value is { kind: 'success' | 'capacity_failure'; finishedAt: number | undefined } => Boolean(value.kind))
     .slice(0, GENERATION_POLICY_SAMPLE_SIZE);
   const sampleSize = validOutcomes.length;
-  const capacityFailures = validOutcomes.filter(value => value === 'capacity_failure').length;
+  const capacityFailures = validOutcomes.filter(value => value.kind === 'capacity_failure').length;
   const capacityFailureRate = sampleSize ? capacityFailures / sampleSize : 0;
+  const latestFailureIndex = validOutcomes.findIndex(value => value.kind === 'capacity_failure');
+  const successStreak = latestFailureIndex === -1 ? validOutcomes.length : latestFailureIndex;
+  const lastCapacityFailure = validOutcomes.find(value => value.kind === 'capacity_failure');
+  const baseLimit = lastCapacityFailure ? limit.min : limit.initial;
+  const effectiveLimit = Math.min(
+    limit.max,
+    baseLimit + Math.floor(successStreak / GENERATION_POLICY_SUCCESSES_PER_STEP),
+  );
 
-  if (sampleSize < GENERATION_POLICY_MIN_SAMPLES) {
+  if (!sampleSize) {
     return {
       ...limit,
-      effectiveLimit: limit.max,
+      effectiveLimit: limit.initial,
       sampleSize,
       capacityFailures,
       capacityFailureRate,
-      mode: 'insufficient_sample',
-      reason: 'Insufficient valid recent outcomes; using the configured maximum.',
+      successStreak,
+      mode: 'initial',
+      reason: 'No recent capacity evidence; using the configured initial limit.',
     };
   }
-  if (capacityFailureRate < 0.3) {
-    return {
-      ...limit,
-      effectiveLimit: limit.max,
-      sampleSize,
-      capacityFailures,
-      capacityFailureRate,
-      mode: 'maximum',
-      reason: 'Recent capacity failure rate is below 30%.',
-    };
-  }
-  if (capacityFailureRate < 0.6) {
-    return {
-      ...limit,
-      effectiveLimit: Math.max(limit.min, limit.max - 2),
-      sampleSize,
-      capacityFailures,
-      capacityFailureRate,
-      mode: 'reduced',
-      reason: 'Recent capacity failure rate is between 30% and 60%.',
-    };
-  }
-  return {
+  const common = {
     ...limit,
-    effectiveLimit: limit.min,
+    effectiveLimit,
     sampleSize,
     capacityFailures,
     capacityFailureRate,
-    mode: 'minimum',
-    reason: 'Recent capacity failure rate is at least 60%.',
+    successStreak,
+    ...(lastCapacityFailure?.finishedAt ? { lastCapacityFailureAt: lastCapacityFailure.finishedAt } : {}),
+  };
+  if (effectiveLimit >= limit.max) {
+    return {
+      ...common,
+      mode: 'maximum' as const,
+      reason: `Reached the configured maximum after ${successStreak} consecutive successes.`,
+    };
+  }
+  if (lastCapacityFailure && effectiveLimit === limit.min) {
+    return {
+      ...common,
+      mode: 'minimum' as const,
+      reason: 'A recent capacity failure reset the model to its configured minimum.',
+    };
+  }
+  return {
+    ...common,
+    mode: 'ramping',
+    reason: `${successStreak} consecutive successes; one slot is restored per ${GENERATION_POLICY_SUCCESSES_PER_STEP}.`,
   };
 };

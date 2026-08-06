@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { parseGenerationVideoModelLimits } from './generation/generationConcurrencyPolicy.ts';
+import { parseGenerationModelValidationOverrides } from './generation/generationValidationPolicy.ts';
 
 
 const DEFAULT_DATABASE_URL = 'postgresql://eval_studio:eval_studio_dev@localhost:5432/eval_studio';
@@ -19,6 +20,10 @@ const generationVideoConcurrency = parsePort(process.env.GENERATION_VIDEO_CONCUR
 const generationVideoModelLimits = parseGenerationVideoModelLimits(
   process.env.GENERATION_VIDEO_MODEL_LIMITS_JSON,
   generationVideoConcurrency,
+);
+
+const generationModelValidationOverrides = parseGenerationModelValidationOverrides(
+  process.env.GENERATION_MODEL_VALIDATION_OVERRIDES_JSON,
 );
 
 export const serverConfig = {
@@ -46,10 +51,13 @@ export const serverConfig = {
   generationImageConcurrency: parsePort(process.env.GENERATION_IMAGE_CONCURRENCY, 4),
   generationVideoConcurrency,
   generationVideoModelLimits,
+  generationModelValidationOverrides,
   generationPollIntervalMs: parsePort(process.env.GENERATION_POLL_INTERVAL_MS, 5000),
   generationLeaseMs: parsePort(process.env.GENERATION_LEASE_MS, 60000),
   generationTaskTimeoutMs: parsePort(process.env.GENERATION_TASK_TIMEOUT_MS, 1500000),
   generationAssetMode: parseGenerationAssetMode(process.env.GENERATION_ASSET_MODE),
+  generationReconciliationTimeoutMs: parsePort(process.env.GENERATION_RECONCILIATION_TIMEOUT_MS, 7200000),
+  generationReconciliationPollMaxMs: parsePort(process.env.GENERATION_RECONCILIATION_POLL_MAX_MS, 600000),
   ossAccessKeyId: process.env.MANUEVAL_OSS_ACCESS_KEY_ID || '',
   ossAccessKeySecret: process.env.MANUEVAL_OSS_ACCESS_KEY_SECRET || '',
   ossEndpoint: process.env.MANUEVAL_OSS_ENDPOINT || '',

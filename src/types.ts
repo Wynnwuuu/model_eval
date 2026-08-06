@@ -452,7 +452,7 @@ export interface EvalDataset {
 export type GenerationOutputModality = DatasetModality;
 export type GenerationJobStatus = 'draft' | 'queued' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled' | 'writeback_conflict';
 export type GenerationItemStatus =
-  | 'pending' | 'submitting' | 'submitted' | 'processing' | 'archiving'
+  | 'pending' | 'submitting' | 'submitted' | 'processing' | 'reconciling' | 'archiving'
   | 'running' | 'succeeded' | 'completed' | 'failed' | 'submission_unknown' | 'cancelled';
 export type GenerationSeedMode = 'fixed' | 'derive_from_case' | 'column';
 export type GenerationTargetMode = 'new' | 'fill_existing';
@@ -465,6 +465,7 @@ export interface GenerationStatusCounts {
   submitted: number;
   processing: number;
   archiving: number;
+  reconciling: number;
   succeeded: number;
   failed: number;
   submissionUnknown: number;
@@ -477,6 +478,7 @@ export interface GenerationQueueLane {
   active: number;
   pending: number;
   models?: GenerationModelQueueState[];
+  reconciling: number;
 }
 
 export interface GenerationModelQueueState {
@@ -486,12 +488,16 @@ export interface GenerationModelQueueState {
   organizationActive: number;
   organizationPending: number;
   minLimit: number;
+  initialLimit: number;
   maxLimit: number;
   effectiveLimit: number;
   sampleSize: number;
+  successStreak: number;
+  lastCapacityFailureAt?: number;
+  reconciling: number;
   capacityFailures: number;
   capacityFailureRate: number;
-  mode: 'insufficient_sample' | 'maximum' | 'reduced' | 'minimum';
+  mode: 'initial' | 'ramping' | 'maximum' | 'minimum';
   reason: string;
 }
 
@@ -648,6 +654,10 @@ export interface DatasetGenerationJobItem {
   submissionStartedAt?: number;
   timeoutAt?: number;
   finishedAt?: number;
+  reconciliationStartedAt?: number;
+  reconciliationDeadlineAt?: number;
+  lastPollSucceededAt?: number;
+  consecutivePollFailures?: number;
 }
 
 export interface GenerationAssetBinding {

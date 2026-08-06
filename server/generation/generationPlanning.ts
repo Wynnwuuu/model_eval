@@ -10,6 +10,7 @@ import type {
   VidMuseInputBindings,
   VidMusePrompt,
 } from '../../src/features/generation/vidmuseInputContract.ts';
+import type { GenerationModelValidationOverride } from './generationValidationPolicy.ts';
 
 export type GenerationModality = 'image' | 'video';
 
@@ -574,6 +575,7 @@ const suppliedInputs = (
 export const preflightGenerationCase = (
   model: NormalizedGenerationModel,
   item: GenerationCase,
+  validation: GenerationModelValidationOverride = {},
 ): PreflightCaseResult => {
   const errors: PreflightIssue[] = [];
   const warnings: PreflightIssue[] = [];
@@ -693,6 +695,16 @@ export const preflightGenerationCase = (
   }
   if (model.outputModality === 'video' && generationType === 'text_to_video' && !inputs.prompt) {
     errors.push({ code: 'MISSING_REQUIRED_INPUT', field: 'prompt', message: 'Text-to-video generation requires a prompt.' });
+  }
+  if (inputs.prompt && validation.promptMaxLength) {
+    const promptLength = Array.from(String(inputs.prompt)).length;
+    if (promptLength > validation.promptMaxLength) {
+      errors.push({
+        code: 'PROMPT_TOO_LONG',
+        field: 'prompt',
+        message: `Prompt length ${promptLength} exceeds the supported maximum ${validation.promptMaxLength}.`,
+      });
+    }
   }
 
   const schema = model.inputSchema;

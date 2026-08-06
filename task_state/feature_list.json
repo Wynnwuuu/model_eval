@@ -1,45 +1,41 @@
 {
-  "feature": "vidmuse_mcp_input_contract",
+  "feature": "generation_wan_conservative_recovery",
+  "previousCompletedFeature": "vidmuse_mcp_input_contract",
   "requirements": [
     {
-      "id": "canonical-compiler",
-      "status": "completed",
-      "description": "Compile VidMuse video and image fields into the existing Aion unified model request"
+      "id": "wan-repair-limit",
+      "status": "in_progress",
+      "description": "Keep Wan at concurrency one until the repaired scheduler and a single-case smoke are verified"
     },
     {
-      "id": "dual-mapping",
-      "status": "completed",
-      "description": "Support direct MCP mappings and backward-compatible assisted mappings"
+      "id": "conservative-adaptation",
+      "status": "pending",
+      "description": "Start from initial capacity, ramp one slot per three successes, and reset to minimum on capacity failure"
     },
     {
-      "id": "structured-import",
-      "status": "completed",
-      "description": "Import CSV/TSV structured cells and JSON arrays or items envelopes without dropping unrelated columns"
+      "id": "status-reconciliation",
+      "status": "pending",
+      "description": "Perform a final poll and reconcile uncertain provider state for two hours without resubmission"
     },
     {
-      "id": "contract-validation",
-      "status": "completed",
-      "description": "Validate MCP structures, prompt references, live model configuration, and verified model compatibility rules per case"
+      "id": "model-contract-preflight",
+      "status": "pending",
+      "description": "Reject structured and configured prompt-limit violations before provider submission"
     },
     {
-      "id": "compatibility-fallback",
-      "status": "completed",
-      "description": "Provide explicit Seedance/H3 keyframe-to-reference conversion with deterministic numbering and visible warnings"
-    },
-    {
-      "id": "audit-and-preview",
-      "status": "completed",
-      "description": "Persist compiler audit data and show normalized inputs, bindings, and final Aion requests in preflight"
+      "id": "task-center-diagnostics",
+      "status": "pending",
+      "description": "Expose initial/effective capacity, success streak, reconciliation state, and safe polling diagnostics"
     },
     {
       "id": "backward-compatibility",
-      "status": "completed",
-      "description": "Preserve old snapshots plus Worker, assets, writeback, dataset versions, and human-evaluation behavior without migration"
+      "status": "pending",
+      "description": "Preserve historical terminal tasks, fair scheduling, writeback, stable assets, and manual retry semantics"
     },
     {
       "id": "verification",
-      "status": "completed",
-      "description": "Pass non-database tests, builds, and desktop/mobile browser QA; database rerun is environment-blocked"
+      "status": "pending",
+      "description": "Pass full automated and browser regression, deploy dev, then run exactly one Wan smoke case"
     }
   ]
 }
