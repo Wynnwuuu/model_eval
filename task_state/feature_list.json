@@ -9,32 +9,32 @@
     },
     {
       "id": "conservative-adaptation",
-      "status": "pending",
+      "status": "completed",
       "description": "Start from initial capacity, ramp one slot per three successes, and reset to minimum on capacity failure"
     },
     {
       "id": "status-reconciliation",
-      "status": "pending",
+      "status": "completed",
       "description": "Perform a final poll and reconcile uncertain provider state for two hours without resubmission"
     },
     {
       "id": "model-contract-preflight",
-      "status": "pending",
+      "status": "completed",
       "description": "Reject structured and configured prompt-limit violations before provider submission"
     },
     {
       "id": "task-center-diagnostics",
-      "status": "pending",
+      "status": "completed",
       "description": "Expose initial/effective capacity, success streak, reconciliation state, and safe polling diagnostics"
     },
     {
       "id": "backward-compatibility",
-      "status": "pending",
+      "status": "completed",
       "description": "Preserve historical terminal tasks, fair scheduling, writeback, stable assets, and manual retry semantics"
     },
     {
       "id": "verification",
-      "status": "pending",
+      "status": "in_progress",
       "description": "Pass full automated and browser regression, deploy dev, then run exactly one Wan smoke case"
     }
   ]

@@ -286,3 +286,11 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Implementation is isolated to ManuEval dev on the latest GitHub main; Aion, VidMuse, historical terminal tasks, and automatic paid retry remain out of scope.
 - Locked decisions: Wan stays at concurrency 1 during repair; adaptive limits ramp by one slot per three consecutive successes; capacity failures return to the configured minimum; local timeout uncertainty enters a two-hour reconciliation lane.
 - Current phase: add failing regression coverage for scheduler cold start/ramp-down, prompt limits, reconciliation claiming, and timeout transition behavior before implementation.
+
+### Implementation and validation
+
+- Deployed emergency Wan concurrency 1 to dev in commit `f99aecf`; CI, image build, migration, and rollout succeeded.
+- Rebased the full recovery onto the VidMuse MCP input-contract commit and preserved structured compilation, warnings, audit snapshots, and request previews.
+- Added initial/ramp/reset concurrency policy, two-hour non-submitting reconciliation, prompt-limit policy, migration 011, queue diagnostics, and task detail status.
+- Passed generation/MCP tests, PostgreSQL generation tests, API smoke, dataset sync/clone/import/column tests, Arena/rank tests, lint, server build, and frontend build.
+- Remaining: desktop/mobile browser QA, publish full fix, observe dev, and run exactly one paid Wan smoke.
