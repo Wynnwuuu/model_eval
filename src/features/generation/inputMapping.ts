@@ -7,6 +7,9 @@ import type {
 import type { GenerationImageRole } from './modelCapabilities';
 
 const emptyMapping = (): GenerationInputMapping => ({
+  mappingMode: 'mcp',
+  compatibilityMode: 'strict',
+  canonicalFieldMappings: {},
   promptColumn: '',
   referenceImageColumns: [],
   referenceAudioColumns: [],
@@ -34,15 +37,27 @@ export const defaultGenerationInputMapping = (
   const fields = dataset.inputSchema || [];
   const fieldKey = (predicate: (field: DatasetSchemaField) => boolean) =>
     fields.find(predicate)?.key;
+  const exactHeader = (key: string) =>
+    headers.find(header => header.trim().toLowerCase() === key.toLowerCase());
+  const promptColumn =
+    exactHeader('prompt')
+    || mappings.standard.full_prompt
+    || fieldKey(field => field.canonicalKey === 'full_prompt')
+    || fieldKey(field => field.canonicalKey === 'zh_prompt')
+    || mappings.inputColumns.find(column => headers.includes(column))
+    || headers.find(header => /prompt|input/i.test(header))
+    || '';
+  const canonicalFieldMappings = Object.fromEntries([
+    ...(promptColumn ? [['prompt', promptColumn]] : []),
+    ...['image_urls', 'images', 'elements', 'audios'].flatMap(key => {
+      const column = exactHeader(key);
+      return column ? [[key, column]] : [];
+    }),
+  ]);
   return {
     ...emptyMapping(),
-    promptColumn:
-      mappings.standard.full_prompt
-      || fieldKey(field => field.canonicalKey === 'full_prompt')
-      || fieldKey(field => field.canonicalKey === 'zh_prompt')
-      || mappings.inputColumns.find(column => headers.includes(column))
-      || headers.find(header => /prompt|input/i.test(header))
-      || '',
+    promptColumn,
+    canonicalFieldMappings,
   };
 };
 

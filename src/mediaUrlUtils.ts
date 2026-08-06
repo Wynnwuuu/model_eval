@@ -9,6 +9,9 @@ export const extractMediaUrls = (value: unknown): string[] => {
   if (Array.isArray(value)) {
     return value.flatMap(item => extractMediaUrls(item));
   }
+  if (typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>).flatMap(item => extractMediaUrls(item));
+  }
   if (typeof value !== 'string') return [];
 
   const trimmed = value.trim();

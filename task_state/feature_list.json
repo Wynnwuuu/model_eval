@@ -1,40 +1,45 @@
 {
-  "feature": "generation_reference_video_audio_duration",
+  "feature": "vidmuse_mcp_input_contract",
   "requirements": [
     {
-      "id": "reference-video-columns",
+      "id": "canonical-compiler",
       "status": "completed",
-      "description": "Build ordered reference-video inputs only through verified live model contracts"
+      "description": "Compile VidMuse video and image fields into the existing Aion unified model request"
     },
     {
-      "id": "raw-elements-compatibility",
+      "id": "dual-mapping",
       "status": "completed",
-      "description": "Keep Raw elements JSON as a mutually exclusive advanced mode"
+      "description": "Support direct MCP mappings and backward-compatible assisted mappings"
     },
     {
-      "id": "duration-source-modes",
+      "id": "structured-import",
       "status": "completed",
-      "description": "Support uniform, dataset-column, and reference-audio duration sources"
+      "description": "Import CSV/TSV structured cells and JSON arrays or items envelopes without dropping unrelated columns"
     },
     {
-      "id": "audio-metadata-probing",
+      "id": "contract-validation",
       "status": "completed",
-      "description": "Probe public audio metadata with URL deduplication, cache, concurrency, timeout, and cancellation"
+      "description": "Validate MCP structures, prompt references, live model configuration, and verified model compatibility rules per case"
     },
     {
-      "id": "server-validation-and-audit",
+      "id": "compatibility-fallback",
       "status": "completed",
-      "description": "Recalculate per-case duration, reject mismatches, and persist source/detected/final audit data"
+      "description": "Provide explicit Seedance/H3 keyframe-to-reference conversion with deterministic numbering and visible warnings"
+    },
+    {
+      "id": "audit-and-preview",
+      "status": "completed",
+      "description": "Persist compiler audit data and show normalized inputs, bindings, and final Aion requests in preflight"
     },
     {
       "id": "backward-compatibility",
       "status": "completed",
-      "description": "Preserve old snapshots, jobs, Worker, writeback, assets, and evaluation handoff without migration"
+      "description": "Preserve old snapshots plus Worker, assets, writeback, dataset versions, and human-evaluation behavior without migration"
     },
     {
       "id": "verification",
       "status": "completed",
-      "description": "Pass full automated tests, builds, live-config preflight, and desktop/mobile browser QA without paid generation"
+      "description": "Pass non-database tests, builds, and desktop/mobile browser QA; database rerun is environment-blocked"
     }
   ]
 }

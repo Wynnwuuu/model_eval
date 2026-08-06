@@ -4,6 +4,7 @@ import { FileAudio, Image as ImageIcon, Search, Video } from 'lucide-react';
 import { DATASET_ITEM_ID_KEY, getDatasetRowCaseId } from '../datasetSync';
 import { extractMediaUrls } from '../mediaUrlUtils';
 import { inferReferenceMediaType } from '../mediaTypeUtils';
+import { parseStructuredGenerationValue } from '../features/generation/mediaReferences';
 import type { EvalDataset, GenerationInputMapping } from '../types';
 import MediaRenderer from './MediaRenderer';
 
@@ -27,6 +28,17 @@ interface SelectableCase {
 }
 
 const text = (value: unknown) => String(value ?? '').trim();
+const promptText = (value: unknown) => {
+  const parsed = parseStructuredGenerationValue(value);
+  if (!Array.isArray(parsed)) return text(parsed);
+  return parsed.map(item => {
+    if (item && typeof item === 'object' && typeof (item as Record<string, unknown>).prompt === 'string') {
+      return text((item as Record<string, unknown>).prompt);
+    }
+    return typeof item === 'object' ? JSON.stringify(item) : text(item);
+  }).filter(Boolean).join(' / ');
+};
+
 
 const LazyCaseMedia: React.FC<{ url: string }> = ({ url }) => {
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -73,13 +85,18 @@ const LazyCaseMedia: React.FC<{ url: string }> = ({ url }) => {
   );
 };
 
-const mappedMediaColumns = (mapping: GenerationInputMapping) => Array.from(new Set([
-  ...(mapping.referenceImageColumns || []),
-  ...(mapping.startImageColumn ? [mapping.startImageColumn] : []),
-  ...(mapping.endImageColumn ? [mapping.endImageColumn] : []),
-  ...(mapping.referenceAudioColumns || []),
-  ...(mapping.referenceVideoColumns || []),
-]));
+const mappedMediaColumns = (mapping: GenerationInputMapping) => {
+  const canonical = mapping.canonicalFieldMappings || {};
+  return Array.from(new Set([
+    ...['image_urls', 'images', 'elements', 'audios'].flatMap(key =>
+      canonical[key] ? [canonical[key]] : []),
+    ...(mapping.referenceImageColumns || []),
+    ...(mapping.startImageColumn ? [mapping.startImageColumn] : []),
+    ...(mapping.endImageColumn ? [mapping.endImageColumn] : []),
+    ...(mapping.referenceAudioColumns || []),
+    ...(mapping.referenceVideoColumns || []),
+  ]));
+};
 
 const GenerationCaseSelector: React.FC<GenerationCaseSelectorProps> = ({
   dataset,
@@ -92,6 +109,9 @@ const GenerationCaseSelector: React.FC<GenerationCaseSelectorProps> = ({
   const [query, setQuery] = useState('');
   const selectAllRef = useRef<HTMLInputElement | null>(null);
   const selectedSet = useMemo<Set<string>>(() => new Set(selectedDatasetItemIds), [selectedDatasetItemIds]);
+  const promptColumn = inputMapping.mappingMode === 'mcp'
+    ? inputMapping.canonicalFieldMappings?.prompt || inputMapping.promptColumn
+    : inputMapping.promptColumn;
   const mediaColumns = useMemo(() => mappedMediaColumns(inputMapping), [inputMapping]);
 
   const cases = useMemo<SelectableCase[]>(() => (dataset.items || []).map((row, rowIndex) => {
@@ -101,12 +121,12 @@ const GenerationCaseSelector: React.FC<GenerationCaseSelectorProps> = ({
       rowIndex,
       datasetItemId,
       caseId: getDatasetRowCaseId(row, rowIndex),
-      prompt: inputMapping.promptColumn ? text(row[inputMapping.promptColumn]) : '',
+      prompt: promptColumn ? promptText(row[promptColumn]) : '',
       mediaUrls: Array.from(new Set(mediaColumns.flatMap(column => extractMediaUrls(row[column])))),
       targetFilled,
       eligible: Boolean(datasetItemId) && !targetFilled,
     };
-  }), [dataset.items, inputMapping.promptColumn, mediaColumns, targetColumn]);
+  }), [dataset.items, mediaColumns, promptColumn, targetColumn]);
 
   const normalizedQuery = query.trim().toLowerCase();
   const filteredCases = useMemo(() => cases.filter(item => !normalizedQuery

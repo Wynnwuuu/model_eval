@@ -11,14 +11,23 @@ import {
   flattenGenerationReferences,
   parseStructuredGenerationValue,
 } from '../../src/features/generation/mediaReferences.ts';
-import type { GenerationDurationSource, GenerationTargetMode } from '../../src/types.ts';
+import {
+  buildAssistedVidMuseInput,
+  compileVidMuseGenerationInput,
+} from '../../src/features/generation/vidmuseInputContract.ts';
+import type {
+  GenerationCompatibilityMode,
+  GenerationDurationSource,
+  GenerationInputMappingMode,
+  GenerationTargetMode,
+} from '../../src/types.ts';
 import type { RequestUser } from '../auth/context.ts';
 import { serverConfig } from '../config.ts';
 import { getDatasetVersion } from '../datasets/datasetRepository.ts';
 import { ApiError, badRequest, conflict, notFound } from '../http/errors.ts';
 import { aionGenerationClient } from './aionGenerationClient.ts';
 import {
-  compileGenerationReferenceVideoInputs,
+  buildAionGenerationRequest,
   deriveGenerationSeed,
   estimateGenerationCost,
   fingerprintConfig,
@@ -26,7 +35,6 @@ import {
   matchUploadedAsset,
   MAX_PORTABLE_GENERATION_SEED,
   preflightGenerationCase,
-  resolveGenerationImageInputs,
   stableJson,
   type GenerationCase,
   type NormalizedGenerationModel,
@@ -49,6 +57,9 @@ export type GenerationPreflightRequest = {
   targetColumn: string;
   targetMode?: GenerationTargetMode;
   inputMapping: {
+    mappingMode?: GenerationInputMappingMode;
+    compatibilityMode?: GenerationCompatibilityMode;
+    canonicalFieldMappings?: Record<string, string>;
     promptColumn?: string;
     referenceImageColumns?: string[];
     referenceAudioColumns?: string[];
@@ -111,7 +122,7 @@ const resolveReferences = (
       message: matched.message || `Uploaded asset was not found: ${reference}`,
     });
   }
-  return { urls: Array.from(new Set(urls)), issues };
+  return { urls, issues };
 };
 
 const MEDIA_FILE_PATTERN = /\.(?:jpe?g|png|webp|gif|avif|mp3|wav|m4a|aac|ogg|flac|mp4|mov|webm)(?:[?#].*)?$/i;
@@ -169,50 +180,94 @@ export const buildGenerationCasesForPreflight = (
   selectedRows: GenerationSelectionRow[],
 ) => {
   const assets = request.assetBindings || [];
-  return selectedRows
-    .map(({ row, rowIndex, datasetItemId }) => {
-      const caseId = getDatasetRowCaseId(row, rowIndex);
-      const input = request.inputMapping || {};
+  const controlDefinitions = new Map(model.controls.map(control => [control.key, control]));
+  const controlKeys = new Set(controlDefinitions.keys());
+  const coreInputKeys = new Set(['prompt', 'image_urls', 'images', 'audios']);
+
+  return selectedRows.map(({ row, rowIndex, datasetItemId }) => {
+    const caseId = getDatasetRowCaseId(row, rowIndex);
+    const input = request.inputMapping || {};
+    const mappingMode = input.mappingMode || 'assisted';
+    const durationIssues: PreflightIssue[] = [];
+    const assetIssues: PreflightIssue[] = [];
+    const assistedIssues: PreflightIssue[] = [];
+    const durationSource = request.durationSource;
+    const controls = { ...(request.defaultControls || {}) };
+    if (durationSource && durationSource.mode !== 'uniform') delete controls.duration;
+
+    for (const [key, column] of Object.entries(request.perCaseControlColumns || {})) {
+      if (durationSource && key === 'duration') continue;
+      const value = row[column];
+      if (hasMappedValue(value)) controls[key] = value;
+    }
+    if (mappingMode === 'mcp') {
+      for (const [key, column] of Object.entries(input.canonicalFieldMappings || {})) {
+        if (!controlKeys.has(key) || !hasMappedValue(row[column])) continue;
+        controls[key] = row[column];
+      }
+    }
+    if (durationSource?.mode === 'column') {
+      const value = durationSource.column ? row[durationSource.column] : undefined;
+      if (!hasMappedValue(value)) {
+        durationIssues.push({
+          code: 'MISSING_DURATION_COLUMN_VALUE',
+          field: durationSource.column || 'duration',
+          message: `The duration column is empty for case ${caseId}.`,
+        });
+      } else {
+        controls.duration = value;
+      }
+    }
+    for (const definition of model.controls) {
+      if (controls[definition.key] !== undefined) {
+        controls[definition.key] = coerceControl(controls[definition.key], definition);
+      }
+    }
+
+    let rawCanonicalInput: Record<string, unknown>;
+    if (mappingMode === 'mcp') {
+      const mappings = { ...(input.canonicalFieldMappings || {}) };
+      if (!mappings.prompt && input.promptColumn) mappings.prompt = input.promptColumn;
+      const mappedInput: Record<string, unknown> = {};
+      for (const [key, column] of Object.entries(mappings)) {
+        if (!column || controlKeys.has(key) || !hasMappedValue(row[column])) continue;
+        const resolved = resolveStructuredAssets(row[column], assets, key);
+        mappedInput[key] = resolved.value;
+        assetIssues.push(...resolved.issues);
+      }
+      rawCanonicalInput = { ...mappedInput, ...controls };
+    } else {
       const start = resolveReferences(input.startImageColumn ? [row[input.startImageColumn]] : [], assets);
       const end = resolveReferences(input.endImageColumn ? [row[input.endImageColumn]] : [], assets);
       const references = resolveReferences(
         (input.referenceImageColumns || []).map(column => row[column]),
         assets,
       );
-      const audios = resolveReferences(
-        (input.referenceAudioColumns || []).map(column => row[column]),
-        assets,
-      );
       const videos = resolveReferences(
         (input.referenceVideoColumns || []).map(column => row[column]),
         assets,
       );
-
-      const durationIssues: PreflightIssue[] = [];
-      const durationSource = request.durationSource;
-      const controls = { ...(request.defaultControls || {}) };
-      if (durationSource && durationSource.mode !== 'uniform') delete controls.duration;
-      for (const [key, column] of Object.entries(request.perCaseControlColumns || {})) {
-        if (durationSource && key === 'duration') continue;
-        const value = row[column];
-        if (hasMappedValue(value)) controls[key] = value;
+      assetIssues.push(...start.issues, ...end.issues, ...references.issues, ...videos.issues);
+      if (start.urls.length > 1) {
+        assistedIssues.push({
+          code: 'INVALID_IMAGE_ROLE_COUNT',
+          field: 'startImageColumn',
+          message: 'A case can contain only one start-frame image.',
+        });
       }
-      if (durationSource?.mode === 'column') {
-        const value = durationSource.column ? row[durationSource.column] : undefined;
-        if (!hasMappedValue(value)) {
-          durationIssues.push({
-            code: 'MISSING_DURATION_COLUMN_VALUE',
-            field: durationSource.column || 'duration',
-            message: `The duration column is empty for case ${caseId}.`,
-          });
-        } else {
-          controls.duration = value;
-        }
+      if (end.urls.length > 1) {
+        assistedIssues.push({
+          code: 'INVALID_IMAGE_ROLE_COUNT',
+          field: 'endImageColumn',
+          message: 'A case can contain only one end-frame image.',
+        });
       }
-      for (const definition of model.controls) {
-        if (controls[definition.key] !== undefined) {
-          controls[definition.key] = coerceControl(controls[definition.key], definition);
-        }
+      if (end.urls.length && !start.urls.length) {
+        assistedIssues.push({
+          code: 'MISSING_START_IMAGE',
+          field: 'startImageColumn',
+          message: 'An end-frame image requires a start-frame image in the same case.',
+        });
       }
 
       const rawExtraInputs = Object.fromEntries([
@@ -222,166 +277,199 @@ export const buildGenerationCasesForPreflight = (
       if (input.lyricsOrDialogueColumn) {
         rawExtraInputs.lyrics_or_dialogue = row[input.lyricsOrDialogueColumn];
       }
-      const compiledVideos = compileGenerationReferenceVideoInputs(
-        model,
-        videos.urls,
-        rawExtraInputs.elements,
-      );
-      const extraInputs: Record<string, unknown> = {};
-      const extraInputIssues: PreflightIssue[] = [];
+      const resolvedExtraInputs: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(rawExtraInputs)) {
         const resolved = resolveStructuredAssets(value, assets, key);
-        extraInputs[key] = resolved.value;
-        extraInputIssues.push(...resolved.issues);
+        resolvedExtraInputs[key] = resolved.value;
+        assetIssues.push(...resolved.issues);
       }
-      Object.assign(extraInputs, compiledVideos.extraInputs);
 
-      const imageInputs = resolveGenerationImageInputs(model.outputModality, {
-        referenceUrls: references.urls,
-        startUrls: start.urls,
-        endUrls: end.urls,
+      const referenceAudios: unknown[] = [];
+      for (const column of input.referenceAudioColumns || []) {
+        const rawValue = row[column];
+        const parsed = parseStructured(rawValue);
+        if (Array.isArray(parsed) || (parsed && typeof parsed === 'object')) {
+          const resolved = resolveStructuredAssets(parsed, assets, 'audios');
+          referenceAudios.push(resolved.value);
+          assetIssues.push(...resolved.issues);
+        } else {
+          const resolved = resolveReferences([rawValue], assets);
+          referenceAudios.push(...resolved.urls);
+          assetIssues.push(...resolved.issues);
+        }
+      }
+
+      const promptValue = input.promptColumn ? row[input.promptColumn] : undefined;
+      if (model.outputModality === 'image') {
+        rawCanonicalInput = {
+          ...resolvedExtraInputs,
+          ...controls,
+          prompt: promptValue,
+          images: [...start.urls, ...end.urls, ...references.urls],
+        };
+      } else {
+        const existingElements = resolvedExtraInputs.elements;
+        delete resolvedExtraInputs.elements;
+        rawCanonicalInput = {
+          ...buildAssistedVidMuseInput({
+            prompt: promptValue,
+            startImageUrls: start.urls,
+            endImageUrls: end.urls,
+            referenceImageUrls: references.urls,
+            referenceVideoUrls: videos.urls,
+            referenceAudios,
+            existingElements,
+            extraInputs: resolvedExtraInputs,
+          }),
+          ...controls,
+        };
+      }
+    }
+
+    const compiled = compileVidMuseGenerationInput({
+      model: { modelName: model.modelName, outputModality: model.outputModality },
+      input: rawCanonicalInput,
+      compatibilityMode: input.compatibilityMode || 'strict',
+    });
+    const audioInputs = compiled.input.audios || [];
+    const audioUrls = audioInputs.map(audio => audio.url);
+    const imageUrls = compiled.input.image_urls || compiled.input.images || [];
+    const videoUrls = (compiled.input.elements || []).flatMap(element =>
+      element.video_url ? [element.video_url] : []);
+    const prompt = compiled.input.prompt;
+    const caseGenerationType = compiled.generationType;
+
+    const seedMode = request.seedMode || 'derive_from_case';
+    const seedColumnValue = seedMode === 'column' && request.seedColumn
+      ? row[request.seedColumn]
+      : undefined;
+    const seed = seedMode === 'fixed'
+      ? Number(request.fixedSeed ?? 42)
+      : seedMode === 'column'
+        ? Number(seedColumnValue)
+        : deriveGenerationSeed(`${dataset.id}:${caseId}:${request.targetColumn}:${stableJson(prompt || '')}`);
+    const seedIssues: PreflightIssue[] = [];
+    if (seedMode === 'column' && (!request.seedColumn || seedColumnValue == null || text(seedColumnValue) === '')) {
+      seedIssues.push({
+        code: 'INVALID_SEED',
+        field: request.seedColumn || 'seedColumn',
+        message: `The seed column must contain an integer between 0 and ${MAX_PORTABLE_GENERATION_SEED} for case ${caseId}.`,
       });
-      const referenceConflictIssues: PreflightIssue[] = [];
-      const usesKeyframes = imageInputs.generationType === 'image_to_video'
-        || imageInputs.generationType === 'images_to_video';
-      const hasRawElements = rawExtraInputs.elements !== undefined
-        && rawExtraInputs.elements !== null
-        && rawExtraInputs.elements !== ''
-        && (!Array.isArray(rawExtraInputs.elements) || rawExtraInputs.elements.length > 0);
-      const caseGenerationType = compiledVideos.generationType
-        || imageInputs.generationType
-        || (hasRawElements && model.outputModality === 'video' ? 'reference_to_video' : undefined)
-        || (model.outputModality === 'video' ? 'text_to_video' : undefined);
-      if (usesKeyframes && (compiledVideos.videoUrls.length > 0 || hasRawElements)) {
-        referenceConflictIssues.push({
-          code: 'CONFLICTING_VIDEO_AND_KEYFRAMES',
-          field: 'referenceVideoColumns',
-          message: 'A case cannot combine start/end keyframes with reference videos or raw elements.',
+    } else {
+      const issue = generationSeedIssue(seed);
+      if (issue) {
+        seedIssues.push({
+          ...issue,
+          field: seedMode === 'fixed' ? 'fixedSeed' : request.seedColumn || issue.field,
         });
       }
+    }
 
-      const prompt = input.promptColumn ? text(row[input.promptColumn]) : '';
-      const seedMode = request.seedMode || 'derive_from_case';
-      const seedColumnValue = seedMode === 'column' && request.seedColumn
-        ? row[request.seedColumn]
-        : undefined;
-      const seed = seedMode === 'fixed'
-        ? Number(request.fixedSeed ?? 42)
-        : seedMode === 'column'
-          ? Number(seedColumnValue)
-          : deriveGenerationSeed(`${dataset.id}:${caseId}:${request.targetColumn}:${prompt}`);
-      const seedIssues: PreflightIssue[] = [];
-      if (seedMode === 'column' && (!request.seedColumn || seedColumnValue == null || text(seedColumnValue) === '')) {
-        seedIssues.push({
-          code: 'INVALID_SEED',
-          field: request.seedColumn || 'seedColumn',
-          message: `The seed column must contain an integer between 0 and ${MAX_PORTABLE_GENERATION_SEED} for case ${caseId}.`,
+    let durationResolution: GenerationCase['durationResolution'];
+    if (durationSource?.mode === 'reference_audio') {
+      const audit = durationSource.referenceAudio?.[datasetItemId];
+      if (audioUrls.length !== 1) {
+        durationIssues.push({
+          code: audioUrls.length ? 'MULTIPLE_REFERENCE_AUDIOS' : 'MISSING_REFERENCE_AUDIO',
+          field: 'referenceAudioColumns',
+          message: `Audio-follow duration requires exactly one reference audio for case ${caseId}.`,
+        });
+      } else if (!/^https?:\/\//i.test(audioUrls[0])) {
+        durationIssues.push({
+          code: 'REFERENCE_AUDIO_NOT_PUBLIC',
+          field: 'referenceAudioColumns',
+          message: 'Audio-follow duration only supports public HTTP(S) reference audio.',
+        });
+      } else if (!audit) {
+        durationIssues.push({
+          code: 'UNKNOWN_AUDIO_DURATION',
+          field: 'duration',
+          message: `No audio metadata duration was provided for case ${caseId}.`,
+        });
+      } else if (audit.audioUrl !== audioUrls[0]) {
+        durationIssues.push({
+          code: 'AUDIO_DURATION_URL_MISMATCH',
+          field: 'duration',
+          message: `The probed audio URL does not match the selected reference audio for case ${caseId}.`,
         });
       } else {
-        const issue = generationSeedIssue(seed);
-        if (issue) {
-          seedIssues.push({
-            ...issue,
-            field: seedMode === 'fixed' ? 'fixedSeed' : request.seedColumn || issue.field,
-          });
-        }
-      }
-
-      let durationResolution: GenerationCase['durationResolution'];
-      if (durationSource?.mode === 'reference_audio') {
-        const audit = durationSource.referenceAudio?.[datasetItemId];
-        if (audios.urls.length !== 1) {
+        const normalized = resolveReferenceAudioDuration(model, audit.detectedSeconds, caseGenerationType);
+        if (!normalized.valid) {
           durationIssues.push({
-            code: audios.urls.length ? 'MULTIPLE_REFERENCE_AUDIOS' : 'MISSING_REFERENCE_AUDIO',
-            field: 'referenceAudioColumns',
-            message: `Audio-follow duration requires exactly one reference audio for case ${caseId}.`,
-          });
-        } else if (!/^https?:\/\//i.test(audios.urls[0])) {
-          durationIssues.push({
-            code: 'REFERENCE_AUDIO_NOT_PUBLIC',
-            field: 'referenceAudioColumns',
-            message: 'Audio-follow duration only supports public HTTP(S) reference audio.',
-          });
-        } else if (!audit) {
-          durationIssues.push({
-            code: 'UNKNOWN_AUDIO_DURATION',
+            code: 'REFERENCE_AUDIO_DURATION_UNSUPPORTED',
             field: 'duration',
-            message: `No audio metadata duration was provided for case ${caseId}.`,
+            message: normalized.error?.message || 'Reference audio duration is unsupported.',
           });
-        } else if (audit.audioUrl !== audios.urls[0]) {
+        } else if (Math.abs(normalized.resolvedDuration - Number(audit.resolvedDuration)) > 0.001) {
           durationIssues.push({
-            code: 'AUDIO_DURATION_URL_MISMATCH',
+            code: 'AUDIO_DURATION_RESOLUTION_MISMATCH',
             field: 'duration',
-            message: `The probed audio URL does not match the selected reference audio for case ${caseId}.`,
+            message: `The submitted duration does not match the server resolution for case ${caseId}.`,
           });
         } else {
-          const normalized = resolveReferenceAudioDuration(model, audit.detectedSeconds, caseGenerationType);
-          if (!normalized.valid) {
-            durationIssues.push({
-              code: 'REFERENCE_AUDIO_DURATION_UNSUPPORTED',
-              field: 'duration',
-              message: normalized.error?.message || 'Reference audio duration is unsupported.',
-            });
-          } else if (Math.abs(normalized.resolvedDuration - Number(audit.resolvedDuration)) > 0.001) {
-            durationIssues.push({
-              code: 'AUDIO_DURATION_RESOLUTION_MISMATCH',
-              field: 'duration',
-              message: `The submitted duration does not match the server resolution for case ${caseId}.`,
-            });
-          } else {
-            controls.duration = normalized.resolvedDuration;
-            durationResolution = {
-              source: 'reference_audio',
-              audioUrl: audit.audioUrl,
-              detectedSeconds: normalized.detectedSeconds,
-              resolvedDuration: normalized.resolvedDuration,
-            };
-          }
+          controls.duration = normalized.resolvedDuration;
+          durationResolution = {
+            source: 'reference_audio',
+            audioUrl: audit.audioUrl,
+            detectedSeconds: normalized.detectedSeconds,
+            resolvedDuration: normalized.resolvedDuration,
+          };
         }
-      } else if (durationSource?.mode === 'column' && Number.isFinite(Number(controls.duration))) {
-        durationResolution = {
-          source: 'column',
-          column: durationSource.column,
-          resolvedDuration: Number(controls.duration),
-        };
-      } else if (durationSource?.mode === 'uniform' && Number.isFinite(Number(controls.duration))) {
-        durationResolution = {
-          source: 'uniform',
-          resolvedDuration: Number(controls.duration),
-        };
       }
+    } else if (durationSource?.mode === 'column' && Number.isFinite(Number(controls.duration))) {
+      durationResolution = {
+        source: 'column',
+        column: durationSource.column,
+        resolvedDuration: Number(controls.duration),
+      };
+    } else if (durationSource?.mode === 'uniform' && Number.isFinite(Number(controls.duration))) {
+      durationResolution = {
+        source: 'uniform',
+        resolvedDuration: Number(controls.duration),
+      };
+    }
+    if (controls.duration !== undefined && controls.duration !== '') {
+      compiled.input.duration = controls.duration;
+      compiled.originalInput.duration = controls.duration;
+    }
 
-      const resolvedCase: GenerationCase = {
-        caseId,
-        datasetItemId,
-        rowIndex,
-        prompt,
-        imageUrls: imageInputs.imageUrls,
-        audioUrls: audios.urls,
-        videoUrls: compiledVideos.videoUrls,
-        controls,
-        seed,
-        extraInputs,
-        generationType: caseGenerationType,
-        ...(durationResolution ? { durationResolution } : {}),
-      };
-      return {
-        resolvedCase,
-        preparationIssues: [
-          ...start.issues,
-          ...end.issues,
-          ...references.issues,
-          ...audios.issues,
-          ...videos.issues,
-          ...extraInputIssues,
-          ...imageInputs.issues,
-          ...compiledVideos.issues,
-          ...referenceConflictIssues,
-          ...durationIssues,
-          ...seedIssues,
-        ],
-      };
-    });
+    const extraInputs = Object.fromEntries(Object.entries(compiled.input).filter(([key]) =>
+      !coreInputKeys.has(key) && !controlKeys.has(key)));
+    const resolvedCase: GenerationCase = {
+      caseId,
+      datasetItemId,
+      rowIndex,
+      prompt,
+      imageUrls,
+      audioUrls,
+      audioInputs,
+      videoUrls,
+      controls,
+      seed,
+      extraInputs,
+      generationType: caseGenerationType,
+      compilerAudit: {
+        compilerVersion: compiled.compilerVersion,
+        profileId: compiled.profileId,
+        compatibilityApplied: compiled.compatibilityApplied,
+        originalInput: compiled.originalInput,
+        compiledInput: compiled.input,
+        bindings: compiled.bindings,
+      },
+      ...(durationResolution ? { durationResolution } : {}),
+    };
+    return {
+      resolvedCase,
+      preparationIssues: [
+        ...assetIssues,
+        ...assistedIssues,
+        ...compiled.errors,
+        ...durationIssues,
+        ...seedIssues,
+      ],
+      preparationWarnings: compiled.warnings,
+    };
+  });
 };
 
 export const validateDurationSourceConfiguration = (
@@ -501,29 +589,38 @@ export const createGenerationPreflight = async (
     throw badRequest(`A generation batch is limited to ${serverConfig.generationMaxBatchSize} cases.`);
   }
 
-  const cases = prepared.map(({ resolvedCase, preparationIssues }) => {
+  const cases = prepared.map(({ resolvedCase, preparationIssues, preparationWarnings }) => {
     const result = preflightGenerationCase(model, resolvedCase);
     const sourceRow = dataset.items[resolvedCase.rowIndex] || {};
     const targetValue = text(sourceRow[request.targetColumn]);
     const errors = [...preparationIssues, ...result.errors];
+    const warnings = [...preparationWarnings, ...result.warnings];
+    const finalAionRequest = buildAionGenerationRequest(model, result.resolvedCase).body;
+    const auditedResolvedCase = result.resolvedCase.compilerAudit
+      ? {
+          ...result.resolvedCase,
+          compilerAudit: { ...result.resolvedCase.compilerAudit, finalAionRequest },
+        }
+      : result.resolvedCase;
     if (targetValue) {
       errors.push({
         code: 'TARGET_NOT_EMPTY',
         field: request.targetColumn,
-        message: `The target column already contains a result for case ${resolvedCase.caseId}.`,
+        message: `The target column already contains a result for case ${auditedResolvedCase.caseId}.`,
       });
     }
-    if (!resolvedCase.datasetItemId) {
+    if (!auditedResolvedCase.datasetItemId) {
       errors.push({
         code: 'MISSING_STABLE_ITEM_ID',
-        message: `The case has no stable dataset item ID: ${resolvedCase.caseId}.`,
+        message: `The case has no stable dataset item ID: ${auditedResolvedCase.caseId}.`,
       });
     }
     return {
       ...result,
       valid: errors.length === 0,
       errors,
-      resolvedCase: result.resolvedCase,
+      warnings,
+      resolvedCase: auditedResolvedCase,
     };
   });
 

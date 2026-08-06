@@ -226,11 +226,43 @@ assert.deepEqual(emptyMediaMapping.referenceAudioColumns, []);
 assert.deepEqual(emptyMediaMapping.referenceVideoColumns, []);
 assert.equal(emptyMediaMapping.startImageColumn, '');
 assert.equal(emptyMediaMapping.endImageColumn, '');
+assert.equal(emptyMediaMapping.mappingMode, 'mcp');
+assert.equal(emptyMediaMapping.compatibilityMode, 'strict');
+assert.equal(emptyMediaMapping.canonicalFieldMappings?.prompt, emptyMediaMapping.promptColumn);
 assert.equal(inferGenerationImageRole('参考图_URLs', mappingDataset.inputSchema), 'reference');
 assert.equal(inferGenerationImageRole('首帧图_URL', mappingDataset.inputSchema), 'start');
 assert.equal(inferGenerationImageRole('尾帧图_URL', mappingDataset.inputSchema), 'end');
 assert.equal(inferGenerationImageRole('\u9996\u5e27\u56fe_URL', []), 'start');
 assert.equal(inferGenerationImageRole('\u5c3e\u5e27\u56fe_URL', []), 'end');
+const canonicalDefaultMapping = defaultGenerationInputMapping(
+  { inputSchema: [], items: [] } as any,
+  ['prompt', 'image_urls', 'elements', 'audios'],
+  {
+    standard: {},
+    inputColumns: ['prompt'],
+    outputColumns: [],
+    dimensionColumns: [],
+    referenceColumns: [],
+  },
+);
+assert.deepEqual(canonicalDefaultMapping.canonicalFieldMappings, {
+  prompt: 'prompt', image_urls: 'image_urls', elements: 'elements', audios: 'audios',
+});
+const exactPromptDefaultMapping = defaultGenerationInputMapping(
+  { inputSchema: [], items: [] } as any,
+  ['other_input', 'prompt'],
+  {
+    standard: {},
+    inputColumns: ['other_input'],
+    outputColumns: [],
+    dimensionColumns: [],
+    referenceColumns: [],
+  },
+);
+assert.equal(exactPromptDefaultMapping.promptColumn, 'prompt');
+assert.equal(exactPromptDefaultMapping.canonicalFieldMappings?.prompt, 'prompt');
+
+
 
 const withReference = setGenerationImageRole(emptyMediaMapping, '参考图_URLs', 'reference');
 const withStart = setGenerationImageRole(withReference, '首帧图_URL', 'start');
@@ -680,6 +712,62 @@ assert.equal(durationColumnCases[0].resolvedCase.durationResolution?.source, 'co
 assert.ok(durationColumnCases[1].preparationIssues.some(
   issue => issue.code === 'MISSING_DURATION_COLUMN_VALUE',
 ));
+const mcpDataset = {
+  id: 'dataset-mcp-contract',
+  items: [{
+    [DATASET_ITEM_ID_KEY]: 'mcp-item-1',
+    case_id: 'mcp-case-1',
+    prompt_json: 'Use @Element1 and @audio1.',
+    elements_json: '[{"frontal_image_url":"https://assets.example.com/subject.png"}]',
+    audios_json: '[{"url":"https://assets.example.com/voice.mp3","range":[0,4]}]',
+    duration_value: '4',
+  }],
+} as any;
+const mcpCases = buildGenerationCasesForPreflight(mcpDataset, {
+  datasetId: mcpDataset.id,
+  datasetVersion: 1,
+  modelName: hailuoH3Model.modelName,
+  targetColumn: 'result',
+  inputMapping: {
+    mappingMode: 'mcp',
+    compatibilityMode: 'strict',
+    canonicalFieldMappings: {
+      prompt: 'prompt_json',
+      elements: 'elements_json',
+      audios: 'audios_json',
+      duration: 'duration_value',
+    },
+    referenceImageColumns: [],
+    referenceAudioColumns: [],
+    referenceVideoColumns: [],
+    extraInputColumns: [],
+  },
+  defaultControls: { resolution: '1080p' },
+  perCaseControlColumns: {},
+  durationSource: { mode: 'uniform' },
+}, hailuoH3Model, [{
+  row: mcpDataset.items[0],
+  rowIndex: 0,
+  datasetItemId: 'mcp-item-1',
+}]);
+assert.deepEqual(mcpCases[0].preparationIssues, []);
+assert.equal(mcpCases[0].resolvedCase.generationType, 'reference_to_video');
+assert.deepEqual(mcpCases[0].resolvedCase.audioInputs, [
+  { url: 'https://assets.example.com/voice.mp3', range: [0, 4] },
+]);
+assert.equal(mcpCases[0].resolvedCase.controls.duration, 4);
+assert.equal(mcpCases[0].resolvedCase.compilerAudit?.profileId, 'hailuo-h3');
+const mcpRequest = buildAionGenerationRequest(hailuoH3Model, {
+  ...mcpCases[0].resolvedCase,
+  generationType: mcpCases[0].resolvedCase.generationType || 'reference_to_video',
+});
+assert.deepEqual(mcpRequest.body.elements, [
+  { frontal_image_url: 'https://assets.example.com/subject.png' },
+]);
+assert.deepEqual(mcpRequest.body.audios, [
+  { url: 'https://assets.example.com/voice.mp3', range: [0, 4] },
+]);
+
 assert.throws(() => validateDurationSourceConfiguration({
   datasetId: serviceDataset.id,
   datasetVersion: 1,
@@ -722,8 +810,44 @@ const audioArrayCase = preflightGenerationCase(cliShapeModel, {
 });
 assert.equal(audioArrayCase.valid, true);
 const audioArrayRequest = buildAionGenerationRequest(cliShapeModel, audioArrayCase.resolvedCase);
-assert.deepEqual(audioArrayRequest.body.audios, ['https://assets.example.com/voice.wav']);
+assert.deepEqual(audioArrayRequest.body.audios, [{ url: 'https://assets.example.com/voice.wav' }]);
 assert.equal(audioArrayRequest.body.audio_url, undefined);
+
+const audioUrlOnlyModel = normalizeAionModelConfig({
+  ...camelCaseVideoModel,
+  name: 'provider/audio-url-only',
+  options: {
+    ...camelCaseVideoModel.options,
+    supportedParams: ['prompt', 'image_urls', 'audio_url', 'duration', 'resolution'],
+  },
+});
+const rangedAudioCase = preflightGenerationCase(audioUrlOnlyModel, {
+  caseId: 'case-ranged-audio',
+  datasetItemId: 'item-ranged-audio',
+  rowIndex: 7,
+  prompt: 'Animate with a selected audio range.',
+  imageUrls: ['https://assets.example.com/reference.png'],
+  audioUrls: ['https://assets.example.com/voice.wav'],
+  audioInputs: [{
+    url: 'https://assets.example.com/voice.wav',
+    range: [1, 4],
+  }],
+  controls: { duration: 5, resolution: '1080p' },
+});
+assert.equal(rangedAudioCase.valid, false);
+assert.ok(rangedAudioCase.errors.some(item =>
+  item.code === 'AUDIO_RANGE_REQUIRES_AUDIOS'));
+
+const multipleAudioUrlCase = preflightGenerationCase(audioUrlOnlyModel, {
+  ...rangedAudioCase.resolvedCase,
+  caseId: 'case-multiple-audio-url',
+  datasetItemId: 'item-multiple-audio-url',
+  audioUrls: ['https://assets.example.com/one.wav', 'https://assets.example.com/two.wav'],
+  audioInputs: [],
+});
+assert.equal(multipleAudioUrlCase.valid, false);
+assert.ok(multipleAudioUrlCase.errors.some(item =>
+  item.code === 'MULTIPLE_AUDIOS_REQUIRE_AUDIOS'));
 
 const tooManyAudios = preflightGenerationCase(cliShapeModel, {
   ...audioArrayCase.resolvedCase,
@@ -733,6 +857,40 @@ const tooManyAudios = preflightGenerationCase(cliShapeModel, {
 });
 assert.equal(tooManyAudios.valid, false);
 assert.ok(tooManyAudios.errors.some(item => item.code === 'INPUT_COUNT_OUT_OF_RANGE'));
+
+const unsupportedExtraInputCase = preflightGenerationCase(audioUrlOnlyModel, {
+  ...rangedAudioCase.resolvedCase,
+  caseId: 'case-unsupported-extra-input',
+  audioInputs: undefined,
+  extraInputs: { custom_provider_field: 'value' },
+});
+assert.ok(unsupportedExtraInputCase.errors.some(item =>
+  item.code === 'UNSUPPORTED_INPUT' && item.field === 'custom_provider_field'));
+
+const mcpImageModel = normalizeAionModelConfig({
+  name: 'provider/mcp-image-model',
+  displayName: 'MCP image model',
+  type: 'image',
+  provider: 'provider',
+  capabilities: { image2image: true },
+  options: {
+    supported_params: ['prompt', 'images'],
+    required_params: { image_to_image: ['images'] },
+  },
+  priceItems: [{ unit: 'image', credits: 1 }],
+});
+const mcpImageCase = preflightGenerationCase(mcpImageModel, {
+  caseId: 'case-mcp-image',
+  datasetItemId: 'item-mcp-image',
+  rowIndex: 8,
+  prompt: 'Restyle @image1.',
+  imageUrls: ['https://assets.example.com/reference.png'],
+  audioUrls: [],
+  controls: {},
+});
+assert.equal(mcpImageCase.valid, true);
+const mcpImageRequest = buildAionGenerationRequest(mcpImageModel, mcpImageCase.resolvedCase);
+assert.deepEqual(mcpImageRequest.body.image_urls, ['https://assets.example.com/reference.png']);
 
 const validTextCase = preflightGenerationCase(videoModel, {
   caseId: 'case-1',

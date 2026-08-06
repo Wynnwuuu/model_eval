@@ -251,6 +251,7 @@
 - `lint`, `server:build`, and `build`: passed; only existing Vite mixed-import and chunk-size warnings remain.
 - Browser: live Hailuo H3 config exposed video-column/Raw-elements modes and all three duration sources. A 6.391-second reference audio resolved to 7 seconds; one valid and one multi-audio invalid case were isolated correctly, and the request/response snapshots contained stable item IDs, duration audit, and `elements[].video_url`.
 - Browser: 1440x900 and 390x844 layouts had no horizontal overflow. A fresh page had zero console errors. The confirmation button stayed disabled and no paid generation was submitted.
+
 ## 2026-08-05: Fair scheduler and adaptive video capacity
 
 - Captured the live dev queue before deployment, including both in-flight provider task IDs and the previously starved Wan batch.
@@ -262,3 +263,20 @@
 - Added migration `010_generation_scheduler_health.sql` for terminal-window lookups.
 
 Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone/column/import/table tests, Arena, rank ties, API smoke, `lint`, `server:build`, and `build` passed. Desktop browser QA verified global 6/8, Wan 6/6, the model-capacity wait reason, and no page-level horizontal overflow. Mobile browser QA was blocked by the browser localhost URL policy after applying the viewport override; no policy bypass was attempted.
+
+## 2026-08-06: VidMuse MCP input contract
+
+### Completed
+
+- Added a versioned VidMuse input compiler for video `prompt`, `image_urls`, `elements`, `audios`, controls, and image `prompt`/`images` inputs while leaving provider-specific request adaptation in Aion.
+- Added MCP direct mapping and backward-compatible assisted mapping. Assisted keyframes, reference images/videos, and audio now compile into the same canonical structure with stable ordering.
+- Added strict structural validation, prompt reference checks, Seedance/H3/Wan compatibility profiles, an explicit reference fallback for conflicting keyframes, and warnings for unverified model combinations.
+- Added JSON dataset import for object arrays and `{ "items": [...] }`, preserving structured cells and unrelated evaluation or historical-result columns.
+- Added per-case compiler audit and final Aion request previews without exposing local asset paths or changing the generation Worker, database schema, assets, writeback, or human-evaluation flow.
+
+### Validation
+
+- `npm.cmd run test:generation`, `test:dataset-import-mappings`, `test:dataset-sync`, `test:dataset-clone`, `test:dataset-column-deletion`, `test:dataset-table-columns`, `test:arena`, and `test:rank-ties`: passed.
+- `npm.cmd run lint`, `npm.cmd run build`, and `npm.cmd run server:build`: passed. Existing Vite mixed-import and chunk-size warnings remain unchanged.
+- Browser: passed structured JSON import, exact MCP field auto-mapping, mixed per-case generation modes, ordered `elements`/`audios`, audio range preservation, request preview, desktop layout, and 390x844 containment with no console errors.
+- PostgreSQL generation and API smoke tests were not rerun because the local Docker Desktop Linux engine was unavailable. No schema, Worker, queue, writeback, or API-route behavior was changed, and no paid generation was submitted.

@@ -5,6 +5,11 @@ import {
   supportsGenerationMode,
   type GenerationMode,
 } from '../../src/features/generation/modelCapabilities.ts';
+import type {
+  VidMuseAudioInput,
+  VidMuseInputBindings,
+  VidMusePrompt,
+} from '../../src/features/generation/vidmuseInputContract.ts';
 
 export type GenerationModality = 'image' | 'video';
 
@@ -43,11 +48,21 @@ export type GenerationCase = {
   caseId: string;
   datasetItemId: string;
   rowIndex: number;
-  prompt?: string;
+  prompt?: VidMusePrompt;
   imageUrls: string[];
   audioUrls: string[];
+  audioInputs?: VidMuseAudioInput[];
   videoUrls?: string[];
   controls: Record<string, any>;
+  compilerAudit?: {
+    compilerVersion: string;
+    profileId?: string;
+    compatibilityApplied: boolean;
+    originalInput: Record<string, unknown>;
+    compiledInput: Record<string, unknown>;
+    bindings: VidMuseInputBindings;
+    finalAionRequest?: Record<string, unknown>;
+  };
   durationResolution?: {
     source: 'uniform' | 'column' | 'reference_audio';
     column?: string;
@@ -312,6 +327,7 @@ const parameterSchemaProperties = (options: Record<string, any>): Record<string,
 const STANDARD_INPUT_PARAMS = new Set([
   'prompt',
   'image_urls',
+  'images',
   'audio_url',
   'audios',
   'video_url',
@@ -483,6 +499,7 @@ const RESERVED_EXTRA_INPUT_KEYS = new Set([
   'image_urls',
   'audio_url',
   'audios',
+  'elements',
   'generation_type',
   'features',
   'extra_params',
@@ -524,12 +541,21 @@ const configuredExtraInputs = (model: NormalizedGenerationModel, item: Generatio
   return Object.fromEntries(Object.entries(safeExtraInputs(item)).filter(([key]) => keys.has(key)));
 };
 
+const promptInputFor = (item: GenerationCase) => {
+  if (typeof item.prompt === 'string') return item.prompt.trim() || undefined;
+  return item.prompt?.length ? item.prompt : undefined;
+};
+
+const supportsStructuredAudios = (model: NormalizedGenerationModel) =>
+  supportedParams(model.options).has('audios') || configuredInputKeys(model).has('audios');
+
 const audioInputsFor = (model: NormalizedGenerationModel, item: GenerationCase) => {
-  if (!item.audioUrls.length) return {};
-  const params = supportedParams(model.options);
-  const schemaInputs = configuredInputKeys(model);
-  if (params.has('audios') || schemaInputs.has('audios')) return { audios: item.audioUrls };
-  return { audio_url: item.audioUrls[0] };
+  const structured = item.audioInputs?.length
+    ? item.audioInputs
+    : item.audioUrls.map(url => ({ url }));
+  if (!structured.length) return {};
+  if (supportsStructuredAudios(model)) return { audios: structured };
+  return { audio_url: structured[0].url };
 };
 
 const suppliedInputs = (
@@ -538,8 +564,9 @@ const suppliedInputs = (
   generationType: string,
 ) => ({
   ...safeExtraInputs(item),
-  prompt: item.prompt?.trim() || undefined,
+  prompt: promptInputFor(item),
   image_urls: item.imageUrls.length ? item.imageUrls : undefined,
+  elements: item.extraInputs?.elements,
   ...audioInputsFor(model, item),
   generation_type: generationType,
 });
@@ -556,7 +583,8 @@ export const preflightGenerationCase = (
   const hasReferenceVideos = Boolean(item.videoUrls?.length);
   const hasRawElements = hasConfiguredValue(item.extraInputs?.elements);
 
-  if ((item.generationType === 'image_to_video' || item.generationType === 'images_to_video')
+  if (!item.compilerAudit
+    && (item.generationType === 'image_to_video' || item.generationType === 'images_to_video')
     && (hasReferenceVideos || hasRawElements)) {
     errors.push({
       code: 'CONFLICTING_VIDEO_AND_KEYFRAMES',
@@ -578,6 +606,52 @@ export const preflightGenerationCase = (
           message: `Asset must be an http(s) URL or uploaded asset reference: ${url}`,
         });
       }
+    });
+  }
+
+  const configuredInputs = configuredInputKeys(model);
+  const explicitlySupported = new Set(
+    Array.isArray(model.inputSchema?.supported_inputs)
+      ? model.inputSchema.supported_inputs.map(String)
+      : [],
+  );
+  for (const key of ['image_urls', 'elements', 'audios']) {
+    const value = (inputs as Record<string, unknown>)[key];
+    if (value === undefined || (Array.isArray(value) && value.length === 0)) continue;
+    const supportedAlias = (key === 'audios' && explicitlySupported.has('audio_url'))
+      || (key === 'image_urls' && model.outputModality === 'image'
+        && explicitlySupported.has('images'));
+    if (explicitlySupported.size && !explicitlySupported.has(key) && !supportedAlias) {
+      errors.push({
+        code: 'UNSUPPORTED_INPUT',
+        field: key,
+        message: `The live model configuration does not declare input: ${key}.`,
+      });
+    }
+  }
+  for (const key of Object.keys(safeExtraInputs(item))) {
+    if (configuredInputs.has(key)) continue;
+    errors.push({
+      code: 'UNSUPPORTED_INPUT',
+      field: key,
+      message: `The live model configuration does not declare input: ${key}.`,
+    });
+  }
+
+  const structuredAudiosSupported = supportsStructuredAudios(model);
+  const audioInputCount = item.audioInputs?.length || item.audioUrls.length;
+  if (audioInputCount > 1 && !structuredAudiosSupported) {
+    errors.push({
+      code: 'MULTIPLE_AUDIOS_REQUIRE_AUDIOS',
+      field: 'audios',
+      message: 'Multiple audio references require the structured audios input; this model only accepts one audio_url.',
+    });
+  }
+  if (item.audioInputs?.some(audio => audio.range) && !structuredAudiosSupported) {
+    errors.push({
+      code: 'AUDIO_RANGE_REQUIRES_AUDIOS',
+      field: 'audios',
+      message: 'Audio ranges require the structured audios input; this model only accepts a single audio_url.',
     });
   }
 
@@ -635,8 +709,11 @@ export const preflightGenerationCase = (
     const requiredOneOf = schema.required_one_of_inputs && typeof schema.required_one_of_inputs === 'object'
       ? schema.required_one_of_inputs as Record<string, string[][]>
       : {};
-    const hasResolvedInput = (key: string) =>
-      (inputs as Record<string, any>)[key] !== undefined || item.controls[key] !== undefined;
+    const hasResolvedInput = (key: string) => {
+      if (key === 'images') return (inputs as Record<string, any>).image_urls !== undefined;
+      return (inputs as Record<string, any>)[key] !== undefined
+        || item.controls[key] !== undefined;
+    };
     for (const mode of modeCandidates(generationType)) {
       for (const key of required[mode] || []) {
         if (!hasResolvedInput(key)) {
@@ -756,7 +833,7 @@ export const buildAionGenerationRequest = (
       body: compactObject({
         ...customInputs,
         model_name: model.modelName,
-        prompt: item.prompt?.trim(),
+        prompt: promptInputFor(item),
         image_urls: item.imageUrls,
         ...standardControls,
         features: {},
@@ -771,7 +848,7 @@ export const buildAionGenerationRequest = (
       ...customInputs,
       generation_type: item.generationType,
       model_name: model.modelName,
-      prompt: item.prompt?.trim(),
+      prompt: promptInputFor(item),
       image_urls: item.imageUrls,
       elements: item.extraInputs?.elements,
       ...audioInputs,

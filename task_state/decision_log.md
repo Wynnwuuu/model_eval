@@ -179,3 +179,11 @@ Only successful outcomes and capacity failures enter the adaptive denominator. S
 Pending items with an unexpired worker lease count as occupied submission slots. This closes the interval between claim and provider submission without treating terminal, skipped, or unleased pending items as active.
 
 Polling and archiving existing work remain eligible regardless of model capacity. Capacity changes never cancel, requeue, or resubmit provider tasks.
+
+## 2026-08-06: ManuEval compiles VidMuse inputs; Aion remains the provider adapter
+
+ManuEval accepts VidMuse MCP-standard inputs and deterministically compiles them before calling the existing Aion unified Model API. It does not call provider APIs or duplicate provider field adapters. Every case retains the canonical input, compiler version/profile, asset bindings, compatibility decision, and final Aion request in the existing JSON snapshot.
+
+MCP direct mapping is the default for new preflights, while missing `mappingMode` continues to mean assisted mapping for historical clients and saved snapshots. JSON import preserves structured values and arbitrary metadata; only explicitly mapped fields participate in generation.
+
+Strict mode rejects incompatible keyframe/reference combinations. Seedance and H3 expose an explicit reference fallback that converts keyframes into appended elements and rewrites only the corresponding `@imageN` tokens. Unknown model combinations may proceed after generic and live-config validation with a visible unverified-combination warning; undeclared inputs and invalid prompt references are never silently dropped.

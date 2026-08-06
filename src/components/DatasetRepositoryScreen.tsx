@@ -67,6 +67,7 @@ import type { DatasetColumnVisibilityOverrides, DatasetTableColumnDescriptor } f
 import { subscribeTasks } from '../features/tasks/api';
 import { getExecutionBatch } from '../features/generation/executionApi';
 import { subscribeGenerationJobs } from '../features/generation/api';
+import { parseVidMuseDatasetJson } from '../features/generation/vidmuseInputContract';
 import {
   DATASET_MODALITIES,
   STANDARD_DATASET_FIELDS,
@@ -500,6 +501,23 @@ const createSchemaFieldsFromMappings = (
       });
     }
   }
+
+  const vidMuseInputHeaders = new Set([
+    'prompt', 'image_urls', 'images', 'elements', 'audios', 'duration',
+    'aspect_ratio', 'resolution', 'generate_audio', 'negative_prompt',
+  ]);
+  headers.forEach(column => {
+    if (!column || column === '_originalData' || column.startsWith('__') || usedSourceKeys.has(column)) return;
+    const previewType = inferPreviewType(column, rows.slice(0, 5).map(row => row[column]));
+    addField({
+      key: column,
+      label: column,
+      type: inferSchemaType(previewType),
+      role: vidMuseInputHeaders.has(column.trim().toLowerCase()) ? 'input' : 'metadata',
+      sourceKey: column,
+      previewType,
+    });
+  });
 
   return fields;
 };
@@ -1522,8 +1540,19 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     setWizardError('');
   };
 
-  const applyParsedData = (text: string) => {
-    const { rows, headers } = parseTableText(text);
+  const parseImportedData = (text: string, format: 'table' | 'json') => {
+    try {
+      return format === 'json' ? parseVidMuseDatasetJson(text) : parseTableText(text);
+    } catch (reason) {
+      setWizardError(reason instanceof Error ? reason.message : 'Unable to parse the dataset file.');
+      return null;
+    }
+  };
+
+  const applyParsedData = (text: string, format: 'table' | 'json' = 'table') => {
+    const parsed = parseImportedData(text, format);
+    if (!parsed) return;
+    const { rows, headers } = parsed;
     if (!headers.length) {
       setWizardError('未识别到表头，请确认 CSV/TSV 或粘贴内容第一行为字段名。');
       return;
@@ -1552,7 +1581,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     const file = event.target.files?.[0];
     if (!file) return;
     const text = await file.text();
-    applyParsedData(text);
+    applyParsedData(text, file.name.toLowerCase().endsWith('.json') ? 'json' : 'table');
     event.target.value = '';
   };
 
@@ -2127,8 +2156,8 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <div className="rounded-xl border border-white/10 bg-white/5 p-5">
                   <h3 className="font-semibold text-slate-100 mb-2 flex items-center gap-2"><Upload size={18} className="text-amber-400" /> 上传文件</h3>
-                  <p className="text-sm text-slate-400 mb-4">支持 CSV、TSV、TXT；Excel/飞书复制建议使用右侧粘贴。</p>
-                  <input ref={fileInputRef} type="file" accept=".csv,.tsv,.txt" className="hidden" onChange={handleFileUpload} />
+                  <p className="text-sm text-slate-400 mb-4">支持 CSV、TSV、TXT、JSON；Excel/飞书复制建议使用右侧粘贴。</p>
+                  <input ref={fileInputRef} type="file" accept=".csv,.tsv,.txt,.json,application/json" className="hidden" onChange={handleFileUpload} />
                   <button onClick={() => fileInputRef.current?.click()} className="w-full py-4 rounded-xl border-2 border-dashed border-white/20 text-slate-300 hover:text-white hover:border-amber-400/50 hover:bg-white/5 transition-colors">
                     选择文件并解析
                   </button>

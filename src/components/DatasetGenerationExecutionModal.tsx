@@ -134,6 +134,9 @@ const imageRoleLabels: Record<GenerationImageRole, string> = {
 };
 
 const emptyMapping: GenerationInputMapping = {
+  mappingMode: 'mcp',
+  compatibilityMode: 'strict',
+  canonicalFieldMappings: {},
   promptColumn: '',
   referenceImageColumns: [],
   referenceAudioColumns: [],
@@ -300,6 +303,20 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const imageRoles = useMemo(() => getSupportedGenerationImageRoles(selectedModel), [selectedModel]);
   const referenceVideoSupport = useMemo(() => getGenerationReferenceVideoSupport(selectedModel), [selectedModel]);
   const supportsRawElements = modelDeclaresGenerationInput(selectedModel, 'elements');
+  const mappingMode = inputMapping.mappingMode || 'assisted';
+  const mcpMappingFields = useMemo(() => {
+    if (!selectedModel) return [];
+    const core = selectedModel.outputModality === 'image'
+      ? ['prompt', 'images']
+      : ['prompt', 'image_urls', 'elements', 'audios'];
+    return Array.from(new Set([
+      ...core,
+      ...(selectedModel.controls || []).map(control => control.key),
+      ...advancedInputKeys,
+    ]));
+  }, [advancedInputKeys, selectedModel]);
+  const supportsReferenceFallback = Boolean(selectedModel?.outputModality === 'video'
+    && /seedance|hailuo.*h3/i.test(selectedModel.modelName || selectedModel.id));
   const durationControl = selectedModel?.controls.find(control => control.key === 'duration');
   const selectedBatchItems = batch?.items.filter(item => selectedBatchItemIds.includes(item.id)) || [];
   const selectableBatchItems = batch?.items.filter(item =>
@@ -332,24 +349,55 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
 
 
   const applyModel = (model?: GenerationModelConfig) => {
+    const exactColumn = (key: string) =>
+      headers.find(header => header.trim().toLowerCase() === key.toLowerCase()) || '';
+    const mappedControlColumns = Object.fromEntries(
+      (model?.controls || []).flatMap(control => {
+        const column = exactColumn(control.key);
+        return column ? [[control.key, column]] : [];
+      }),
+    );
+    const mappedDurationColumn = mappedControlColumns.duration || '';
+
     setModelId(model?.id || '');
     setTargetMode('new');
     setTargetColumn(targetColumnFor(model));
     setDefaultControls(Object.fromEntries(
       (model?.controls || []).map(control => [control.key, control.defaultValue ?? '']),
     ));
-    setPerCaseControlColumns({});
-    setDurationMode('uniform');
-    setDurationColumn('');
+    setPerCaseControlColumns(Object.fromEntries(
+      Object.entries(mappedControlColumns).filter(([key]) => key !== 'duration'),
+    ));
+    setDurationMode(mappedDurationColumn ? 'column' : 'uniform');
+    setDurationColumn(mappedDurationColumn);
     const videoSupport = getGenerationReferenceVideoSupport(model);
     setReferenceInputMode(videoSupport.supported ? 'video_columns' : 'raw_elements');
     audioProbeController.current?.abort();
     setAudioProbe({ status: 'idle', values: {}, issues: {} });
-    setInputMapping(current => ({
-      ...current,
-      referenceVideoColumns: [],
-      extraInputMappings: {},
-    }));
+    setInputMapping(current => {
+      const coreKeys = model?.outputModality === 'image'
+        ? ['prompt', 'images']
+        : ['prompt', 'image_urls', 'elements', 'audios'];
+      const mappableKeys = Array.from(new Set([
+        ...coreKeys,
+        ...advancedInputKeysFor(model),
+      ]));
+      const allowedKeys = new Set(mappableKeys);
+      const exactMappings = Object.fromEntries(mappableKeys.flatMap(key => {
+        const column = exactColumn(key);
+        return column ? [[key, column]] : [];
+      }));
+      const retainedMappings = Object.fromEntries(
+        Object.entries(current.canonicalFieldMappings || {})
+          .filter(([key]) => allowedKeys.has(key)),
+      );
+      return {
+        ...current,
+        canonicalFieldMappings: { ...exactMappings, ...retainedMappings },
+        referenceVideoColumns: [],
+        extraInputMappings: {},
+      };
+    });
     setPreflight(null);
     setConfirmed(false);
   };
@@ -391,6 +439,24 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     return (dataset.items || []).flatMap(row => {
       const datasetItemId = String(row[DATASET_ITEM_ID_KEY] || '').trim();
       if (!datasetItemId || !selectedIds.has(datasetItemId)) return [];
+      if (mappingMode === 'mcp') {
+        const canonicalMappings = inputMapping.canonicalFieldMappings || {};
+        const audioColumn = canonicalMappings.audios;
+        const imageColumn = canonicalMappings.image_urls || canonicalMappings.images;
+        const elementsColumn = canonicalMappings.elements;
+        const audioUrls = uniqueGenerationReferences(audioColumn ? [row[audioColumn]] : []);
+        const imageCount = uniqueGenerationReferences(imageColumn ? [row[imageColumn]] : []).length;
+        const hasElements = Boolean(elementsColumn && hasConfiguredInputValue(row[elementsColumn]));
+        const generationType = hasElements || audioUrls.length
+          ? 'reference_to_video'
+          : imageCount > 1
+            ? 'images_to_video'
+            : imageCount === 1
+              ? 'image_to_video'
+              : 'text_to_video';
+        return [{ datasetItemId, audioUrls, generationType }];
+      }
+
       const audioUrls = uniqueGenerationReferences(
         (inputMapping.referenceAudioColumns || []).map(column => row[column]),
       );
@@ -415,7 +481,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
             : 'text_to_video';
       return [{ datasetItemId, audioUrls, generationType }];
     });
-  }, [dataset.items, inputMapping, selectedDatasetItemIds]);
+  }, [dataset.items, inputMapping, mappingMode, selectedDatasetItemIds]);
 
   useEffect(() => {
     audioProbeController.current?.abort();
@@ -574,6 +640,44 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const updateMapping = (patch: Partial<GenerationInputMapping>) => {
     setInputMapping(current => ({ ...current, ...patch }));
     invalidatePreflight();
+  };
+
+  const changeMappingMode = (mode: 'mcp' | 'assisted') => {
+    updateMapping({ mappingMode: mode });
+  };
+
+  const mcpMappedColumn = (key: string) => {
+    if (key === 'duration') return durationMode === 'column' ? durationColumn : '';
+    if (selectedModel?.controls.some(control => control.key === key)) {
+      return perCaseControlColumns[key] || '';
+    }
+    return inputMapping.canonicalFieldMappings?.[key] || '';
+  };
+
+  const changeMcpFieldMapping = (key: string, column: string) => {
+    if (key === 'duration') {
+      setDurationMode(column ? 'column' : 'uniform');
+      setDurationColumn(column);
+      invalidatePreflight();
+      return;
+    }
+    if (selectedModel?.controls.some(control => control.key === key)) {
+      setPerCaseControlColumns(current => {
+        const next = { ...current };
+        if (column) next[key] = column;
+        else delete next[key];
+        return next;
+      });
+      invalidatePreflight();
+      return;
+    }
+    const nextMappings = { ...(inputMapping.canonicalFieldMappings || {}) };
+    if (column) nextMappings[key] = column;
+    else delete nextMappings[key];
+    updateMapping({
+      canonicalFieldMappings: nextMappings,
+      ...(key === 'prompt' ? { promptColumn: column } : {}),
+    });
   };
 
   const toggleMappingColumn = (
@@ -1051,6 +1155,38 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
             <div className="space-y-7">
               <section>
                 <h3 className="mb-3 text-sm font-semibold text-slate-100">Input mapping</h3>
+                <div className="mb-4 flex w-fit border border-white/10 bg-black/20 p-1" role="group" aria-label="Input mapping mode">
+                  <button
+                    type="button"
+                    aria-pressed={mappingMode === 'mcp'}
+                    onClick={() => changeMappingMode('mcp')}
+                    className={`px-3 py-1.5 text-xs ${mappingMode === 'mcp' ? 'bg-amber-400 text-black' : 'text-slate-300 hover:bg-white/5'}`}
+                  >
+                    VidMuse MCP
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={mappingMode === 'assisted'}
+                    onClick={() => changeMappingMode('assisted')}
+                    className={`px-3 py-1.5 text-xs ${mappingMode === 'assisted' ? 'bg-amber-400 text-black' : 'text-slate-300 hover:bg-white/5'}`}
+                  >
+                    {'\u8f85\u52a9\u6620\u5c04'}
+                  </button>
+                </div>
+                {mappingMode === 'mcp' && (
+                  <div data-testid="generation-mcp-field-mappings">
+                    <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+                      {mcpMappingFields.map(inputKey => renderColumnSelect(
+                        mcpMappedColumn(inputKey),
+                        value => changeMcpFieldMapping(inputKey, value),
+                        inputKey,
+                        inputKey,
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {mappingMode === 'assisted' && (
+                  <>
                 <div className="max-w-xl">
                   {renderColumnSelect(inputMapping.promptColumn, value => updateMapping({ promptColumn: value }), copy.promptColumn)}
                 </div>
@@ -1194,6 +1330,19 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                       ))}
                     </div>
                   </div>
+                )}
+                  </>
+                )}
+                {supportsReferenceFallback && (
+                  <label className="mt-4 flex items-start gap-3 border border-amber-400/20 bg-amber-500/10 px-3 py-3 text-xs text-amber-100">
+                    <input
+                      type="checkbox"
+                      checked={inputMapping.compatibilityMode === 'reference_fallback'}
+                      onChange={event => updateMapping({ compatibilityMode: event.target.checked ? 'reference_fallback' : 'strict' })}
+                      className="mt-0.5"
+                    />
+                    <span>{'\u517c\u5bb9\u53c2\u8003\u6a21\u5f0f\uff1a\u5c06\u51b2\u7a81\u7684\u5173\u952e\u5e27\u8f6c\u6362\u4e3a\u53c2\u8003\u5143\u7d20\uff0c\u9884\u68c0\u4f1a\u6807\u8bb0\u8bc4\u6d4b\u8bed\u4e49\u53d8\u5316\u3002'}</span>
+                  </label>
                 )}
               </section>
 
@@ -1406,6 +1555,40 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                           <div className="space-y-1 text-slate-400">
                             {item.errors.map(issue => <div key={`${issue.code}-${issue.field || ''}`} className="text-red-300">[{issue.code}] {issue.message}</div>)}
                             {item.warnings.map(issue => <div key={`${issue.code}-${issue.field || ''}`} className="text-amber-300">[{issue.code}] {issue.message}</div>)}
+                            {item.resolvedCase.compilerAudit && (
+                              <div className="space-y-1.5 border-l border-sky-400/30 pl-2 text-sky-200">
+                                <div className="flex flex-wrap gap-x-3 gap-y-1">
+                                  <span>contract v{item.resolvedCase.compilerAudit.compilerVersion}</span>
+                                  {item.resolvedCase.compilerAudit.profileId && <span>{item.resolvedCase.compilerAudit.profileId}</span>}
+                                  {item.resolvedCase.compilerAudit.compatibilityApplied && (
+                                    <span className="text-amber-300">{'\u5df2\u5e94\u7528\u517c\u5bb9\u8f6c\u6362'}</span>
+                                  )}
+                                </div>
+                                <div className="flex flex-wrap gap-2 text-[11px] text-slate-400">
+                                  {(item.resolvedCase.compilerAudit.bindings?.images || []).map((binding: any) => (
+                                    <span key={`image-${binding.index}`}>@image{binding.index}</span>
+                                  ))}
+                                  {(item.resolvedCase.compilerAudit.bindings?.elements || []).map((binding: any) => (
+                                    <span key={`element-${binding.index}`}>@Element{binding.index}</span>
+                                  ))}
+                                  {(item.resolvedCase.compilerAudit.bindings?.audios || []).map((binding: any) => (
+                                    <span key={`audio-${binding.index}`}>@audio{binding.index}</span>
+                                  ))}
+                                </div>
+                                <details>
+                                  <summary className="cursor-pointer text-[11px] text-sky-300">{'\u8bf7\u6c42\u5ba1\u8ba1'}</summary>
+                                  <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-all bg-black/30 p-2 text-[10px] text-slate-300">
+                                    {JSON.stringify({
+                                      ...(item.resolvedCase.compilerAudit.compatibilityApplied
+                                        ? { originalInput: item.resolvedCase.compilerAudit.originalInput }
+                                        : {}),
+                                      normalizedInput: item.resolvedCase.compilerAudit.compiledInput,
+                                      finalAionRequest: item.resolvedCase.compilerAudit.finalAionRequest,
+                                    }, null, 2)}
+                                  </pre>
+                                </details>
+                              </div>
+                            )}
                             {item.resolvedCase.durationResolution?.source === 'reference_audio' && (
                               <div className="text-sky-300">
                                 {'\u97f3\u9891 '}{item.resolvedCase.durationResolution.detectedSeconds}s

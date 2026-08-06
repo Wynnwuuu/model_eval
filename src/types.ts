@@ -553,7 +553,13 @@ export interface GenerationModelConfig {
   updatedAt?: string;
 }
 
+export type GenerationInputMappingMode = 'assisted' | 'mcp';
+export type GenerationCompatibilityMode = 'strict' | 'reference_fallback';
+
 export interface GenerationInputMapping {
+  mappingMode?: GenerationInputMappingMode;
+  compatibilityMode?: GenerationCompatibilityMode;
+  canonicalFieldMappings?: Record<string, string>;
   promptColumn?: string;
   referenceImageColumns: string[];
   referenceAudioColumns: string[];

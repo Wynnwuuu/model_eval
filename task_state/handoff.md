@@ -59,3 +59,9 @@ Media requests are one-shot lazy mounted against the horizontal table viewport. 
 The generation modal now supports simple reference-video columns or mutually exclusive Raw elements JSON, plus uniform, column, and reference-audio duration sources. Live-model contracts drive field compilation; Hailuo H3 compiles videos to ordered `elements[].video_url`. Audio metadata probing is browser-only and the server verifies per-case audit data before producing final controls.
 
 No schema migration, Aion change, OSS activation, or paid generation was used. All generation/database/dataset/Arena/API tests, TypeScript checks, both builds, and live H3 desktop/mobile browser preflight passed on the latest main baseline. The live browser request demonstrated one valid 6.391s-to-7s case and one isolated multi-audio invalid case.
+
+## Completed work: VidMuse MCP input contract
+
+New generation preflights default to a VidMuse MCP mapping mode and compile standard video/image fields into the existing Aion unified API. Assisted mapping remains available and historical snapshots remain compatible. Structured JSON datasets, per-case mixed modes, model-profile constraints, prompt-token validation, explicit keyframe fallback, compiler audit, and final request preview are implemented without a database migration or Worker/writeback changes.
+
+All non-database generation, dataset, Arena, TypeScript, production-build, and desktop/mobile browser gates pass. Docker/PostgreSQL was unavailable for the final database/API rerun; this feature does not change persistence, queue, or route behavior. No paid generation was submitted.
