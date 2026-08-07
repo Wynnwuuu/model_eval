@@ -363,4 +363,5 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Browser QA confirmed exact mappings, per-case modes, request audit, no batch creation, desktop containment, and 390x844 mobile containment with wide case tables scrolling only inside their own container.
 - Fixed duplicate React issue keys found during QA; a fresh video preflight produced no new browser console errors.
 - Rebased onto GitHub main `4c12bbe` while preserving its Wan HTTP 500 incident record. The full generation/database/dataset/Arena/API/typecheck/build gate passed again after the rebase.
-- Remaining: push the rebased commit, inspect CI, and verify the dev deployment. No paid generation has been submitted.
+- Published source commit `eaca1ef` to `world-sim-dev/ManuEval` main without force-pushing. Eval Studio Test run `31185153047` and Dev CI/CD run `31185153483` succeeded, including migration validation, database integration, API smoke, image build, and dev rollout.
+- `https://eval-studio.sandaii.cn/datasets` loaded under the online account with no browser console errors after deployment. The organization had no dataset, so no dev test data or paid generation request was created.
