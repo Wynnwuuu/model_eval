@@ -17,11 +17,15 @@ import {
   EvalDataset,
   GenerationAssetDurability,
   GenerationAssetBinding,
+  GenerationCaseReview,
+  GenerationContractFinding,
   GenerationJobEvent,
   GenerationDurationSourceMode,
   GenerationInputMapping,
   GenerationReferenceAudioDuration,
   GenerationModelConfig,
+  GenerationParameterBinding,
+  GenerationParameterValueType,
   GenerationPreflightResult,
   GenerationQueueState,
   GenerationSeedMode,
@@ -34,6 +38,7 @@ import {
   inspectGenerationTargetColumn,
 } from '../features/generation/caseSelection';
 import GenerationCaseSelector from './GenerationCaseSelector';
+import DatasetGenerationContentMappingEditor from './DatasetGenerationContentMappingEditor';
 import MediaRenderer from './MediaRenderer';
 import {
   GenerationBatch,
@@ -54,18 +59,13 @@ import {
   waitForExecutionBatch,
 } from '../features/generation/executionApi';
 
+import { defaultGenerationInputMapping } from '../features/generation/inputMapping';
 import {
-  defaultGenerationInputMapping,
-  getGenerationImageRole,
-  inferGenerationImageRole,
-  setGenerationImageRole,
+  defaultVidMuseEvaluationParameterColumns,
+  generationRowMatchesModality,
+  hasVidMuseEvaluationPreset,
+  resolveVidMuseEvaluationPresetColumns,
 } from '../features/generation/inputMapping';
-import {
-  GenerationImageRole,
-  getGenerationReferenceVideoSupport,
-  getSupportedGenerationImageRoles,
-  modelDeclaresGenerationInput,
-} from '../features/generation/modelCapabilities';
 import {
   probeAudioDurations,
   resolveReferenceAudioDuration,
@@ -127,13 +127,15 @@ const copy = {
   explicitConfirm: '\u6211\u5df2\u6838\u5bf9\u6709\u6548/\u65e0\u6548 case\u3001\u6a21\u578b\u914d\u7f6e\u5feb\u7167\u548c\u8d39\u7528\u4fe1\u606f\u3002',
 };
 
-const imageRoleLabels: Record<GenerationImageRole, string> = {
-  reference: '\u53c2\u8003\u56fe',
-  start: '\u9996\u5e27',
-  end: '\u5c3e\u5e27',
-};
-
 const emptyMapping: GenerationInputMapping = {
+  contentMappingVersion: 2,
+  contentMapping: {
+    version: 2,
+    prompt: { column: '', format: 'text' },
+    keyframes: { source: 'unused' },
+    elements: { source: 'unused' },
+    audios: { source: 'unused' },
+  },
   mappingMode: 'mcp',
   compatibilityMode: 'strict',
   canonicalFieldMappings: {},
@@ -202,29 +204,6 @@ const hasConfiguredInputValue = (value: unknown) => {
   return parsed !== undefined && parsed !== null && String(parsed).trim() !== '';
 };
 
-const advancedInputKeysFor = (model?: GenerationModelConfig) => {
-  const schema = model?.inputSchema || {};
-  const keys = new Set<string>(Object.keys(schema.properties || {}));
-  for (const field of ['required_inputs', 'optional_inputs']) {
-    const declaration = schema[field];
-    if (Array.isArray(declaration)) declaration.forEach(key => keys.add(String(key)));
-    else Object.values(declaration || {}).forEach(value => {
-      if (Array.isArray(value)) value.forEach(key => keys.add(String(key)));
-    });
-  }
-  if (Array.isArray(schema.supported_inputs)) schema.supported_inputs.forEach(key => keys.add(String(key)));
-  Object.values(schema.required_one_of_inputs || {}).forEach(value => {
-    if (!Array.isArray(value)) return;
-    value.flatMap(group => Array.isArray(group) ? group : [group]).forEach(key => keys.add(String(key)));
-  });
-  [
-    'prompt', 'image_urls', 'audio_url', 'audios', 'video_url', 'video_urls',
-    'reference_video_urls', 'elements', 'generation_type', 'model_name', 'features', 'extra_params',
-  ].forEach(key => keys.delete(key));
-  (model?.controls || []).forEach(control => keys.delete(control.key));
-  return Array.from(keys).sort();
-};
-
 const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalProps> = ({
   dataset,
   initialBatchId,
@@ -242,10 +221,9 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const [selectedDatasetItemIds, setSelectedDatasetItemIds] = useState<string[]>([]);
   const [inputMapping, setInputMapping] = useState<GenerationInputMapping>(emptyMapping);
   const [defaultControls, setDefaultControls] = useState<Record<string, unknown>>({});
-  const [perCaseControlColumns, setPerCaseControlColumns] = useState<Record<string, string>>({});
+  const [parameterBindings, setParameterBindings] = useState<Record<string, GenerationParameterBinding>>({});
   const [durationMode, setDurationMode] = useState<GenerationDurationSourceMode>('uniform');
   const [durationColumn, setDurationColumn] = useState('');
-  const [referenceInputMode, setReferenceInputMode] = useState<'video_columns' | 'raw_elements'>('video_columns');
   const [seedMode, setSeedMode] = useState<GenerationSeedMode>('derive_from_case');
   const [fixedSeed, setFixedSeed] = useState(42);
   const [seedColumn, setSeedColumn] = useState('');
@@ -253,6 +231,9 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState('');
   const [preflight, setPreflight] = useState<GenerationPreflightResult | null>(null);
+  const [caseReviews, setCaseReviews] = useState<Record<string, GenerationCaseReview>>({});
+  const [requestJsonDrafts, setRequestJsonDrafts] = useState<Record<string, string>>({});
+  const [reviewsDirty, setReviewsDirty] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [batch, setBatch] = useState<GenerationBatch | null>(null);
   const [queue, setQueue] = useState<GenerationQueueState>();
@@ -294,30 +275,27 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     outputModality: selectedModel.outputModality,
     configFingerprint: selectedModel.configFingerprint,
   }) : null, [dataset, selectedModel, targetColumn, targetMode]);
+  const presetColumns = useMemo(
+    () => resolveVidMuseEvaluationPresetColumns(headers, dataset.inputSchema || []),
+    [dataset.inputSchema, headers],
+  );
+  const usesVidMuseEvaluationPreset = hasVidMuseEvaluationPreset(headers, dataset.inputSchema || []);
   const eligibleDatasetItemIds = useMemo(() => dataset.items
-    .filter(row => String(row[DATASET_ITEM_ID_KEY] || '').trim() && !String(row[targetColumn] ?? '').trim())
-    .map(row => String(row[DATASET_ITEM_ID_KEY]).trim()), [dataset.items, targetColumn]);
+    .filter(row => String(row[DATASET_ITEM_ID_KEY] || '').trim()
+      && !String(row[targetColumn] ?? '').trim()
+      && (!usesVidMuseEvaluationPreset
+        || !selectedModel
+        || generationRowMatchesModality(row, selectedModel.outputModality)))
+    .map(row => String(row[DATASET_ITEM_ID_KEY]).trim()), [
+      dataset.items,
+      selectedModel,
+      targetColumn,
+      usesVidMuseEvaluationPreset,
+    ]);
   const eligibleSelectionSignature = eligibleDatasetItemIds.join('|');
   const maxBatchSize = runtimeHealth?.maxBatchSize || 500;
   const selectionTooLarge = selectedDatasetItemIds.length > maxBatchSize;
-  const advancedInputKeys = useMemo(() => advancedInputKeysFor(selectedModel), [selectedModel]);
-  const imageRoles = useMemo(() => getSupportedGenerationImageRoles(selectedModel), [selectedModel]);
-  const referenceVideoSupport = useMemo(() => getGenerationReferenceVideoSupport(selectedModel), [selectedModel]);
-  const supportsRawElements = modelDeclaresGenerationInput(selectedModel, 'elements');
   const mappingMode = inputMapping.mappingMode || 'assisted';
-  const mcpMappingFields = useMemo(() => {
-    if (!selectedModel) return [];
-    const core = selectedModel.outputModality === 'image'
-      ? ['prompt', 'images']
-      : ['prompt', 'image_urls', 'elements', 'audios'];
-    return Array.from(new Set([
-      ...core,
-      ...(selectedModel.controls || []).map(control => control.key),
-      ...advancedInputKeys,
-    ]));
-  }, [advancedInputKeys, selectedModel]);
-  const supportsReferenceFallback = Boolean(selectedModel?.outputModality === 'video'
-    && /seedance|hailuo.*h3/i.test(selectedModel.modelName || selectedModel.id));
   const durationControl = selectedModel?.controls.find(control => control.key === 'duration');
   const selectedBatchItems = batch?.items.filter(item => selectedBatchItemIds.includes(item.id)) || [];
   const selectableBatchItems = batch?.items.filter(item =>
@@ -351,60 +329,62 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
 
   const applyModel = (model?: GenerationModelConfig) => {
     const exactColumn = (key: string) =>
-      headers.find(header => header.trim().toLowerCase() === key.toLowerCase()) || '';
-    const mappedControlColumns = Object.fromEntries(
-      (model?.controls || []).flatMap(control => {
-        const column = exactColumn(control.key);
-        return column ? [[control.key, column]] : [];
-      }),
-    );
-    const mappedDurationColumn = mappedControlColumns.duration || '';
+      presetColumns[key as keyof typeof presetColumns]
+      || headers.find(header => header.trim().toLowerCase() === key.toLowerCase())
+      || '';
+    const duration = model?.controls.find(control => control.key === 'duration');
+    const nextParameterBindings = {
+      ...Object.fromEntries([
+      ...(model?.controls || [])
+        .filter(control => control.key !== 'duration' && control.key !== 'seed')
+        .map(control => [control.key, { source: 'unused' }]),
+      ...(model?.advancedParameters || []).map(parameter => [parameter.key, { source: 'unused' }]),
+      ]),
+      ...defaultVidMuseEvaluationParameterColumns(
+        headers,
+        (model?.controls || []).map(control => control.key),
+        dataset.inputSchema || [],
+      ),
+    } as Record<string, GenerationParameterBinding>;
+    const presetMapping = model
+      ? defaultGenerationInputMapping(
+          dataset,
+          headers,
+          mappings,
+          model.outputModality === 'image' ? 'image' : 'video',
+        )
+      : defaultGenerationInputMapping(dataset, headers, mappings);
+    const presetDurationColumn = model?.controls.some(control => control.key === 'duration')
+      && usesVidMuseEvaluationPreset
+      ? exactColumn('duration')
+      : '';
 
     setModelId(model?.id || '');
     setTargetMode('new');
     setTargetColumn(targetColumnFor(model));
-    setDefaultControls(Object.fromEntries(
-      (model?.controls || []).map(control => [control.key, control.defaultValue ?? '']),
-    ));
-    setPerCaseControlColumns(Object.fromEntries(
-      Object.entries(mappedControlColumns).filter(([key]) => key !== 'duration'),
-    ));
-    setDurationMode(mappedDurationColumn ? 'column' : 'uniform');
-    setDurationColumn(mappedDurationColumn);
-    const videoSupport = getGenerationReferenceVideoSupport(model);
-    setReferenceInputMode(videoSupport.supported ? 'video_columns' : 'raw_elements');
+    setDefaultControls(duration && !presetDurationColumn
+      ? { duration: duration.defaultValue ?? duration.options?.[0] ?? '' }
+      : {});
+    setParameterBindings(nextParameterBindings);
+    setDurationMode(presetDurationColumn ? 'column' : 'uniform');
+    setDurationColumn(presetDurationColumn);
     audioProbeController.current?.abort();
     setAudioProbe({ status: 'idle', values: {}, issues: {} });
-    setInputMapping(current => {
-      const coreKeys = model?.outputModality === 'image'
-        ? ['prompt', 'images']
-        : ['prompt', 'image_urls', 'elements', 'audios'];
-      const mappableKeys = Array.from(new Set([
-        ...coreKeys,
-        ...advancedInputKeysFor(model),
-      ]));
-      const allowedKeys = new Set(mappableKeys);
-      const exactMappings = Object.fromEntries(mappableKeys.flatMap(key => {
-        const column = exactColumn(key);
-        return column ? [[key, column]] : [];
-      }));
-      const retainedMappings = Object.fromEntries(
-        Object.entries(current.canonicalFieldMappings || {})
-          .filter(([key]) => allowedKeys.has(key)),
-      );
-      return {
-        ...current,
-        canonicalFieldMappings: { ...exactMappings, ...retainedMappings },
-        referenceVideoColumns: [],
-        extraInputMappings: {},
-      };
-    });
+    setInputMapping(presetMapping);
     setPreflight(null);
+    setCaseReviews({});
+    setRequestJsonDrafts({});
+    setReviewsDirty(false);
     setConfirmed(false);
   };
 
   useEffect(() => {
-    setInputMapping(defaultGenerationInputMapping(dataset, headers, mappings));
+    setInputMapping(defaultGenerationInputMapping(
+      dataset,
+      headers,
+      mappings,
+      selectedModel?.outputModality,
+    ));
   }, [dataset.id, dataset.version]);
 
   useEffect(() => {
@@ -440,6 +420,52 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     return (dataset.items || []).flatMap(row => {
       const datasetItemId = String(row[DATASET_ITEM_ID_KEY] || '').trim();
       if (!datasetItemId || !selectedIds.has(datasetItemId)) return [];
+      const content = inputMapping.contentMappingVersion === 2
+        && inputMapping.contentMapping?.version === 2
+        ? inputMapping.contentMapping
+        : undefined;
+      if (content) {
+        const audioUrls = content.audios.source === 'array_column'
+          ? uniqueGenerationReferences([row[content.audios.column]])
+          : content.audios.source === 'builder'
+            ? uniqueGenerationReferences(content.audios.items.map(item => row[item.urlColumn]))
+            : [];
+        const imageCount = content.keyframes.source === 'array_column'
+          ? uniqueGenerationReferences([row[content.keyframes.column]]).length
+          : content.keyframes.source === 'columns'
+            ? Number(hasConfiguredInputValue(row[content.keyframes.firstColumn]))
+              + Number(Boolean(content.keyframes.lastColumn)
+                && hasConfiguredInputValue(row[content.keyframes.lastColumn || '']))
+            : 0;
+        const hasElements = content.elements.source === 'array_column'
+          ? hasConfiguredInputValue(row[content.elements.column])
+          : content.elements.source === 'builder'
+            ? content.elements.items.some(item => {
+                if (item.mode === 'video') {
+                  return Boolean(item.videoColumn && hasConfiguredInputValue(row[item.videoColumn]));
+                }
+                if (item.mode === 'element_id') {
+                  return Boolean(item.elementIdColumn && hasConfiguredInputValue(row[item.elementIdColumn]));
+                }
+                return Boolean(
+                  (item.frontalImageColumn && hasConfiguredInputValue(row[item.frontalImageColumn]))
+                  || (item.referenceImageArrayColumn
+                    && hasConfiguredInputValue(row[item.referenceImageArrayColumn]))
+                  || (item.referenceImageColumns || []).some(column =>
+                    hasConfiguredInputValue(row[column])),
+                );
+              })
+            : false;
+        const generationType = hasElements || audioUrls.length
+          ? 'reference_to_video'
+          : imageCount > 1
+            ? 'images_to_video'
+            : imageCount === 1
+              ? 'image_to_video'
+              : 'text_to_video';
+        return [{ datasetItemId, audioUrls, generationType }];
+      }
+
       if (mappingMode === 'mcp') {
         const canonicalMappings = inputMapping.canonicalFieldMappings || {};
         const audioColumn = canonicalMappings.audios;
@@ -621,6 +647,63 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
 
   const invalidatePreflight = () => {
     setPreflight(null);
+    setCaseReviews({});
+    setRequestJsonDrafts({});
+    setReviewsDirty(false);
+    setConfirmed(false);
+  };
+
+  const updateCaseReview = (
+    datasetItemId: string,
+    updater: (current: GenerationCaseReview) => GenerationCaseReview,
+  ) => {
+    setCaseReviews(current => ({
+      ...current,
+      [datasetItemId]: updater(current[datasetItemId] || {}),
+    }));
+    setReviewsDirty(true);
+    setConfirmed(false);
+  };
+
+  const decideFinding = (
+    datasetItemId: string,
+    findingId: string,
+    decision: 'accept' | 'reject',
+  ) => updateCaseReview(datasetItemId, current => {
+    const accepted = new Set(current.acceptedFindingIds || []);
+    const rejected = new Set(current.rejectedFindingIds || []);
+    if (decision === 'accept') {
+      accepted.add(findingId);
+      rejected.delete(findingId);
+    } else {
+      rejected.add(findingId);
+      accepted.delete(findingId);
+    }
+    return {
+      ...current,
+      acceptedFindingIds: Array.from(accepted),
+      rejectedFindingIds: Array.from(rejected),
+    };
+  });
+
+  const acceptFindingRule = (ruleId: string) => {
+    if (!preflight) return;
+    const next = { ...caseReviews };
+    preflight.cases.forEach(item => {
+      const datasetItemId = String(item.resolvedCase.datasetItemId || '');
+      const findings = (item.resolvedCase.compilerAudit?.contractFindings || []) as GenerationContractFinding[];
+      findings.filter(finding => finding.ruleId === ruleId && finding.disposition !== 'force_required')
+        .forEach(finding => {
+          const current = next[datasetItemId] || {};
+          next[datasetItemId] = {
+            ...current,
+            acceptedFindingIds: Array.from(new Set([...(current.acceptedFindingIds || []), finding.id])),
+            rejectedFindingIds: (current.rejectedFindingIds || []).filter(id => id !== finding.id),
+          };
+        });
+    });
+    setCaseReviews(next);
+    setReviewsDirty(true);
     setConfirmed(false);
   };
 
@@ -643,131 +726,25 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     invalidatePreflight();
   };
 
-  const changeMappingMode = (mode: 'mcp' | 'assisted') => {
-    updateMapping({ mappingMode: mode });
-  };
-
-  const mcpMappedColumn = (key: string) => {
-    if (key === 'duration') return durationMode === 'column' ? durationColumn : '';
-    if (selectedModel?.controls.some(control => control.key === key)) {
-      return perCaseControlColumns[key] || '';
-    }
-    return inputMapping.canonicalFieldMappings?.[key] || '';
-  };
-
-  const changeMcpFieldMapping = (key: string, column: string) => {
-    if (key === 'duration') {
-      setDurationMode(column ? 'column' : 'uniform');
-      setDurationColumn(column);
-      invalidatePreflight();
-      return;
-    }
-    if (selectedModel?.controls.some(control => control.key === key)) {
-      setPerCaseControlColumns(current => {
-        const next = { ...current };
-        if (column) next[key] = column;
-        else delete next[key];
-        return next;
-      });
-      invalidatePreflight();
-      return;
-    }
-    const nextMappings = { ...(inputMapping.canonicalFieldMappings || {}) };
-    if (column) nextMappings[key] = column;
-    else delete nextMappings[key];
-    updateMapping({
-      canonicalFieldMappings: nextMappings,
-      ...(key === 'prompt' ? { promptColumn: column } : {}),
-    });
-  };
-
-  const toggleMappingColumn = (
-    field: 'referenceImageColumns' | 'referenceAudioColumns' | 'referenceVideoColumns' | 'extraInputColumns',
-    column: string,
-  ) => {
-    const values = inputMapping[field] || [];
-    updateMapping({
-      [field]: values.includes(column) ? values.filter(value => value !== column) : [...values, column],
-    });
-  };
-
-  const imageRoleOccupied = (role: GenerationImageRole, column: string) => (
-    role === 'start'
-      ? Boolean(inputMapping.startImageColumn && inputMapping.startImageColumn !== column)
-      : role === 'end'
-        ? Boolean(inputMapping.endImageColumn && inputMapping.endImageColumn !== column)
-        : false
-  );
-
-  const toggleImageColumn = (column: string) => {
-    const currentRole = getGenerationImageRole(inputMapping, column);
-    if (currentRole) {
-      updateMapping(setGenerationImageRole(inputMapping, column));
-      return;
-    }
-
-    const inferredRole = selectedModel?.outputModality === 'image'
-      ? 'reference'
-      : inferGenerationImageRole(column, dataset.inputSchema || []);
-    const nextRole = [inferredRole, ...imageRoles]
-      .find((role, index, roles) => roles.indexOf(role) === index
-        && imageRoles.includes(role)
-        && !imageRoleOccupied(role, column));
-    if (!nextRole) {
-      setError('\u5f53\u524d\u6a21\u578b\u6ca1\u6709\u53ef\u7528\u7684\u56fe\u50cf\u8f93\u5165\u89d2\u8272\u3002');
-      return;
-    }
-    setError('');
-    updateMapping(setGenerationImageRole(inputMapping, column, nextRole));
-  };
-
-  const changeImageRole = (column: string, role: GenerationImageRole) => {
-    if (!imageRoles.includes(role) || imageRoleOccupied(role, column)) return;
-    updateMapping(setGenerationImageRole(inputMapping, column, role));
-  };
-
   const changeDurationMode = (mode: GenerationDurationSourceMode) => {
     setDurationMode(mode);
     if (mode !== 'column') setDurationColumn('');
     invalidatePreflight();
   };
 
-  const changeReferenceInputMode = (mode: 'video_columns' | 'raw_elements') => {
-    setReferenceInputMode(mode);
-    if (mode === 'video_columns') {
-      const nextMappings = { ...(inputMapping.extraInputMappings || {}) };
-      delete nextMappings.elements;
-      updateMapping({ extraInputMappings: nextMappings });
-      return;
-    }
-    updateMapping({ referenceVideoColumns: [] });
-  };
-
-  const changeRawElementsColumn = (column: string) => {
-    const nextMappings = { ...(inputMapping.extraInputMappings || {}) };
-    if (column) nextMappings.elements = column;
-    else delete nextMappings.elements;
-    updateMapping({
-      extraInputMappings: nextMappings,
-      referenceVideoColumns: [],
-    });
-  };
-
   const buildRequest = (): GenerationPreflightRequest => {
     if (!selectedModel) throw new Error('Select a model before preflight.');
-    const requestDefaultControls = { ...defaultControls };
-    const requestPerCaseControlColumns = { ...perCaseControlColumns };
-    delete requestPerCaseControlColumns.duration;
+    const requestDefaultControls = durationControl && durationMode === 'uniform'
+      ? { duration: defaultControls.duration }
+      : {};
 
     let durationSource: GenerationPreflightRequest['durationSource'];
     if (durationControl) {
       if (durationMode === 'uniform') {
         durationSource = { mode: 'uniform' };
       } else if (durationMode === 'column') {
-        delete requestDefaultControls.duration;
         durationSource = { mode: 'column', column: durationColumn };
       } else {
-        delete requestDefaultControls.duration;
         if (audioProbe.status !== 'ready') {
           throw new Error(copy.probingAudio);
         }
@@ -791,12 +768,14 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
         referenceVideoColumns: inputMapping.referenceVideoColumns || [],
       },
       defaultControls: requestDefaultControls,
-      perCaseControlColumns: requestPerCaseControlColumns,
+      perCaseControlColumns: {},
+      parameterBindings,
       durationSource,
       seedMode,
       fixedSeed: seedMode === 'fixed' ? fixedSeed : undefined,
       seedColumn: seedMode === 'column' ? seedColumn : undefined,
       assetBindings,
+      caseReviews,
     };
   };
 
@@ -807,6 +786,8 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     try {
       const next = await createExecutionPreflight(buildRequest());
       setPreflight(next);
+      setRequestJsonDrafts({});
+      setReviewsDirty(false);
       setStep(3);
     } catch (reason) {
       setError(errorMessage(reason));
@@ -976,6 +957,257 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     );
   };
 
+  const updateParameterBinding = (key: string, binding: GenerationParameterBinding) => {
+    setParameterBindings(current => ({ ...current, [key]: binding }));
+    invalidatePreflight();
+  };
+
+  const changeParameterSource = (
+    key: string,
+    source: GenerationParameterBinding['source'],
+    control?: GenerationModelConfig['controls'][number],
+    advanced = false,
+  ) => {
+    const current = parameterBindings[key];
+    const valueType = current && current.source !== 'unused' && current.valueType
+      ? current.valueType
+      : 'string';
+    if (source === 'unused') {
+      updateParameterBinding(key, { source: 'unused' });
+    } else if (source === 'column') {
+      updateParameterBinding(key, {
+        source: 'column',
+        column: current?.source === 'column' ? current.column : '',
+        ...(advanced ? { valueType } : {}),
+      });
+    } else {
+      updateParameterBinding(key, {
+        source: 'uniform',
+        value: current?.source === 'uniform'
+          ? current.value
+          : control?.defaultValue ?? (control?.type === 'toggle' ? false : ''),
+        ...(advanced ? { valueType } : {}),
+      });
+    }
+  };
+
+  const renderUniformParameterValue = (
+    value: unknown,
+    setValue: (value: unknown) => void,
+    control?: GenerationModelConfig['controls'][number],
+    valueType?: GenerationParameterValueType,
+  ) => {
+    const type = control?.type || valueType || 'string';
+    if (type === 'toggle' || type === 'boolean') {
+      return (
+        <label className="flex h-10 items-center justify-between gap-3 border-b border-white/5 text-sm text-slate-200">
+          <span>{'\u7edf\u4e00\u503c'}</span>
+          <input type="checkbox" checked={Boolean(value)} onChange={event => setValue(event.target.checked)} />
+        </label>
+      );
+    }
+    if (control?.type === 'select') {
+      return (
+        <select value={String(value ?? '')} onChange={event => setValue(event.target.value)} className="w-full rounded-md border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100">
+          {(control.options || []).map(option => <option key={option} value={option}>{option}{control.unit || ''}</option>)}
+        </select>
+      );
+    }
+    if (type === 'json') {
+      return <textarea value={String(value ?? '')} onChange={event => setValue(event.target.value)} rows={3} className="w-full rounded-md border border-white/10 bg-slate-900 px-3 py-2 font-mono text-xs text-slate-100" />;
+    }
+    return <input type={type === 'number' ? 'number' : 'text'} value={String(value ?? '')} onChange={event => setValue(event.target.value)} className="w-full rounded-md border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100" />;
+  };
+
+  const renderParameterBinding = ({
+    key,
+    label,
+    control,
+    advanced = false,
+  }: {
+    key: string;
+    label: string;
+    control?: GenerationModelConfig['controls'][number];
+    advanced?: boolean;
+  }) => {
+    const binding = parameterBindings[key] || { source: 'unused' as const };
+    const valueType = binding.source !== 'unused' ? binding.valueType || 'string' : 'string';
+    return (
+      <div key={key} data-generation-parameter={key} className="border border-white/10 bg-black/10 p-3">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <span className="text-xs font-medium text-slate-200">{label}</span>
+          {advanced && <span className="text-[11px] text-amber-300">{'\u672a\u7ecf\u5408\u540c\u9a8c\u8bc1 / extra_params'}</span>}
+        </div>
+        <div className="mb-3 flex w-fit max-w-full flex-wrap border border-white/10 bg-black/20 p-1" role="group" aria-label={`${label} source`}>
+          {([['uniform', copy.uniformDuration], ['column', copy.fromColumn], ['unused', copy.none]] as const).map(([source, sourceLabel]) => (
+            <button
+              key={source}
+              type="button"
+              aria-pressed={binding.source === source}
+              onClick={() => changeParameterSource(key, source, control, advanced)}
+              className={`px-3 py-1.5 text-xs ${binding.source === source ? 'bg-amber-400 text-black' : 'text-slate-300 hover:bg-white/5'}`}
+            >
+              {sourceLabel}
+            </button>
+          ))}
+        </div>
+        {advanced && binding.source !== 'unused' && (
+          <label className="mb-3 block text-xs text-slate-400">
+            <span className="mb-1.5 block">Value type</span>
+            <select
+              value={valueType}
+              onChange={event => updateParameterBinding(key, {
+                ...binding,
+                valueType: event.target.value as GenerationParameterValueType,
+              })}
+              className="w-full rounded-md border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100"
+            >
+              {(['string', 'number', 'boolean', 'json'] as const).map(type => <option key={type} value={type}>{type}</option>)}
+            </select>
+          </label>
+        )}
+        {binding.source === 'uniform' && renderUniformParameterValue(
+          binding.value,
+          value => updateParameterBinding(key, { ...binding, value }),
+          control,
+          advanced ? valueType : undefined,
+        )}
+        {binding.source === 'column' && renderColumnSelect(
+          binding.column,
+          column => updateParameterBinding(key, { ...binding, column }),
+          copy.fromColumn,
+          `${key}-parameter-column`,
+        )}
+      </div>
+    );
+  };
+
+  const renderContractReview = (item: GenerationPreflightResult['cases'][number]) => {
+    const audit = item.resolvedCase.compilerAudit;
+    const findings = (audit?.contractFindings || []) as GenerationContractFinding[];
+    if (!audit || (!findings.length && audit.compilerVersion !== '3')) return null;
+    const datasetItemId = String(item.resolvedCase.datasetItemId || '');
+    const review = caseReviews[datasetItemId] || {};
+    const accepted = new Set(review.acceptedFindingIds || []);
+    const rejected = new Set(review.rejectedFindingIds || []);
+    const promptValue = review.promptOverride !== undefined
+      ? review.promptOverride
+      : item.resolvedCase.prompt;
+    const promptDraft = typeof promptValue === 'string'
+      ? promptValue
+      : JSON.stringify(promptValue ?? '', null, 2);
+    const requestDraft = requestJsonDrafts[datasetItemId]
+      ?? JSON.stringify(review.finalAionRequest || audit.finalAionRequest || {}, null, 2);
+
+    const applyRequestDraft = () => {
+      try {
+        const parsed = JSON.parse(requestDraft);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new Error('Final Aion JSON must be an object.');
+        }
+        updateCaseReview(datasetItemId, current => ({ ...current, finalAionRequest: parsed }));
+        setError('');
+      } catch (reason) {
+        setError(errorMessage(reason));
+      }
+    };
+
+    return (
+      <div className="mt-2 space-y-2 border-l border-amber-400/30 pl-2">
+        {findings.map(finding => {
+          const isAccepted = accepted.has(finding.id);
+          const isRejected = rejected.has(finding.id);
+          return (
+            <div key={finding.id} className="border border-white/10 bg-black/20 p-2">
+              <div className="text-amber-200">[{finding.ruleId}] {finding.message}</div>
+              <div className="mt-1 text-[10px] text-slate-500">{finding.source} / {finding.sourceVersion}</div>
+              {finding.disposition !== 'force_required' && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button type="button" onClick={() => decideFinding(datasetItemId, finding.id, 'accept')} className={`border px-2 py-1 text-[11px] ${isAccepted ? 'border-emerald-400 bg-emerald-500/20 text-emerald-200' : 'border-white/10 text-slate-300'}`}>接受建议</button>
+                  <button type="button" onClick={() => decideFinding(datasetItemId, finding.id, 'reject')} className={`border px-2 py-1 text-[11px] ${isRejected ? 'border-slate-400 bg-white/10 text-slate-100' : 'border-white/10 text-slate-300'}`}>拒绝建议</button>
+                  <button type="button" onClick={() => acceptFindingRule(finding.ruleId)} className="border border-white/10 px-2 py-1 text-[11px] text-sky-200">同类全部接受</button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        <details className="border border-white/10 bg-black/20">
+          <summary className="cursor-pointer px-2 py-1.5 text-[11px] text-sky-300">逐 case 编辑与人工覆盖</summary>
+          <div className="space-y-3 border-t border-white/10 p-3">
+            <label className="block">
+              <span className="mb-1 block text-[11px] text-slate-400">本批次 Prompt</span>
+              <textarea
+                value={promptDraft}
+                onChange={event => updateCaseReview(datasetItemId, current => ({
+                  ...current,
+                  promptOverride: event.target.value,
+                }))}
+                rows={3}
+                className="w-full border border-white/10 bg-slate-950 p-2 font-mono text-[11px] text-slate-200"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-[11px] text-slate-400">最终 Aion JSON</span>
+              <textarea
+                value={requestDraft}
+                onChange={event => {
+                  setRequestJsonDrafts(current => ({ ...current, [datasetItemId]: event.target.value }));
+                  setReviewsDirty(true);
+                  setConfirmed(false);
+                }}
+                rows={8}
+                className="w-full border border-white/10 bg-slate-950 p-2 font-mono text-[10px] text-slate-200"
+              />
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={applyRequestDraft} className="border border-red-400/30 bg-red-500/10 px-2 py-1 text-[11px] text-red-100">采用人工覆盖 JSON</button>
+              {review.finalAionRequest && (
+                <button type="button" onClick={() => updateCaseReview(datasetItemId, current => ({ ...current, finalAionRequest: undefined }))} className="border border-white/10 px-2 py-1 text-[11px] text-slate-300">移除 JSON 覆盖</button>
+              )}
+            </div>
+            <label className="block">
+              <span className="mb-1 block text-[11px] text-slate-400">强制提交原因</span>
+              <input
+                value={review.force?.reason || ''}
+                onChange={event => updateCaseReview(datasetItemId, current => ({
+                  ...current,
+                  force: {
+                    reason: event.target.value,
+                    duplicateBillingRiskConfirmed: current.force?.duplicateBillingRiskConfirmed === true,
+                  },
+                }))}
+                className="w-full border border-white/10 bg-slate-950 px-2 py-1.5 text-xs text-slate-200"
+              />
+            </label>
+            <label className="flex items-start gap-2 text-[11px] text-red-200">
+              <input
+                type="checkbox"
+                checked={review.force?.duplicateBillingRiskConfirmed === true}
+                onChange={event => updateCaseReview(datasetItemId, current => ({
+                  ...current,
+                  force: {
+                    reason: current.force?.reason || '',
+                    duplicateBillingRiskConfirmed: event.target.checked,
+                  },
+                }))}
+              />
+              <span>我确认该请求不再保证 MCP 对齐，并理解人工覆盖或再次提交可能产生重复计费。</span>
+            </label>
+            {review.force && (
+              <button
+                type="button"
+                onClick={() => updateCaseReview(datasetItemId, current => ({ ...current, force: undefined }))}
+                className="border border-white/10 px-2 py-1 text-[11px] text-slate-300"
+              >
+                清除强制提交设置
+              </button>
+            )}
+          </div>
+        </details>
+      </div>
+    );
+  };
   const terminal = isTerminalGenerationBatch(batch || undefined);
   const completedItems = batch?.items.filter(item => ['succeeded', 'failed', 'submission_unknown', 'cancelled'].includes(item.status)).length || 0;
   const temporaryResultCount = batch?.items.filter(item => item.status === 'succeeded' && item.durability === 'temporary').length || 0;
@@ -1134,14 +1366,14 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                         <span>{'\u5f53\u524d\u8bc4\u6d4b\u96c6\u6ca1\u6709\u53ef\u8865\u9f50\u7684\u6a21\u578b\u8f93\u51fa\u5217\u3002'}</span>
                       </div>
                     )}
-                    {targetInspection?.errors.map(issue => (
-                      <div key={issue.code} className="mt-3 flex items-start gap-2 text-sm text-red-300">
+                    {targetInspection?.errors.map((issue, index) => (
+                      <div key={`${issue.code}-${issue.field || ''}-${issue.message}-${index}`} className="mt-3 flex items-start gap-2 text-sm text-red-300">
                         <AlertTriangle size={16} className="mt-0.5 shrink-0" />
                         <span>[{issue.code}] {issue.message}</span>
                       </div>
                     ))}
-                    {targetInspection?.warnings.map(issue => (
-                      <div key={issue.code} className="mt-3 flex items-start gap-2 text-sm text-amber-300">
+                    {targetInspection?.warnings.map((issue, index) => (
+                      <div key={`${issue.code}-${issue.field || ''}-${issue.message}-${index}`} className="mt-3 flex items-start gap-2 text-sm text-amber-300">
                         <AlertTriangle size={16} className="mt-0.5 shrink-0" />
                         <span>[{issue.code}] {issue.message}</span>
                       </div>
@@ -1156,195 +1388,18 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
             <div className="space-y-7">
               <section>
                 <h3 className="mb-3 text-sm font-semibold text-slate-100">Input mapping</h3>
-                <div className="mb-4 flex w-fit border border-white/10 bg-black/20 p-1" role="group" aria-label="Input mapping mode">
-                  <button
-                    type="button"
-                    aria-pressed={mappingMode === 'mcp'}
-                    onClick={() => changeMappingMode('mcp')}
-                    className={`px-3 py-1.5 text-xs ${mappingMode === 'mcp' ? 'bg-amber-400 text-black' : 'text-slate-300 hover:bg-white/5'}`}
-                  >
-                    VidMuse MCP
-                  </button>
-                  <button
-                    type="button"
-                    aria-pressed={mappingMode === 'assisted'}
-                    onClick={() => changeMappingMode('assisted')}
-                    className={`px-3 py-1.5 text-xs ${mappingMode === 'assisted' ? 'bg-amber-400 text-black' : 'text-slate-300 hover:bg-white/5'}`}
-                  >
-                    {'\u8f85\u52a9\u6620\u5c04'}
-                  </button>
-                </div>
-                {mappingMode === 'mcp' && (
-                  <div data-testid="generation-mcp-field-mappings">
-                    <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-                      {mcpMappingFields.map(inputKey => renderColumnSelect(
-                        mcpMappedColumn(inputKey),
-                        value => changeMcpFieldMapping(inputKey, value),
-                        inputKey,
-                        inputKey,
-                      ))}
-                    </div>
+                {inputMapping.presetId === 'vidmuse_evaluation_v1' && (
+                  <div className="mb-4 flex items-start gap-2 border border-emerald-400/25 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+                    <CheckCircle2 size={15} className="mt-0.5 shrink-0" />
+                    <span>{'\u5df2\u6309\u7cbe\u786e\u5217\u540d\u5e94\u7528 VidMuse \u8bc4\u6d4b\u96c6\u9884\u8bbe\uff1b\u4e0b\u65b9\u7684\u5185\u5bb9\u5b57\u6bb5\u548c\u53c2\u6570\u6765\u6e90\u5747\u53ef\u5728\u63d0\u4ea4\u524d\u4fee\u6539\u3002'}</span>
                   </div>
                 )}
-                {mappingMode === 'assisted' && (
-                  <>
-                <div className="max-w-xl">
-                  {renderColumnSelect(inputMapping.promptColumn, value => updateMapping({ promptColumn: value }), copy.promptColumn)}
-                </div>
-                <div className="mt-4 grid gap-4 md:grid-cols-2">
-                  <div className="min-w-0">
-                    <div className="mb-2 text-xs text-slate-400">{copy.imageInputs}</div>
-                    <div data-testid="generation-image-input-columns" className="max-h-44 space-y-1 overflow-auto border border-white/10 p-2">
-                      {headers.map(header => {
-                        const selectedRole = getGenerationImageRole(inputMapping, header);
-                        const roleOptions = selectedRole
-                          ? Array.from(new Set([selectedRole, ...imageRoles]))
-                          : imageRoles;
-                        const hasAvailableRole = imageRoles.some(role => !imageRoleOccupied(role, header));
-                        return (
-                          <div key={header} className="flex min-h-8 items-center gap-2 px-1 py-1 text-xs text-slate-300">
-                            <label className="flex min-w-0 flex-1 items-center gap-2">
-                              <input
-                                type="checkbox"
-                                data-generation-image-column={header}
-                                checked={Boolean(selectedRole)}
-                                disabled={!selectedRole && !hasAvailableRole}
-                                onChange={() => toggleImageColumn(header)}
-                              />
-                              <span className="truncate" title={header}>{header}</span>
-                            </label>
-                            {selectedRole && selectedModel.outputModality === 'video' && roleOptions.length > 1 ? (
-                              <select
-                                value={selectedRole}
-                                aria-label={`${header} ${copy.imageRole}`}
-                                onChange={event => changeImageRole(header, event.target.value as GenerationImageRole)}
-                                className={`w-24 shrink-0 rounded-md border bg-slate-900 px-2 py-1 text-xs ${
-                                  imageRoles.includes(selectedRole)
-                                    ? 'border-white/10 text-slate-200'
-                                    : 'border-red-400/40 text-red-300'
-                                }`}
-                              >
-                                {roleOptions.map(role => (
-                                  <option
-                                    key={role}
-                                    value={role}
-                                    disabled={!imageRoles.includes(role) || imageRoleOccupied(role, header)}
-                                  >
-                                    {imageRoleLabels[role]}
-                                  </option>
-                                ))}
-                              </select>
-                            ) : selectedRole ? (
-                              <span className={`shrink-0 px-2 py-1 ${
-                                imageRoles.includes(selectedRole) ? 'text-slate-400' : 'text-red-300'
-                              }`}>
-                                {selectedModel.outputModality === 'image'
-                                  ? copy.imageRole
-                                  : imageRoles.includes(selectedRole)
-                                    ? imageRoleLabels[selectedRole]
-                                    : copy.unsupportedRole}
-                              </span>
-                            ) : null}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                  <div className="min-w-0">
-                    <div className="mb-2 text-xs text-slate-400">{copy.refAudios}</div>
-                    <div data-testid="generation-audio-input-columns" className="max-h-44 space-y-1 overflow-auto border border-white/10 p-2">
-                      {headers.map(header => (
-                        <label key={header} className="flex min-h-8 items-center gap-2 px-1 py-1 text-xs text-slate-300">
-                          <input type="checkbox" checked={inputMapping.referenceAudioColumns.includes(header)} onChange={() => toggleMappingColumn('referenceAudioColumns', header)} />
-                          <span className="truncate" title={header}>{header}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-                {selectedModel.outputModality === 'video'
-                  && (referenceVideoSupport.supported || supportsRawElements)
-                  && (
-                    <div className="mt-4 border-t border-white/10 pt-4">
-                      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                        <div className="text-xs font-medium text-slate-300">{copy.refVideosAndElements}</div>
-                        {referenceVideoSupport.supported && supportsRawElements && (
-                          <div className="flex border border-white/10 bg-black/20 p-1" role="group" aria-label={copy.refVideosAndElements}>
-                            <button
-                              type="button"
-                              aria-pressed={referenceInputMode === 'video_columns'}
-                              onClick={() => changeReferenceInputMode('video_columns')}
-                              className={`px-3 py-1.5 text-xs ${referenceInputMode === 'video_columns' ? 'bg-amber-400 text-black' : 'text-slate-300 hover:bg-white/5'}`}
-                            >
-                              {copy.videoColumns}
-                            </button>
-                            <button
-                              type="button"
-                              aria-pressed={referenceInputMode === 'raw_elements'}
-                              onClick={() => changeReferenceInputMode('raw_elements')}
-                              className={`px-3 py-1.5 text-xs ${referenceInputMode === 'raw_elements' ? 'bg-amber-400 text-black' : 'text-slate-300 hover:bg-white/5'}`}
-                            >
-                              {copy.rawElements}
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                      {referenceVideoSupport.supported && referenceInputMode === 'video_columns' ? (
-                        <div data-testid="generation-video-input-columns" className="max-h-44 space-y-1 overflow-auto border border-white/10 p-2">
-                          {headers.map(header => (
-                            <label key={header} className="flex min-h-8 items-center gap-2 px-1 py-1 text-xs text-slate-300">
-                              <input
-                                type="checkbox"
-                                checked={(inputMapping.referenceVideoColumns || []).includes(header)}
-                                onChange={() => toggleMappingColumn('referenceVideoColumns', header)}
-                              />
-                              <span className="truncate" title={header}>{header}</span>
-                            </label>
-                          ))}
-                        </div>
-                      ) : supportsRawElements ? (
-                        <div className="max-w-xl">
-                          {renderColumnSelect(
-                            inputMapping.extraInputMappings?.elements,
-                            changeRawElementsColumn,
-                            'elements JSON',
-                            'elements',
-                          )}
-                        </div>
-                      ) : null}
-                    </div>
-                  )}
-                {!!advancedInputKeys.length && (
-                  <div className="mt-4">
-                    <div className="mb-2 text-xs text-slate-400">Advanced model inputs</div>
-                    <div className="grid gap-3 md:grid-cols-3">
-                      {advancedInputKeys.map(inputKey => renderColumnSelect(
-                        inputMapping.extraInputMappings?.[inputKey],
-                        value => updateMapping({
-                          extraInputMappings: {
-                            ...(inputMapping.extraInputMappings || {}),
-                            [inputKey]: value,
-                          },
-                        }),
-                        inputKey,
-                        inputKey,
-                      ))}
-                    </div>
-                  </div>
-                )}
-                  </>
-                )}
-                {supportsReferenceFallback && (
-                  <label className="mt-4 flex items-start gap-3 border border-amber-400/20 bg-amber-500/10 px-3 py-3 text-xs text-amber-100">
-                    <input
-                      type="checkbox"
-                      checked={inputMapping.compatibilityMode === 'reference_fallback'}
-                      onChange={event => updateMapping({ compatibilityMode: event.target.checked ? 'reference_fallback' : 'strict' })}
-                      className="mt-0.5"
-                    />
-                    <span>{'\u517c\u5bb9\u53c2\u8003\u6a21\u5f0f\uff1a\u5c06\u51b2\u7a81\u7684\u5173\u952e\u5e27\u8f6c\u6362\u4e3a\u53c2\u8003\u5143\u7d20\uff0c\u9884\u68c0\u4f1a\u6807\u8bb0\u8bc4\u6d4b\u8bed\u4e49\u53d8\u5316\u3002'}</span>
-                  </label>
-                )}
+                <DatasetGenerationContentMappingEditor
+                  headers={headers}
+                  model={selectedModel}
+                  mapping={inputMapping}
+                  onChange={next => updateMapping(next)}
+                />
               </section>
 
               {runtimeHealth?.assetMode === 'temporary_url' && (
@@ -1452,20 +1507,40 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                     </div>
                   </div>
                 )}
-                <div className="grid gap-3 md:grid-cols-3">
-                  {(selectedModel.controls || []).filter(control => control.key !== 'duration').map(renderControl)}
+                <div className="grid gap-3 md:grid-cols-2">
+                  {(selectedModel.controls || [])
+                    .filter(control => control.key !== 'duration' && control.key !== 'seed')
+                    .map(control => renderParameterBinding({
+                      key: control.key,
+                      label: control.label,
+                      control,
+                    }))}
                 </div>
-                {!!selectedModel.controls.filter(control => control.key !== 'duration').length && (
-                  <div className="mt-5">
-                    <div className="mb-2 text-xs text-slate-400">{copy.caseColumn}</div>
-                    <div className="grid gap-3 md:grid-cols-3">
-                      {selectedModel.controls.filter(control => control.key !== 'duration').map(control => renderColumnSelect(
-                        perCaseControlColumns[control.key],
-                        value => { setPerCaseControlColumns(current => ({ ...current, [control.key]: value })); invalidatePreflight(); },
-                        control.label,
-                        control.key,
-                      ))}
+                {!!(selectedModel.advancedParameters || []).length && (
+                  <details className="mt-5 border-t border-white/10 pt-4">
+                    <summary className="cursor-pointer text-xs font-medium text-amber-300">
+                      {'\u9ad8\u7ea7\u6a21\u578b\u53c2\u6570'} ({selectedModel.advancedParameters.length})
+                    </summary>
+                    <div className="mt-2 text-xs text-amber-200/80">
+                      {'\u8fd9\u4e9b\u5b57\u6bb5\u672a\u7ecf\u7edf\u4e00 Aion \u5408\u540c\u9a8c\u8bc1\uff0c\u9ed8\u8ba4\u4e0d\u53d1\u9001\uff1b\u542f\u7528\u540e\u4ec5\u901a\u8fc7 extra_params \u900f\u4f20\u3002'}
                     </div>
+                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                      {selectedModel.advancedParameters.map(parameter => renderParameterBinding({
+                        key: parameter.key,
+                        label: parameter.label,
+                        advanced: true,
+                      }))}
+                    </div>
+                  </details>
+                )}
+                {!!(selectedModel.invalidParameters || []).length && (
+                  <div className="mt-5 space-y-2 border-t border-white/10 pt-4">
+                    {selectedModel.invalidParameters.map(parameter => (
+                      <div key={parameter.key} className="flex items-start gap-2 text-xs text-amber-300">
+                        <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                        <span><strong>{parameter.key}</strong>: {parameter.message} {parameter.replacement}</span>
+                      </div>
+                    ))}
                   </div>
                 )}
               </section>
@@ -1488,6 +1563,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
               <GenerationCaseSelector
                 dataset={dataset}
                 inputMapping={inputMapping}
+                outputModality={selectedModel?.outputModality}
                 targetColumn={targetColumn}
                 selectedDatasetItemIds={selectedDatasetItemIds}
                 maxBatchSize={maxBatchSize}
@@ -1522,6 +1598,9 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                         <div className="text-xs text-slate-500">Configuration snapshot</div>
                         <div className="mt-1 text-sm text-slate-100">{preflight.model.displayName}</div>
                         <code className="mt-1 block break-all text-[11px] text-slate-400">{preflight.configFingerprint}</code>
+                        {!!preflight.model.description && (
+                          <div className="mt-2 whitespace-pre-wrap text-xs leading-5 text-slate-400">{preflight.model.description}</div>
+                        )}
                       </div>
                       <div>
                         <div className="text-xs text-slate-500">Estimated upper-bound cost</div>
@@ -1539,8 +1618,8 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                     <section className="border border-amber-400/30 bg-amber-500/10 px-4 py-3">
                       <h3 className="text-sm font-semibold text-amber-100">{'\u6279\u6b21\u8b66\u544a'}</h3>
                       <div className="mt-2 space-y-1 text-xs text-amber-200">
-                        {preflight.batchWarnings.map(issue => (
-                          <div key={issue.code}>[{issue.code}] {issue.message}</div>
+                        {preflight.batchWarnings.map((issue, index) => (
+                          <div key={`${issue.code}-${issue.field || ''}-${issue.message}-${index}`}>[{issue.code}] {issue.message}</div>
                         ))}
                       </div>
                     </section>
@@ -1550,12 +1629,18 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                     <h3 className="mb-3 text-sm font-semibold text-slate-100">Case validation</h3>
                     <div className="max-h-72 overflow-auto border border-white/10">
                       {preflight.cases.map((item, index) => (
-                        <div key={`${String(item.resolvedCase.caseId || index)}-${index}`} className="grid gap-2 border-b border-white/5 px-3 py-3 text-xs last:border-0 md:grid-cols-[180px_130px_1fr]">
+                        <div key={`${String(item.resolvedCase.caseId || index)}-${index}`} className="grid gap-2 border-b border-white/5 px-3 py-3 text-xs last:border-0 md:grid-cols-[180px_190px_1fr]">
                           <div className="truncate text-slate-200" title={String(item.resolvedCase.caseId || '')}>{String(item.resolvedCase.caseId || `case-${index + 1}`)}</div>
-                          <div className={item.valid ? 'text-emerald-300' : 'text-red-300'}>{item.valid ? '\u6709\u6548' : '\u65e0\u6548'} / {item.generationType}</div>
+                          <div>
+                            <div className={item.valid ? 'text-emerald-300' : 'text-red-300'}>{item.valid ? '\u6709\u6548' : '\u65e0\u6548'} / {item.generationType}</div>
+                            {item.resolvedCase.compilerAudit?.effectiveGenerationType && (
+                              <div className="mt-1 text-[11px] text-sky-300">Aion effective: {item.resolvedCase.compilerAudit.effectiveGenerationType}</div>
+                            )}
+                          </div>
                           <div className="space-y-1 text-slate-400">
-                            {item.errors.map(issue => <div key={`${issue.code}-${issue.field || ''}`} className="text-red-300">[{issue.code}] {issue.message}</div>)}
-                            {item.warnings.map(issue => <div key={`${issue.code}-${issue.field || ''}`} className="text-amber-300">[{issue.code}] {issue.message}</div>)}
+                            {item.errors.map((issue, issueIndex) => <div key={`${issue.code}-${issue.field || ''}-${issue.message}-${issueIndex}`} className="text-red-300">[{issue.code}] {issue.message}</div>)}
+                            {item.warnings.map((issue, issueIndex) => <div key={`${issue.code}-${issue.field || ''}-${issue.message}-${issueIndex}`} className="text-amber-300">[{issue.code}] {issue.message}</div>)}
+                            {renderContractReview(item)}
                             {item.resolvedCase.compilerAudit && (
                               <div className="space-y-1.5 border-l border-sky-400/30 pl-2 text-sky-200">
                                 <div className="flex flex-wrap gap-x-3 gap-y-1">
@@ -1567,13 +1652,13 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                                 </div>
                                 <div className="flex flex-wrap gap-2 text-[11px] text-slate-400">
                                   {(item.resolvedCase.compilerAudit.bindings?.images || []).map((binding: any) => (
-                                    <span key={`image-${binding.index}`}>@image{binding.index}</span>
+                                    <span key={`image-${binding.index}`}>image_urls[{binding.index}]</span>
                                   ))}
                                   {(item.resolvedCase.compilerAudit.bindings?.elements || []).map((binding: any) => (
-                                    <span key={`element-${binding.index}`}>@Element{binding.index}</span>
+                                    <span key={`element-${binding.index}`}>elements[{binding.index}]</span>
                                   ))}
                                   {(item.resolvedCase.compilerAudit.bindings?.audios || []).map((binding: any) => (
-                                    <span key={`audio-${binding.index}`}>@audio{binding.index}</span>
+                                    <span key={`audio-${binding.index}`}>audios[{binding.index}]</span>
                                   ))}
                                 </div>
                                 <details>
@@ -1584,7 +1669,15 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                                         ? { originalInput: item.resolvedCase.compilerAudit.originalInput }
                                         : {}),
                                       normalizedInput: item.resolvedCase.compilerAudit.compiledInput,
+                                      requestedGenerationType: item.generationType,
+                                      effectiveGenerationType: item.resolvedCase.compilerAudit.effectiveGenerationType,
+                                      inputIntent: item.resolvedCase.compilerAudit.intent,
+                                      contractSource: item.resolvedCase.compilerAudit.contractSource,
+                                      contractFindings: item.resolvedCase.compilerAudit.contractFindings,
+                                      review: item.resolvedCase.compilerAudit.review,
+                                      parameterSources: item.resolvedCase.parameterAudit,
                                       finalAionRequest: item.resolvedCase.compilerAudit.finalAionRequest,
+                                      overrideAudit: item.resolvedCase.compilerAudit.overrideAudit,
                                     }, null, 2)}
                                   </pre>
                                 </details>
@@ -1603,8 +1696,17 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                     </div>
                   </section>
 
+                  {reviewsDirty && (
+                    <div className="flex flex-wrap items-center justify-between gap-3 border border-sky-400/30 bg-sky-500/10 px-4 py-3 text-sm text-sky-100">
+                      <span>审阅内容已修改。重新预检后才会生成新的请求哈希和最终请求快照。</span>
+                      <button type="button" disabled={busy} onClick={() => { void runPreflight(); }} className="inline-flex items-center gap-2 border border-sky-300/30 px-3 py-1.5 text-xs disabled:opacity-40">
+                        {busy ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} 应用审阅并重新预检
+                      </button>
+                    </div>
+                  )}
+
                   <label className="flex items-start gap-3 border border-amber-400/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-                    <input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} className="mt-0.5" />
+                    <input type="checkbox" checked={confirmed} disabled={reviewsDirty} onChange={event => setConfirmed(event.target.checked)} className="mt-0.5" />
                     <span>{copy.explicitConfirm}</span>
                   </label>
                 </>
@@ -1820,7 +1922,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
             {preflight && (
               <>
                 <button type="button" disabled={busy} onClick={() => { setPreflight(null); setConfirmed(false); setStep(2); }} className="border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200 disabled:opacity-40">{copy.rerunPreflight}</button>
-                <button type="button" disabled={busy || !confirmed || preflight.validCount === 0} onClick={() => { void confirmPreflight(); }} className="inline-flex items-center gap-2 bg-amber-500 px-5 py-2 text-sm font-medium text-black disabled:opacity-40">
+                <button type="button" disabled={busy || reviewsDirty || !confirmed || preflight.validCount === 0} onClick={() => { void confirmPreflight(); }} className="inline-flex items-center gap-2 bg-amber-500 px-5 py-2 text-sm font-medium text-black disabled:opacity-40">
                   {busy ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />} {copy.confirm}
                 </button>
               </>

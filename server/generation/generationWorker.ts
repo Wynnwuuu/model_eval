@@ -12,6 +12,7 @@ import {
   type GenerationCase,
   type NormalizedGenerationModel,
 } from './generationPlanning.ts';
+import { isForceableRelativeGenerationAsset } from '../../src/features/generation/vidmuseInputContract.ts';
 import {
   claimNextGenerationItem,
   beginGenerationSubmission,
@@ -170,6 +171,7 @@ type ProviderPollContext = {
 };
 const prepareInputs = async (item: ClaimedGenerationItem, generationCase: GenerationCase) => {
   const resolve = async (value: string) => {
+    if (isForceableRelativeGenerationAsset(value)) return value;
     if (generationAssetService.usesTemporaryUrls()) {
       if (value.startsWith('asset://')) {
         throw new Error('Uploaded local assets require OSS mode. Use a public media URL in temporary URL mode.');
@@ -216,11 +218,36 @@ const prepareInputs = async (item: ClaimedGenerationItem, generationCase: Genera
       await resolveNestedAssets(value, key, /^elements?$/i.test(key)),
     ] as const)))
     : undefined;
+  const audioInputs = generationCase.audioInputs?.length
+    ? await Promise.all(generationCase.audioInputs.map(async audio => ({
+        ...audio,
+        url: await resolve(audio.url),
+      })))
+    : undefined;
+  const audioUrls = audioInputs?.length
+    ? audioInputs.map(audio => audio.url)
+    : await Promise.all(generationCase.audioUrls.map(value => resolve(value)));
+  const overrideAudit = generationCase.compilerAudit?.overrideAudit;
+  const resolvedOverrideRequest = overrideAudit?.finalRequest
+    ? await resolveNestedAssets(overrideAudit.finalRequest, 'request') as Record<string, unknown>
+    : undefined;
+  const compilerAudit = resolvedOverrideRequest && generationCase.compilerAudit
+    ? {
+        ...generationCase.compilerAudit,
+        finalAionRequest: resolvedOverrideRequest,
+        overrideAudit: {
+          ...overrideAudit,
+          finalRequest: resolvedOverrideRequest,
+        },
+      }
+    : generationCase.compilerAudit;
   return {
     ...generationCase,
     imageUrls: await Promise.all(generationCase.imageUrls.map(value => resolve(value))),
-    audioUrls: await Promise.all(generationCase.audioUrls.map(value => resolve(value))),
+    audioUrls,
+    ...(audioInputs ? { audioInputs } : {}),
     extraInputs,
+    ...(compilerAudit ? { compilerAudit } : {}),
   };
 };
 

@@ -96,15 +96,17 @@ export const ensureStableDatasetItemIds = (
   datasetId: string,
   rows: Record<string, any>[]
 ): Record<string, any>[] => {
-  const occurrenceByCase = new Map<string, number>();
+  const occurrenceByIdentity = new Map<string, number>();
   return rows.map((row, index) => {
     if (getDatasetItemStableId(row)) return { ...row };
     const caseId = getDatasetRowCaseId(row, index);
-    const occurrence = occurrenceByCase.get(caseId) || 0;
-    occurrenceByCase.set(caseId, occurrence + 1);
+    const variantLabel = String(row.variant_label ?? '').trim();
+    const identity = `${caseId}|${variantLabel}`;
+    const occurrence = occurrenceByIdentity.get(identity) || 0;
+    occurrenceByIdentity.set(identity, occurrence + 1);
     return {
       ...row,
-      [DATASET_ITEM_ID_KEY]: `${datasetId}:item:${hashString(`${caseId}|${occurrence}`)}`,
+      [DATASET_ITEM_ID_KEY]: `${datasetId}:item:${hashString(`${identity}|${occurrence}`)}`,
     };
   });
 };

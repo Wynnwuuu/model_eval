@@ -198,6 +198,23 @@ assert.equal(ambiguousPlan.updates.length, 0, 'ambiguous legacy rows must not be
 assert.equal(ambiguousPlan.additions.length, 0, 'ambiguous legacy rows must not trigger duplicate additions');
 assert.ok(ambiguousPlan.warnings.length > 0, 'ambiguous legacy rows must surface synchronization warnings');
 
+const variantRows = ensureStableDatasetItemIds('dataset-variants', [
+  { case_id: 'shared-case', variant_label: 'baseline', prompt: 'first' },
+  { case_id: 'shared-case', variant_label: 'reference', prompt: 'second' },
+  { case_id: 'shared-case', variant_label: 'reference', prompt: 'third' },
+]);
+assert.notEqual(variantRows[0][DATASET_ITEM_ID_KEY], variantRows[1][DATASET_ITEM_ID_KEY]);
+assert.notEqual(variantRows[1][DATASET_ITEM_ID_KEY], variantRows[2][DATASET_ITEM_ID_KEY]);
+assert.deepEqual(
+  ensureStableDatasetItemIds('dataset-variants', [
+    { case_id: 'shared-case', variant_label: 'baseline', prompt: 'changed' },
+    { case_id: 'shared-case', variant_label: 'reference', prompt: 'changed' },
+    { case_id: 'shared-case', variant_label: 'reference', prompt: 'changed again' },
+  ]).map(row => row[DATASET_ITEM_ID_KEY]),
+  variantRows.map(row => row[DATASET_ITEM_ID_KEY]),
+  'case_id plus variant_label and deterministic occurrence must define new stable item IDs',
+);
+
 const legacyBinding = inferTaskDatasetBinding(
   { ...activeTask, datasetBinding: undefined },
   activeItems,

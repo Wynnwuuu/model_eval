@@ -308,3 +308,59 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - After diagnostic deployment, the preserved smoke record displayed `AION_SUBMISSION_UNKNOWN / HTTP 500`; submission and termination were both `2026-08-06 10:37:59`, and no provider task ID existed.
 - This proves the smoke failed at the Aion submission boundary rather than from the 1200-second Wan task timeout, reconciliation, fair scheduling, or model concurrency.
 - Public detail QA passed at a 524px viewport with no horizontal overflow. CI, image build, migration validation, and dev rollout for `9f06bca` all succeeded.
+
+## 2026-08-06: Generation parameter source deduplication
+
+### Completed
+
+- Limited MCP mapping to case-content fields and changed fresh mappings to infer Prompt only.
+- Added one persisted binding per standard or advanced parameter with uniform, dataset-column, or unused sources.
+- Kept duration and Seed on their dedicated strategies; dedicated Seed wins over any legacy `extra_params.seed`.
+- Added strict boolean, number, JSON, enum, range, empty-cell, and duplicate-source validation without changing historical preflight behavior.
+- Classified non-contract live-config fields as disabled advanced parameters that only pass through `extra_params`; blocked `reference_image_urls` and `multi_shots` with replacement guidance.
+- Preserved `false` and `0` in final Aion requests and stored source/value audit data in existing JSONB.
+
+### Validation
+
+- `test:generation`, `test:generation:db`, dataset sync/import/clone/column/table tests, Arena, rank ties, and API smoke passed.
+- `lint`, `server:build`, and `build` passed; only existing Vite mixed-import and chunk-size warnings remain.
+- Browser QA confirmed Prompt-only input mapping, every ordinary/advanced parameter initially unused, one source selector per parameter, dedicated duration/Seed sections, strict invalid-boolean isolation, and `false` preservation in final request audit.
+
+## 2026-08-06: Explicit VidMuse video input intent (V2)
+
+### Completed
+
+- Added `GenerationContentMappingV2` so Prompt, keyframes, reference elements, and reference audios retain explicit user intent before MCP compilation.
+- Reserved `image_urls` for one first frame or ordered first/last frames; ordinary reference images and videos compile only into ordered `elements`, and reference audio compiles only into ordered `audios`.
+- Added per-case mode inference, strict keyframe/reference conflict rejection, V2 prompt formats, decimal multi-shot durations, exact audio ranges, prompt index auditing, and requested/effective generation-type audit for H3/Wan dual-frame requests.
+- Replaced the duplicate MCP/assisted UI with one responsive mapping surface plus ordered element and audio builders. Fresh mappings select only Prompt.
+- Preserved the V1 compiler and historical snapshots; no database migration, Worker, asset, writeback, or human-evaluation changes were required.
+
+### Validation
+
+- Generation/MCP, PostgreSQL generation, dataset sync/import/clone/column/table, Arena, and rank tests passed.
+- Frontend and server TypeScript checks plus both production builds passed; only existing Vite chunk/import warnings remain.
+- Browser QA passed at 1440x1000 and 390x844. The builders stayed contained and model descriptions were visible.
+- A live H3 text-only preflight was valid as `text_to_video`; the final request contained Prompt, duration, resolution, and `auto_adjust_duration_to_supported=false` with no media fields. No paid generation was submitted.
+
+## 2026-08-07: Generic VidMuse MCP contract review (implementation complete)
+
+### Completed
+
+- Added an exact `VidMuse evaluation` preset for `prompt`, `image_urls`, `elements`, `audio_url`, standard parameter columns, and modality-based row selection while preserving every source column.
+- Added compiler v3 for new preflights. It derives each case mode from explicit MCP channels, removes new-task model-name profiles, preserves historical v1/v2 snapshots, and requires review for mixed or unresolved inputs.
+- Added the reviewed `general-mv-main-dsl-v2-en-0721` Plugin snapshot at commit `1029c7970b7069f2e088247cc870992bc65d1424`; rules produce reviewable findings and never mutate requests silently.
+- Added per-case finding acceptance/rejection, Prompt edits, final Aion JSON overrides, duplicate-billing confirmation, security validation, immutable account/model/features fields, and JSONB audit persistence without a migration.
+- Preserved safe `online-mining/...` relative audio references for explicit risk-confirmed submission and rejected unsafe relative paths.
+- Added stable dataset item IDs based on `case_id + variant_label + occurrence`, without modifying business columns.
+- Updated the as-built MCP/Aion input contract document in `docs/manueval-vidmuse-mcp-video-input-contract-review.md`.
+
+### Validation
+
+- `test:generation`, `test:generation:db`, all dataset tests, Arena, rank ties, API smoke, `lint`, `server:build`, and the frontend production build passed. Existing Vite mixed-import and chunk-size warnings remain unchanged.
+- The compact attachment fixture covers 18 element/`@imageN`, 3 inverse keyframe/`@ElementN`, and 11 mixed-input cases without committing the full business dataset.
+- The real 188-row attachment imported with exact source-key resolution. Video preflight selected 164 video cases and isolated 54 invalid/review-required cases; image mapping selected only the 24 image cases.
+- Browser QA confirmed exact mappings, per-case modes, request audit, no batch creation, desktop containment, and 390x844 mobile containment with wide case tables scrolling only inside their own container.
+- Fixed duplicate React issue keys found during QA; a fresh video preflight produced no new browser console errors.
+- Rebased onto GitHub main `4c12bbe` while preserving its Wan HTTP 500 incident record. The full generation/database/dataset/Arena/API/typecheck/build gate passed again after the rebase.
+- Remaining: push the rebased commit, inspect CI, and verify the dev deployment. No paid generation has been submitted.

@@ -29,12 +29,18 @@ import {
 import { createByteLimitStream, generationAssetService } from '../server/generation/generationAssetService.ts';
 import {
   buildGenerationCasesForPreflight,
+  validateGenerationRequestOverride,
+  validateGenerationContentMappingConfiguration,
+  validateGenerationParameterBindings,
   validateDurationSourceConfiguration,
 } from '../server/generation/generationPreflightService.ts';
 import { inferDatasetMappings } from '../src/datasetManifest.ts';
 import {
+  defaultVidMuseEvaluationParameterColumns,
   defaultGenerationInputMapping,
+  generationRowMatchesModality,
   getGenerationImageRole,
+  hasVidMuseEvaluationPreset,
   inferGenerationImageRole,
   setGenerationImageRole,
 } from '../src/features/generation/inputMapping.ts';
@@ -296,9 +302,7 @@ const canonicalDefaultMapping = defaultGenerationInputMapping(
     referenceColumns: [],
   },
 );
-assert.deepEqual(canonicalDefaultMapping.canonicalFieldMappings, {
-  prompt: 'prompt', image_urls: 'image_urls', elements: 'elements', audios: 'audios',
-});
+assert.deepEqual(canonicalDefaultMapping.canonicalFieldMappings, { prompt: 'prompt' });
 const exactPromptDefaultMapping = defaultGenerationInputMapping(
   { inputSchema: [], items: [] } as any,
   ['other_input', 'prompt'],
@@ -312,6 +316,93 @@ const exactPromptDefaultMapping = defaultGenerationInputMapping(
 );
 assert.equal(exactPromptDefaultMapping.promptColumn, 'prompt');
 assert.equal(exactPromptDefaultMapping.canonicalFieldMappings?.prompt, 'prompt');
+
+const vidMusePresetHeaders = [
+  'case_id', 'cell_id', 'modality', 'effects', 'intent', 'variant_label', 'prompt',
+  'duration', 'aspect_ratio', 'resolution', 'generate_audio', 'audio_url',
+  'source_thread', 'source_note', 'image_urls', 'elements',
+];
+assert.equal(hasVidMuseEvaluationPreset(vidMusePresetHeaders), true);
+const vidMuseVideoPreset = defaultGenerationInputMapping(
+  { inputSchema: [], items: [] } as any,
+  vidMusePresetHeaders,
+  { standard: {}, inputColumns: [], outputColumns: [], dimensionColumns: [], referenceColumns: [] },
+  'video',
+);
+assert.equal(vidMuseVideoPreset.presetId, 'vidmuse_evaluation_v1');
+assert.deepEqual(vidMuseVideoPreset.contentMapping?.keyframes, { source: 'array_column', column: 'image_urls' });
+assert.deepEqual(vidMuseVideoPreset.contentMapping?.elements, { source: 'array_column', column: 'elements' });
+assert.deepEqual(vidMuseVideoPreset.contentMapping?.audios, {
+  source: 'builder',
+  items: [{ id: 'preset-audio-1', urlColumn: 'audio_url', rangeSource: 'none' }],
+});
+const vidMuseImagePreset = defaultGenerationInputMapping(
+  { inputSchema: [], items: [] } as any,
+  vidMusePresetHeaders,
+  { standard: {}, inputColumns: [], outputColumns: [], dimensionColumns: [], referenceColumns: [] },
+  'image',
+);
+assert.deepEqual(vidMuseImagePreset.contentMapping?.elements, { source: 'unused' });
+assert.deepEqual(vidMuseImagePreset.contentMapping?.audios, { source: 'unused' });
+assert.deepEqual(defaultVidMuseEvaluationParameterColumns(
+  vidMusePresetHeaders,
+  ['aspect_ratio', 'resolution', 'generate_audio', 'watermark'],
+), {
+  aspect_ratio: { source: 'column', column: 'aspect_ratio' },
+  resolution: { source: 'column', column: 'resolution' },
+  generate_audio: { source: 'column', column: 'generate_audio' },
+});
+assert.equal(generationRowMatchesModality({ modality: 'video' }, 'video'), true);
+assert.equal(generationRowMatchesModality({ modality: 'image' }, 'video'), false);
+assert.equal(generationRowMatchesModality({}, 'video'), true);
+assert.equal(generationRowMatchesModality({ _originalData: { modality: 'image' } }, 'video'), false);
+
+const importedVidMusePresetDataset = {
+  inputSchema: [
+    { key: '\u7528\u4f8bID', label: '\u7528\u4f8bID', sourceKey: 'case_id', canonicalKey: 'case_id' },
+    { key: 'modality', label: 'modality', sourceKey: 'modality' },
+    { key: '\u5b8c\u6574Prompt', label: '\u5b8c\u6574Prompt', sourceKey: 'prompt', canonicalKey: 'full_prompt' },
+    { key: 'duration', label: 'duration', sourceKey: 'duration' },
+    { key: 'aspect_ratio', label: 'aspect_ratio', sourceKey: 'aspect_ratio' },
+    { key: 'resolution', label: 'resolution', sourceKey: 'resolution' },
+    { key: 'generate_audio', label: 'generate_audio', sourceKey: 'generate_audio' },
+    { key: '\u97f3\u9891_URL', label: '\u97f3\u9891_URL', sourceKey: 'audio_url', canonicalKey: 'audio_url' },
+    { key: 'image_urls', label: 'image_urls', sourceKey: 'image_urls' },
+    { key: 'elements', label: 'elements', sourceKey: 'elements' },
+  ],
+  items: [],
+} as any;
+const importedVidMuseHeaders = importedVidMusePresetDataset.inputSchema.map((field: { key: string }) => field.key);
+assert.equal(hasVidMuseEvaluationPreset(importedVidMuseHeaders, importedVidMusePresetDataset.inputSchema), true);
+const importedVidMuseVideoPreset = defaultGenerationInputMapping(
+  importedVidMusePresetDataset,
+  importedVidMuseHeaders,
+  {
+    standard: { case_id: '\u7528\u4f8bID', full_prompt: '\u5b8c\u6574Prompt', audio_url: '\u97f3\u9891_URL' },
+    inputColumns: ['\u5b8c\u6574Prompt', 'duration', 'aspect_ratio', 'resolution', 'generate_audio', 'image_urls', 'elements'],
+    outputColumns: [],
+    dimensionColumns: [],
+    referenceColumns: ['\u97f3\u9891_URL'],
+  },
+  'video',
+);
+assert.equal(importedVidMuseVideoPreset.presetId, 'vidmuse_evaluation_v1');
+assert.equal(importedVidMuseVideoPreset.contentMapping?.prompt.column, '\u5b8c\u6574Prompt');
+assert.deepEqual(importedVidMuseVideoPreset.contentMapping?.keyframes, { source: 'array_column', column: 'image_urls' });
+assert.deepEqual(importedVidMuseVideoPreset.contentMapping?.elements, { source: 'array_column', column: 'elements' });
+assert.deepEqual(importedVidMuseVideoPreset.contentMapping?.audios, {
+  source: 'builder',
+  items: [{ id: 'preset-audio-1', urlColumn: '\u97f3\u9891_URL', rangeSource: 'none' }],
+});
+assert.deepEqual(defaultVidMuseEvaluationParameterColumns(
+  importedVidMuseHeaders,
+  ['aspect_ratio', 'resolution', 'generate_audio'],
+  importedVidMusePresetDataset.inputSchema,
+), {
+  aspect_ratio: { source: 'column', column: 'aspect_ratio' },
+  resolution: { source: 'column', column: 'resolution' },
+  generate_audio: { source: 'column', column: 'generate_audio' },
+});
 
 
 
@@ -470,6 +561,72 @@ const camelCaseVideoModel = {
 };
 
 const videoModel = normalizeAionModelConfig(rawVideoModel);
+const overrideBaseRequest = {
+  model_name: videoModel.modelName,
+  generation_type: 'image_to_video',
+  prompt: 'Original prompt',
+  image_urls: ['https://cdn.example.com/first.png'],
+  features: { auto_adjust_duration_to_supported: false },
+};
+assert.equal(validateGenerationRequestOverride(videoModel, overrideBaseRequest, {
+  ...overrideBaseRequest,
+  prompt: 'Reviewed prompt',
+}).prompt, 'Reviewed prompt');
+assert.throws(() => validateGenerationRequestOverride(videoModel, overrideBaseRequest, {
+  ...overrideBaseRequest,
+  model_name: 'another/model',
+}), /selected model is immutable/i);
+assert.throws(() => validateGenerationRequestOverride(videoModel, overrideBaseRequest, {
+  ...overrideBaseRequest,
+  features: { auto_adjust_duration_to_supported: true },
+}), /features object is immutable/i);
+assert.throws(() => validateGenerationRequestOverride(videoModel, overrideBaseRequest, {
+  ...overrideBaseRequest,
+  callback_url: 'https://attacker.example.com/callback',
+}), /protected field/i);
+assert.throws(() => validateGenerationRequestOverride(videoModel, overrideBaseRequest, {
+  ...overrideBaseRequest,
+  image_urls: ['file:///etc/passwd'],
+}), /file URL/i);
+assert.throws(() => validateGenerationRequestOverride(videoModel, overrideBaseRequest, {
+  ...overrideBaseRequest,
+  audios: [{ url: '../private/audio.mp3' }],
+}), /Path traversal/i);
+const reviewedOverrideRequest = validateGenerationRequestOverride(videoModel, overrideBaseRequest, {
+  ...overrideBaseRequest,
+  generation_type: 'reference_to_video',
+  prompt: 'Reviewed request',
+  image_urls: [],
+  elements: [{ frontal_image_url: 'https://cdn.example.com/reference.png' }],
+});
+assert.deepEqual(buildAionGenerationRequest(videoModel, {
+  caseId: 'override-case',
+  datasetItemId: 'override-item',
+  rowIndex: 0,
+  prompt: 'Original request',
+  imageUrls: ['https://cdn.example.com/first.png'],
+  audioUrls: [],
+  controls: {},
+  generationType: 'image_to_video',
+  compilerAudit: {
+    compilerVersion: '3',
+    compatibilityApplied: false,
+    originalInput: {},
+    compiledInput: {},
+    bindings: { images: [], elements: [], audios: [] },
+    overrideAudit: {
+      forced: true,
+      reason: 'Reviewed model-specific contract.',
+      actorId: 'user-1',
+      actorName: 'Tester',
+      reviewedAt: 1,
+      originalRequest: overrideBaseRequest,
+      finalRequest: reviewedOverrideRequest,
+      bypassedRules: ['UNSUPPORTED_GENERATION_TYPE'],
+      configFingerprint: videoModel.configFingerprint,
+    },
+  },
+}).body, reviewedOverrideRequest);
 assert.equal(videoModel.id, rawVideoModel.name);
 assert.equal(videoModel.outputModality, 'video');
 assert.deepEqual(getSupportedGenerationImageRoles(videoModel), ['start', 'end']);
@@ -477,9 +634,41 @@ assert.deepEqual(videoModel.supportedDurations, [5, 10]);
 assert.equal(videoModel.controls.find(item => item.key === 'duration')?.defaultValue, 5);
 assert.ok(videoModel.configFingerprint);
 
-assert.equal(videoModel.controls.find(item => item.key === 'camera_motion')?.type, 'text');
-assert.equal(videoModel.controls.find(item => item.key === 'custom_strength')?.type, 'number');
-assert.equal(videoModel.controls.find(item => item.key === 'custom_strength')?.defaultValue, 0.5);
+assert.equal(videoModel.controls.find(item => item.key === 'camera_motion'), undefined);
+assert.equal(videoModel.advancedParameters.find(item => item.key === 'camera_motion')?.verified, false);
+assert.equal(videoModel.controls.find(item => item.key === 'custom_strength'), undefined);
+assert.equal(videoModel.advancedParameters.find(item => item.key === 'custom_strength')?.verified, false);
+
+const wanParameterModel = normalizeAionModelConfig({
+  ...rawVideoModel,
+  name: 'wan/wan3.0-video',
+  options: {
+    ...rawVideoModel.options,
+    supported_params: [
+      'prompt',
+      'duration',
+      'generate_audio',
+      'watermark',
+      'seed',
+      'reference_image_urls',
+      'multi_shots',
+      'adapter_hint',
+    ],
+    parameter_schema: { properties: {} },
+  },
+});
+assert.ok(wanParameterModel.controls.some(item => item.key === 'generate_audio' && item.type === 'toggle'));
+assert.ok(wanParameterModel.controls.some(item => item.key === 'watermark' && item.type === 'toggle'));
+assert.equal(wanParameterModel.controls.some(item => item.key === 'seed'), false);
+assert.deepEqual(wanParameterModel.advancedParameters.map(item => item.key), ['adapter_hint']);
+assert.deepEqual(
+  wanParameterModel.invalidParameters.map(item => item.key).sort(),
+  ['multi_shots', 'reference_image_urls'],
+);
+assert.match(
+  wanParameterModel.invalidParameters.find(item => item.key === 'reference_image_urls')?.replacement || '',
+  /elements\[\]\.reference_image_urls/,
+);
 
 const cliShapeModel = normalizeAionModelConfig(camelCaseVideoModel);
 assert.equal(cliShapeModel.displayName, camelCaseVideoModel.displayName);
@@ -818,7 +1007,366 @@ assert.deepEqual(mcpRequest.body.elements, [
 assert.deepEqual(mcpRequest.body.audios, [
   { url: 'https://assets.example.com/voice.mp3', range: [0, 4] },
 ]);
+const v2IntentDataset = {
+  id: 'dataset-mcp-v2-intent',
+  items: [
+    {
+      [DATASET_ITEM_ID_KEY]: 'intent-reference',
+      case_id: 'intent-reference',
+      prompt: 'Keep @Element1 and @Element2 consistent.',
+      first_frame: '',
+      last_frame: '',
+      reference_a: 'https://assets.example.com/reference-a.png',
+      reference_b: 'https://assets.example.com/reference-b.png',
+    },
+    {
+      [DATASET_ITEM_ID_KEY]: 'intent-keyframes',
+      case_id: 'intent-keyframes',
+      prompt: 'Move from @Image1 to @Image2.',
+      first_frame: 'https://assets.example.com/first.png',
+      last_frame: 'https://assets.example.com/last.png',
+      reference_a: '',
+      reference_b: '',
+    },
+    {
+      [DATASET_ITEM_ID_KEY]: 'intent-conflict',
+      case_id: 'intent-conflict',
+      prompt: 'Conflicting media.',
+      first_frame: 'https://assets.example.com/first.png',
+      last_frame: '',
+      reference_a: 'https://assets.example.com/reference.png',
+      reference_b: '',
+    },
+  ],
+} as any;
+const v2IntentRequest = {
+  datasetId: v2IntentDataset.id,
+  datasetVersion: 1,
+  modelName: hailuoH3Model.modelName,
+  targetColumn: 'result',
+  inputMapping: {
+    contentMappingVersion: 2 as const,
+    contentMapping: {
+      version: 2 as const,
+      prompt: { column: 'prompt', format: 'text' as const },
+      keyframes: {
+        source: 'columns' as const,
+        firstColumn: 'first_frame',
+        lastColumn: 'last_frame',
+      },
+      elements: {
+        source: 'builder' as const,
+        items: [
+          { id: 'reference-a', mode: 'image' as const, frontalImageColumn: 'reference_a' },
+          { id: 'reference-b', mode: 'image' as const, frontalImageColumn: 'reference_b' },
+        ],
+      },
+      audios: { source: 'unused' as const },
+    },
+  },
+  defaultControls: { duration: 5 },
+  perCaseControlColumns: {},
+  durationSource: { mode: 'uniform' as const },
+  seedMode: 'fixed' as const,
+  fixedSeed: 7,
+};
+assert.doesNotThrow(() => validateGenerationContentMappingConfiguration(
+  v2IntentRequest,
+  hailuoH3Model,
+  v2IntentDataset,
+));
+const v2IntentCases = buildGenerationCasesForPreflight(
+  v2IntentDataset,
+  v2IntentRequest,
+  hailuoH3Model,
+  v2IntentDataset.items.map((row: Record<string, unknown>, rowIndex: number) => ({
+    row,
+    rowIndex,
+    datasetItemId: String(row[DATASET_ITEM_ID_KEY]),
+  })),
+);
+assert.equal(v2IntentCases[0].resolvedCase.generationType, 'reference_to_video');
+assert.deepEqual(v2IntentCases[0].resolvedCase.imageUrls, []);
+assert.deepEqual(v2IntentCases[0].resolvedCase.extraInputs?.elements, [
+  { frontal_image_url: 'https://assets.example.com/reference-a.png' },
+  { frontal_image_url: 'https://assets.example.com/reference-b.png' },
+]);
+assert.equal(v2IntentCases[1].resolvedCase.generationType, 'images_to_video');
+assert.equal(v2IntentCases[1].resolvedCase.compilerAudit?.effectiveGenerationType, undefined);
+assert.equal(v2IntentCases[1].resolvedCase.compilerAudit?.profileId, undefined);
+assert.deepEqual(v2IntentCases[1].resolvedCase.imageUrls, [
+  'https://assets.example.com/first.png',
+  'https://assets.example.com/last.png',
+]);
+assert.deepEqual(v2IntentCases[1].resolvedCase.extraInputs?.elements, []);
+assert.equal(v2IntentCases[2].resolvedCase.generationType, 'manual_review');
+assert.ok(v2IntentCases[2].preparationIssues.some(issue => issue.code === 'CONTRACT_REVIEW_REQUIRED'));
+assert.ok(v2IntentCases[2].resolvedCase.compilerAudit?.contractFindings?.some(
+  finding => finding.id === 'plugin-mixed-keyframes-to-elements',
+));
+assert.equal(v2IntentCases[0].resolvedCase.compilerAudit?.intent?.mappingVersion, 2);
 
+const v2StructuredDataset = {
+  id: 'dataset-mcp-v2-structured',
+  items: [{
+    [DATASET_ITEM_ID_KEY]: 'structured-1',
+    case_id: 'structured-1',
+    prompt: '[Scene 1] Keep this literal.',
+    frontal: 'https://assets.example.com/front.png',
+    angle_a: 'https://assets.example.com/left.png',
+    angle_b: 'https://assets.example.com/right.png',
+    audio: 'https://assets.example.com/voice.mp3',
+    range_start: '0.1234',
+    range_end: '3.9876',
+  }],
+} as any;
+const v2StructuredCases = buildGenerationCasesForPreflight(v2StructuredDataset, {
+  datasetId: v2StructuredDataset.id,
+  datasetVersion: 1,
+  modelName: hailuoH3Model.modelName,
+  targetColumn: 'result',
+  inputMapping: {
+    contentMappingVersion: 2,
+    contentMapping: {
+      version: 2,
+      prompt: { column: 'prompt', format: 'text' },
+      keyframes: { source: 'unused' },
+      elements: {
+        source: 'builder',
+        items: [{
+          id: 'subject',
+          mode: 'image',
+          frontalImageColumn: 'frontal',
+          referenceImageColumns: ['angle_a', 'angle_b'],
+        }],
+      },
+      audios: {
+        source: 'builder',
+        items: [{
+          id: 'voice',
+          urlColumn: 'audio',
+          rangeSource: 'columns',
+          rangeStartColumn: 'range_start',
+          rangeEndColumn: 'range_end',
+        }],
+      },
+    },
+  },
+  defaultControls: { duration: 5 },
+  perCaseControlColumns: {},
+  durationSource: { mode: 'uniform' },
+  seedMode: 'fixed',
+  fixedSeed: 9,
+}, hailuoH3Model, [{
+  row: v2StructuredDataset.items[0],
+  rowIndex: 0,
+  datasetItemId: 'structured-1',
+}]);
+assert.equal(v2StructuredCases[0].resolvedCase.prompt, '[Scene 1] Keep this literal.');
+assert.deepEqual(v2StructuredCases[0].resolvedCase.extraInputs?.elements, [{
+  frontal_image_url: 'https://assets.example.com/front.png',
+  reference_image_urls: [
+    'https://assets.example.com/left.png',
+    'https://assets.example.com/right.png',
+  ],
+}]);
+assert.deepEqual(v2StructuredCases[0].resolvedCase.audioInputs, [{
+  url: 'https://assets.example.com/voice.mp3',
+  range: [0.1234, 3.9876],
+}]);
+
+
+
+const parameterDataset = {
+  id: 'dataset-parameter-bindings',
+  items: [
+    {
+      [DATASET_ITEM_ID_KEY]: 'parameter-item-1',
+      case_id: 'parameter-case-1',
+      prompt: 'A paper boat crossing a quiet lake.',
+      generate_audio_value: '\u662f',
+      adapter_hint_value: '{"mode":"cinematic"}',
+    },
+    {
+      [DATASET_ITEM_ID_KEY]: 'parameter-item-2',
+      case_id: 'parameter-case-2',
+      prompt: 'A paper plane crossing a bright room.',
+      generate_audio_value: 'maybe',
+      adapter_hint_value: '',
+    },
+  ],
+} as any;
+const parameterSelection = parameterDataset.items.map((row: Record<string, unknown>, rowIndex: number) => ({
+  row,
+  rowIndex,
+  datasetItemId: String(row[DATASET_ITEM_ID_KEY]),
+}));
+const parameterRequest = {
+  datasetId: parameterDataset.id,
+  datasetVersion: 1,
+  modelName: wanParameterModel.modelName,
+  targetColumn: 'result',
+  inputMapping: {
+    mappingMode: 'mcp',
+    canonicalFieldMappings: { prompt: 'prompt' },
+    referenceImageColumns: [],
+    referenceAudioColumns: [],
+    referenceVideoColumns: [],
+    extraInputColumns: [],
+  },
+  defaultControls: { duration: 5 },
+  perCaseControlColumns: {},
+  durationSource: { mode: 'uniform' },
+  seedMode: 'fixed',
+  fixedSeed: 17,
+  parameterBindings: {
+    generate_audio: { source: 'column', column: 'generate_audio_value' },
+    watermark: { source: 'uniform', value: false },
+    adapter_hint: { source: 'column', column: 'adapter_hint_value', valueType: 'json' },
+  },
+} as any;
+validateGenerationParameterBindings(parameterRequest, wanParameterModel, parameterDataset);
+const parameterCases = buildGenerationCasesForPreflight(
+  parameterDataset,
+  parameterRequest,
+  wanParameterModel,
+  parameterSelection,
+);
+assert.deepEqual(parameterCases[0].preparationIssues, []);
+assert.equal(parameterCases[0].resolvedCase.controls.generate_audio, true);
+assert.equal(parameterCases[0].resolvedCase.controls.watermark, false);
+assert.deepEqual(parameterCases[0].resolvedCase.extraInputs?.extra_params, {
+  adapter_hint: { mode: 'cinematic' },
+});
+assert.equal(parameterCases[0].resolvedCase.parameterAudit?.generate_audio.source, 'column');
+assert.ok(parameterCases[0].preparationWarnings.some(
+  issue => issue.code === 'UNVERIFIED_EXTRA_PARAMETER' && issue.field === 'adapter_hint',
+));
+assert.ok(parameterCases[1].preparationIssues.some(
+  issue => issue.code === 'INVALID_PARAMETER_VALUE' && issue.field === 'generate_audio',
+));
+assert.ok(parameterCases[1].preparationIssues.some(
+  issue => issue.code === 'MISSING_PARAMETER_COLUMN_VALUE' && issue.field === 'adapter_hint',
+));
+const parameterAionRequest = buildAionGenerationRequest(wanParameterModel, {
+  ...parameterCases[0].resolvedCase,
+  generationType: parameterCases[0].resolvedCase.generationType || 'text_to_video',
+});
+assert.equal(parameterAionRequest.body.generate_audio, true);
+assert.equal(parameterAionRequest.body.watermark, false);
+assert.equal(parameterAionRequest.body.extra_params.seed, 17);
+assert.deepEqual(parameterAionRequest.body.extra_params.adapter_hint, { mode: 'cinematic' });
+const protectedSeedRequest = buildAionGenerationRequest(wanParameterModel, {
+  ...parameterCases[0].resolvedCase,
+  generationType: parameterCases[0].resolvedCase.generationType || 'text_to_video',
+  extraInputs: {
+    ...parameterCases[0].resolvedCase.extraInputs,
+    extra_params: { seed: 99 },
+  },
+});
+assert.equal(protectedSeedRequest.body.extra_params.seed, 17);
+
+const booleanVariants: Array<[unknown, boolean]> = [
+  ['true', true], ['1', true], ['yes', true], ['on', true], ['enabled', true],
+  ['\u662f', true], ['\u5f00', true], ['\u542f\u7528', true],
+  ['false', false], ['0', false], ['no', false], ['off', false], ['disabled', false],
+  ['\u5426', false], ['\u5173', false], ['\u7981\u7528', false],
+];
+const booleanDataset = {
+  id: 'dataset-boolean-bindings',
+  items: booleanVariants.map(([value], index) => ({
+    [DATASET_ITEM_ID_KEY]: `boolean-item-${index}`,
+    case_id: `boolean-case-${index}`,
+    prompt: `Boolean parser case ${index}`,
+    generate_audio_value: value,
+  })),
+} as any;
+const booleanRequest = {
+  ...parameterRequest,
+  datasetId: booleanDataset.id,
+  parameterBindings: {
+    generate_audio: { source: 'column', column: 'generate_audio_value' },
+  },
+} as any;
+validateGenerationParameterBindings(booleanRequest, wanParameterModel, booleanDataset);
+const booleanCases = buildGenerationCasesForPreflight(
+  booleanDataset,
+  booleanRequest,
+  wanParameterModel,
+  booleanDataset.items.map((row: Record<string, unknown>, rowIndex: number) => ({
+    row,
+    rowIndex,
+    datasetItemId: String(row[DATASET_ITEM_ID_KEY]),
+  })),
+);
+booleanCases.forEach((item, index) => {
+  assert.deepEqual(item.preparationIssues, []);
+  assert.equal(item.resolvedCase.controls.generate_audio, booleanVariants[index][1]);
+});
+const unusedAdvancedRequest = {
+  ...parameterRequest,
+  parameterBindings: { adapter_hint: { source: 'unused' } },
+} as any;
+validateGenerationParameterBindings(unusedAdvancedRequest, wanParameterModel, parameterDataset);
+const unusedAdvancedCase = buildGenerationCasesForPreflight(
+  parameterDataset,
+  unusedAdvancedRequest,
+  wanParameterModel,
+  [parameterSelection[0]],
+)[0];
+const unusedAdvancedAionRequest = buildAionGenerationRequest(wanParameterModel, {
+  ...unusedAdvancedCase.resolvedCase,
+  generationType: unusedAdvancedCase.resolvedCase.generationType || 'text_to_video',
+});
+assert.equal(unusedAdvancedAionRequest.body.extra_params.adapter_hint, undefined);
+assert.throws(() => validateGenerationParameterBindings({
+  ...parameterRequest,
+  parameterBindings: { seed: { source: 'uniform', value: 99 } },
+} as any, wanParameterModel, parameterDataset), /dedicated Seed strategy/);
+assert.throws(() => validateGenerationParameterBindings({
+  ...parameterRequest,
+  parameterBindings: { multi_shots: { source: 'uniform', value: true } },
+} as any, wanParameterModel, parameterDataset), /prompt.*duration/);
+assert.throws(() => validateGenerationParameterBindings({
+  ...parameterRequest,
+  inputMapping: {
+    ...parameterRequest.inputMapping,
+    canonicalFieldMappings: { prompt: 'prompt', reference_image_urls: 'adapter_hint_value' },
+  },
+  parameterBindings: {},
+} as any, videoModel, parameterDataset), /elements\[\]\.reference_image_urls/);
+assert.throws(() => validateGenerationParameterBindings({
+  ...parameterRequest,
+  parameterBindings: {
+    reference_image_urls: { source: 'column', column: 'adapter_hint_value', valueType: 'json' },
+  },
+} as any, wanParameterModel, parameterDataset), /elements\[\]\.reference_image_urls/);
+assert.throws(() => validateGenerationParameterBindings({
+  ...parameterRequest,
+  inputMapping: {
+    ...parameterRequest.inputMapping,
+    canonicalFieldMappings: {
+      prompt: 'prompt',
+      generate_audio: 'generate_audio_value',
+    },
+  },
+} as any, wanParameterModel, parameterDataset), /generation parameter mapping/i);
+
+assert.throws(() => validateGenerationParameterBindings({
+  ...parameterRequest,
+  inputMapping: {
+    ...parameterRequest.inputMapping,
+    extraInputMappings: { adapter_hint: 'adapter_hint_value' },
+  },
+} as any, wanParameterModel, parameterDataset), /explicit parameterBindings/i);
+assert.throws(() => validateGenerationParameterBindings({
+  ...parameterRequest,
+  inputMapping: {
+    ...parameterRequest.inputMapping,
+    extraInputColumns: ['multi_shots'],
+  },
+  parameterBindings: {},
+} as any, wanParameterModel, parameterDataset), /prompt.*duration/);
 assert.throws(() => validateDurationSourceConfiguration({
   datasetId: serviceDataset.id,
   datasetVersion: 1,
@@ -888,6 +1436,33 @@ const rangedAudioCase = preflightGenerationCase(audioUrlOnlyModel, {
 assert.equal(rangedAudioCase.valid, false);
 assert.ok(rangedAudioCase.errors.some(item =>
   item.code === 'AUDIO_RANGE_REQUIRES_AUDIOS'));
+
+const v3AudioContractCase = preflightGenerationCase(audioUrlOnlyModel, {
+  caseId: 'case-v3-audio-contract',
+  datasetItemId: 'item-v3-audio-contract',
+  rowIndex: 8,
+  prompt: 'Use the reference audio.',
+  imageUrls: ['https://assets.example.com/reference.png'],
+  audioUrls: ['https://assets.example.com/voice.wav'],
+  audioInputs: [{ url: 'https://assets.example.com/voice.wav' }],
+  controls: { duration: 5, resolution: '1080p' },
+  generationType: 'image_to_video',
+  compilerAudit: {
+    compilerVersion: '3',
+    compatibilityApplied: false,
+    originalInput: {},
+    compiledInput: {},
+    bindings: { images: [], elements: [], audios: [] },
+  },
+});
+assert.ok(v3AudioContractCase.errors.some(item =>
+  item.code === 'UNSUPPORTED_INPUT' && item.field === 'audios'));
+const v3AudioContractRequest = buildAionGenerationRequest(
+  audioUrlOnlyModel,
+  v3AudioContractCase.resolvedCase,
+);
+assert.deepEqual(v3AudioContractRequest.body.audios, [{ url: 'https://assets.example.com/voice.wav' }]);
+assert.equal(v3AudioContractRequest.body.audio_url, undefined);
 
 const multipleAudioUrlCase = preflightGenerationCase(audioUrlOnlyModel, {
   ...rangedAudioCase.resolvedCase,

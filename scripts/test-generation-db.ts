@@ -456,6 +456,9 @@ try {
     'stable_result',
     `request-${suffix}-stable`,
   );
+  stablePreflight.payload.parameterBindings = {
+    aspect_ratio: { source: 'uniform', value: '1:1' },
+  };
   stablePreflight.payload.durationSource = {
     mode: 'reference_audio',
     referenceAudio: {
@@ -496,6 +499,9 @@ try {
   assert.equal(stableBatch?.items[0].durability, 'vidmuse_asset');
   assert.equal(stableBatch?.items[0].originalResultUrl, stableProviderUrl);
   assert.equal(stableBatch?.controls.durationSource?.mode, 'reference_audio');
+  assert.deepEqual(stableBatch?.controls.parameterBindings, {
+    aspect_ratio: { source: 'uniform', value: '1:1' },
+  });
   const afterStableWriteback = await getDataset(datasetId);
   assert.equal(afterStableWriteback?.items[0].stable_result, stableAssetUrl);
   const stableParams = JSON.parse(String(afterStableWriteback?.items[0].stable_result_params_json || '{}'));

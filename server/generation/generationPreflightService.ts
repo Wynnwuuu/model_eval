@@ -16,9 +16,11 @@ import {
   compileVidMuseGenerationInput,
 } from '../../src/features/generation/vidmuseInputContract.ts';
 import type {
-  GenerationCompatibilityMode,
   GenerationDurationSource,
-  GenerationInputMappingMode,
+  GenerationCaseReview,
+  GenerationInputMapping,
+  GenerationParameterBinding,
+  GenerationParameterValueType,
   GenerationTargetMode,
 } from '../../src/types.ts';
 import type { RequestUser } from '../auth/context.ts';
@@ -32,6 +34,7 @@ import {
   estimateGenerationCost,
   fingerprintConfig,
   generationSeedIssue,
+  KNOWN_INVALID_GENERATION_PARAMETERS,
   matchUploadedAsset,
   MAX_PORTABLE_GENERATION_SEED,
   preflightGenerationCase,
@@ -41,6 +44,11 @@ import {
   type PreflightIssue,
   type UploadedAssetCandidate,
 } from './generationPlanning.ts';
+import {
+  compileGenerationContentMappingV2,
+  generationContentMappingColumns,
+} from './generationContentMapping.ts';
+
 import {
   createGenerationBatchFromPreflight,
   getGenerationPreflight,
@@ -57,22 +65,10 @@ export type GenerationPreflightRequest = {
   modelName: string;
   targetColumn: string;
   targetMode?: GenerationTargetMode;
-  inputMapping: {
-    mappingMode?: GenerationInputMappingMode;
-    compatibilityMode?: GenerationCompatibilityMode;
-    canonicalFieldMappings?: Record<string, string>;
-    promptColumn?: string;
-    referenceImageColumns?: string[];
-    referenceAudioColumns?: string[];
-    referenceVideoColumns?: string[];
-    startImageColumn?: string;
-    endImageColumn?: string;
-    lyricsOrDialogueColumn?: string;
-    extraInputColumns?: string[];
-    extraInputMappings?: Record<string, string>;
-  };
+  inputMapping: Partial<GenerationInputMapping>;
   defaultControls?: Record<string, any>;
   perCaseControlColumns?: Record<string, string>;
+  parameterBindings?: Record<string, GenerationParameterBinding>;
   durationSource?: GenerationDurationSource;
   seedMode?: 'fixed' | 'derive_from_case' | 'column';
   fixedSeed?: number;
@@ -82,6 +78,7 @@ export type GenerationPreflightRequest = {
   retrySourceItemIds?: Record<string, string>;
   retryDuplicateBillingRiskConfirmed?: boolean;
   assetBindings?: UploadedAssetCandidate[];
+  caseReviews?: Record<string, GenerationCaseReview>;
 };
 
 const text = (value: unknown) => String(value ?? '').trim();
@@ -105,6 +102,262 @@ const coerceControl = (value: unknown, definition: NormalizedGenerationModel['co
   return value;
 };
 
+const STRICT_BOOLEAN_BINDINGS = new Map<string, boolean>([
+  ['true', true],
+  ['1', true],
+  ['yes', true],
+  ['on', true],
+  ['enabled', true],
+  ['\u662f', true],
+  ['\u5f00', true],
+  ['\u542f\u7528', true],
+  ['false', false],
+  ['0', false],
+  ['no', false],
+  ['off', false],
+  ['disabled', false],
+  ['\u5426', false],
+  ['\u5173', false],
+  ['\u7981\u7528', false],
+]);
+
+const parameterValueType = (
+  definition: NormalizedGenerationModel['controls'][number] | undefined,
+  explicitType?: GenerationParameterValueType,
+): GenerationParameterValueType => {
+  if (explicitType) return explicitType;
+  if (definition?.type === 'toggle') return 'boolean';
+  if (definition?.type === 'number') return 'number';
+  if (definition?.type === 'json') return 'json';
+  if (definition?.type === 'select'
+    && definition.options?.length
+    && definition.options.every(option => Number.isFinite(Number(option)))) return 'number';
+  return 'string';
+};
+
+const coerceBoundParameter = (
+  value: unknown,
+  valueType: GenerationParameterValueType,
+): { valid: true; value: unknown } | { valid: false; message: string } => {
+  if (valueType === 'boolean') {
+    if (typeof value === 'boolean') return { valid: true, value };
+    if (typeof value === 'number' && (value === 0 || value === 1)) return { valid: true, value: value === 1 };
+    const normalized = text(value).toLowerCase();
+    if (STRICT_BOOLEAN_BINDINGS.has(normalized)) {
+      return { valid: true, value: STRICT_BOOLEAN_BINDINGS.get(normalized) as boolean };
+    }
+    return { valid: false, message: 'Expected a supported boolean value such as true/false, 1/0, yes/no, on/off, enabled/disabled, or the documented Chinese equivalents.' };
+  }
+  if (valueType === 'number') {
+    const normalized = typeof value === 'number' ? value : Number(text(value));
+    return Number.isFinite(normalized)
+      ? { valid: true, value: normalized }
+      : { valid: false, message: 'Expected a finite number.' };
+  }
+  if (valueType === 'json') {
+    if (typeof value !== 'string') return { valid: true, value };
+    try {
+      return { valid: true, value: JSON.parse(value) };
+    } catch {
+      return { valid: false, message: 'Expected valid JSON.' };
+    }
+  }
+  return { valid: true, value: typeof value === 'string' ? value.trim() : String(value) };
+};
+
+const activeParameterBinding = (binding: GenerationParameterBinding | undefined) =>
+  Boolean(binding && binding.source !== 'unused');
+
+const datasetHasColumn = (dataset: { items?: Array<Record<string, unknown>> }, column: string) =>
+  Boolean(column) && Boolean(dataset.items?.some(row => Object.prototype.hasOwnProperty.call(row, column)));
+
+export const validateGenerationContentMappingConfiguration = (
+  request: GenerationPreflightRequest,
+  model: NormalizedGenerationModel,
+  dataset: { items?: Array<Record<string, unknown>> },
+) => {
+  if (request.inputMapping?.contentMappingVersion !== 2) return;
+  const mapping = request.inputMapping.contentMapping;
+  if (!mapping || mapping.version !== 2) {
+    throw badRequest('Generation content mapping v2 requires a version 2 mapping snapshot.');
+  }
+  if (!['text', 'multi_prompt_json', 'typed'].includes(mapping.prompt.format)) {
+    throw badRequest('Unknown Prompt format in generation content mapping.');
+  }
+  if (!['unused', 'columns', 'array_column'].includes(mapping.keyframes.source)) {
+    throw badRequest('Unknown keyframe input source.');
+  }
+  if (mapping.keyframes.source === 'columns' && !mapping.keyframes.firstColumn?.trim()) {
+    throw badRequest('Separate keyframe columns require a first-frame column.');
+  }
+  if (mapping.keyframes.source === 'array_column' && !mapping.keyframes.column?.trim()) {
+    throw badRequest('Keyframe array input requires an image_urls column.');
+  }
+  if (!['unused', 'builder', 'array_column'].includes(mapping.elements.source)) {
+    throw badRequest('Unknown reference element source.');
+  }
+  if (mapping.elements.source === 'array_column' && !mapping.elements.column?.trim()) {
+    throw badRequest('Reference element JSON input requires an elements column.');
+  }
+  if (mapping.elements.source === 'builder') {
+    const ids = new Set<string>();
+    for (const item of mapping.elements.items) {
+      if (!item.id?.trim() || ids.has(item.id)) {
+        throw badRequest('Reference element bindings require unique stable IDs.');
+      }
+      ids.add(item.id);
+      if (!['image', 'video', 'element_id'].includes(item.mode)) {
+        throw badRequest(`Unknown reference element mode: ${item.mode}.`);
+      }
+      if (item.mode === 'image'
+        && !item.frontalImageColumn?.trim()
+        && !(item.referenceImageColumns || []).some(Boolean)
+        && !item.referenceImageArrayColumn?.trim()) {
+        throw badRequest('An image element requires a frontal or reference-image source.');
+      }
+      if (item.mode === 'video' && !item.videoColumn?.trim()) {
+        throw badRequest('A video element requires a video URL column.');
+      }
+      if (item.mode === 'element_id' && !item.elementIdColumn?.trim()) {
+        throw badRequest('An existing element requires an element ID column.');
+      }
+    }
+  }
+  if (!['unused', 'builder', 'array_column'].includes(mapping.audios.source)) {
+    throw badRequest('Unknown reference audio source.');
+  }
+  if (mapping.audios.source === 'array_column' && !mapping.audios.column?.trim()) {
+    throw badRequest('Reference audio JSON input requires an audios column.');
+  }
+  if (mapping.audios.source === 'builder') {
+    const ids = new Set<string>();
+    for (const item of mapping.audios.items) {
+      if (!item.id?.trim() || ids.has(item.id)) {
+        throw badRequest('Reference audio bindings require unique stable IDs.');
+      }
+      ids.add(item.id);
+      if (!item.urlColumn?.trim()) throw badRequest('Each reference audio item requires a URL column.');
+      if (!['none', 'fixed', 'column', 'columns'].includes(item.rangeSource)) {
+        throw badRequest('Unknown reference audio range source.');
+      }
+      if (item.rangeSource === 'fixed'
+        && (!Array.isArray(item.fixedRange) || item.fixedRange.length !== 2)) {
+        throw badRequest('A fixed audio range requires start and end values.');
+      }
+      if (item.rangeSource === 'column' && !item.rangeColumn?.trim()) {
+        throw badRequest('Audio range column mode requires a range column.');
+      }
+      if (item.rangeSource === 'columns'
+        && (!item.rangeStartColumn?.trim() || !item.rangeEndColumn?.trim())) {
+        throw badRequest('Audio start/end mode requires both columns.');
+      }
+    }
+  }
+  if (model.outputModality === 'image'
+    && (mapping.elements.source !== 'unused' || mapping.audios.source !== 'unused')) {
+    throw badRequest('Image generation does not accept video reference elements or audios.');
+  }
+  const missingColumns = generationContentMappingColumns(mapping)
+    .filter(column => !datasetHasColumn(dataset, column));
+  if (missingColumns.length) {
+    throw badRequest('One or more content mapping columns do not exist in this dataset version.', {
+      columns: missingColumns,
+    });
+  }
+};
+
+
+export const validateGenerationParameterBindings = (
+  request: GenerationPreflightRequest,
+  model: NormalizedGenerationModel,
+  dataset: { items?: Array<Record<string, unknown>> },
+) => {
+  const bindings = request.parameterBindings;
+  const invalidParameters = new Map(Object.entries(KNOWN_INVALID_GENERATION_PARAMETERS).map(
+    ([key, definition]) => [key, { key, ...definition }],
+  ));
+  const mappedKeys = new Set([
+    ...Object.entries(request.inputMapping?.canonicalFieldMappings || {})
+      .filter(([, column]) => Boolean(column?.trim()))
+      .map(([key]) => key),
+    ...Object.entries(request.inputMapping?.extraInputMappings || {})
+      .filter(([, column]) => Boolean(column?.trim()))
+      .map(([key]) => key),
+    ...(request.inputMapping?.extraInputColumns || []).map(String),
+    ...Object.entries(request.defaultControls || {})
+      .filter(([, value]) => hasMappedValue(value))
+      .map(([key]) => key),
+    ...Object.entries(request.perCaseControlColumns || {})
+      .filter(([, column]) => Boolean(column?.trim()))
+      .map(([key]) => key),
+    ...Object.entries(bindings || {})
+      .filter(([, binding]) => activeParameterBinding(binding))
+      .map(([key]) => key),
+  ]);
+  for (const [key, definition] of invalidParameters) {
+    if (!mappedKeys.has(key)) continue;
+    throw badRequest(`${definition.message} ${definition.replacement}`, { field: key });
+  }
+
+  if (bindings === undefined) return;
+
+  const controlDefinitions = new Map(model.controls.map(control => [control.key, control]));
+  const advancedDefinitions = new Map((model.advancedParameters || []).map(parameter => [parameter.key, parameter]));
+  const canonicalParameterKeys = new Set([
+    ...controlDefinitions.keys(),
+    ...advancedDefinitions.keys(),
+    'duration',
+    'seed',
+    'extra_params',
+  ]);
+  for (const [key, column] of Object.entries(request.inputMapping?.canonicalFieldMappings || {})) {
+    if (!column?.trim() || !canonicalParameterKeys.has(key)) continue;
+    throw badRequest(`The generation parameter mapping for ${key} must use parameterBindings, not MCP input mapping.`);
+  }
+  for (const [key, column] of Object.entries(request.inputMapping?.extraInputMappings || {})) {
+    if (!column?.trim() || !canonicalParameterKeys.has(key)) continue;
+    throw badRequest(`The generation parameter mapping for ${key} must use explicit parameterBindings.`);
+  }
+  for (const key of request.inputMapping?.extraInputColumns || []) {
+    if (!canonicalParameterKeys.has(key)) continue;
+    throw badRequest(`The generation parameter mapping for ${key} must use explicit parameterBindings.`);
+  }
+  for (const [key, value] of Object.entries(request.defaultControls || {})) {
+    if (key === 'duration' || !hasMappedValue(value) || !canonicalParameterKeys.has(key)) continue;
+    throw badRequest(`The generation parameter ${key} has more than one source.`);
+  }
+  for (const [key, column] of Object.entries(request.perCaseControlColumns || {})) {
+    if (key === 'duration' || !column?.trim() || !canonicalParameterKeys.has(key)) continue;
+    throw badRequest(`The generation parameter ${key} has more than one source.`);
+  }
+
+  for (const [key, binding] of Object.entries(bindings)) {
+    if (!binding || !['unused', 'uniform', 'column'].includes(binding.source)) {
+      throw badRequest(`Unknown parameter source for ${key}.`);
+    }
+    if (key === 'seed') throw badRequest('Seed must use the dedicated Seed strategy.');
+    if (key === 'duration') throw badRequest('Duration must use the dedicated duration source selector.');
+    const control = controlDefinitions.get(key);
+    const advanced = advancedDefinitions.get(key);
+    if (!control && !advanced) throw badRequest(`The live model configuration does not declare generation parameter: ${key}.`);
+    if (binding.source === 'unused') continue;
+    if (advanced && !binding.valueType) {
+      throw badRequest(`Advanced parameter ${key} requires an explicit value type.`);
+    }
+    if (binding.valueType && !['string', 'number', 'boolean', 'json'].includes(binding.valueType)) {
+      throw badRequest(`Unknown value type for generation parameter ${key}.`);
+    }
+    if (binding.source === 'uniform' && !hasMappedValue(binding.value)) {
+      throw badRequest(`Uniform generation parameter ${key} requires a value.`);
+    }
+    if (binding.source === 'column') {
+      if (!binding.column?.trim()) throw badRequest(`Generation parameter ${key} requires a dataset column.`);
+      if (!datasetHasColumn(dataset, binding.column)) {
+        throw badRequest(`The selected column for generation parameter ${key} does not exist in this dataset version.`);
+      }
+    }
+  }
+};
 const resolveReferences = (
   values: unknown[],
   assets: UploadedAssetCandidate[],
@@ -174,6 +427,80 @@ const resolveStructuredAssets = (
 const hasMappedValue = (value: unknown) =>
   value !== undefined && value !== null && text(value) !== '';
 
+const BLOCKED_OVERRIDE_KEYS = new Set([
+  '__proto__',
+  'prototype',
+  'constructor',
+  'result_file_dir',
+  'preview_file_dir',
+  'callback',
+  'callback_url',
+  'webhook',
+  'webhook_url',
+]);
+const CREDENTIAL_KEY_PATTERN = /(?:authorization|credential|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|password)/i;
+
+const inspectOverrideValue = (value: unknown, path = 'request') => {
+  if (typeof value === 'string') {
+    if (/^file:\/\//i.test(value.trim())) throw badRequest(`Unsafe file URL is not allowed in ${path}.`);
+    if (/(^|[\\/])\.\.([\\/]|$)/.test(value)) throw badRequest(`Path traversal is not allowed in ${path}.`);
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => inspectOverrideValue(entry, `${path}[${index}]`));
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw badRequest(`Only plain JSON objects are allowed in ${path}.`);
+  }
+  for (const [key, entry] of Object.entries(value)) {
+    if (BLOCKED_OVERRIDE_KEYS.has(key) || CREDENTIAL_KEY_PATTERN.test(key)) {
+      throw badRequest(`Generation request override cannot set protected field: ${path}.${key}.`);
+    }
+    inspectOverrideValue(entry, `${path}.${key}`);
+  }
+};
+
+export const validateGenerationRequestOverride = (
+  model: NormalizedGenerationModel,
+  baseRequest: Record<string, unknown>,
+  override: Record<string, unknown>,
+) => {
+  if (!override || typeof override !== 'object' || Array.isArray(override)) {
+    throw badRequest('The final Aion request override must be a JSON object.');
+  }
+  inspectOverrideValue(override);
+  if (override.model_name !== model.modelName) {
+    throw badRequest('The selected model is immutable in a final Aion request override.');
+  }
+  if (stableJson(override.features) !== stableJson(baseRequest.features)) {
+    throw badRequest('The generation features object is immutable in a final Aion request override.');
+  }
+  if (model.outputModality === 'video') {
+    if (typeof override.generation_type !== 'string' || !override.generation_type.trim()) {
+      throw badRequest('A forced video request requires an explicit generation_type.');
+    }
+  } else if (override.generation_type !== undefined) {
+    throw badRequest('Image generation request overrides cannot set generation_type.');
+  }
+  return JSON.parse(JSON.stringify(override)) as Record<string, unknown>;
+};
+
+const FORCEABLE_PREFLIGHT_CODES = new Set([
+  'CONTRACT_REVIEW_REQUIRED',
+  'GENERATION_TYPE_REVIEW_REQUIRED',
+  'RELATIVE_ASSET_REQUIRES_REVIEW',
+  'AUDIO_ONLY_MODE_REVIEW_REQUIRED',
+  'UNSUPPORTED_INPUT',
+  'UNSUPPORTED_GENERATION_TYPE',
+  'MISSING_REQUIRED_INPUT',
+  'INPUT_COUNT_OUT_OF_RANGE',
+  'MULTIPLE_AUDIOS_REQUIRE_AUDIOS',
+  'AUDIO_RANGE_REQUIRES_AUDIOS',
+]);
+
 export const buildGenerationCasesForPreflight = (
   dataset: Awaited<ReturnType<typeof getDatasetVersion>> extends infer T ? Exclude<T, null> : never,
   request: GenerationPreflightRequest,
@@ -187,24 +514,105 @@ export const buildGenerationCasesForPreflight = (
 
   return selectedRows.map(({ row, rowIndex, datasetItemId }) => {
     const caseId = getDatasetRowCaseId(row, rowIndex);
+    const caseReview = request.caseReviews?.[datasetItemId];
     const input = request.inputMapping || {};
     const mappingMode = input.mappingMode || 'assisted';
+    const contentMapping = input.contentMappingVersion === 2 && input.contentMapping?.version === 2
+      ? input.contentMapping
+      : undefined;
     const durationIssues: PreflightIssue[] = [];
     const assetIssues: PreflightIssue[] = [];
     const assistedIssues: PreflightIssue[] = [];
+    const parameterIssues: PreflightIssue[] = [];
+    const parameterWarnings: PreflightIssue[] = [];
+    const parameterAudit: NonNullable<GenerationCase['parameterAudit']> = {};
+    const advancedExtraParams: Record<string, unknown> = {};
     const durationSource = request.durationSource;
-    const controls = { ...(request.defaultControls || {}) };
-    if (durationSource && durationSource.mode !== 'uniform') delete controls.duration;
+    const usesParameterBindings = request.parameterBindings !== undefined;
+    const controls: Record<string, unknown> = usesParameterBindings
+      ? {}
+      : { ...(request.defaultControls || {}) };
 
-    for (const [key, column] of Object.entries(request.perCaseControlColumns || {})) {
-      if (durationSource && key === 'duration') continue;
-      const value = row[column];
-      if (hasMappedValue(value)) controls[key] = value;
+    if (input.presetId === 'vidmuse_evaluation_v1') {
+      const original = row._originalData
+        && typeof row._originalData === 'object'
+        && !Array.isArray(row._originalData)
+        ? row._originalData as Record<string, unknown>
+        : undefined;
+      const rowModality = text(row.modality ?? original?.modality).toLowerCase();
+      if (rowModality && rowModality !== model.outputModality) {
+        assistedIssues.push({
+          code: 'DATASET_MODALITY_MISMATCH',
+          field: 'modality',
+          message: `Case ${caseId} is marked as ${rowModality}, but the selected model produces ${model.outputModality}.`,
+        });
+      }
     }
-    if (mappingMode === 'mcp') {
-      for (const [key, column] of Object.entries(input.canonicalFieldMappings || {})) {
-        if (!controlKeys.has(key) || !hasMappedValue(row[column])) continue;
-        controls[key] = row[column];
+
+    if (usesParameterBindings) {
+      if ((!durationSource || durationSource.mode === 'uniform')
+        && hasMappedValue(request.defaultControls?.duration)) {
+        controls.duration = request.defaultControls?.duration;
+      }
+      const advancedKeys = new Set((model.advancedParameters || []).map(parameter => parameter.key));
+      for (const [key, binding] of Object.entries(request.parameterBindings || {})) {
+        if (!binding || binding.source === 'unused') continue;
+        const definition = controlDefinitions.get(key);
+        const isAdvanced = advancedKeys.has(key);
+        let rawValue: unknown;
+        if (binding.source === 'column') {
+          rawValue = row[binding.column];
+          if (!hasMappedValue(rawValue)) {
+            parameterIssues.push({
+              code: 'MISSING_PARAMETER_COLUMN_VALUE',
+              field: key,
+              message: `The ${binding.column} column is empty for parameter ${key} in case ${caseId}.`,
+            });
+            continue;
+          }
+        } else {
+          rawValue = binding.value;
+        }
+        const valueType = parameterValueType(definition, isAdvanced ? binding.valueType : undefined);
+        const coerced = coerceBoundParameter(rawValue, valueType);
+        if ('message' in coerced) {
+          parameterIssues.push({
+            code: 'INVALID_PARAMETER_VALUE',
+            field: key,
+            message: `${key}: ${coerced.message}`,
+          });
+          continue;
+        }
+        if (isAdvanced) {
+          advancedExtraParams[key] = coerced.value;
+          parameterWarnings.push({
+            code: 'UNVERIFIED_EXTRA_PARAMETER',
+            field: key,
+            message: `${key} is not covered by the unified Aion contract and will be passed through extra_params.`,
+          });
+        } else {
+          controls[key] = coerced.value;
+        }
+        parameterAudit[key] = {
+          source: binding.source,
+          ...(binding.source === 'column' ? { column: binding.column } : {}),
+          value: coerced.value,
+          verified: !isAdvanced,
+          destination: isAdvanced ? 'extra_params' : 'control',
+        };
+      }
+    } else {
+      if (durationSource && durationSource.mode !== 'uniform') delete controls.duration;
+      for (const [key, column] of Object.entries(request.perCaseControlColumns || {})) {
+        if (durationSource && key === 'duration') continue;
+        const value = row[column];
+        if (hasMappedValue(value)) controls[key] = value;
+      }
+      if (mappingMode === 'mcp') {
+        for (const [key, column] of Object.entries(input.canonicalFieldMappings || {})) {
+          if (!controlKeys.has(key) || !hasMappedValue(row[column])) continue;
+          controls[key] = row[column];
+        }
       }
     }
     if (durationSource?.mode === 'column') {
@@ -220,13 +628,25 @@ export const buildGenerationCasesForPreflight = (
       }
     }
     for (const definition of model.controls) {
-      if (controls[definition.key] !== undefined) {
+      if (controls[definition.key] !== undefined
+        && (!usesParameterBindings || definition.key === 'duration')) {
         controls[definition.key] = coerceControl(controls[definition.key], definition);
       }
     }
 
     let rawCanonicalInput: Record<string, unknown>;
-    if (mappingMode === 'mcp') {
+    let contentIntent: ReturnType<typeof compileGenerationContentMappingV2>['intent'] | undefined;
+    if (contentMapping) {
+      const content = compileGenerationContentMappingV2({
+        row,
+        mapping: contentMapping,
+        outputModality: model.outputModality,
+        assets,
+      });
+      contentIntent = content.intent;
+      assetIssues.push(...content.issues);
+      rawCanonicalInput = { ...content.input, ...controls };
+    } else if (mappingMode === 'mcp') {
       const mappings = { ...(input.canonicalFieldMappings || {}) };
       if (!mappings.prompt && input.promptColumn) mappings.prompt = input.promptColumn;
       const mappedInput: Record<string, unknown> = {};
@@ -327,10 +747,27 @@ export const buildGenerationCasesForPreflight = (
       }
     }
 
+    if (Object.keys(advancedExtraParams).length) {
+      const existingExtraParams = rawCanonicalInput.extra_params;
+      rawCanonicalInput.extra_params = {
+        ...(existingExtraParams && typeof existingExtraParams === 'object' && !Array.isArray(existingExtraParams)
+          ? existingExtraParams : {}),
+        ...advancedExtraParams,
+      };
+    }
     const compiled = compileVidMuseGenerationInput({
-      model: { modelName: model.modelName, outputModality: model.outputModality },
+      model: {
+        modelName: model.modelName,
+        outputModality: model.outputModality,
+        capabilities: model.capabilities,
+        inputSchema: model.inputSchema,
+        options: model.options,
+      },
       input: rawCanonicalInput,
-      compatibilityMode: input.compatibilityMode || 'strict',
+      compatibilityMode: contentMapping ? 'strict' : input.compatibilityMode || 'strict',
+      contractVersion: contentMapping ? 3 : 1,
+      promptFormat: contentMapping?.prompt.format,
+      review: caseReview,
     });
     const audioInputs = compiled.input.audios || [];
     const audioUrls = audioInputs.map(audio => audio.url);
@@ -448,14 +885,23 @@ export const buildGenerationCasesForPreflight = (
       controls,
       seed,
       extraInputs,
+      ...(Object.keys(parameterAudit).length ? { parameterAudit } : {}),
       generationType: caseGenerationType,
       compilerAudit: {
         compilerVersion: compiled.compilerVersion,
         profileId: compiled.profileId,
+        modelDescription: model.description,
+        effectiveGenerationType: compiled.effectiveGenerationType,
+        ...(contentIntent ? { intent: contentIntent } : {}),
         compatibilityApplied: compiled.compatibilityApplied,
         originalInput: compiled.originalInput,
         compiledInput: compiled.input,
         bindings: compiled.bindings,
+        contractFindings: compiled.contractFindings,
+        appliedFindingIds: compiled.appliedFindingIds,
+        reviewedFindingIds: compiled.reviewedFindingIds,
+        contractSource: compiled.contractSource,
+        review: caseReview,
       },
       ...(durationResolution ? { durationResolution } : {}),
     };
@@ -465,10 +911,11 @@ export const buildGenerationCasesForPreflight = (
         ...assetIssues,
         ...assistedIssues,
         ...compiled.errors,
+        ...parameterIssues,
         ...durationIssues,
         ...seedIssues,
       ],
-      preparationWarnings: compiled.warnings,
+      preparationWarnings: [...compiled.warnings, ...parameterWarnings],
     };
   });
 };
@@ -509,6 +956,12 @@ export const validateDurationSourceConfiguration = (
   }
 };
 
+const deduplicatePreflightIssues = <T extends { code: string; field?: string; message: string }>(issues: T[]) =>
+  issues.filter((issue, index) => issues.findIndex(candidate =>
+    candidate.code === issue.code
+    && candidate.field === issue.field
+    && candidate.message === issue.message) === index);
+
 export const createGenerationPreflight = async (
   request: GenerationPreflightRequest,
   user: RequestUser,
@@ -528,6 +981,8 @@ export const createGenerationPreflight = async (
   const model = await aionGenerationClient.getModel(request.modelName);
   if (!model) throw notFound('Enabled Aion model');
   validateDurationSourceConfiguration(request, model);
+  validateGenerationParameterBindings(request, model, dataset);
+  validateGenerationContentMappingConfiguration(request, model, dataset);
 
   const targetMode = request.targetMode || 'new';
   const targetInspection = inspectGenerationTargetColumn(dataset, {
@@ -553,6 +1008,13 @@ export const createGenerationPreflight = async (
   );
   if (selection.errors.length) {
     throw badRequest(selection.errors[0].message, { issues: selection.errors });
+  }
+  const selectedIdSet = new Set(selection.normalizedIds);
+  const unknownReviewIds = Object.keys(request.caseReviews || {}).filter(id => !selectedIdSet.has(id));
+  if (unknownReviewIds.length) {
+    throw badRequest('Case reviews contain unknown or unselected stable item IDs.', {
+      datasetItemIds: unknownReviewIds,
+    });
   }
   if (request.durationSource?.mode === 'column'
     && !dataset.items.some(row => Object.prototype.hasOwnProperty.call(row, request.durationSource?.column || ''))) {
@@ -598,13 +1060,63 @@ export const createGenerationPreflight = async (
     );
     const sourceRow = dataset.items[resolvedCase.rowIndex] || {};
     const targetValue = text(sourceRow[request.targetColumn]);
-    const errors = [...preparationIssues, ...result.errors];
+    let errors = [...preparationIssues, ...result.errors];
     const warnings = [...preparationWarnings, ...result.warnings];
-    const finalAionRequest = buildAionGenerationRequest(model, result.resolvedCase).body;
+    const review = request.caseReviews?.[resolvedCase.datasetItemId];
+    const baseAionRequest = buildAionGenerationRequest(model, result.resolvedCase).body;
+    const force = review?.force;
+    if (review?.finalAionRequest && !force) {
+      throw badRequest(`Case ${resolvedCase.caseId} must include a force reason and duplicate-billing confirmation when editing final Aion JSON.`);
+    }
+    if (force && (!text(force.reason) || force.duplicateBillingRiskConfirmed !== true)) {
+      throw badRequest(`Case ${resolvedCase.caseId} requires a force reason and duplicate-billing confirmation.`);
+    }
+    if (force && !review?.finalAionRequest && errors.some(issue => [
+      'GENERATION_TYPE_REVIEW_REQUIRED',
+      'AUDIO_ONLY_MODE_REVIEW_REQUIRED',
+      'UNSUPPORTED_GENERATION_TYPE',
+    ].includes(issue.code))) {
+      throw badRequest(`Case ${resolvedCase.caseId} requires an explicit final Aion JSON request because its generation mode is unresolved.`);
+    }
+    const finalAionRequest = review?.finalAionRequest
+      ? validateGenerationRequestOverride(model, baseAionRequest, review.finalAionRequest)
+      : baseAionRequest;
+    const bypassedRules = force
+      ? errors.filter(issue => FORCEABLE_PREFLIGHT_CODES.has(issue.code)).map(issue => issue.code)
+      : [];
+    if (force) {
+      errors = errors.filter(issue => !FORCEABLE_PREFLIGHT_CODES.has(issue.code));
+      warnings.push({
+        code: 'AION_MANUAL_OVERRIDE',
+        field: 'request',
+        message: `This case uses a reviewed Aion override and is no longer guaranteed to align with the VidMuse MCP contract. Reason: ${text(force.reason)}`,
+      });
+    }
+    const finalGenerationType = model.outputModality === 'video'
+      && typeof finalAionRequest.generation_type === 'string'
+      ? finalAionRequest.generation_type
+      : result.generationType;
     const auditedResolvedCase = result.resolvedCase.compilerAudit
       ? {
           ...result.resolvedCase,
-          compilerAudit: { ...result.resolvedCase.compilerAudit, finalAionRequest },
+          generationType: finalGenerationType,
+          compilerAudit: {
+            ...result.resolvedCase.compilerAudit,
+            finalAionRequest,
+            ...((force || review?.finalAionRequest) ? {
+              overrideAudit: {
+                forced: Boolean(force),
+                ...(force ? { reason: text(force.reason) } : {}),
+                actorId: user.id,
+                actorName: user.displayName,
+                reviewedAt: Date.now(),
+                originalRequest: baseAionRequest,
+                finalRequest: finalAionRequest,
+                bypassedRules: Array.from(new Set(bypassedRules)),
+                configFingerprint: model.configFingerprint,
+              },
+            } : {}),
+          },
         }
       : result.resolvedCase;
     if (targetValue) {
@@ -620,11 +1132,14 @@ export const createGenerationPreflight = async (
         message: `The case has no stable dataset item ID: ${auditedResolvedCase.caseId}.`,
       });
     }
+    const finalErrors = deduplicatePreflightIssues(errors);
+    const finalWarnings = deduplicatePreflightIssues(warnings);
     return {
       ...result,
-      valid: errors.length === 0,
-      errors,
-      warnings,
+      generationType: finalGenerationType,
+      valid: finalErrors.length === 0,
+      errors: finalErrors,
+      warnings: finalWarnings,
       resolvedCase: auditedResolvedCase,
     };
   });
@@ -639,6 +1154,36 @@ export const createGenerationPreflight = async (
     unselected: Math.max(0, dataset.items.length - cases.length),
   };
   const costEstimate = estimateGenerationCost(model, cases.filter(item => item.valid).map(item => item.resolvedCase));
+  const hashCases = cases.map(item => {
+    const resolved = item.resolvedCase;
+    const audit = resolved.compilerAudit;
+    return {
+      datasetItemId: resolved.datasetItemId,
+      generationType: item.generationType,
+      prompt: resolved.prompt,
+      imageUrls: resolved.imageUrls,
+      audioInputs: resolved.audioInputs,
+      controls: resolved.controls,
+      seed: resolved.seed,
+      extraInputs: resolved.extraInputs,
+      compilerAudit: audit ? {
+        compilerVersion: audit.compilerVersion,
+        originalInput: audit.originalInput,
+        compiledInput: audit.compiledInput,
+        finalAionRequest: audit.finalAionRequest,
+        appliedFindingIds: audit.appliedFindingIds,
+        reviewedFindingIds: audit.reviewedFindingIds,
+        overrideAudit: audit.overrideAudit ? {
+          forced: audit.overrideAudit.forced,
+          reason: audit.overrideAudit.reason,
+          originalRequest: audit.overrideAudit.originalRequest,
+          finalRequest: audit.overrideAudit.finalRequest,
+          bypassedRules: audit.overrideAudit.bypassedRules,
+          configFingerprint: audit.overrideAudit.configFingerprint,
+        } : undefined,
+      } : undefined,
+    };
+  });
   const requestHash = fingerprintConfig({
     datasetId: request.datasetId,
     datasetVersion: request.datasetVersion,
@@ -649,6 +1194,7 @@ export const createGenerationPreflight = async (
     inputMapping: request.inputMapping,
     defaultControls: request.defaultControls || {},
     perCaseControlColumns: request.perCaseControlColumns || {},
+    parameterBindings: request.parameterBindings,
     durationSource: request.durationSource,
     retryOfJobId: request.retryOfJobId,
     retryDuplicateBillingRiskConfirmed: request.retryDuplicateBillingRiskConfirmed === true,
@@ -656,7 +1202,7 @@ export const createGenerationPreflight = async (
     fixedSeed: request.fixedSeed,
     seedColumn: request.seedColumn,
     selectedDatasetItemIds: selection.normalizedIds,
-    cases: cases.map(item => item.resolvedCase),
+    cases: hashCases,
   });
   const id = `preflight-${randomUUID()}`;
   const expiresAt = Date.now() + 30 * 60 * 1000;

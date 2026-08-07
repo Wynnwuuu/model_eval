@@ -14,6 +14,8 @@ type GenerationJobRow = {
   controls_json: {
     defaultControls?: DatasetGenerationJob['defaultControls'];
     perCaseControlColumns?: DatasetGenerationJob['perCaseControlColumns'];
+    parameterBindings?: DatasetGenerationJob['parameterBindings'];
+    caseReviews?: DatasetGenerationJob['caseReviews'];
     seedMode?: DatasetGenerationJob['seedMode'];
     fixedSeed?: number;
     seedColumn?: string;
@@ -105,6 +107,8 @@ const mapJob = (row: GenerationJobRow): DatasetGenerationJob => {
     inputMapping: row.input_mapping_json,
     defaultControls: controls.defaultControls || {},
     perCaseControlColumns: controls.perCaseControlColumns || {},
+    parameterBindings: controls.parameterBindings,
+    caseReviews: controls.caseReviews,
     seedMode: controls.seedMode || 'derive_from_case',
     fixedSeed: controls.fixedSeed,
     seedColumn: controls.seedColumn,
@@ -270,6 +274,8 @@ export const saveGenerationJob = async (job: DatasetGenerationJob): Promise<Data
   const controls = {
     defaultControls: job.defaultControls || {},
     perCaseControlColumns: job.perCaseControlColumns || {},
+    parameterBindings: job.parameterBindings,
+    caseReviews: job.caseReviews,
     seedMode: job.seedMode,
     fixedSeed: job.fixedSeed,
     seedColumn: job.seedColumn,

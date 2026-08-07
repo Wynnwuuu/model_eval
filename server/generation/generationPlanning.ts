@@ -10,6 +10,15 @@ import type {
   VidMuseInputBindings,
   VidMusePrompt,
 } from '../../src/features/generation/vidmuseInputContract.ts';
+import { isForceableRelativeGenerationAsset } from '../../src/features/generation/vidmuseInputContract.ts';
+import type {
+  GenerationAdvancedParameterDefinition,
+  GenerationCaseReview,
+  GenerationContractFinding,
+  GenerationInvalidParameterDefinition,
+  GenerationParameterAuditEntry,
+} from '../../src/types.ts';
+import type { GenerationContentIntentAudit } from './generationContentMapping.ts';
 import type { GenerationModelValidationOverride } from './generationValidationPolicy.ts';
 
 export type GenerationModality = 'image' | 'video';
@@ -37,6 +46,8 @@ export type NormalizedGenerationModel = {
   supportedResolutions: string[];
   supportedDurations: Array<string | number>;
   controls: GenerationControl[];
+  advancedParameters: GenerationAdvancedParameterDefinition[];
+  invalidParameters: GenerationInvalidParameterDefinition[];
   inputSchema?: Record<string, any>;
   options: Record<string, any>;
   priceItems: Array<Record<string, any>>;
@@ -58,12 +69,32 @@ export type GenerationCase = {
   compilerAudit?: {
     compilerVersion: string;
     profileId?: string;
+    modelDescription?: string;
+    effectiveGenerationType?: string;
+    intent?: GenerationContentIntentAudit;
     compatibilityApplied: boolean;
     originalInput: Record<string, unknown>;
     compiledInput: Record<string, unknown>;
     bindings: VidMuseInputBindings;
     finalAionRequest?: Record<string, unknown>;
+    contractFindings?: GenerationContractFinding[];
+    appliedFindingIds?: string[];
+    reviewedFindingIds?: string[];
+    contractSource?: Record<string, unknown>;
+    review?: GenerationCaseReview;
+    overrideAudit?: {
+      forced: boolean;
+      reason?: string;
+      actorId: string;
+      actorName: string;
+      reviewedAt: number;
+      originalRequest: Record<string, unknown>;
+      finalRequest: Record<string, unknown>;
+      bypassedRules: string[];
+      configFingerprint: string;
+    };
   };
+  parameterAudit?: Record<string, GenerationParameterAuditEntry>;
   durationResolution?: {
     source: 'uniform' | 'column' | 'reference_audio';
     column?: string;
@@ -245,6 +276,27 @@ const STANDARD_CONTROLS: Record<string, Omit<GenerationControl, 'key'>> = {
   seed: { label: 'Seed', type: 'number' },
 };
 
+export const KNOWN_INVALID_GENERATION_PARAMETERS: Record<string, Omit<GenerationInvalidParameterDefinition, 'key'>> = {
+  reference_image_urls: {
+    label: 'reference image urls',
+    message: 'Top-level reference_image_urls is not consumed by the Aion video request contract.',
+    replacement: 'Use elements[].reference_image_urls inside the elements MCP field.',
+  },
+  multi_shots: {
+    label: 'multi shots',
+    message: 'multi_shots is not a VidMuse MCP or Aion unified video request field.',
+    replacement: 'Use prompt: [{ "prompt": "...", "duration": 3 }] for multi-shot input.',
+  },
+};
+
+const SPECIALIZED_PARAMETER_KEYS = new Set(['seed']);
+const RESERVED_PARAMETER_KEYS = new Set([
+  'model_name',
+  'generation_type',
+  'features',
+  'extra_params',
+]);
+
 const OPTION_KEYS: Record<string, string[]> = {
   aspect_ratio: ['aspect_ratio_options', 'aspect_ratios', 'supported_aspect_ratios'],
   resolution: ['resolution_options', 'resolutions', 'supported_resolutions'],
@@ -407,19 +459,41 @@ export const normalizeAionModelConfig = (raw: Record<string, any>): NormalizedGe
   const costItems = Array.isArray(raw.cost_items) ? raw.cost_items : Array.isArray(raw.costItems) ? raw.costItems : [];
   const updatedAt = raw.update_time || raw.updateTime || raw.updated_at || raw.updatedAt;
   const params = supportedParams(options);
+  const schemaProperties = parameterSchemaProperties(options);
+  const normalizedParamKeys = Array.from(params).map(key => key.replace(/_options$/, ''));
+  const invalidParameters = Object.entries(KNOWN_INVALID_GENERATION_PARAMETERS)
+    .filter(([key]) => normalizedParamKeys.includes(key) || Object.prototype.hasOwnProperty.call(schemaProperties, key))
+    .map(([key, definition]) => ({ key, ...definition }));
+  const invalidKeys = new Set(invalidParameters.map(parameter => parameter.key));
   const controlKeys = [
-    ...Array.from(params).map(key => key.replace(/_options$/, '')),
-    ...Object.keys(parameterSchemaProperties(options)),
+    ...normalizedParamKeys.filter(key => Boolean(STANDARD_CONTROLS[key])),
+    ...Object.keys(schemaProperties).filter(key => Boolean(STANDARD_CONTROLS[key])),
   ];
   for (const key of Object.keys(STANDARD_CONTROLS)) {
     if (OPTION_KEYS[key]?.some(optionKey => valueArray(options[optionKey]).length)) controlKeys.push(key);
   }
   const controls = Array.from(new Set(controlKeys))
-    .filter(key => ![
-      'prompt', 'image_urls', 'audio_url', 'audios', 'video_url', 'video_urls', 'reference_video_urls',
-      'elements', 'generation_type', 'model_name', 'features', 'extra_params',
-    ].includes(key))
+    .filter(key => !STANDARD_INPUT_PARAMS.has(key))
+    .filter(key => !RESERVED_PARAMETER_KEYS.has(key))
+    .filter(key => !SPECIALIZED_PARAMETER_KEYS.has(key))
+    .filter(key => !invalidKeys.has(key))
     .map(key => controlFor(key, options));
+  const controlKeySet = new Set(controls.map(control => control.key));
+  const advancedParameters = Array.from(new Set([
+    ...normalizedParamKeys,
+    ...Object.keys(schemaProperties),
+  ]))
+    .filter(key => !STANDARD_INPUT_PARAMS.has(key))
+    .filter(key => !RESERVED_PARAMETER_KEYS.has(key))
+    .filter(key => !SPECIALIZED_PARAMETER_KEYS.has(key))
+    .filter(key => !invalidKeys.has(key))
+    .filter(key => !controlKeySet.has(key))
+    .map(key => ({
+      key,
+      label: key.replaceAll('_', ' '),
+      verified: false as const,
+      destination: 'extra_params' as const,
+    }));
 
   const fingerprintSource = {
     id: raw.id,
@@ -448,6 +522,8 @@ export const normalizeAionModelConfig = (raw: Record<string, any>): NormalizedGe
     supportedResolutions: firstOptionArray(options, OPTION_KEYS.resolution).map(String),
     supportedDurations: firstOptionArray(options, OPTION_KEYS.duration),
     controls,
+    advancedParameters,
+    invalidParameters,
     inputSchema,
     options,
     priceItems,
@@ -555,6 +631,7 @@ const audioInputsFor = (model: NormalizedGenerationModel, item: GenerationCase) 
     ? item.audioInputs
     : item.audioUrls.map(url => ({ url }));
   if (!structured.length) return {};
+  if (item.compilerAudit?.compilerVersion === '3') return { audios: structured };
   if (supportsStructuredAudios(model)) return { audios: structured };
   return { audio_url: structured[0].url };
 };
@@ -601,6 +678,7 @@ export const preflightGenerationCase = (
     ['video', item.videoUrls || []],
   ] as const) {
     urls.forEach((url, index) => {
+      if (item.compilerAudit?.compilerVersion === '3' && isForceableRelativeGenerationAsset(url)) return;
       if (!isUsableAssetUrl(url)) {
         errors.push({
           code: 'INVALID_ASSET_URL',
@@ -620,7 +698,8 @@ export const preflightGenerationCase = (
   for (const key of ['image_urls', 'elements', 'audios']) {
     const value = (inputs as Record<string, unknown>)[key];
     if (value === undefined || (Array.isArray(value) && value.length === 0)) continue;
-    const supportedAlias = (key === 'audios' && explicitlySupported.has('audio_url'))
+    const supportedAlias = (item.compilerAudit?.compilerVersion !== '3'
+      && key === 'audios' && explicitlySupported.has('audio_url'))
       || (key === 'image_urls' && model.outputModality === 'image'
         && explicitlySupported.has('images'));
     if (explicitlySupported.size && !explicitlySupported.has(key) && !supportedAlias) {
@@ -706,6 +785,11 @@ export const preflightGenerationCase = (
       });
     }
   }
+  const effectiveGenerationType = item.compilerAudit?.effectiveGenerationType;
+  const validationGenerationTypes = Array.from(new Set([
+    generationType,
+    ...(effectiveGenerationType ? [effectiveGenerationType] : []),
+  ]));
 
   const schema = model.inputSchema;
   if (schema && typeof schema === 'object') {
@@ -726,7 +810,7 @@ export const preflightGenerationCase = (
       return (inputs as Record<string, any>)[key] !== undefined
         || item.controls[key] !== undefined;
     };
-    for (const mode of modeCandidates(generationType)) {
+    for (const mode of Array.from(new Set(validationGenerationTypes.flatMap(modeCandidates)))) {
       for (const key of required[mode] || []) {
         if (!hasResolvedInput(key)) {
           errors.push({ code: 'MISSING_REQUIRED_INPUT', field: key, message: `${generationType} requires input: ${key}.` });
@@ -751,9 +835,11 @@ export const preflightGenerationCase = (
       'images_to_video',
       'reference_to_video',
     ]);
-    const supported = standardModes.has(generationType as GenerationMode)
-      ? supportsGenerationMode(model, generationType as GenerationMode)
-      : hasCapability(model, [generationType]);
+    const supported = validationGenerationTypes.some(mode =>
+      standardModes.has(mode as GenerationMode)
+        ? supportsGenerationMode(model, mode as GenerationMode)
+        : hasCapability(model, [mode]),
+    );
     if (!supported) {
       errors.push({
         code: 'UNSUPPORTED_GENERATION_TYPE',
@@ -824,6 +910,14 @@ export const buildAionGenerationRequest = (
   model: NormalizedGenerationModel,
   item: GenerationCase & { generationType: string },
 ) => {
+  if (item.compilerAudit?.overrideAudit?.finalRequest) {
+    return {
+      path: model.outputModality === 'image'
+        ? '/model/api/v1/model/generate-image'
+        : '/model/api/v1/model/generate-video',
+      body: item.compilerAudit.overrideAudit.finalRequest,
+    };
+  }
   const standardFields = model.outputModality === 'image' ? IMAGE_FIELDS : VIDEO_FIELDS;
   const standardControls: Record<string, any> = {};
   const extraParams: Record<string, any> = {};
@@ -834,8 +928,8 @@ export const buildAionGenerationRequest = (
     if (standardFields.has(key)) standardControls[key] = value;
     else extraParams[key] = value;
   }
-  if (item.seed !== undefined && params.has('seed')) extraParams.seed = item.seed;
   Object.assign(extraParams, item.extraInputs?.extra_params || {});
+  if (item.seed !== undefined && params.has('seed')) extraParams.seed = item.seed;
   const customInputs = configuredExtraInputs(model, item);
   const audioInputs = audioInputsFor(model, item);
 

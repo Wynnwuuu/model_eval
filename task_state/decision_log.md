@@ -204,3 +204,33 @@ Wan dev remains fixed at `1/1/1`. A successful single-case smoke is still requir
 Submission diagnostics expose only bounded tokens: HTTP status, Error name, and transport code. Arbitrary error text, response bodies, prompts, media URLs, and credentials are excluded from logs and API diagnostics.
 
 The deployed diagnostic view recovered an HTTP 500 from the existing smoke row. The incident should therefore be investigated as an Aion Manager submission-path failure. It must not be counted as evidence that the new reconciliation path or concurrency-one setting caused a provider generation timeout.
+
+## 2026-08-06: Generation parameters have one explicit source
+
+MCP mapping represents only per-case content. Duration and Seed retain dedicated source strategies; every other declared control or advanced parameter has exactly one binding: uniform, dataset column, or unused. Dataset-column blanks and malformed values invalidate that case and never fall back to a uniform value.
+
+Only the known unified Aion controls are treated as verified top-level request fields. Other live-config parameters, including schema-declared unknowns, start disabled and may be explicitly typed for `extra_params` pass-through with a visible warning. Top-level `reference_image_urls` and `multi_shots` are rejected at the server boundary.
+
+New requests use `parameterBindings` stored in existing JSONB. Omitted bindings retain the legacy compiler path so saved preflights, running jobs, retries, assets, writeback, and evaluation handoff remain compatible without a migration.
+
+## 2026-08-06: Video media channels encode intent, never image-count guesses
+
+New generation requests use `GenerationContentMappingV2`. `image_urls` is exclusively the keyframe channel: one image is a first frame and two ordered images are first/last frames. Ordinary reference images, multi-view identity references, reference videos, and existing element IDs are explicit mutually exclusive `elements` variants; audio references are ordered `audios` entries.
+
+The V2 compiler infers `generation_type` independently per case from non-empty compiled channels. Keyframes mixed with `elements` or `audios`, a tail frame without a first frame, or more than two keyframes is invalid and is never auto-converted. H3 and Wan preserve `images_to_video` as ManuEval's requested semantic mode while recording their known Aion effective `image_to_video` normalization for audit and capability checks.
+
+The MCP contract fixes field meaning and structure, live Aion configuration narrows supported modes and values, model descriptions are displayed but not parsed, and Aion remains the provider-specific adapter. Historical mappings continue through compiler V1 snapshots.
+
+## 2026-08-07: New preflights use a generic reviewed MCP contract
+
+Compiler v3 supersedes new-task model-name profiles. `image_urls` is limited by MCP semantics to one single-image driver or two ordered keyframes; ordinary image/video references and existing element IDs remain in `elements`, and reference audio remains in `audios`. Generation type is derived per case from actual non-empty channels, then narrowed by live structured Aion configuration.
+
+The reviewed default Plugin snapshot can propose Prompt token corrections or an approximate keyframe-to-element conversion, but every proposal is inert until the operator accepts it. Model descriptions remain visible context and are never parsed into runtime rules. Future model support therefore begins with MCP revision 1813 plus live Aion structure, not a hidden model-name branch.
+
+Unknown audio-only and mixed-channel semantics stop for review. A final Aion JSON override is available only with a reason and duplicate-billing confirmation; it is audited as no longer MCP-guaranteed and cannot alter the endpoint, evaluation account, selected model, immutable features, callbacks, output directories, credentials, or unsafe paths. Historical compiler snapshots and execution behavior remain unchanged.
+
+## 2026-08-07: Imported business columns resolve through exact source keys
+
+The VidMuse evaluation preset matches only the exact attachment column names. When import normalization reuses existing business columns, `DatasetSchemaField.sourceKey` is the authoritative bridge from raw names such as `prompt`, `audio_url`, and `case_id` to stored keys such as `完整Prompt`, `音频_URL`, and `用例ID`. Display labels and fuzzy name similarity never activate MCP inputs.
+
+Prompt placeholder auditing is also contract-driven. Compiler v3 checks a token family only when live structured Aion configuration explicitly declares its corresponding media channel; it never infers support from model names or descriptions. Duplicate preflight issues are collapsed for display, while distinct missing indices remain separately auditable.

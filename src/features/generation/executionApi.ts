@@ -3,6 +3,7 @@ import {
   DatasetGenerationJobItem,
   GenerationAssetBinding,
   GenerationDurationSource,
+  GenerationCaseReview,
   GenerationInputMapping,
   GenerationModelConfig,
   GenerationPreflightResult,
@@ -10,6 +11,7 @@ import {
   GenerationJobStatus,
   GenerationQueueState,
   GenerationSeedMode,
+  GenerationParameterBinding,
   GenerationTargetMode,
 } from '../../types';
 import { getApiAuthHeaders } from '../apiAuthHeaders';
@@ -25,12 +27,14 @@ export interface GenerationPreflightRequest {
   inputMapping: GenerationInputMapping;
   defaultControls: Record<string, unknown>;
   perCaseControlColumns: Record<string, string>;
+  parameterBindings?: Record<string, GenerationParameterBinding>;
   durationSource?: GenerationDurationSource;
   seedMode: GenerationSeedMode;
   fixedSeed?: number;
   seedColumn?: string;
   selectedDatasetItemIds?: string[];
   assetBindings?: GenerationAssetBinding[];
+  caseReviews?: Record<string, GenerationCaseReview>;
 }
 
 export interface GenerationRuntimeHealth {

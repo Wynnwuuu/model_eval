@@ -293,6 +293,8 @@ export const createGenerationBatchFromPreflight = async (
     const controls = {
       defaultControls: preflight.payload.defaultControls || {},
       perCaseControlColumns: preflight.payload.perCaseControlColumns || {},
+      parameterBindings: preflight.payload.parameterBindings,
+      caseReviews: preflight.payload.caseReviews,
       durationSource: preflight.payload.durationSource,
       seedMode: preflight.payload.seedMode || 'derive_from_case',
       fixedSeed: preflight.payload.fixedSeed,

@@ -537,6 +537,35 @@ export interface GenerationControlDefinition {
   unit?: string;
 }
 
+export type GenerationParameterValueType = 'string' | 'number' | 'boolean' | 'json';
+
+export type GenerationParameterBinding =
+  | { source: 'unused' }
+  | { source: 'uniform'; value: unknown; valueType?: GenerationParameterValueType }
+  | { source: 'column'; column: string; valueType?: GenerationParameterValueType };
+
+export interface GenerationAdvancedParameterDefinition {
+  key: string;
+  label: string;
+  verified: false;
+  destination: 'extra_params';
+}
+
+export interface GenerationInvalidParameterDefinition {
+  key: string;
+  label: string;
+  message: string;
+  replacement: string;
+}
+
+export interface GenerationParameterAuditEntry {
+  source: 'uniform' | 'column';
+  column?: string;
+  value: unknown;
+  verified: boolean;
+  destination: 'control' | 'extra_params';
+}
+
 export interface GenerationModelConfig {
   id: string;
   configId?: string;
@@ -551,6 +580,8 @@ export interface GenerationModelConfig {
   supportedResolutions?: string[];
   supportedDurations?: Array<string | number>;
   controls: GenerationControlDefinition[];
+  advancedParameters: GenerationAdvancedParameterDefinition[];
+  invalidParameters: GenerationInvalidParameterDefinition[];
   inputSchema?: Record<string, any>;
   options?: Record<string, any>;
   priceItems?: Array<Record<string, any>>;
@@ -560,9 +591,67 @@ export interface GenerationModelConfig {
 }
 
 export type GenerationInputMappingMode = 'assisted' | 'mcp';
+export type GenerationPromptFormat = 'text' | 'multi_prompt_json' | 'typed';
+
+export type GenerationKeyframeBinding =
+  | { source: 'unused' }
+  | { source: 'columns'; firstColumn: string; lastColumn?: string }
+  | { source: 'array_column'; column: string };
+
+export type GenerationElementMode = 'image' | 'video' | 'element_id';
+
+export type GenerationElementBinding = {
+  id: string;
+  mode: GenerationElementMode;
+  frontalImageColumn?: string;
+  referenceImageColumns?: string[];
+  referenceImageArrayColumn?: string;
+  videoColumn?: string;
+  elementIdColumn?: string;
+};
+
+export type GenerationElementsBinding =
+  | { source: 'unused' }
+  | { source: 'builder'; items: GenerationElementBinding[] }
+  | { source: 'array_column'; column: string };
+
+export type GenerationAudioRangeSource = 'none' | 'fixed' | 'column' | 'columns';
+
+export type GenerationAudioBinding = {
+  id: string;
+  urlColumn: string;
+  rangeSource: GenerationAudioRangeSource;
+  fixedRange?: [number, number];
+  rangeColumn?: string;
+  rangeStartColumn?: string;
+  rangeEndColumn?: string;
+};
+
+export type GenerationAudiosBinding =
+  | { source: 'unused' }
+  | { source: 'builder'; items: GenerationAudioBinding[] }
+  | { source: 'array_column'; column: string };
+
+export interface GenerationContentMappingV2 {
+  version: 2;
+  prompt: {
+    column: string;
+    format: GenerationPromptFormat;
+  };
+  keyframes: GenerationKeyframeBinding;
+  elements: GenerationElementsBinding;
+  audios: GenerationAudiosBinding;
+}
+
+export type GenerationInputPresetId = 'vidmuse_evaluation_v1';
+
+
 export type GenerationCompatibilityMode = 'strict' | 'reference_fallback';
 
 export interface GenerationInputMapping {
+  presetId?: GenerationInputPresetId;
+  contentMappingVersion?: 2;
+  contentMapping?: GenerationContentMappingV2;
   mappingMode?: GenerationInputMappingMode;
   compatibilityMode?: GenerationCompatibilityMode;
   canonicalFieldMappings?: Record<string, string>;
@@ -602,6 +691,8 @@ export interface DatasetGenerationJob {
   inputMapping: GenerationInputMapping;
   defaultControls: Record<string, string | number | boolean>;
   perCaseControlColumns: Record<string, string>;
+  parameterBindings?: Record<string, GenerationParameterBinding>;
+  caseReviews?: Record<string, GenerationCaseReview>;
   seedMode: GenerationSeedMode;
   fixedSeed?: number;
   seedColumn?: string;
@@ -673,6 +764,32 @@ export interface GenerationPreflightIssue {
   code: string;
   message: string;
   field?: string;
+}
+
+export interface GenerationContractProposal {
+  kind: 'prompt_rewrite' | 'keyframes_to_elements';
+  prompt?: unknown;
+  compiledInput?: Record<string, unknown>;
+}
+
+export interface GenerationContractFinding extends GenerationPreflightIssue {
+  id: string;
+  ruleId: string;
+  source: 'mcp_revision_1813' | 'aion_live_config' | 'plugin_snapshot';
+  sourceVersion: string;
+  disposition: 'suggestion' | 'review_required' | 'force_required';
+  proposal?: GenerationContractProposal;
+}
+
+export interface GenerationCaseReview {
+  acceptedFindingIds?: string[];
+  rejectedFindingIds?: string[];
+  promptOverride?: unknown;
+  finalAionRequest?: Record<string, unknown>;
+  force?: {
+    reason: string;
+    duplicateBillingRiskConfirmed: boolean;
+  };
 }
 
 export interface GenerationPreflightCase {

@@ -174,6 +174,8 @@ generationRoutes.post('/batches/:batchId/retry', async (req, res) => {
       inputMapping: batch.inputMapping,
       defaultControls: batch.controls.defaultControls || {},
       perCaseControlColumns: batch.controls.perCaseControlColumns || {},
+      parameterBindings: batch.controls.parameterBindings,
+      caseReviews: batch.controls.caseReviews,
       durationSource: batch.controls.durationSource,
       retryOfJobId: batch.id,
       retrySourceItemIds: Object.fromEntries(

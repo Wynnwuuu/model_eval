@@ -6,7 +6,90 @@ import type {
 } from '../../types';
 import type { GenerationImageRole } from './modelCapabilities';
 
+export const VIDMUSE_EVALUATION_PRESET_COLUMNS = [
+  'case_id',
+  'modality',
+  'prompt',
+  'duration',
+  'aspect_ratio',
+  'resolution',
+  'generate_audio',
+  'audio_url',
+  'image_urls',
+  'elements',
+] as const;
+
+const exactHeaderMap = (headers: string[]) => new Map(
+  headers.map(header => [header.trim().toLowerCase(), header] as const),
+);
+
+export const resolveVidMuseEvaluationPresetColumns = (
+  headers: string[],
+  fields: DatasetSchemaField[] = [],
+) => {
+  const exact = exactHeaderMap(headers);
+  const resolved = new Map<string, string>();
+  VIDMUSE_EVALUATION_PRESET_COLUMNS.forEach(column => {
+    const direct = exact.get(column);
+    if (direct) {
+      resolved.set(column, direct);
+      return;
+    }
+    const field = fields.find(candidate =>
+      [candidate.sourceKey, candidate.key]
+        .filter(Boolean)
+        .some(value => String(value).trim().toLowerCase() === column));
+    if (field && headers.includes(field.key)) resolved.set(column, field.key);
+  });
+  return Object.fromEntries(resolved) as Partial<Record<typeof VIDMUSE_EVALUATION_PRESET_COLUMNS[number], string>>;
+};
+
+export const hasVidMuseEvaluationPreset = (
+  headers: string[],
+  fields: DatasetSchemaField[] = [],
+) => {
+  const resolved = resolveVidMuseEvaluationPresetColumns(headers, fields);
+  return VIDMUSE_EVALUATION_PRESET_COLUMNS.every(column => Boolean(resolved[column]));
+};
+
+export const defaultVidMuseEvaluationParameterColumns = (
+  headers: string[],
+  supportedKeys: string[],
+  fields: DatasetSchemaField[] = [],
+) => {
+  const resolved = resolveVidMuseEvaluationPresetColumns(headers, fields);
+  if (!VIDMUSE_EVALUATION_PRESET_COLUMNS.every(column => Boolean(resolved[column]))) return {};
+  const supported = new Set(supportedKeys);
+  return Object.fromEntries(
+    ['aspect_ratio', 'resolution', 'generate_audio']
+      .filter(key => supported.has(key) && Boolean(resolved[key as keyof typeof resolved]))
+      .map(key => [key, {
+        source: 'column' as const,
+        column: resolved[key as keyof typeof resolved] as string,
+      }]),
+  );
+};
+
+export const generationRowMatchesModality = (
+  row: Record<string, unknown>,
+  outputModality: 'image' | 'video',
+) => {
+  const original = row._originalData && typeof row._originalData === 'object' && !Array.isArray(row._originalData)
+    ? row._originalData as Record<string, unknown>
+    : undefined;
+  const value = String(row.modality ?? original?.modality ?? '').trim().toLowerCase();
+  return !value || value === outputModality;
+};
+
 const emptyMapping = (): GenerationInputMapping => ({
+  contentMappingVersion: 2,
+  contentMapping: {
+    version: 2,
+    prompt: { column: '', format: 'text' },
+    keyframes: { source: 'unused' },
+    elements: { source: 'unused' },
+    audios: { source: 'unused' },
+  },
   mappingMode: 'mcp',
   compatibilityMode: 'strict',
   canonicalFieldMappings: {},
@@ -33,6 +116,7 @@ export const defaultGenerationInputMapping = (
   dataset: EvalDataset,
   headers: string[],
   mappings: DatasetColumnMappings,
+  outputModality?: 'image' | 'video',
 ): GenerationInputMapping => {
   const fields = dataset.inputSchema || [];
   const fieldKey = (predicate: (field: DatasetSchemaField) => boolean) =>
@@ -47,17 +131,46 @@ export const defaultGenerationInputMapping = (
     || mappings.inputColumns.find(column => headers.includes(column))
     || headers.find(header => /prompt|input/i.test(header))
     || '';
-  const canonicalFieldMappings = Object.fromEntries([
-    ...(promptColumn ? [['prompt', promptColumn]] : []),
-    ...['image_urls', 'images', 'elements', 'audios'].flatMap(key => {
-      const column = exactHeader(key);
-      return column ? [[key, column]] : [];
-    }),
-  ]);
+  const canonicalFieldMappings = Object.fromEntries(promptColumn ? [['prompt', promptColumn]] : []);
+  const presetColumns = resolveVidMuseEvaluationPresetColumns(headers, fields);
+  if (outputModality && VIDMUSE_EVALUATION_PRESET_COLUMNS.every(column => Boolean(presetColumns[column]))) {
+    const presetPrompt = presetColumns.prompt || '';
+    return {
+      ...emptyMapping(),
+      presetId: 'vidmuse_evaluation_v1',
+      promptColumn: presetPrompt,
+      canonicalFieldMappings: presetPrompt ? { prompt: presetPrompt } : {},
+      contentMapping: {
+        version: 2,
+        prompt: { column: presetPrompt, format: 'text' },
+        keyframes: { source: 'array_column', column: presetColumns.image_urls || '' },
+        elements: outputModality === 'video'
+          ? { source: 'array_column', column: presetColumns.elements || '' }
+          : { source: 'unused' },
+        audios: outputModality === 'video'
+          ? {
+              source: 'builder',
+              items: [{
+                id: 'preset-audio-1',
+                urlColumn: presetColumns.audio_url || '',
+                rangeSource: 'none',
+              }],
+            }
+          : { source: 'unused' },
+      },
+    };
+  }
   return {
     ...emptyMapping(),
     promptColumn,
     canonicalFieldMappings,
+    contentMapping: {
+      version: 2,
+      prompt: { column: promptColumn, format: 'text' },
+      keyframes: { source: 'unused' },
+      elements: { source: 'unused' },
+      audios: { source: 'unused' },
+    },
   };
 };
 

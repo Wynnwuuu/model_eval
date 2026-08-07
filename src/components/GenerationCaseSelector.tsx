@@ -6,11 +6,13 @@ import { extractMediaUrls } from '../mediaUrlUtils';
 import { inferReferenceMediaType } from '../mediaTypeUtils';
 import { parseStructuredGenerationValue } from '../features/generation/mediaReferences';
 import type { EvalDataset, GenerationInputMapping } from '../types';
+import { generationRowMatchesModality } from '../features/generation/inputMapping';
 import MediaRenderer from './MediaRenderer';
 
 interface GenerationCaseSelectorProps {
   dataset: EvalDataset;
   inputMapping: GenerationInputMapping;
+  outputModality?: 'image' | 'video';
   targetColumn: string;
   selectedDatasetItemIds: string[];
   maxBatchSize: number;
@@ -24,6 +26,7 @@ interface SelectableCase {
   prompt: string;
   mediaUrls: string[];
   targetFilled: boolean;
+  modalityMatches: boolean;
   eligible: boolean;
 }
 
@@ -86,6 +89,35 @@ const LazyCaseMedia: React.FC<{ url: string }> = ({ url }) => {
 };
 
 const mappedMediaColumns = (mapping: GenerationInputMapping) => {
+  const content = mapping.contentMappingVersion === 2 && mapping.contentMapping?.version === 2
+    ? mapping.contentMapping
+    : undefined;
+  if (content) {
+    const columns: string[] = [];
+    if (content.keyframes.source === 'columns') {
+      columns.push(content.keyframes.firstColumn, content.keyframes.lastColumn || '');
+    } else if (content.keyframes.source === 'array_column') {
+      columns.push(content.keyframes.column);
+    }
+    if (content.elements.source === 'array_column') {
+      columns.push(content.elements.column);
+    } else if (content.elements.source === 'builder') {
+      content.elements.items.forEach(item => {
+        columns.push(
+          item.frontalImageColumn || '',
+          ...(item.referenceImageColumns || []),
+          item.referenceImageArrayColumn || '',
+          item.videoColumn || '',
+        );
+      });
+    }
+    if (content.audios.source === 'array_column') {
+      columns.push(content.audios.column);
+    } else if (content.audios.source === 'builder') {
+      content.audios.items.forEach(item => columns.push(item.urlColumn));
+    }
+    return Array.from(new Set(columns.filter(Boolean)));
+  }
   const canonical = mapping.canonicalFieldMappings || {};
   return Array.from(new Set([
     ...['image_urls', 'images', 'elements', 'audios'].flatMap(key =>
@@ -101,6 +133,7 @@ const mappedMediaColumns = (mapping: GenerationInputMapping) => {
 const GenerationCaseSelector: React.FC<GenerationCaseSelectorProps> = ({
   dataset,
   inputMapping,
+  outputModality,
   targetColumn,
   selectedDatasetItemIds,
   maxBatchSize,
@@ -109,14 +142,19 @@ const GenerationCaseSelector: React.FC<GenerationCaseSelectorProps> = ({
   const [query, setQuery] = useState('');
   const selectAllRef = useRef<HTMLInputElement | null>(null);
   const selectedSet = useMemo<Set<string>>(() => new Set(selectedDatasetItemIds), [selectedDatasetItemIds]);
-  const promptColumn = inputMapping.mappingMode === 'mcp'
-    ? inputMapping.canonicalFieldMappings?.prompt || inputMapping.promptColumn
-    : inputMapping.promptColumn;
+  const promptColumn = inputMapping.contentMappingVersion === 2
+    ? inputMapping.contentMapping?.prompt.column
+    : inputMapping.mappingMode === 'mcp'
+      ? inputMapping.canonicalFieldMappings?.prompt || inputMapping.promptColumn
+      : inputMapping.promptColumn;
   const mediaColumns = useMemo(() => mappedMediaColumns(inputMapping), [inputMapping]);
 
   const cases = useMemo<SelectableCase[]>(() => (dataset.items || []).map((row, rowIndex) => {
     const datasetItemId = text(row[DATASET_ITEM_ID_KEY]);
     const targetFilled = Boolean(text(row[targetColumn]));
+    const modalityMatches = !inputMapping.presetId
+      || !outputModality
+      || generationRowMatchesModality(row, outputModality);
     return {
       rowIndex,
       datasetItemId,
@@ -124,9 +162,10 @@ const GenerationCaseSelector: React.FC<GenerationCaseSelectorProps> = ({
       prompt: promptColumn ? promptText(row[promptColumn]) : '',
       mediaUrls: Array.from(new Set(mediaColumns.flatMap(column => extractMediaUrls(row[column])))),
       targetFilled,
-      eligible: Boolean(datasetItemId) && !targetFilled,
+      modalityMatches,
+      eligible: Boolean(datasetItemId) && !targetFilled && modalityMatches,
     };
-  }), [dataset.items, mediaColumns, promptColumn, targetColumn]);
+  }), [dataset.items, inputMapping.presetId, mediaColumns, outputModality, promptColumn, targetColumn]);
 
   const normalizedQuery = query.trim().toLowerCase();
   const filteredCases = useMemo(() => cases.filter(item => !normalizedQuery
@@ -222,6 +261,7 @@ const GenerationCaseSelector: React.FC<GenerationCaseSelectorProps> = ({
             </div>
             <div>
               {item.targetFilled ? <span className="text-sky-300">{'\u5df2\u6709\u7ed3\u679c'}</span>
+                : !item.modalityMatches ? <span className="text-amber-300">{'\u6a21\u6001\u4e0d\u5339\u914d'}</span>
                 : item.datasetItemId ? <span className="text-emerald-300">{'\u53ef\u751f\u6210'}</span>
                   : <span className="text-red-300">{'\u7f3a\u5c11\u7a33\u5b9a ID'}</span>}
             </div>
