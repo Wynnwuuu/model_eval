@@ -1,10 +1,11 @@
 # ManuEval 视频输入对接 VidMuse MCP / Aion 说明文档
 
-> 状态：Implemented v1.0，作为 ManuEval dev 新生成预检的输入合同  
-> 日期：2026-08-07  
+> 状态：Implemented v1.1，作为 ManuEval dev 新生成预检的输入合同
+> 日期：2026-08-08
 > 适用范围：ManuEval dev 的图片/视频模型批量生成  
 > 权威文档：[VidMuse MCP 工具文档](https://j0yswlgboxz.feishu.cn/wiki/Odf8w2SBmicB9skMfAMcDoqxnpd)，读取版本 revision 1813  
 > Plugin 规则快照：`general-mv-main-dsl-v2-en-0721`，commit `1029c7970b7069f2e088247cc870992bc65d1424`  
+> Aion Model API 核对版本：`aea3088770f1eefdf754473075ebdb26fe32f90b`
 > ManuEval 实现基线：`9f06bca` 之后的 MCP compiler v3；发布提交见本文所在 Git 历史
 
 ## 1. 文档目的
@@ -227,6 +228,15 @@ MCP 允许多镜头子项时长为数字；是否允许小数、总时长范围�
 
 标准 MCP 参数包括 `duration`、`aspect_ratio`、`resolution`、`generate_audio`、`negative_prompt`。`seed`、`watermark`、`480p` 不在本次读取的 MCP `generate_video` 字段中，只能在 Aion 实时配置明确声明时作为“Aion 模型扩展参数”展示和发送，不能标成 MCP 标准输入。
 
+Seed 使用独立策略，不进入普通参数映射：
+
+- `不使用`是默认值：MCP 输入和 Aion `extra_params` 中都不出现 Seed，由模型采用自身默认行为；这不承诺供应商一定随机。
+- `按 case 派生`：由 `datasetId + stableDatasetItemId` 派生，修改 Prompt、模型或目标列不改变同一 case 的 Seed。
+- `固定值`：整个批次使用同一个整数，`0` 是有效值。
+- `数据集列`：逐 case 严格读取整数；空值或非法值只使对应 case 预检失败。
+- 只有实时 `options.supported_params` 精确包含 `seed` 且执行传输为 `model_api` 时才显示和允许后三种策略。`options.seed`、模型名和 description 均不能推断 Seed 支持。
+- Seed 启用时只进入最终 Aion 请求的 `extra_params.seed`，不进入 `mcpToolInput`，也不作为 Aion 顶层字段。
+
 已知不应作为新任务顶层入口的字段：
 
 - `reference_image_urls`：应位于 `elements[].reference_image_urls`。
@@ -351,6 +361,7 @@ MCP 和实时配置取交集。例如 `image_urls` 的数量上限始终不超�
 - 规范化 MCP 输入。
 - 推导出的 ManuEval 生成方式。
 - 最终 Aion 请求体，隐藏账号凭据和服务器本地路径。
+- MCP 公共字段投影差异；正常请求必须为空，人工强制覆盖时必须明确展示。
 - 参数来源、模型配置快照/指纹和完整 description。
 - 所有错误、警告和已应用的模型专项规则。
 
@@ -404,9 +415,28 @@ Aion Adapter 负责供应商私有字段、role、最终互斥和供应商错误
 
 默认 Plugin 快照只提供可审阅的通道错位建议：来源通道唯一且编号一一对应时，可建议 `@imageN <-> @ElementN`；用户接受后才改写本批次 Prompt，原评测集不变。合同未知或编号无法对应时不自动改写。
 
-## 10. 请求示例
+## 10. MCP 输入与 Aion 请求分层示例
+
+以下每个示例都分成三步：`mcpToolInput` 是按 revision 1813 构造的标准工具输入；`generation_type` 是 ManuEval 根据每个 case 的非空媒体推导的 Aion 桥接字段；最终 JSON 才是发送到 Aion `POST /model/api/v1/model/generate-video` 的 HTTP body。
+
+正常请求提交前会从最终 Aion JSON 投影出 MCP 公共字段，与 `mcpToolInput` 逐值比较。字段值、数组顺序或 `false`、`0` 等值发生变化时，该 case 预检失败。ManuEval 能保证的是发往 Aion 的 JSON；Aion Adapter 后续如何转换为供应商字段不属于 MCP 请求本身。
 
 ### 10.1 文生视频
+
+MCP 标准输入：
+
+```json
+{
+  "model_name": "selected-model",
+  "prompt": "一名角色沿着街道向前走",
+  "duration": 5,
+  "resolution": "1080p"
+}
+```
+
+ManuEval 推导：`generation_type = "text_to_video"`。
+
+最终 Aion 请求：
 
 ```json
 {
@@ -417,26 +447,46 @@ Aion Adapter 负责供应商私有字段、role、最终互斥和供应商错误
   "resolution": "1080p",
   "features": {
     "auto_adjust_duration_to_supported": false
-  }
+  },
+  "extra_params": {}
 }
 ```
 
 ### 10.2 单图驱动视频
 
+MCP 标准输入：
+
 ```json
 {
-  "generation_type": "image_to_video",
   "model_name": "selected-model",
   "prompt": "角色转头看向镜头",
   "image_urls": ["https://example.com/driver.png"]
 }
 ```
 
-### 10.3 首尾帧视频
+ManuEval 推导：`generation_type = "image_to_video"`。
+
+最终 Aion 请求：
 
 ```json
 {
-  "generation_type": "images_to_video",
+  "generation_type": "image_to_video",
+  "model_name": "selected-model",
+  "prompt": "角色转头看向镜头",
+  "image_urls": ["https://example.com/driver.png"],
+  "features": {
+    "auto_adjust_duration_to_supported": false
+  },
+  "extra_params": {}
+}
+```
+
+### 10.3 首尾帧视频
+
+MCP 标准输入：
+
+```json
+{
   "model_name": "selected-model",
   "prompt": "从室内平滑移动到室外",
   "image_urls": [
@@ -446,11 +496,32 @@ Aion Adapter 负责供应商私有字段、role、最终互斥和供应商错误
 }
 ```
 
-### 10.4 两个普通图片参考元素
+ManuEval 推导：`generation_type = "images_to_video"`。数组顺序必须保持 `[第一帧, 最后一帧]`。
+
+最终 Aion 请求：
 
 ```json
 {
-  "generation_type": "reference_to_video",
+  "generation_type": "images_to_video",
+  "model_name": "selected-model",
+  "prompt": "从室内平滑移动到室外",
+  "image_urls": [
+    "https://example.com/first.png",
+    "https://example.com/last.png"
+  ],
+  "features": {
+    "auto_adjust_duration_to_supported": false
+  },
+  "extra_params": {}
+}
+```
+
+### 10.4 两个普通图片参考元素
+
+MCP 标准输入：
+
+```json
+{
   "model_name": "selected-model",
   "prompt": "让两个参考角色在场景中互动",
   "elements": [
@@ -462,7 +533,49 @@ Aion Adapter 负责供应商私有字段、role、最终互斥和供应商错误
 
 这里不能使用双项 `image_urls`，否则语义会变成首尾帧。
 
+ManuEval 推导：`generation_type = "reference_to_video"`。
+
+最终 Aion 请求：
+
+```json
+{
+  "generation_type": "reference_to_video",
+  "model_name": "selected-model",
+  "prompt": "让两个参考角色在场景中互动",
+  "elements": [
+    { "frontal_image_url": "https://example.com/character-a.png" },
+    { "frontal_image_url": "https://example.com/character-b.png" }
+  ],
+  "features": {
+    "auto_adjust_duration_to_supported": false
+  },
+  "extra_params": {}
+}
+```
+
 ### 10.5 参考元素和参考音频
+
+MCP 标准输入：
+
+```json
+{
+  "model_name": "selected-model",
+  "prompt": "角色根据参考音频完成表演",
+  "elements": [
+    { "video_url": "https://example.com/performance.mp4" }
+  ],
+  "audios": [
+    {
+      "url": "https://example.com/dialogue.wav",
+      "range": [1.25, 6.75]
+    }
+  ]
+}
+```
+
+ManuEval 推导：`generation_type = "reference_to_video"`。
+
+最终 Aion 请求：
 
 ```json
 {
@@ -477,7 +590,23 @@ Aion Adapter 负责供应商私有字段、role、最终互斥和供应商错误
       "url": "https://example.com/dialogue.wav",
       "range": [1.25, 6.75]
     }
-  ]
+  ],
+  "features": {
+    "auto_adjust_duration_to_supported": false
+  },
+  "extra_params": {}
+}
+```
+
+### 10.6 Seed 是 Aion 扩展，不是 MCP 字段
+
+默认“不使用”时，上述 `mcpToolInput` 不含 `seed`，最终 Aion 请求的 `extra_params` 也不含 `seed`。选择固定 Seed `0` 后，MCP 输入保持完全不变，最终 Aion 请求只增加：
+
+```json
+{
+  "extra_params": {
+    "seed": 0
+  }
 }
 ```
 
@@ -493,6 +622,8 @@ Aion Adapter 负责供应商私有字段、role、最终互斥和供应商错误
 - 规范化 MCP 输入。
 - ManuEval 推导的 generation type。
 - 最终 Aion 请求。
+- MCP 公共字段投影差异；正常请求为空，人工覆盖可非空。
+- Seed 策略版本、模式和实际发送值；`unused` 不保存伪造的派生值。
 - 如存在 Adapter 模式归一化，保存请求模式和已知有效模式。
 - 参数来源和规范化值。
 - 模型配置快照、指纹和 description。
@@ -506,6 +637,7 @@ Aion Adapter 负责供应商私有字段、role、最终互斥和供应商错误
 
 - 新任务使用版本化的内容映射合同，例如 `GenerationContentMappingV2`。
 - 已保存的历史预检、运行中批次和旧 `GenerationInputMapping` 继续使用原快照与旧编译器，不在恢复时套用新语义。
+- 新任务保存 `seedPolicyVersion=2`；历史重试仅在旧模型快照明确声明 Seed 支持时沿用旧策略，否则转为 `unused`。
 - 历史兼容逻辑可以保留在服务端，但新任务界面不再提供会改变素材意图的 `reference_fallback`。
 - 数据库 JSONB 足以保存版本化映射和审计数据，不要求为本输入规范单独迁移表结构。
 - Worker、任务租约、重试、资产链接、数据集回填和人工评测链路不因本规范改变。
@@ -519,7 +651,7 @@ Aion Adapter 负责供应商私有字段、role、最终互斥和供应商错误
 | MCP compiler v1/v2/v3 | `src/features/generation/vidmuseInputContract.ts` |
 | 固定 Plugin 规则快照 | `src/features/generation/vidmusePluginContracts.ts` |
 | 实时配置校验、请求构造 | `server/generation/generationPlanning.ts` |
-| case 审阅、强制覆盖、安全校验 | `server/generation/generationPreflightService.ts` |
+| case 审阅、Seed 策略、MCP/Aion 投影、强制覆盖 | `server/generation/generationPreflightService.ts` |
 | 审阅 UI 与请求预览 | `DatasetGenerationExecutionModal.tsx` |
 | Worker 执行与素材准备 | `server/generation/generationWorker.ts` |
 
@@ -551,11 +683,12 @@ Worker 不自动重发生成 POST；`submission_unknown` 仍需用户明确手�
 ### 14.3 新模型接入
 
 1. Aion 配置必须声明 output modality、capabilities、输入 schema、支持参数和范围。
-2. ManuEval 先使用 MCP revision 1813 基础合同和实时配置，不新增模型名判断。
-3. 普通文字、单图、双帧和元素参考可在结构化合同足够时直接预检。
-4. 音频单独或跨通道组合只有结构化合同能确定唯一模式时自动成立，否则进入人工配置。
-5. 若需要模型专用 Prompt token 或互斥建议，应在 Plugin 仓库提供版本化机器合同；更新 ManuEval 固定快照并补测试后才能生效。
-6. `description` 始终展示，但不转成运行时规则。
+2. 需要 Seed 时，Aion 实时 `options.supported_params` 必须精确包含 `seed`；其他字段或描述不能替代。
+3. ManuEval 先使用 MCP revision 1813 基础合同和实时配置，不新增模型名判断。
+4. 普通文字、单图、双帧和元素参考可在结构化合同足够时直接预检。
+5. 音频单独或跨通道组合只有结构化合同能确定唯一模式时自动成立，否则进入人工配置。
+6. 若需要模型专用 Prompt token 或互斥建议，应在 Plugin 仓库提供版本化机器合同；更新 ManuEval 固定快照并补测试后才能生效。
+7. `description` 始终展示，但不转成运行时规则。
 
 ## 15. 验收标准
 
@@ -569,6 +702,8 @@ Worker 不自动重发生成 POST；`submission_unknown` 仍需用户明确手�
 - Aion 实时配置缩小 MCP 能力时正确阻断，不把配置中的大数量范围误用到 `image_urls`。
 - 未知模型通过 MCP 基础合同和实时配置后可使用，不因缺少 ManuEval 专项 profile 被无条件阻断。
 - 预检准确展示规范化 MCP 输入、最终 Aion 请求、模式、顺序、配置快照和 description。
+- Seed 默认不发送；支持模型的派生、固定值 `0` 和数据集列准确进入 `extra_params.seed`，不支持模型和 `task_worker` 明确阻断。
+- 五类视频输入的 MCP 公共字段能从最终 Aion 请求逐值投影回来；人工覆盖差异可见且留痕。
 - 历史映射、运行中任务、Worker 恢复、稳定资产、回填和人工评测不回归。
 - 最终 dev 付费验收应分别执行“双参考图”和“双关键帧”case；执行前单独确认，禁止因测试失败自动重提付费请求。
 

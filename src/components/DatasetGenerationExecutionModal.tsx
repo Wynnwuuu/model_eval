@@ -112,6 +112,7 @@ const copy = {
   controls: '\u751f\u6210\u53c2\u6570',
   caseColumn: '\u9010 case \u8986\u76d6\u5217',
   seed: 'Seed \u7b56\u7565',
+  unusedSeed: '\u4e0d\u4f7f\u7528\uff08\u9ed8\u8ba4\uff09',
   fixed: '\u56fa\u5b9a Seed',
   derived: '\u6309 case \u7a33\u5b9a\u6d3e\u751f',
   fromColumn: '\u4ece\u5217\u8bfb\u53d6',
@@ -224,7 +225,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const [parameterBindings, setParameterBindings] = useState<Record<string, GenerationParameterBinding>>({});
   const [durationMode, setDurationMode] = useState<GenerationDurationSourceMode>('uniform');
   const [durationColumn, setDurationColumn] = useState('');
-  const [seedMode, setSeedMode] = useState<GenerationSeedMode>('derive_from_case');
+  const [seedMode, setSeedMode] = useState<GenerationSeedMode>('unused');
   const [fixedSeed, setFixedSeed] = useState(42);
   const [seedColumn, setSeedColumn] = useState('');
   const [assetBindings, setAssetBindings] = useState<GenerationAssetBinding[]>([]);
@@ -368,6 +369,9 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     setParameterBindings(nextParameterBindings);
     setDurationMode(presetDurationColumn ? 'column' : 'uniform');
     setDurationColumn(presetDurationColumn);
+    setSeedMode('unused');
+    setFixedSeed(42);
+    setSeedColumn('');
     audioProbeController.current?.abort();
     setAudioProbe({ status: 'idle', values: {}, issues: {} });
     setInputMapping(presetMapping);
@@ -772,6 +776,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
       parameterBindings,
       durationSource,
       seedMode,
+      seedPolicyVersion: 2,
       fixedSeed: seedMode === 'fixed' ? fixedSeed : undefined,
       seedColumn: seedMode === 'column' ? seedColumn : undefined,
       assetBindings,
@@ -1545,20 +1550,29 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                 )}
               </section>
 
-              <section className="border-t border-white/10 pt-5">
-                <h3 className="mb-3 text-sm font-semibold text-slate-100">{copy.seed}</h3>
-                <div className="flex flex-wrap gap-4 text-sm text-slate-300">
-                  {([
-                    ['derive_from_case', copy.derived],
-                    ['fixed', copy.fixed],
-                    ['column', copy.fromColumn],
-                  ] as const).map(([value, label]) => (
-                    <label key={value} className="flex items-center gap-2"><input type="radio" checked={seedMode === value} onChange={() => { setSeedMode(value); invalidatePreflight(); }} /> {label}</label>
-                  ))}
-                </div>
-                {seedMode === 'fixed' && <input type="number" value={fixedSeed} onChange={event => { setFixedSeed(Number(event.target.value)); invalidatePreflight(); }} className="mt-3 w-44 border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100" />}
-                {seedMode === 'column' && <div className="mt-3 max-w-sm">{renderColumnSelect(seedColumn, value => { setSeedColumn(value); invalidatePreflight(); }, 'Seed column')}</div>}
-              </section>
+              {selectedModel?.supportsSeed && runtimeHealth?.executionTransport === 'model_api' && (
+                <section className="border-t border-white/10 pt-5">
+                  <h3 className="mb-3 text-sm font-semibold text-slate-100">{copy.seed}</h3>
+                  <div className="flex flex-wrap gap-4 text-sm text-slate-300">
+                    {([
+                      ['unused', copy.unusedSeed],
+                      ['derive_from_case', copy.derived],
+                      ['fixed', copy.fixed],
+                      ['column', copy.fromColumn],
+                    ] as const).map(([value, label]) => (
+                      <label key={value} className="flex items-center gap-2"><input type="radio" checked={seedMode === value} onChange={() => { setSeedMode(value); invalidatePreflight(); }} /> {label}</label>
+                    ))}
+                  </div>
+                  <div className="mt-2 text-xs text-slate-500">
+                    {seedMode === 'unused' && '\u672a\u53d1\u9001\uff0c\u4f7f\u7528\u6a21\u578b\u9ed8\u8ba4'}
+                    {seedMode === 'derive_from_case' && '\u6309 case \u6d3e\u751f'}
+                    {seedMode === 'fixed' && '\u56fa\u5b9a\u503c'}
+                    {seedMode === 'column' && '\u6570\u636e\u96c6\u5217'}
+                  </div>
+                  {seedMode === 'fixed' && <input type="number" value={fixedSeed} onChange={event => { setFixedSeed(Number(event.target.value)); invalidatePreflight(); }} className="mt-3 w-44 border border-white/10 bg-slate-900 px-3 py-2 text-sm text-slate-100" />}
+                  {seedMode === 'column' && <div className="mt-3 max-w-sm">{renderColumnSelect(seedColumn, value => { setSeedColumn(value); invalidatePreflight(); }, 'Seed column')}</div>}
+                </section>
+              )}
 
               <GenerationCaseSelector
                 dataset={dataset}
@@ -1662,24 +1676,48 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                                   ))}
                                 </div>
                                 <details>
-                                  <summary className="cursor-pointer text-[11px] text-sky-300">{'\u8bf7\u6c42\u5ba1\u8ba1'}</summary>
-                                  <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-all bg-black/30 p-2 text-[10px] text-slate-300">
-                                    {JSON.stringify({
-                                      ...(item.resolvedCase.compilerAudit.compatibilityApplied
-                                        ? { originalInput: item.resolvedCase.compilerAudit.originalInput }
-                                        : {}),
-                                      normalizedInput: item.resolvedCase.compilerAudit.compiledInput,
-                                      requestedGenerationType: item.generationType,
-                                      effectiveGenerationType: item.resolvedCase.compilerAudit.effectiveGenerationType,
-                                      inputIntent: item.resolvedCase.compilerAudit.intent,
-                                      contractSource: item.resolvedCase.compilerAudit.contractSource,
-                                      contractFindings: item.resolvedCase.compilerAudit.contractFindings,
-                                      review: item.resolvedCase.compilerAudit.review,
-                                      parameterSources: item.resolvedCase.parameterAudit,
-                                      finalAionRequest: item.resolvedCase.compilerAudit.finalAionRequest,
-                                      overrideAudit: item.resolvedCase.compilerAudit.overrideAudit,
-                                    }, null, 2)}
-                                  </pre>
+                                  <summary className="cursor-pointer text-[11px] text-sky-300">{'\u539f\u59cb\u8f93\u5165\u4e0e\u7528\u6237\u610f\u56fe'}</summary>
+                                  <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-all bg-black/30 p-2 text-[10px] text-slate-300">{JSON.stringify({
+                                    originalInput: item.resolvedCase.compilerAudit.originalInput,
+                                    inputIntent: item.resolvedCase.compilerAudit.intent,
+                                    normalizedInput: item.resolvedCase.compilerAudit.compiledInput,
+                                  }, null, 2)}</pre>
+                                </details>
+                                <details>
+                                  <summary className="cursor-pointer text-[11px] text-sky-300">{'MCP \u6807\u51c6\u8f93\u5165'}</summary>
+                                  <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-all bg-black/30 p-2 text-[10px] text-slate-300">{JSON.stringify(
+                                    item.resolvedCase.compilerAudit.mcpToolInput || {}, null, 2,
+                                  )}</pre>
+                                </details>
+                                <details>
+                                  <summary className="cursor-pointer text-[11px] text-sky-300">{'\u751f\u6210\u65b9\u5f0f'}</summary>
+                                  <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-all bg-black/30 p-2 text-[10px] text-slate-300">{JSON.stringify({
+                                    manuevalGenerationType: item.generationType,
+                                    aionKnownEffectiveType: item.resolvedCase.compilerAudit.effectiveGenerationType,
+                                  }, null, 2)}</pre>
+                                </details>
+                                <details>
+                                  <summary className="cursor-pointer text-[11px] text-sky-300">{'\u6700\u7ec8 Aion \u8bf7\u6c42'}</summary>
+                                  <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-all bg-black/30 p-2 text-[10px] text-slate-300">{JSON.stringify({
+                                    request: item.resolvedCase.compilerAudit.finalAionRequest,
+                                    projectionDiff: item.resolvedCase.compilerAudit.projectionDiff,
+                                    overrideAudit: item.resolvedCase.compilerAudit.overrideAudit,
+                                  }, null, 2)}</pre>
+                                </details>
+                                <details>
+                                  <summary className="cursor-pointer text-[11px] text-sky-300">{'\u53c2\u6570\u6765\u6e90'}</summary>
+                                  <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-all bg-black/30 p-2 text-[10px] text-slate-300">{JSON.stringify({
+                                    seed: {
+                                      policyVersion: item.resolvedCase.seedPolicyVersion,
+                                      mode: item.resolvedCase.seedMode,
+                                      status: item.resolvedCase.seedMode === 'unused' ? '\u672a\u53d1\u9001\uff0c\u4f7f\u7528\u6a21\u578b\u9ed8\u8ba4' : item.resolvedCase.seedMode,
+                                      value: item.resolvedCase.seed,
+                                    },
+                                    parameters: item.resolvedCase.parameterAudit,
+                                    contractSource: item.resolvedCase.compilerAudit.contractSource,
+                                    contractFindings: item.resolvedCase.compilerAudit.contractFindings,
+                                    review: item.resolvedCase.compilerAudit.review,
+                                  }, null, 2)}</pre>
                                 </details>
                               </div>
                             )}

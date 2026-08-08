@@ -3,6 +3,7 @@ import { getDataset } from '../datasets/datasetRepository.ts';
 import { serverConfig } from '../config.ts';
 import { ApiError, badRequest } from '../http/errors.ts';
 import { aionGenerationClient } from './aionGenerationClient.ts';
+import { generationOptionsSupportSeed } from './generationPlanning.ts';
 import { generationAssetService } from './generationAssetService.ts';
 import {
   getGenerationBatch,
@@ -164,6 +165,13 @@ generationRoutes.post('/batches/:batchId/retry', async (req, res) => {
     if (stableDatasetItemIds.length !== retryable.length) {
       throw badRequest('One or more selected cases no longer have a stable dataset item ID.');
     }
+    const legacySeedSupported = batch.modelConfig.supportsSeed
+      ?? generationOptionsSupportSeed(batch.modelConfig.options);
+    const retrySeedMode = batch.controls.seedPolicyVersion === 2
+      ? batch.controls.seedMode || 'unused'
+      : legacySeedSupported
+        ? batch.controls.seedMode || 'derive_from_case'
+        : 'unused';
     const preflight = await createGenerationPreflight({
       datasetId: batch.datasetId,
       datasetVersion: currentDataset.version || 1,
@@ -182,7 +190,10 @@ generationRoutes.post('/batches/:batchId/retry', async (req, res) => {
         retryable.map(item => [item!.datasetItemId, item!.id]),
       ),
       retryDuplicateBillingRiskConfirmed: duplicateRiskAcknowledged,
-      seedMode: batch.controls.seedMode,
+      seedMode: retrySeedMode,
+      seedPolicyVersion: batch.controls.seedPolicyVersion === 2 || !legacySeedSupported
+        ? 2
+        : undefined,
       fixedSeed: batch.controls.fixedSeed,
       seedColumn: batch.controls.seedColumn,
       selectedDatasetItemIds: stableDatasetItemIds,

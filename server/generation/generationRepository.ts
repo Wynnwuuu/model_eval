@@ -17,6 +17,7 @@ type GenerationJobRow = {
     parameterBindings?: DatasetGenerationJob['parameterBindings'];
     caseReviews?: DatasetGenerationJob['caseReviews'];
     seedMode?: DatasetGenerationJob['seedMode'];
+    seedPolicyVersion?: DatasetGenerationJob['seedPolicyVersion'];
     fixedSeed?: number;
     seedColumn?: string;
     datasetName?: string;
@@ -109,7 +110,8 @@ const mapJob = (row: GenerationJobRow): DatasetGenerationJob => {
     perCaseControlColumns: controls.perCaseControlColumns || {},
     parameterBindings: controls.parameterBindings,
     caseReviews: controls.caseReviews,
-    seedMode: controls.seedMode || 'derive_from_case',
+    seedMode: controls.seedMode || (controls.seedPolicyVersion === 2 ? 'unused' : 'derive_from_case'),
+    seedPolicyVersion: controls.seedPolicyVersion,
     fixedSeed: controls.fixedSeed,
     seedColumn: controls.seedColumn,
     status: row.status,

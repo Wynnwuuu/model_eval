@@ -17,6 +17,7 @@ import type {
   GenerationContractFinding,
   GenerationInvalidParameterDefinition,
   GenerationParameterAuditEntry,
+  GenerationSeedMode,
 } from '../../src/types.ts';
 import type { GenerationContentIntentAudit } from './generationContentMapping.ts';
 import type { GenerationModelValidationOverride } from './generationValidationPolicy.ts';
@@ -42,6 +43,7 @@ export type NormalizedGenerationModel = {
   outputModality: GenerationModality;
   previewType: GenerationModality;
   capabilities: string[];
+  supportsSeed: boolean;
   supportedAspectRatios: string[];
   supportedResolutions: string[];
   supportedDurations: Array<string | number>;
@@ -75,6 +77,8 @@ export type GenerationCase = {
     compatibilityApplied: boolean;
     originalInput: Record<string, unknown>;
     compiledInput: Record<string, unknown>;
+    mcpToolInput?: Record<string, unknown>;
+    projectionDiff?: GenerationProjectionDiff[];
     bindings: VidMuseInputBindings;
     finalAionRequest?: Record<string, unknown>;
     contractFindings?: GenerationContractFinding[];
@@ -103,6 +107,8 @@ export type GenerationCase = {
     resolvedDuration: number;
   };
   seed?: number;
+  seedMode?: GenerationSeedMode;
+  seedPolicyVersion?: 2;
   extraInputs?: Record<string, any>;
   generationType?: string;
 };
@@ -370,6 +376,9 @@ const supportedParams = (options: Record<string, any>) => {
   return new Set(Array.isArray(values) ? values.map(String) : []);
 };
 
+export const generationOptionsSupportSeed = (options: Record<string, any> | undefined) =>
+  Boolean(options && Array.isArray(options.supported_params) && options.supported_params.includes('seed'));
+
 const parameterSchemaProperties = (options: Record<string, any>): Record<string, any> => {
   for (const candidate of [options.parameter_schema, options.params_schema, options.parameters_schema]) {
     if (candidate?.properties && typeof candidate.properties === 'object') return candidate.properties;
@@ -518,6 +527,7 @@ export const normalizeAionModelConfig = (raw: Record<string, any>): NormalizedGe
     outputModality: modelType,
     previewType: modelType,
     capabilities: normalizeCapabilities(raw.capabilities),
+    supportsSeed: generationOptionsSupportSeed(options),
     supportedAspectRatios: firstOptionArray(options, OPTION_KEYS.aspect_ratio).map(String),
     supportedResolutions: firstOptionArray(options, OPTION_KEYS.resolution).map(String),
     supportedDurations: firstOptionArray(options, OPTION_KEYS.duration),
@@ -906,6 +916,77 @@ const VIDEO_FIELDS = new Set([
   'watermark_url',
 ]);
 
+const MCP_VIDEO_CONTROL_FIELDS = [
+  'duration',
+  'aspect_ratio',
+  'resolution',
+  'generate_audio',
+  'negative_prompt',
+] as const;
+
+export type GenerationProjectionDiff = {
+  field: string;
+  mcpValue?: unknown;
+  aionValue?: unknown;
+};
+
+export const buildMcpToolInput = (
+  model: NormalizedGenerationModel,
+  item: GenerationCase,
+) => {
+  if (model.outputModality === 'image') {
+    return compactObject({
+      model_name: model.modelName,
+      prompt: promptInputFor(item),
+      images: item.imageUrls,
+      ...Object.fromEntries(MCP_VIDEO_CONTROL_FIELDS
+        .filter(key => item.controls?.[key] !== undefined)
+        .map(key => [key, item.controls[key]])),
+    });
+  }
+  const audios = item.audioInputs?.length
+    ? item.audioInputs
+    : item.audioUrls.map(url => ({ url }));
+  return compactObject({
+    model_name: model.modelName,
+    prompt: promptInputFor(item),
+    image_urls: item.imageUrls,
+    elements: item.extraInputs?.elements,
+    audios,
+    ...Object.fromEntries(MCP_VIDEO_CONTROL_FIELDS
+      .filter(key => item.controls?.[key] !== undefined)
+      .map(key => [key, item.controls[key]])),
+  });
+};
+
+export const generationRequestProjectionDiff = (
+  model: NormalizedGenerationModel,
+  mcpToolInput: Record<string, unknown>,
+  aionRequest: Record<string, unknown>,
+) => {
+  const fieldMappings = model.outputModality === 'image'
+    ? [
+        ['model_name', 'model_name'],
+        ['prompt', 'prompt'],
+        ['images', 'image_urls'],
+        ...MCP_VIDEO_CONTROL_FIELDS.map(key => [key, key]),
+      ]
+    : [
+        ['model_name', 'model_name'],
+        ['prompt', 'prompt'],
+        ['image_urls', 'image_urls'],
+        ['elements', 'elements'],
+        ['audios', 'audios'],
+        ...MCP_VIDEO_CONTROL_FIELDS.map(key => [key, key]),
+      ];
+  return fieldMappings.flatMap(([mcpField, aionField]) => {
+    const mcpValue = mcpToolInput[mcpField];
+    const aionValue = aionRequest[aionField];
+    if (stableJson(mcpValue) === stableJson(aionValue)) return [];
+    return [{ field: mcpField, mcpValue, aionValue }];
+  });
+};
+
 export const buildAionGenerationRequest = (
   model: NormalizedGenerationModel,
   item: GenerationCase & { generationType: string },
@@ -928,8 +1009,17 @@ export const buildAionGenerationRequest = (
     if (standardFields.has(key)) standardControls[key] = value;
     else extraParams[key] = value;
   }
-  Object.assign(extraParams, item.extraInputs?.extra_params || {});
-  if (item.seed !== undefined && params.has('seed')) extraParams.seed = item.seed;
+  const mappedExtraParams = item.extraInputs?.extra_params || {};
+  if (item.seedPolicyVersion === 2 && mappedExtraParams.seed !== undefined) {
+    throw new Error('Seed cannot be supplied through extra_params; use the dedicated Seed strategy.');
+  }
+  Object.assign(extraParams, mappedExtraParams);
+  if (item.seed !== undefined) {
+    if (item.seedPolicyVersion === 2 ? model.supportsSeed : params.has('seed')) extraParams.seed = item.seed;
+    else if (item.seedPolicyVersion === 2) {
+      throw new Error(`Model ${model.modelName} does not declare Seed support in options.supported_params.`);
+    }
+  }
   const customInputs = configuredExtraInputs(model, item);
   const audioInputs = audioInputsFor(model, item);
 

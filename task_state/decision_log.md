@@ -234,3 +234,19 @@ Unknown audio-only and mixed-channel semantics stop for review. A final Aion JSO
 The VidMuse evaluation preset matches only the exact attachment column names. When import normalization reuses existing business columns, `DatasetSchemaField.sourceKey` is the authoritative bridge from raw names such as `prompt`, `audio_url`, and `case_id` to stored keys such as `完整Prompt`, `音频_URL`, and `用例ID`. Display labels and fuzzy name similarity never activate MCP inputs.
 
 Prompt placeholder auditing is also contract-driven. Compiler v3 checks a token family only when live structured Aion configuration explicitly declares its corresponding media channel; it never infers support from model names or descriptions. Duplicate preflight issues are collapsed for display, while distinct missing indices remain separately auditable.
+
+## 2026-08-08: Seed is an explicit Aion extension, not an MCP default
+
+MCP revision 1813 does not define `seed`, `generation_type`, or `features`. New ManuEval preflights therefore default Seed to `unused`; this omits `extra_params.seed` and delegates behavior to the selected model. ManuEval does not describe that behavior as guaranteed randomness.
+
+Seed support is true only when live `options.supported_params` contains the exact `seed` token. Model names, descriptions, `options.seed`, and camel-case aliases cannot enable it. Any non-unused Seed policy on an unsupported model or the `task_worker` transport is a preflight error, and a manually supplied v2 `extra_params.seed` is rejected.
+
+The deterministic v2 key is `datasetId + stableDatasetItemId`, so the value is stable across model, target-column, and Prompt changes. Legacy running jobs and retries preserve their historical snapshot only when the original contract actually supported and sent Seed.
+
+## 2026-08-08: MCP and Aion requests have a checked projection boundary
+
+Each new case records source cells and mapping intent, normalized MCP tool input, ManuEval's derived `generation_type`, and final Aion JSON. MCP public fields must project from the final Aion request with identical values and ordering. A normal mismatch invalidates the case.
+
+The final Aion request may add only transport-layer fields outside that projection, including top-level `generation_type`, immutable `features.auto_adjust_duration_to_supported=false`, and declared Aion extensions such as `extra_params.seed`. A reviewed forced override may bypass the projection check only with an audited diff and remains labeled as not MCP-guaranteed.
+
+ManuEval guarantees the HTTP JSON it sends to Aion. Provider-specific field conversion performed later by an Aion Adapter is outside the MCP request contract and is not reimplemented in ManuEval.

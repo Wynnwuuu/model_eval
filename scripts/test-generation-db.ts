@@ -125,6 +125,7 @@ const createPreflightRecord = (
       defaultControls: { aspect_ratio: '1:1' },
       perCaseControlColumns: {},
       seedMode: 'fixed',
+      seedPolicyVersion: 2,
       fixedSeed: 7,
       assetBindings: [],
     },
@@ -239,6 +240,7 @@ try {
   const cancelledPreflight = createPreflightRecord(savedDataset, 'cancelled_result', `request-${suffix}-cancel`);
   await saveGenerationPreflight(cancelledPreflight);
   const cancelledJob = await createGenerationBatchFromPreflight(cancelledPreflight, user);
+  assert.equal((await getGenerationBatch(cancelledJob.id))?.controls.seedPolicyVersion, 2);
 
   const claims = await Promise.all([
     claimNextGenerationItem('image', `worker-a-${suffix}`),

@@ -296,7 +296,9 @@ export const createGenerationBatchFromPreflight = async (
       parameterBindings: preflight.payload.parameterBindings,
       caseReviews: preflight.payload.caseReviews,
       durationSource: preflight.payload.durationSource,
-      seedMode: preflight.payload.seedMode || 'derive_from_case',
+      seedMode: preflight.payload.seedMode
+        || (preflight.payload.seedPolicyVersion === 2 ? 'unused' : 'derive_from_case'),
+      seedPolicyVersion: preflight.payload.seedPolicyVersion,
       fixedSeed: preflight.payload.fixedSeed,
       seedColumn: preflight.payload.seedColumn,
       datasetName: preflight.payload.datasetName,

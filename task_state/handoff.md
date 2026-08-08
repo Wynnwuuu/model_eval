@@ -1,5 +1,13 @@
 # Arena And Arena-rank Handoff
 
+## Current work: Seed v2 and MCP/Aion request layering
+
+The implementation and local validation are complete. New generation preflights default Seed to `unused`, expose it only when exact live `supported_params` contains `seed`, and reject unsupported or `task_worker` Seed instead of silently dropping it. Enabled Seed is an Aion extension at `extra_params.seed`, never part of VidMuse MCP input.
+
+Every new case now audits source intent, normalized MCP tool input, derived `generation_type`, and final Aion JSON separately. Normal requests must pass a value-and-order projection check; reviewed forced overrides retain the diff and remain outside the MCP guarantee. The as-built contract is `docs/manueval-vidmuse-mcp-video-input-contract-review.md`.
+
+All deterministic suites, isolated PostgreSQL generation/API tests, builds, and desktop/mobile browser checks pass. No batch or paid generation was submitted. The remaining action is a non-force fast-forward push to GitHub main followed by CI and dev rollout checks.
+
 ## Current work: independent dataset copies
 
 Dataset cloning is implemented on the latest ManuEval baseline. The repository can clone the current dataset or the historical version currently being viewed. Shared API and offline localStorage semantics match: new dataset/item identities, v1 reset, visible provenance, copied business content, and no linked task/vote/generation history.

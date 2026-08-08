@@ -21,6 +21,7 @@ import type {
   GenerationInputMapping,
   GenerationParameterBinding,
   GenerationParameterValueType,
+  GenerationSeedMode,
   GenerationTargetMode,
 } from '../../src/types.ts';
 import type { RequestUser } from '../auth/context.ts';
@@ -30,10 +31,12 @@ import { ApiError, badRequest, conflict, notFound } from '../http/errors.ts';
 import { aionGenerationClient } from './aionGenerationClient.ts';
 import {
   buildAionGenerationRequest,
+  buildMcpToolInput,
   deriveGenerationSeed,
   estimateGenerationCost,
   fingerprintConfig,
   generationSeedIssue,
+  generationRequestProjectionDiff,
   KNOWN_INVALID_GENERATION_PARAMETERS,
   matchUploadedAsset,
   MAX_PORTABLE_GENERATION_SEED,
@@ -70,7 +73,8 @@ export type GenerationPreflightRequest = {
   perCaseControlColumns?: Record<string, string>;
   parameterBindings?: Record<string, GenerationParameterBinding>;
   durationSource?: GenerationDurationSource;
-  seedMode?: 'fixed' | 'derive_from_case' | 'column';
+  seedMode?: GenerationSeedMode;
+  seedPolicyVersion?: 2;
   fixedSeed?: number;
   seedColumn?: string;
   selectedDatasetItemIds?: string[];
@@ -499,7 +503,37 @@ const FORCEABLE_PREFLIGHT_CODES = new Set([
   'INPUT_COUNT_OUT_OF_RANGE',
   'MULTIPLE_AUDIOS_REQUIRE_AUDIOS',
   'AUDIO_RANGE_REQUIRES_AUDIOS',
+  'MCP_AION_PROJECTION_MISMATCH',
 ]);
+
+export const validateGenerationSeedConfiguration = (
+  request: GenerationPreflightRequest,
+  model: NormalizedGenerationModel,
+  executionTransport: 'model_api' | 'task_worker',
+  dataset?: { items?: Array<Record<string, unknown>> },
+) => {
+  const mode = request.seedMode || (request.seedPolicyVersion === 2 ? 'unused' : 'derive_from_case');
+  if (!['unused', 'derive_from_case', 'fixed', 'column'].includes(mode)) {
+    throw badRequest('Unknown Seed strategy.');
+  }
+  if (mode === 'unused') return;
+  if (!model.supportsSeed) {
+    throw badRequest(`Model ${model.modelName} does not declare Seed support in options.supported_params.`);
+  }
+  if (executionTransport !== 'model_api') {
+    throw badRequest('Seed requires the model_api execution transport; task_worker cannot preserve it.');
+  }
+  if (mode === 'fixed') {
+    const issue = generationSeedIssue(request.fixedSeed);
+    if (issue) throw badRequest(issue.message, { issues: [issue] });
+  }
+  if (mode === 'column') {
+    if (!request.seedColumn?.trim()) throw badRequest('A Seed column is required.');
+    if (dataset && !dataset.items?.some(row => Object.prototype.hasOwnProperty.call(row, request.seedColumn || ''))) {
+      throw badRequest('The selected Seed column does not exist in this dataset version.');
+    }
+  }
+};
 
 export const buildGenerationCasesForPreflight = (
   dataset: Awaited<ReturnType<typeof getDatasetVersion>> extends infer T ? Exclude<T, null> : never,
@@ -777,15 +811,20 @@ export const buildGenerationCasesForPreflight = (
     const prompt = compiled.input.prompt;
     const caseGenerationType = compiled.generationType;
 
-    const seedMode = request.seedMode || 'derive_from_case';
+    const seedPolicyVersion = request.seedPolicyVersion;
+    const seedMode = request.seedMode || (seedPolicyVersion === 2 ? 'unused' : 'derive_from_case');
     const seedColumnValue = seedMode === 'column' && request.seedColumn
       ? row[request.seedColumn]
       : undefined;
-    const seed = seedMode === 'fixed'
-      ? Number(request.fixedSeed ?? 42)
+    const seed = seedMode === 'unused'
+      ? undefined
+      : seedMode === 'fixed'
+      ? Number(seedPolicyVersion === 2 ? request.fixedSeed : request.fixedSeed ?? 42)
       : seedMode === 'column'
         ? Number(seedColumnValue)
-        : deriveGenerationSeed(`${dataset.id}:${caseId}:${request.targetColumn}:${stableJson(prompt || '')}`);
+        : deriveGenerationSeed(seedPolicyVersion === 2
+          ? `${dataset.id}:${datasetItemId}`
+          : `${dataset.id}:${caseId}:${request.targetColumn}:${stableJson(prompt || '')}`);
     const seedIssues: PreflightIssue[] = [];
     if (seedMode === 'column' && (!request.seedColumn || seedColumnValue == null || text(seedColumnValue) === '')) {
       seedIssues.push({
@@ -793,7 +832,7 @@ export const buildGenerationCasesForPreflight = (
         field: request.seedColumn || 'seedColumn',
         message: `The seed column must contain an integer between 0 and ${MAX_PORTABLE_GENERATION_SEED} for case ${caseId}.`,
       });
-    } else {
+    } else if (seedMode !== 'unused') {
       const issue = generationSeedIssue(seed);
       if (issue) {
         seedIssues.push({
@@ -884,6 +923,8 @@ export const buildGenerationCasesForPreflight = (
       videoUrls,
       controls,
       seed,
+      seedMode,
+      ...(seedPolicyVersion === 2 ? { seedPolicyVersion } : {}),
       extraInputs,
       ...(Object.keys(parameterAudit).length ? { parameterAudit } : {}),
       generationType: caseGenerationType,
@@ -905,6 +946,9 @@ export const buildGenerationCasesForPreflight = (
       },
       ...(durationResolution ? { durationResolution } : {}),
     };
+    if (resolvedCase.compilerAudit) {
+      resolvedCase.compilerAudit.mcpToolInput = buildMcpToolInput(model, resolvedCase);
+    }
     return {
       resolvedCase,
       preparationIssues: [
@@ -980,6 +1024,20 @@ export const createGenerationPreflight = async (
   if (!dataset) throw notFound('Dataset version');
   const model = await aionGenerationClient.getModel(request.modelName);
   if (!model) throw notFound('Enabled Aion model');
+  const seedPolicyVersion = request.retryOfJobId && request.seedPolicyVersion === undefined
+    ? undefined
+    : 2;
+  request = {
+    ...request,
+    seedMode: request.seedMode || (seedPolicyVersion === 2 ? 'unused' : 'derive_from_case'),
+    ...(seedPolicyVersion === 2 ? { seedPolicyVersion } : {}),
+  };
+  validateGenerationSeedConfiguration(
+    request,
+    model,
+    aionGenerationClient.executionTransport(),
+    dataset,
+  );
   validateDurationSourceConfiguration(request, model);
   validateGenerationParameterBindings(request, model, dataset);
   validateGenerationContentMappingConfiguration(request, model, dataset);
@@ -1064,6 +1122,17 @@ export const createGenerationPreflight = async (
     const warnings = [...preparationWarnings, ...result.warnings];
     const review = request.caseReviews?.[resolvedCase.datasetItemId];
     const baseAionRequest = buildAionGenerationRequest(model, result.resolvedCase).body;
+    const mcpToolInput = result.resolvedCase.compilerAudit?.mcpToolInput;
+    const baseProjectionDiff = mcpToolInput
+      ? generationRequestProjectionDiff(model, mcpToolInput, baseAionRequest)
+      : [];
+    if (baseProjectionDiff.length) {
+      errors.push({
+        code: 'MCP_AION_PROJECTION_MISMATCH',
+        field: 'request',
+        message: `The Aion request changes MCP fields: ${baseProjectionDiff.map(item => item.field).join(', ')}.`,
+      });
+    }
     const force = review?.force;
     if (review?.finalAionRequest && !force) {
       throw badRequest(`Case ${resolvedCase.caseId} must include a force reason and duplicate-billing confirmation when editing final Aion JSON.`);
@@ -1081,6 +1150,9 @@ export const createGenerationPreflight = async (
     const finalAionRequest = review?.finalAionRequest
       ? validateGenerationRequestOverride(model, baseAionRequest, review.finalAionRequest)
       : baseAionRequest;
+    const projectionDiff = mcpToolInput
+      ? generationRequestProjectionDiff(model, mcpToolInput, finalAionRequest)
+      : [];
     const bypassedRules = force
       ? errors.filter(issue => FORCEABLE_PREFLIGHT_CODES.has(issue.code)).map(issue => issue.code)
       : [];
@@ -1103,6 +1175,7 @@ export const createGenerationPreflight = async (
           compilerAudit: {
             ...result.resolvedCase.compilerAudit,
             finalAionRequest,
+            ...(projectionDiff.length ? { projectionDiff } : {}),
             ...((force || review?.finalAionRequest) ? {
               overrideAudit: {
                 forced: Boolean(force),
@@ -1170,7 +1243,9 @@ export const createGenerationPreflight = async (
         compilerVersion: audit.compilerVersion,
         originalInput: audit.originalInput,
         compiledInput: audit.compiledInput,
+        mcpToolInput: audit.mcpToolInput,
         finalAionRequest: audit.finalAionRequest,
+        projectionDiff: audit.projectionDiff,
         appliedFindingIds: audit.appliedFindingIds,
         reviewedFindingIds: audit.reviewedFindingIds,
         overrideAudit: audit.overrideAudit ? {
@@ -1199,6 +1274,7 @@ export const createGenerationPreflight = async (
     retryOfJobId: request.retryOfJobId,
     retryDuplicateBillingRiskConfirmed: request.retryDuplicateBillingRiskConfirmed === true,
     seedMode: request.seedMode,
+    seedPolicyVersion: request.seedPolicyVersion,
     fixedSeed: request.fixedSeed,
     seedColumn: request.seedColumn,
     selectedDatasetItemIds: selection.normalizedIds,

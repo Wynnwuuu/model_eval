@@ -30,6 +30,7 @@ export interface GenerationPreflightRequest {
   parameterBindings?: Record<string, GenerationParameterBinding>;
   durationSource?: GenerationDurationSource;
   seedMode: GenerationSeedMode;
+  seedPolicyVersion: 2;
   fixedSeed?: number;
   seedColumn?: string;
   selectedDatasetItemIds?: string[];

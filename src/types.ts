@@ -454,7 +454,7 @@ export type GenerationJobStatus = 'draft' | 'queued' | 'running' | 'completed' |
 export type GenerationItemStatus =
   | 'pending' | 'submitting' | 'submitted' | 'processing' | 'reconciling' | 'archiving'
   | 'running' | 'succeeded' | 'completed' | 'failed' | 'submission_unknown' | 'cancelled';
-export type GenerationSeedMode = 'fixed' | 'derive_from_case' | 'column';
+export type GenerationSeedMode = 'unused' | 'fixed' | 'derive_from_case' | 'column';
 export type GenerationTargetMode = 'new' | 'fill_existing';
 export type GenerationAssetDurability = 'vidmuse_asset' | 'temporary' | 'manueval_oss';
 export type GenerationItemResolutionStatus = 'open' | 'skipped' | 'retrying' | 'resolved';
@@ -576,6 +576,7 @@ export interface GenerationModelConfig {
   outputModality: GenerationOutputModality;
   previewType: DatasetPreviewType;
   capabilities: string[];
+  supportsSeed: boolean;
   supportedAspectRatios?: string[];
   supportedResolutions?: string[];
   supportedDurations?: Array<string | number>;
@@ -694,6 +695,7 @@ export interface DatasetGenerationJob {
   parameterBindings?: Record<string, GenerationParameterBinding>;
   caseReviews?: Record<string, GenerationCaseReview>;
   seedMode: GenerationSeedMode;
+  seedPolicyVersion?: 2;
   fixedSeed?: number;
   seedColumn?: string;
   status: GenerationJobStatus;

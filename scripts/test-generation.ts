@@ -3,9 +3,11 @@ import { Readable } from 'node:stream';
 
 import {
   buildAionGenerationRequest,
+  buildMcpToolInput,
   compileGenerationReferenceVideoInputs,
   estimateGenerationCost,
   fingerprintConfig,
+  generationRequestProjectionDiff,
   matchUploadedAsset,
   normalizeAionModelConfig,
   preflightGenerationCase,
@@ -32,6 +34,7 @@ import {
   validateGenerationRequestOverride,
   validateGenerationContentMappingConfiguration,
   validateGenerationParameterBindings,
+  validateGenerationSeedConfiguration,
   validateDurationSourceConfiguration,
 } from '../server/generation/generationPreflightService.ts';
 import { inferDatasetMappings } from '../src/datasetManifest.ts';
@@ -633,6 +636,57 @@ assert.deepEqual(getSupportedGenerationImageRoles(videoModel), ['start', 'end'])
 assert.deepEqual(videoModel.supportedDurations, [5, 10]);
 assert.equal(videoModel.controls.find(item => item.key === 'duration')?.defaultValue, 5);
 assert.ok(videoModel.configFingerprint);
+assert.equal(videoModel.supportsSeed, false);
+assert.throws(() => buildAionGenerationRequest(videoModel, {
+  caseId: 'unsupported-seed-case',
+  datasetItemId: 'unsupported-seed-item',
+  rowIndex: 0,
+  prompt: 'Do not silently discard this seed.',
+  imageUrls: [],
+  audioUrls: [],
+  controls: {},
+  generationType: 'text_to_video',
+  seed: 0,
+  seedPolicyVersion: 2,
+} as any), /does not declare Seed support/i);
+const misleadingSeedOptionModel = normalizeAionModelConfig({
+  ...rawVideoModel,
+  name: 'provider/misleading-seed-option',
+  options: {
+    ...rawVideoModel.options,
+    seed: true,
+  },
+});
+assert.equal(misleadingSeedOptionModel.supportsSeed, false);
+const camelOnlySeedModel = normalizeAionModelConfig({
+  ...rawVideoModel,
+  name: 'provider/camel-only-seed',
+  options: {
+    ...rawVideoModel.options,
+    supported_params: undefined,
+    supportedParams: ['prompt', 'seed'],
+  },
+});
+assert.equal(camelOnlySeedModel.supportsSeed, false);
+assert.doesNotThrow(() => validateGenerationSeedConfiguration({
+  datasetId: 'dataset',
+  datasetVersion: 1,
+  modelName: videoModel.modelName,
+  targetColumn: 'result',
+  inputMapping: {},
+  seedMode: 'unused',
+  seedPolicyVersion: 2,
+} as any, videoModel, 'task_worker'));
+assert.throws(() => validateGenerationSeedConfiguration({
+  datasetId: 'dataset',
+  datasetVersion: 1,
+  modelName: videoModel.modelName,
+  targetColumn: 'result',
+  inputMapping: {},
+  seedMode: 'fixed',
+  seedPolicyVersion: 2,
+  fixedSeed: 0,
+} as any, videoModel, 'model_api'), /does not declare Seed support/i);
 
 assert.equal(videoModel.controls.find(item => item.key === 'camera_motion'), undefined);
 assert.equal(videoModel.advancedParameters.find(item => item.key === 'camera_motion')?.verified, false);
@@ -659,6 +713,7 @@ const wanParameterModel = normalizeAionModelConfig({
 });
 assert.ok(wanParameterModel.controls.some(item => item.key === 'generate_audio' && item.type === 'toggle'));
 assert.ok(wanParameterModel.controls.some(item => item.key === 'watermark' && item.type === 'toggle'));
+assert.equal(wanParameterModel.supportsSeed, true);
 assert.equal(wanParameterModel.controls.some(item => item.key === 'seed'), false);
 assert.deepEqual(wanParameterModel.advancedParameters.map(item => item.key), ['adapter_hint']);
 assert.deepEqual(
@@ -669,6 +724,140 @@ assert.match(
   wanParameterModel.invalidParameters.find(item => item.key === 'reference_image_urls')?.replacement || '',
   /elements\[\]\.reference_image_urls/,
 );
+assert.throws(() => validateGenerationSeedConfiguration({
+  datasetId: 'dataset',
+  datasetVersion: 1,
+  modelName: wanParameterModel.modelName,
+  targetColumn: 'result',
+  inputMapping: {},
+  seedMode: 'fixed',
+  seedPolicyVersion: 2,
+  fixedSeed: 0,
+} as any, wanParameterModel, 'task_worker'), /task_worker/i);
+assert.doesNotThrow(() => validateGenerationSeedConfiguration({
+  datasetId: 'dataset',
+  datasetVersion: 1,
+  modelName: wanParameterModel.modelName,
+  targetColumn: 'result',
+  inputMapping: {},
+  seedMode: 'fixed',
+  seedPolicyVersion: 2,
+  fixedSeed: 0,
+} as any, wanParameterModel, 'model_api'));
+
+const mcpProjectionModel = normalizeAionModelConfig({
+  ...rawVideoModel,
+  name: 'provider/mcp-projection-video',
+  capabilities: {
+    text_to_video: true,
+    image_to_video: true,
+    images_to_video: true,
+    reference_to_video: true,
+  },
+  options: {
+    ...rawVideoModel.options,
+    supported_params: [
+      'prompt', 'image_urls', 'elements', 'audios', 'duration', 'aspect_ratio',
+      'resolution', 'generate_audio', 'negative_prompt', 'seed',
+    ],
+  },
+});
+const compilerAuditV3 = {
+  compilerVersion: '3',
+  compatibilityApplied: false,
+  originalInput: {},
+  compiledInput: {},
+  bindings: { images: [], elements: [], audios: [] },
+};
+const mcpProjectionCases = [
+  {
+    generationType: 'text_to_video',
+    imageUrls: [],
+    audioUrls: [],
+    extraInputs: {},
+  },
+  {
+    generationType: 'image_to_video',
+    imageUrls: ['https://assets.example.com/first.png'],
+    audioUrls: [],
+    extraInputs: {},
+  },
+  {
+    generationType: 'images_to_video',
+    imageUrls: [
+      'https://assets.example.com/first.png',
+      'https://assets.example.com/last.png',
+    ],
+    audioUrls: [],
+    extraInputs: {},
+  },
+  {
+    generationType: 'reference_to_video',
+    imageUrls: [],
+    audioUrls: [],
+    extraInputs: {
+      elements: [{ frontal_image_url: 'https://assets.example.com/character.png' }],
+    },
+  },
+  {
+    generationType: 'reference_to_video',
+    imageUrls: [],
+    audioUrls: ['https://assets.example.com/voice.wav'],
+    audioInputs: [{ url: 'https://assets.example.com/voice.wav', range: [0.25, 3.75] as [number, number] }],
+    extraInputs: {
+      elements: [{ video_url: 'https://assets.example.com/reference.mp4' }],
+    },
+  },
+].map((value, index) => ({
+  caseId: `projection-case-${index}`,
+  datasetItemId: `projection-item-${index}`,
+  rowIndex: index,
+  prompt: `Projection case ${index}`,
+  controls: {
+    duration: 5,
+    aspect_ratio: '16:9',
+    resolution: '720p',
+    generate_audio: false,
+  },
+  compilerAudit: compilerAuditV3,
+  ...value,
+}));
+mcpProjectionCases.forEach(item => {
+  const mcpToolInput = buildMcpToolInput(mcpProjectionModel, item as any);
+  const aionRequest = buildAionGenerationRequest(mcpProjectionModel, item as any).body;
+  assert.deepEqual(generationRequestProjectionDiff(mcpProjectionModel, mcpToolInput, aionRequest), []);
+  assert.equal(mcpToolInput.generation_type, undefined);
+  assert.equal(mcpToolInput.features, undefined);
+  assert.equal(mcpToolInput.extra_params, undefined);
+  assert.equal(mcpToolInput.seed, undefined);
+  assert.equal(aionRequest.generation_type, item.generationType);
+  assert.equal(aionRequest.features.auto_adjust_duration_to_supported, false);
+  assert.equal(aionRequest.generate_audio, false);
+});
+const forcedProjectionInput = buildMcpToolInput(mcpProjectionModel, mcpProjectionCases[0] as any);
+assert.deepEqual(
+  generationRequestProjectionDiff(mcpProjectionModel, forcedProjectionInput, {
+    ...buildAionGenerationRequest(mcpProjectionModel, mcpProjectionCases[0] as any).body,
+    prompt: 'Forced prompt override',
+  }),
+  [{ field: 'prompt', mcpValue: 'Projection case 0', aionValue: 'Forced prompt override' }],
+);
+const explicitZeroSeedRequest = buildAionGenerationRequest(mcpProjectionModel, {
+  ...mcpProjectionCases[0],
+  seed: 0,
+  seedPolicyVersion: 2,
+} as any).body;
+assert.equal(explicitZeroSeedRequest.extra_params.seed, 0);
+assert.equal(
+  buildAionGenerationRequest(mcpProjectionModel, mcpProjectionCases[0] as any).body.extra_params.seed,
+  undefined,
+);
+assert.throws(() => buildAionGenerationRequest(mcpProjectionModel, {
+  ...mcpProjectionCases[0],
+  seedPolicyVersion: 2,
+  seedMode: 'unused',
+  extraInputs: { extra_params: { seed: 99 } },
+} as any), /dedicated Seed strategy/i);
 
 const cliShapeModel = normalizeAionModelConfig(camelCaseVideoModel);
 assert.equal(cliShapeModel.displayName, camelCaseVideoModel.displayName);
@@ -1218,6 +1407,7 @@ const parameterRequest = {
   perCaseControlColumns: {},
   durationSource: { mode: 'uniform' },
   seedMode: 'fixed',
+  seedPolicyVersion: 2,
   fixedSeed: 17,
   parameterBindings: {
     generate_audio: { source: 'column', column: 'generate_audio_value' },
@@ -1232,6 +1422,77 @@ const parameterCases = buildGenerationCasesForPreflight(
   wanParameterModel,
   parameterSelection,
 );
+const unusedSeedCase = buildGenerationCasesForPreflight(
+  parameterDataset,
+  {
+    ...parameterRequest,
+    seedMode: 'unused',
+    fixedSeed: undefined,
+    parameterBindings: {},
+  },
+  wanParameterModel,
+  [parameterSelection[0]],
+)[0];
+assert.equal(unusedSeedCase.resolvedCase.seed, undefined);
+assert.equal(unusedSeedCase.resolvedCase.seedPolicyVersion, 2);
+const derivedSeedRequest = {
+  ...parameterRequest,
+  seedMode: 'derive_from_case',
+  fixedSeed: undefined,
+  parameterBindings: {},
+};
+const derivedSeed = buildGenerationCasesForPreflight(
+  parameterDataset,
+  derivedSeedRequest,
+  wanParameterModel,
+  [parameterSelection[0]],
+)[0].resolvedCase.seed;
+const promptChangedDataset = {
+  ...parameterDataset,
+  items: [{ ...parameterDataset.items[0], prompt: 'A completely revised prompt.' }],
+};
+const promptChangedSeed = buildGenerationCasesForPreflight(
+  promptChangedDataset as any,
+  { ...derivedSeedRequest, targetColumn: 'another_result' },
+  { ...wanParameterModel, modelName: 'provider/another-seed-model' },
+  [{ row: promptChangedDataset.items[0], rowIndex: 0, datasetItemId: 'parameter-item-1' }],
+)[0].resolvedCase.seed;
+assert.equal(promptChangedSeed, derivedSeed);
+const fixedZeroSeedCase = buildGenerationCasesForPreflight(
+  parameterDataset,
+  { ...parameterRequest, fixedSeed: 0, parameterBindings: {} },
+  wanParameterModel,
+  [parameterSelection[0]],
+)[0];
+assert.equal(fixedZeroSeedCase.resolvedCase.seed, 0);
+const emptySeedColumnCase = buildGenerationCasesForPreflight(
+  parameterDataset,
+  {
+    ...parameterRequest,
+    seedMode: 'column',
+    fixedSeed: undefined,
+    seedColumn: 'seed_value',
+    parameterBindings: {},
+  },
+  wanParameterModel,
+  [parameterSelection[0]],
+)[0];
+assert.ok(emptySeedColumnCase.preparationIssues.some(issue => issue.code === 'INVALID_SEED'));
+const zeroSeedColumnRow = { ...parameterDataset.items[0], seed_value: 0 };
+const zeroSeedColumnCase = buildGenerationCasesForPreflight(
+  { ...parameterDataset, items: [zeroSeedColumnRow] } as any,
+  {
+    ...parameterRequest,
+    seedMode: 'column',
+    fixedSeed: undefined,
+    seedColumn: 'seed_value',
+    parameterBindings: {},
+  },
+  wanParameterModel,
+  [{ row: zeroSeedColumnRow, rowIndex: 0, datasetItemId: 'parameter-item-1' }],
+)[0];
+assert.equal(zeroSeedColumnCase.resolvedCase.seed, 0);
+assert.equal(zeroSeedColumnCase.preparationIssues.some(issue => issue.code === 'INVALID_SEED'), false);
 assert.deepEqual(parameterCases[0].preparationIssues, []);
 assert.equal(parameterCases[0].resolvedCase.controls.generate_audio, true);
 assert.equal(parameterCases[0].resolvedCase.controls.watermark, false);
@@ -1256,15 +1517,14 @@ assert.equal(parameterAionRequest.body.generate_audio, true);
 assert.equal(parameterAionRequest.body.watermark, false);
 assert.equal(parameterAionRequest.body.extra_params.seed, 17);
 assert.deepEqual(parameterAionRequest.body.extra_params.adapter_hint, { mode: 'cinematic' });
-const protectedSeedRequest = buildAionGenerationRequest(wanParameterModel, {
+assert.throws(() => buildAionGenerationRequest(wanParameterModel, {
   ...parameterCases[0].resolvedCase,
   generationType: parameterCases[0].resolvedCase.generationType || 'text_to_video',
   extraInputs: {
     ...parameterCases[0].resolvedCase.extraInputs,
     extra_params: { seed: 99 },
   },
-});
-assert.equal(protectedSeedRequest.body.extra_params.seed, 17);
+}), /dedicated Seed strategy/i);
 
 const booleanVariants: Array<[unknown, boolean]> = [
   ['true', true], ['1', true], ['yes', true], ['on', true], ['enabled', true],
@@ -1814,6 +2074,14 @@ assert.equal(taskWorkerSubmission.modality, 'video');
 assert.equal(taskWorkerSubmission.request.event_type, 'vidflow/remix-shot-video.triggered');
 assert.equal(taskWorkerSubmission.request.data.standalone, true);
 assert.equal(taskWorkerSubmission.request.data.features, undefined);
+assert.throws(() => buildTaskWorkerSubmission(
+  '/model/api/v1/model/generate-video',
+  {
+    model_name: 'provider/video-pro',
+    prompt: 'Do not silently discard this seed.',
+    extra_params: { seed: 0 },
+  },
+), /task_worker.*Seed/i);
 assert.equal(
   taskWorkerFilePathToUrl(
     '/work/aion-user-base-dev/987654/images/result image.png',

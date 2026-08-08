@@ -365,3 +365,21 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Rebased onto GitHub main `4c12bbe` while preserving its Wan HTTP 500 incident record. The full generation/database/dataset/Arena/API/typecheck/build gate passed again after the rebase.
 - Published source commit `eaca1ef` to `world-sim-dev/ManuEval` main without force-pushing. Eval Studio Test run `31185153047` and Dev CI/CD run `31185153483` succeeded, including migration validation, database integration, API smoke, image build, and dev rollout.
 - `https://eval-studio.sandaii.cn/datasets` loaded under the online account with no browser console errors after deployment. The organization had no dataset, so no dev test data or paid generation request was created.
+
+## 2026-08-08: Seed v2 and MCP/Aion request layering
+
+### Completed
+
+- Added Seed policy v2 with `unused` as the default plus deterministic per-case, fixed, and dataset-column strategies.
+- Seed support now comes only from an exact `options.supported_params` `seed` declaration. Unsupported models and `task_worker` requests fail preflight instead of silently dropping Seed.
+- New requests keep VidMuse MCP input, derived `generation_type`, and final Aion HTTP JSON as separate audited layers. Projection mismatches fail normal preflight; reviewed forced overrides retain an explicit diff.
+- MCP audit excludes Aion-only `generation_type`, `features`, `extra_params`, Seed, and watermark. Aion requests preserve MCP public values and order, add immutable duration-adjustment behavior, and place enabled Seed only in `extra_params.seed`.
+- Updated the VidMuse MCP video input contract document with five fully separated MCP/mode/Aion examples and the ManuEval/Aion Adapter guarantee boundary.
+- Historical snapshots and legacy Seed retries retain their prior execution semantics; no database migration was added.
+
+### Validation
+
+- Passed generation, isolated PostgreSQL generation, API smoke, all dataset suites, Arena, rank ties, lint, server build, frontend build, and `git diff --check`.
+- Browser QA passed live model-config gating, all four Seed strategies, model-switch reset, unsupported-model hiding, one-case preflight audit, and 1440x900 / 390x844 containment.
+- The only current browser errors are 401 responses from an expired reference image already stored in the QA dataset; application API calls and the new preflight succeeded.
+- No batch was created and no paid model generation was submitted.

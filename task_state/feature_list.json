@@ -1,41 +1,41 @@
 {
-  "feature": "generation_wan_conservative_recovery",
+  "feature": "generation_seed_v2_mcp_aion_layering",
   "previousCompletedFeature": "vidmuse_mcp_input_contract",
   "requirements": [
     {
-      "id": "wan-repair-limit",
-      "status": "in_progress",
-      "description": "Keep Wan at concurrency one until the repaired scheduler and a single-case smoke are verified"
+      "id": "seed-policy-v2",
+      "status": "completed",
+      "description": "Default Seed to unused and support deterministic, fixed, and dataset-column strategies without silent dropping"
     },
     {
-      "id": "conservative-adaptation",
+      "id": "live-seed-gating",
       "status": "completed",
-      "description": "Start from initial capacity, ramp one slot per three successes, and reset to minimum on capacity failure"
+      "description": "Expose Seed only for model_api models whose exact live supported_params contract contains seed"
     },
     {
-      "id": "status-reconciliation",
+      "id": "mcp-aion-layering",
       "status": "completed",
-      "description": "Perform a final poll and reconcile uncertain provider state for two hours without resubmission"
+      "description": "Persist and display source intent, MCP input, derived generation type, and final Aion JSON separately"
     },
     {
-      "id": "model-contract-preflight",
+      "id": "projection-consistency",
       "status": "completed",
-      "description": "Reject structured and configured prompt-limit violations before provider submission"
-    },
-    {
-      "id": "task-center-diagnostics",
-      "status": "completed",
-      "description": "Expose initial/effective capacity, success streak, reconciliation state, and safe polling diagnostics"
+      "description": "Reject non-reviewed MCP/Aion projection differences while auditing forced overrides"
     },
     {
       "id": "backward-compatibility",
       "status": "completed",
-      "description": "Preserve historical terminal tasks, fair scheduling, writeback, stable assets, and manual retry semantics"
+      "description": "Preserve historical snapshots, running tasks, retries, writeback, assets, and human evaluation without a migration"
     },
     {
       "id": "verification",
+      "status": "completed",
+      "description": "Pass deterministic, PostgreSQL, API, build, and desktop/mobile browser checks without paid generation"
+    },
+    {
+      "id": "release",
       "status": "in_progress",
-      "description": "Pass full automated and browser regression, deploy dev, then run exactly one Wan smoke case"
+      "description": "Synchronize GitHub main, push without force, and verify CI and dev deployment"
     }
   ]
 }

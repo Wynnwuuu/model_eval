@@ -114,6 +114,9 @@ export const buildTaskWorkerSubmission = (
   path: string,
   body: Record<string, any>,
 ) => {
+  if (body.extra_params?.seed !== undefined) {
+    throw new Error('The task_worker execution transport does not support Seed; use model_api or set Seed to unused.');
+  }
   const modality: GenerationModality = path.endsWith('/generate-image') ? 'image' : 'video';
   const data = Object.fromEntries(
     TASK_WORKER_FIELDS[modality]
