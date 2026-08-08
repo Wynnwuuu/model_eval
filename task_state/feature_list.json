@@ -1,40 +1,40 @@
 {
-  "feature": "generation_workspace_review_ux",
-  "previousCompletedFeature": "generation_input_reliability_hardening",
+  "feature": "structured_evaluation_base_audit",
+  "previousCompletedFeature": "generation_workspace_review_ux",
   "requirements": [
     {
-      "id": "generation-navigation",
+      "id": "preserved-source-import",
       "status": "completed",
-      "description": "Use stable tasks/new routes and one fixed page-level navigation"
+      "description": "Import the 188-row Base snapshot with exactly 16 visible source columns and hidden provenance"
     },
     {
-      "id": "explicit-dataset-selection",
+      "id": "mcp-aion-dry-run",
       "status": "completed",
-      "description": "Disable configuration until the operator explicitly selects a read-only production dataset"
+      "description": "Compile every modality-matching case against all 63 live model configurations without generation POSTs"
     },
     {
-      "id": "duration-copy",
+      "id": "quality-audit",
       "status": "completed",
-      "description": "Identify video duration, its purpose, and the duration-column source"
+      "description": "Audit Prompt, MCP structure, media roles, reachability, decoding, and objective media quality per case"
     },
     {
-      "id": "case-filtering",
-      "status": "completed",
-      "description": "Filter cases by status, issue type, and Case ID with filter-scoped bulk confirmation"
+      "id": "dev-artifacts",
+      "status": "pending",
+      "description": "Create immutable source and derived audit datasets in ManuEval dev and verify deep links"
     },
     {
-      "id": "case-review-dialog",
-      "status": "completed",
-      "description": "Use compact rows and a responsive detail dialog with saved drafts and explicit re-preflight"
+      "id": "report",
+      "status": "pending",
+      "description": "Publish a reproducible Feishu report linking source data, audit detail, and compatibility evidence"
     },
     {
       "id": "verification",
-      "status": "completed",
-      "description": "Run full regression, desktop/mobile browser checks, and no-paid-generation safety validation"
+      "status": "pending",
+      "description": "Run full regression, browser checks, and no-paid-generation safety validation"
     },
     {
       "id": "release",
-      "status": "completed",
+      "status": "pending",
       "description": "Fast-forward GitHub main and verify CI plus dev deployment"
     }
   ]

@@ -1,5 +1,13 @@
 # Arena Decision Log
 
+## 2026-08-08: Structured Base snapshots remain immutable audit evidence
+
+The source dataset is imported with exactly the 16 visible Base fields and their original order. Transport-only Feishu Markdown URL wrappers may be unwrapped deterministically, but source values are retained in hidden audit metadata and business columns are never renamed, corrected, or augmented with visible audit fields.
+
+The source snapshot is accepted only after two full paginated reads produce the same schema and content hash. Existing dataset IDs with a different source hash must never be overwritten. Stable item IDs derive from `case_id + variant_label + duplicate ordinal`; Feishu record IDs and source row positions remain hidden provenance.
+
+Quality findings and model compatibility results are separate derived artifacts. Media-role mismatches, inaccessible assets, Prompt references, and model parameter conflicts do not silently rewrite requests. A case may become ready only through an explicit batch override or a reviewed source revision, and no audit path may call a paid generation endpoint.
+
 ## 2026-08-05: Generation capacity is shared but submission slots are dataset-fair
 
 ManuEval keeps global image/video provider limits because every batch uses the same dedicated VidMuse evaluation account. New submission slots are allocated by least current dataset load, then least current job load, while due polling and archiving remain higher priority. Failed and ambiguous-terminal items never consume provider capacity.
@@ -278,3 +286,13 @@ Preflight issue selection is both a presentation filter and the batch-review sco
 Per-case edits are local to the detail dialog until saved into the existing `caseReviews` snapshot. Saved reviews are visibly pending and only affect a request after one explicit re-preflight, preserving request-hash and billing confirmation semantics.
 
 Cases without a stable dataset item ID use a presentation-only dialog key so the operator can still inspect their blocking error and request audit. They cannot save a review because there is no safe persistence key. Likewise, an unchanged dialog cannot be saved, preventing a false “pending re-preflight” state.
+
+## 2026-08-08: Structured evaluation evidence is immutable and separately reviewable
+
+The Feishu `cases / Grid View` source is imported only through the exact 16-column contract. Visible names, order, and values are retained; transport-only select wrappers and Markdown URL wrappers are normalized while the raw API values, record ID, row hash, snapshot hash, and normalization version remain hidden provenance.
+
+The source dataset and the derived 17-column audit dataset use separately verified import envelopes. Existing IDs are accepted only when source hash, normalization version, schema, and every row match. Audit dataset IDs include an audit-contract version so a later rules revision cannot masquerade as the same artifact.
+
+All-model compatibility is a zero-generation compilation against captured live Aion configuration. It records MCP input, ManuEval generation type, final Aion JSON, projection diff, and one of five fixed statuses. It never calls a generation POST and does not claim that the downstream provider Adapter was executed.
+
+Prompt and media quality findings are evidence for human review, not AI scores. Relative, local, single-label, and private-literal media locations are rejected before `ffprobe` or network probing. Full source rows, media URLs, previews, matrices, and reports stay outside Git; only code and redacted fixtures are versioned.

@@ -1,5 +1,15 @@
 # Arena Implementation Progress
 
+## 2026-08-08: Structured evaluation Base import and audit
+
+### In progress
+
+- Added a preserved-source import path that keeps the Feishu Base's 16 visible columns, names, ordering, and values while storing record identity and source hashes only in hidden metadata.
+- Fetched the `cases / Grid View` source twice and verified a stable 188-record snapshot: `sha256:00381745e0a61b29f665bd8ee031ec04ff9ecb7e85d5b20b8c7fcbf638530b34`.
+- Added deterministic MCP/Aion dry-run auditing and evaluated 63 live image/video configurations across all modality-matching cases. The audit made 7,952 compiler evaluations and zero generation POST requests.
+- Added media probing and per-case quality checks. The corrected run deduplicated 169 media references; 162 were HTTP reachable and 160 decodable. Findings remain separate from the immutable source dataset.
+- Focused regression tests for source preservation, compatibility classification, and quality rules pass. Repository-wide regression, dev import, final report publication, and release validation remain pending.
+
 ## 2026-08-05: Generation task center and fair scheduling (implementation complete)
 
 - Isolated clone: `ManuEval-generation-task-center`, branch `agent/generation-task-center`, based on `origin/main` at `e874eb7`.
@@ -444,3 +454,25 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Fast-forwarded source commit `2ffd4b4` to `world-sim-dev/ManuEval` `main` without force-pushing or staging the existing untracked report and report assets.
 - Eval Studio Test run `31252776514` and Dev CI/CD run `31252776557` succeeded. The latter passed tests, image build, and the Kubernetes dev rollout.
 - `https://eval-studio.sandaii.cn/generation?view=tasks` loaded the unified navigation after deployment. Switching to `view=new` retained no implicit dataset selection, kept configuration disabled, and produced no browser console errors or warnings.
+
+## 2026-08-08: Structured Base import and no-cost quality audit (pre-release)
+
+### Completed
+
+- Added a local `lark-cli` importer that reads the specified Base/table/view twice and stops on schema, row-count, pagination, or snapshot drift.
+- Added verified web import envelopes for the exact 16-column source dataset and versioned 17-column per-case audit dataset, including hidden Feishu provenance and overwrite protection.
+- Added an all-live-model dry-run that reuses the production MCP compiler, preflight validation, generation-mode inference, and Aion request builder without issuing generation POSTs.
+- Added deterministic Prompt/MCP/media auditing, HTTP/MIME/ffprobe checks, image/audio/video evidence generation, and a human-reviewed report pipeline. Complete business artifacts remain gitignored.
+- The final source recheck contains 188 rows, the exact 16 visible columns, 618 transport-only normalizations, and stable snapshot `sha256:00381745e0a61b29f665bd8ee031ec04ff9ecb7e85d5b20b8c7fcbf638530b34`.
+- The captured 63-model matrix contains 7,952 matching case-model compilations and exactly zero generation POSTs.
+
+### Validation
+
+- Passed focused structured-audit tests, generation/MCP/Seed tests, every dataset suite, Arena, rank ties, lint, server build, frontend build, and `git diff --check`.
+- The shared PostgreSQL test was externally claimed by an existing Worker; the separately migrated `eval_studio_codex_base_audit` database passed the full generation integration suite and worker-disabled API smoke. The temporary API was stopped afterward.
+- Manually read all 188 Prompts, reviewed all 167 unique visual/media previews, and checked 18 generated audio preview clips. No AI judge or paid model generation was used.
+- Current quality result: 25 blocker, 52 high, 34 medium, and 77 informational cases. MCP status is 164 valid / 20 review / 4 blocked; media status is 109 valid / 58 review / 21 blocked.
+
+### Pending Release
+
+- Fast-forward GitHub main, verify CI/dev deployment, import both verified datasets through the authenticated public UI, upload the compatibility matrix, and publish the linked Feishu report.

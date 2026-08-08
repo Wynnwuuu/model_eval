@@ -68,6 +68,11 @@ import { getExecutionBatch } from '../features/generation/executionApi';
 import { subscribeGenerationJobs } from '../features/generation/api';
 import { parseVidMuseDatasetJson } from '../features/generation/vidmuseInputContract';
 import {
+  parseVerifiedEvaluationImportEnvelope,
+  sameVerifiedEvaluationDatasetContent,
+  type VerifiedEvaluationImportEnvelope,
+} from '../features/datasets/preservedSourceImport';
+import {
   resolveWorkspaceDataset,
   type GenerationWorkspaceView,
 } from '../features/generation/workspaceNavigation';
@@ -836,6 +841,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     )
   );
   const [wizardError, setWizardError] = useState('');
+  const [preservedImport, setPreservedImport] = useState<VerifiedEvaluationImportEnvelope | null>(null);
   const [showMappedFieldsOnly, setShowMappedFieldsOnly] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -1540,6 +1546,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     setWizardStep(mode === 'append' ? 2 : 1);
     setWizardOpen(true);
     setWizardError('');
+    setPreservedImport(null);
     setShowMappedFieldsOnly(false);
     setParsedRows([]);
     setParsedHeaders(normalizedTarget?.inputSchema?.map(field => field.key) || []);
@@ -1573,6 +1580,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     setWizardOpen(false);
     setWizardTarget(null);
     setWizardError('');
+    setPreservedImport(null);
   };
 
   const parseImportedData = (text: string, format: 'table' | 'json') => {
@@ -1616,6 +1624,40 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     const file = event.target.files?.[0];
     if (!file) return;
     const text = await file.text();
+    if (file.name.toLowerCase().endsWith('.json')) {
+      try {
+        const envelope = parseVerifiedEvaluationImportEnvelope(text);
+        if (envelope) {
+          if (wizardMode !== 'create') throw new Error('受审计源结构快照只能创建为新评测集，不能追加到已有评测集。');
+          const dataset = envelope.dataset;
+          setPreservedImport(envelope);
+          setParsedRows(dataset.items);
+          setParsedHeaders(dataset.inputSchema.map(field => field.key));
+          setSchemaFields(attachSchemaFieldEditorIds(dataset.inputSchema));
+          setForm({
+            name: dataset.name,
+            description: dataset.description,
+            tags: dataset.tags.join(', '),
+            modality: dataset.modality || 'multimodal',
+            categoryPath: dataset.categoryPath?.join(' / ') || '',
+            source: dataset.datasetCard?.source || '',
+            applicableTasks: dataset.datasetCard?.applicableTasks?.join(', ') || '',
+            applicableStages: dataset.datasetCard?.applicableStages?.join(', ') || '',
+            rubricBinding: dataset.datasetCard?.rubricBinding || '',
+            coverageGaps: dataset.datasetCard?.coverageGaps?.join('\n') || '',
+          });
+          setWizardError('');
+          setWizardStep(3);
+          event.target.value = '';
+          return;
+        }
+      } catch (reason) {
+        setWizardError(reason instanceof Error ? reason.message : '受审计源结构快照解析失败。');
+        event.target.value = '';
+        return;
+      }
+    }
+    setPreservedImport(null);
     applyParsedData(text, file.name.toLowerCase().endsWith('.json') ? 'json' : 'table');
     event.target.value = '';
   };
@@ -1724,6 +1766,46 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     if (!form.name.trim()) {
       setWizardError('请填写评测集名称。');
       setWizardStep(1);
+      return;
+    }
+    if (preservedImport) {
+      const imported = preservedImport.dataset;
+      const existing = datasets.find(dataset => dataset.id === imported.id);
+      if (existing) {
+        const existingHash = existing.items?.[0]?.__sourceSnapshotHash;
+        const importedHash = imported.items?.[0]?.__sourceSnapshotHash;
+        const existingNormalizationVersion = existing.items?.[0]?.__sourceNormalizationVersion;
+        const importedNormalizationVersion = imported.items?.[0]?.__sourceNormalizationVersion;
+        if (existingHash !== importedHash
+          || existingNormalizationVersion !== importedNormalizationVersion
+          || !sameVerifiedEvaluationDatasetContent(existing, imported)) {
+          setWizardError('同一受审计评测集 ID 已存在，但来源快照、规范化版本或逐行内容不同；已停止导入以避免覆盖。');
+          return;
+        }
+        setSelectedDatasetId(existing.id);
+        setSelectedRowIndex(0);
+        closeWizard();
+        return;
+      }
+      const now = Date.now();
+      const userName = auth.currentUser?.displayName || auth.currentUser?.email || 'Unknown';
+      const datasetBase: EvalDataset = {
+        ...imported,
+        name: form.name.trim().slice(0, 100),
+        creatorUid: imported.creatorUid || auth.currentUser?.uid,
+        creatorName: imported.creatorName || userName,
+        updatedAt: now,
+      };
+      try {
+        const savedDataset = await saveDataset(datasetBase);
+        setDatasets(current => [savedDataset, ...current]);
+        setSelectedDatasetId(savedDataset.id);
+        setSelectedRowIndex(0);
+        closeWizard();
+      } catch (error: any) {
+        console.error('Error saving preserved source dataset:', error);
+        setWizardError(`保存受审计评测集失败：${error.message || error}`);
+      }
       return;
     }
     if (wizardMode === 'append' && parsedRows.length === 0) {
@@ -2084,8 +2166,11 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     const previewRows = parsedRows.slice(0, 5);
     const persistedSchemaFields = stripSchemaFieldEditorIds(schemaFields);
     const activeMappings = deriveMappingsFromSchemaFields(persistedSchemaFields);
-    const normalizedPreviewRows = normalizeDatasetRows(parsedRows, activeMappings, persistedSchemaFields, { activeFieldsOnly: true });
-    const validation = validateDatasetItems(normalizedPreviewRows, activeMappings);
+    const normalizedPreviewRows = preservedImport
+      ? parsedRows
+      : normalizeDatasetRows(parsedRows, activeMappings, persistedSchemaFields, { activeFieldsOnly: true });
+    const validation = preservedImport?.dataset.validationSummary
+      || validateDatasetItems(normalizedPreviewRows, activeMappings);
     const hasActiveInputField = persistedSchemaFields.some(
       field => field.role === 'input' || field.role === 'reference' || field.role === 'media'
     );
@@ -2136,6 +2221,20 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
             {wizardError && (
               <div className="mb-4 rounded-xl border border-red-400/30 bg-red-500/10 text-red-200 px-4 py-3 text-sm flex items-start gap-2">
                 <AlertTriangle size={16} className="mt-0.5 shrink-0" /> {wizardError}
+              </div>
+            )}
+
+            {preservedImport && (
+              <div className="mb-4 border border-emerald-400/30 bg-emerald-500/10 text-emerald-100 px-4 py-3 text-sm flex items-start gap-2">
+                <CheckCircle2 size={16} className="mt-0.5 shrink-0" />
+                <div>
+                  <div className="font-medium">
+                    {preservedImport.importMode === 'preserve_source_schema_v1' ? '受审计源结构快照' : '逐 case 审计明细'}
+                  </div>
+                  <div className="text-xs text-emerald-100/75 mt-1">
+                    将按文件中已验证的 {preservedImport.verification.recordCount} 行、{preservedImport.verification.visibleColumnCount} 列原样创建；字段映射仅供查看，保存时不会重命名、重排或补充可见列。
+                  </div>
+                </div>
               </div>
             )}
 
