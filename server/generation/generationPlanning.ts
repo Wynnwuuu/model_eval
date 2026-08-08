@@ -21,6 +21,7 @@ import type {
 } from '../../src/types.ts';
 import type { GenerationContentIntentAudit } from './generationContentMapping.ts';
 import type { GenerationModelValidationOverride } from './generationValidationPolicy.ts';
+import type { GenerationMediaReferenceAudit } from '../../src/features/generation/mediaValidation.ts';
 
 export type GenerationModality = 'image' | 'video';
 
@@ -81,6 +82,7 @@ export type GenerationCase = {
     projectionDiff?: GenerationProjectionDiff[];
     bindings: VidMuseInputBindings;
     finalAionRequest?: Record<string, unknown>;
+    mediaReferences?: GenerationMediaReferenceAudit[];
     contractFindings?: GenerationContractFinding[];
     appliedFindingIds?: string[];
     reviewedFindingIds?: string[];
@@ -96,6 +98,8 @@ export type GenerationCase = {
       finalRequest: Record<string, unknown>;
       bypassedRules: string[];
       configFingerprint: string;
+      projectionPreserved?: boolean;
+      riskOnly?: boolean;
     };
   };
   parameterAudit?: Record<string, GenerationParameterAuditEntry>;
@@ -1130,6 +1134,7 @@ export type UploadedAssetCandidate = {
   id: string;
   relativePath: string;
   fileName: string;
+  contentType?: string;
 };
 
 const normalizeAssetPath = (value: string) =>

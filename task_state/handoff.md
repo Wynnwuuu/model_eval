@@ -1,5 +1,13 @@
 # Arena And Arena-rank Handoff
 
+## Current work: generation input reliability hardening
+
+Implementation and local validation are complete. Scalar media URLs no longer split on spaces, URL spaces normalize to `%20`, exact VidMuse preset parameters cannot disappear silently, and deterministic role/type/public-host findings are available per case. Risk-only confirmation remains distinct from manual Aion JSON override, and bulk review cannot make a final-JSON-required case valid.
+
+The real imported 188-row QA dataset passed a GET-only dry-run with zero request-build failures, zero normalized whitespace, zero MCP/Aion projection differences, and no generation POST. A second model contract exposed all unsupported non-empty preset parameters explicitly. The as-built contract and exact statistics are in `docs/manueval-vidmuse-mcp-video-input-contract-review.md`.
+
+All deterministic, PostgreSQL, API smoke, TypeScript/build, and desktop/mobile browser checks pass without paid generation. Remaining actions are scoped commit, latest-main fast-forward verification, push to GitHub main, CI/dev rollout checks, and public generation-health verification. Preserve and exclude the unrelated untracked technical report and `docs/report-assets/`.
+
 ## Current work: Seed v2 and MCP/Aion request layering
 
 The implementation and local validation are complete. New generation preflights default Seed to `unused`, expose it only when exact live `supported_params` contains `seed`, and reject unsupported or `task_worker` Seed instead of silently dropping it. Enabled Seed is an Aion extension at `extra_params.seed`, never part of VidMuse MCP input.

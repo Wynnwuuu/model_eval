@@ -3,8 +3,8 @@ import type {
   DatasetSchemaField,
   EvalDataset,
   GenerationInputMapping,
-} from '../../types';
-import type { GenerationImageRole } from './modelCapabilities';
+} from '../../types.js';
+import type { GenerationImageRole } from './modelCapabilities.js';
 
 export const VIDMUSE_EVALUATION_PRESET_COLUMNS = [
   'case_id',

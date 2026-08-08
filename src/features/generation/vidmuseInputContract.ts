@@ -7,6 +7,7 @@ import {
   reviewedPluginPromptFindings,
   VIDMUSE_PLUGIN_RULE_SNAPSHOT,
 } from './vidmusePluginContracts.js';
+import { normalizeGenerationReference } from './mediaReferences.js';
 
 export const VIDMUSE_INPUT_COMPILER_VERSION = '1';
 export const VIDMUSE_INPUT_COMPILER_VERSION_V2 = '2';
@@ -155,11 +156,16 @@ export const isForceableRelativeGenerationAsset = (value: unknown) => {
     && !trimmed.includes('\\');
 };
 
+const normalizedUsableAssetUrl = (value: unknown, allowRelative = false) => {
+  if (typeof value !== 'string') return undefined;
+  const normalized = normalizeGenerationReference(value);
+  if (/^(?:https?:\/\/|asset:\/\/)[^\s]+$/i.test(normalized)) return normalized;
+  if (allowRelative && isForceableRelativeGenerationAsset(normalized)) return normalized;
+  return undefined;
+};
+
 const isUsableAssetUrl = (value: unknown, allowRelative = false) =>
-  typeof value === 'string' && (
-    /^(?:https?:\/\/|asset:\/\/)[^\s]+$/i.test(value.trim())
-    || (allowRelative && isForceableRelativeGenerationAsset(value))
-  );
+  Boolean(normalizedUsableAssetUrl(value, allowRelative));
 
 const normalizeUrlArray = (
   value: unknown,
@@ -193,7 +199,7 @@ const normalizeUrlArray = (
       addIssue(errors, 'INVALID_ASSET_URL', `${field}[${index}]`, `${field} entries must be HTTP(S) or uploaded asset URLs.`);
       return [];
     }
-    return [String(entry).trim()];
+    return [normalizedUsableAssetUrl(entry, allowRelative) as string];
   });
 };
 
@@ -302,17 +308,13 @@ const normalizeElements = (
     const references = normalizeUrlArray(entry.reference_image_urls, `elements[${index}].reference_image_urls`, errors, false, allowRelative);
     const frontal = entry.frontal_image_url == null || entry.frontal_image_url === ''
       ? undefined
-      : isUsableAssetUrl(entry.frontal_image_url, allowRelative)
-        ? String(entry.frontal_image_url).trim()
-        : undefined;
+      : normalizedUsableAssetUrl(entry.frontal_image_url, allowRelative);
     if (entry.frontal_image_url && !frontal) {
       addIssue(errors, 'INVALID_ASSET_URL', `elements[${index}].frontal_image_url`, 'Element frontal image must be an HTTP(S) or uploaded asset URL.');
     }
     const video = entry.video_url == null || entry.video_url === ''
       ? undefined
-      : isUsableAssetUrl(entry.video_url, allowRelative)
-        ? String(entry.video_url).trim()
-        : undefined;
+      : normalizedUsableAssetUrl(entry.video_url, allowRelative);
     if (entry.video_url && !video) {
       addIssue(errors, 'INVALID_ASSET_URL', `elements[${index}].video_url`, 'Element video must be an HTTP(S) or uploaded asset URL.');
     }
@@ -347,7 +349,8 @@ const normalizeAudios = (
     if (unknownKeys.length) {
       addIssue(errors, 'UNKNOWN_AUDIO_FIELD', `audios[${index}]`, `Unsupported audio fields: ${unknownKeys.join(', ')}.`);
     }
-    if (!isUsableAssetUrl(entry.url, options.allowRelative)) {
+    const normalizedUrl = normalizedUsableAssetUrl(entry.url, options.allowRelative);
+    if (!normalizedUrl) {
       addIssue(errors, 'INVALID_ASSET_URL', `audios[${index}].url`, 'Audio URL must be an HTTP(S) or uploaded asset URL.');
       return [];
     }
@@ -362,7 +365,7 @@ const normalizeAudios = (
           : [Math.round(values[0] * 100) / 100, Math.round(values[1] * 100) / 100];
       }
     }
-    return [{ url: String(entry.url).trim(), ...(range ? { range } : {}) } as VidMuseAudioInput];
+    return [{ url: normalizedUrl, ...(range ? { range } : {}) } as VidMuseAudioInput];
   });
 
 const promptTexts = (prompt?: VidMusePrompt) => typeof prompt === 'string'

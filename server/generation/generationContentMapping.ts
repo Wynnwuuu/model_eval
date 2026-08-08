@@ -1,5 +1,6 @@
 import {
-  flattenGenerationReferences,
+  flattenRawGenerationReferences,
+  normalizeGenerationReference,
   parseStructuredGenerationValue,
 } from '../../src/features/generation/mediaReferences.ts';
 import { isForceableRelativeGenerationAsset } from '../../src/features/generation/vidmuseInputContract.ts';
@@ -48,21 +49,26 @@ const resolveReferences = (
   values: unknown[],
   assets: UploadedAssetCandidate[],
   field: string,
-): { urls: string[]; issues: PreflightIssue[] } => {
+): { urls: string[]; rawUrls: string[]; issues: PreflightIssue[] } => {
   const urls: string[] = [];
+  const rawUrls: string[] = [];
   const issues: PreflightIssue[] = [];
-  for (const reference of values.flatMap(flattenGenerationReferences)) {
+  for (const rawReference of values.flatMap(flattenRawGenerationReferences)) {
+    const reference = normalizeGenerationReference(rawReference);
     if (/^(https?:\/\/|asset:\/\/)/i.test(reference)) {
       urls.push(reference);
+      rawUrls.push(rawReference);
       continue;
     }
     if (isForceableRelativeGenerationAsset(reference)) {
       urls.push(reference);
+      rawUrls.push(rawReference);
       continue;
     }
     const matched = matchUploadedAsset(reference, assets);
     if (matched.assetId) {
       urls.push(`asset://${matched.assetId}`);
+      rawUrls.push(rawReference);
     } else {
       issues.push({
         code: matched.errorCode || 'MISSING_ASSET',
@@ -71,7 +77,7 @@ const resolveReferences = (
       });
     }
   }
-  return { urls, issues };
+  return { urls, rawUrls, issues };
 };
 
 const MEDIA_FILE_PATTERN = /\.(?:jpe?g|png|webp|gif|avif|mp3|wav|m4a|aac|ogg|flac|mp4|mov|webm)(?:[?#].*)?$/i;
@@ -126,11 +132,16 @@ const resolveSingleReference = (
   value: unknown,
   assets: UploadedAssetCandidate[],
   field: string,
-): { url?: string; issues: PreflightIssue[] } => {
+): { url?: string; rawUrl?: string; issues: PreflightIssue[] } => {
   const resolved = resolveReferences([value], assets, field);
-  if (resolved.urls.length <= 1) return { url: resolved.urls[0], issues: resolved.issues };
+  if (resolved.urls.length <= 1) return {
+    url: resolved.urls[0],
+    rawUrl: resolved.rawUrls[0],
+    issues: resolved.issues,
+  };
   return {
     url: resolved.urls[0],
+    rawUrl: resolved.rawUrls[0],
     issues: [
       ...resolved.issues,
       {
@@ -211,7 +222,7 @@ const compileElement = (
   row: Record<string, unknown>,
   binding: GenerationElementBinding,
   assets: UploadedAssetCandidate[],
-): { value?: Record<string, unknown>; issues: PreflightIssue[] } => {
+): { value?: Record<string, unknown>; rawValue?: Record<string, unknown>; issues: PreflightIssue[] } => {
   const issues: PreflightIssue[] = [];
   if (binding.mode === 'video') {
     const video = resolveSingleReference(
@@ -220,7 +231,11 @@ const compileElement = (
       `elements.${binding.id}.video_url`,
     );
     issues.push(...video.issues);
-    return { value: video.url ? { video_url: video.url } : undefined, issues };
+    return {
+      value: video.url ? { video_url: video.url } : undefined,
+      rawValue: video.rawUrl ? { video_url: video.rawUrl } : undefined,
+      issues,
+    };
   }
   if (binding.mode === 'element_id') {
     const rawValue = binding.elementIdColumn ? row[binding.elementIdColumn] : undefined;
@@ -257,6 +272,10 @@ const compileElement = (
       ...(frontal.url ? { frontal_image_url: frontal.url } : {}),
       ...(references.urls.length ? { reference_image_urls: references.urls } : {}),
     },
+    rawValue: {
+      ...(frontal.rawUrl ? { frontal_image_url: frontal.rawUrl } : {}),
+      ...(references.rawUrls.length ? { reference_image_urls: references.rawUrls } : {}),
+    },
     issues,
   };
 };
@@ -268,18 +287,22 @@ export const compileGenerationContentMappingV2 = ({
   assets,
 }: ContentMappingCompileArgs): {
   input: Record<string, unknown>;
+  rawInput: Record<string, unknown>;
   intent: GenerationContentIntentAudit;
   issues: PreflightIssue[];
 } => {
   const issues: PreflightIssue[] = [];
   const input: Record<string, unknown> = {};
+  const rawInput: Record<string, unknown> = {};
   const promptValue = mapping.prompt.column ? row[mapping.prompt.column] : undefined;
   if (promptValue !== undefined && promptValue !== null && text(promptValue) !== '') {
     input.prompt = promptValue;
+    rawInput.prompt = promptValue;
   }
 
   const keyframeFields: GenerationContentIntentAudit['keyframes']['fields'] = [];
   let keyframeUrls: string[] = [];
+  let rawKeyframeUrls: string[] = [];
   if (mapping.keyframes.source === 'columns') {
     const first = resolveSingleReference(
       mapping.keyframes.firstColumn ? row[mapping.keyframes.firstColumn] : undefined,
@@ -300,19 +323,28 @@ export const compileGenerationContentMappingV2 = ({
       });
     }
     keyframeUrls = [...(first.url ? [first.url] : []), ...(last.url ? [last.url] : [])];
+    rawKeyframeUrls = [
+      ...(first.rawUrl ? [first.rawUrl] : []),
+      ...(last.rawUrl ? [last.rawUrl] : []),
+    ];
     if (first.url) keyframeFields.push({ role: 'first_frame', column: mapping.keyframes.firstColumn, url: first.url });
     if (last.url) keyframeFields.push({ role: 'last_frame', column: mapping.keyframes.lastColumn, url: last.url });
   } else if (mapping.keyframes.source === 'array_column') {
     const resolved = resolveReferences([row[mapping.keyframes.column]], assets, 'image_urls');
     issues.push(...resolved.issues);
     keyframeUrls = resolved.urls;
+    rawKeyframeUrls = resolved.rawUrls;
     resolved.urls.forEach((url, index) => keyframeFields.push({
       role: index === 0 ? 'first_frame' : 'last_frame',
       column: mapping.keyframes.source === 'array_column' ? mapping.keyframes.column : undefined,
       url,
     }));
   }
-  if (keyframeUrls.length) input[outputModality === 'image' ? 'images' : 'image_urls'] = keyframeUrls;
+  if (keyframeUrls.length) {
+    const imageField = outputModality === 'image' ? 'images' : 'image_urls';
+    input[imageField] = keyframeUrls;
+    rawInput[imageField] = rawKeyframeUrls;
+  }
 
   const elementFields: GenerationContentIntentAudit['elements']['fields'] = [];
   if (mapping.elements.source === 'array_column') {
@@ -320,6 +352,7 @@ export const compileGenerationContentMappingV2 = ({
     issues.push(...resolved.issues);
     if (Array.isArray(resolved.value) && resolved.value.length) {
       input.elements = resolved.value;
+      rawInput.elements = parseStructuredGenerationValue(row[mapping.elements.column]);
       resolved.value.forEach((value, index) => elementFields.push({
         index: index + 1,
         mode: 'json',
@@ -330,11 +363,13 @@ export const compileGenerationContentMappingV2 = ({
     }
   } else if (mapping.elements.source === 'builder') {
     const elements: Record<string, unknown>[] = [];
+    const rawElements: Record<string, unknown>[] = [];
     for (const binding of mapping.elements.items) {
       const compiled = compileElement(row, binding, assets);
       issues.push(...compiled.issues);
       if (!compiled.value) continue;
       elements.push(compiled.value);
+      rawElements.push(compiled.rawValue || compiled.value);
       elementFields.push({
         index: elements.length,
         bindingId: binding.id,
@@ -342,7 +377,10 @@ export const compileGenerationContentMappingV2 = ({
         value: compiled.value,
       });
     }
-    if (elements.length) input.elements = elements;
+    if (elements.length) {
+      input.elements = elements;
+      rawInput.elements = rawElements;
+    }
   }
 
   const audioFields: GenerationContentIntentAudit['audios']['fields'] = [];
@@ -351,12 +389,14 @@ export const compileGenerationContentMappingV2 = ({
     issues.push(...resolved.issues);
     if (Array.isArray(resolved.value) && resolved.value.length) {
       input.audios = resolved.value;
+      rawInput.audios = parseStructuredGenerationValue(row[mapping.audios.column]);
       resolved.value.forEach((value, index) => audioFields.push({ index: index + 1, value }));
     } else if (resolved.value != null && text(resolved.value) !== '') {
       input.audios = resolved.value;
     }
   } else if (mapping.audios.source === 'builder') {
     const audios: Array<Record<string, unknown>> = [];
+    const rawAudios: Array<Record<string, unknown>> = [];
     for (const binding of mapping.audios.items) {
       const audio = resolveSingleReference(
         binding.urlColumn ? row[binding.urlColumn] : undefined,
@@ -378,13 +418,18 @@ export const compileGenerationContentMappingV2 = ({
       issues.push(...range.issues);
       const value = { url: audio.url, ...(range.range ? { range: range.range } : {}) };
       audios.push(value);
+      rawAudios.push({ url: audio.rawUrl || audio.url, ...(range.range ? { range: range.range } : {}) });
       audioFields.push({ index: audios.length, bindingId: binding.id, value });
     }
-    if (audios.length) input.audios = audios;
+    if (audios.length) {
+      input.audios = audios;
+      rawInput.audios = rawAudios;
+    }
   }
 
   return {
     input,
+    rawInput,
     intent: {
       mappingVersion: 2,
       prompt: {

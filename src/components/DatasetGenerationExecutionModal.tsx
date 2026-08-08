@@ -74,6 +74,11 @@ import {
   parseStructuredGenerationValue,
   uniqueGenerationReferences,
 } from '../features/generation/mediaReferences';
+import {
+  applyBulkGenerationForceReview,
+  GENERATION_FORCEABLE_PREFLIGHT_CODES,
+  generationForceRequiresFinalJson,
+} from '../features/generation/preflightReview';
 
 interface DatasetGenerationExecutionModalProps {
   dataset: EvalDataset;
@@ -234,6 +239,9 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const [preflight, setPreflight] = useState<GenerationPreflightResult | null>(null);
   const [caseReviews, setCaseReviews] = useState<Record<string, GenerationCaseReview>>({});
   const [requestJsonDrafts, setRequestJsonDrafts] = useState<Record<string, string>>({});
+  const [bulkForceCode, setBulkForceCode] = useState('');
+  const [bulkForceReason, setBulkForceReason] = useState('');
+  const [bulkForceConfirmed, setBulkForceConfirmed] = useState(false);
   const [reviewsDirty, setReviewsDirty] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [batch, setBatch] = useState<GenerationBatch | null>(null);
@@ -298,6 +306,44 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const selectionTooLarge = selectedDatasetItemIds.length > maxBatchSize;
   const mappingMode = inputMapping.mappingMode || 'assisted';
   const durationControl = selectedModel?.controls.find(control => control.key === 'duration');
+  const unsupportedPresetParameters = useMemo(() => {
+    if (!usesVidMuseEvaluationPreset || !selectedModel) return [];
+    const supported = new Set(selectedModel.controls.map(control => control.key));
+    const selected = new Set(selectedDatasetItemIds);
+    return (['duration', 'aspect_ratio', 'resolution', 'generate_audio'] as const).flatMap(key => {
+      const column = presetColumns[key];
+      if (!column || supported.has(key)) return [];
+      const affected = dataset.items.filter(row => {
+        if (selected.size && !selected.has(String(row[DATASET_ITEM_ID_KEY] || ''))) return false;
+        if (!generationRowMatchesModality(row, selectedModel.outputModality)) return false;
+        const original = row._originalData && typeof row._originalData === 'object' && !Array.isArray(row._originalData)
+          ? row._originalData as Record<string, unknown>
+          : undefined;
+        return hasConfiguredInputValue(row[column] ?? original?.[key]);
+      }).length;
+      return affected ? [{ key, column, affected }] : [];
+    });
+  }, [
+    dataset.items,
+    presetColumns,
+    selectedDatasetItemIds,
+    selectedModel,
+    usesVidMuseEvaluationPreset,
+  ]);
+  const forceableReviewGroups = useMemo(() => {
+    const groups = new Map<string, number>();
+    (preflight?.cases || []).forEach(item => {
+      new Set<string>(item.errors.map(issue => String(issue.code))).forEach(code => {
+        if (GENERATION_FORCEABLE_PREFLIGHT_CODES.has(code)) {
+          groups.set(code, (groups.get(code) || 0) + 1);
+        }
+      });
+    });
+    return Array.from(groups, ([code, count]) => ({ code, count }));
+  }, [preflight]);
+  const activeBulkForceCode = forceableReviewGroups.some(group => group.code === bulkForceCode)
+    ? bulkForceCode
+    : forceableReviewGroups[0]?.code || '';
   const selectedBatchItems = batch?.items.filter(item => selectedBatchItemIds.includes(item.id)) || [];
   const selectableBatchItems = batch?.items.filter(item =>
     ['pending', 'failed', 'submission_unknown', 'cancelled'].includes(item.status)
@@ -653,6 +699,9 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     setPreflight(null);
     setCaseReviews({});
     setRequestJsonDrafts({});
+    setBulkForceCode('');
+    setBulkForceReason('');
+    setBulkForceConfirmed(false);
     setReviewsDirty(false);
     setConfirmed(false);
   };
@@ -707,6 +756,29 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
         });
     });
     setCaseReviews(next);
+    setReviewsDirty(true);
+    setConfirmed(false);
+  };
+
+  const setPresetParameterOmission = (key: string, omitted: boolean) => {
+    setParameterBindings(current => {
+      const next = { ...current };
+      if (omitted) next[key] = { source: 'unused' };
+      else delete next[key];
+      return next;
+    });
+    invalidatePreflight();
+  };
+
+  const applyBulkForceReview = () => {
+    if (!preflight || !activeBulkForceCode) return;
+    setCaseReviews(current => applyBulkGenerationForceReview({
+      cases: preflight.cases,
+      reviews: current,
+      errorCode: activeBulkForceCode,
+      reason: bulkForceReason.trim(),
+      duplicateBillingRiskConfirmed: bulkForceConfirmed,
+    }));
     setReviewsDirty(true);
     setConfirmed(false);
   };
@@ -1101,6 +1173,11 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     const promptDraft = typeof promptValue === 'string'
       ? promptValue
       : JSON.stringify(promptValue ?? '', null, 2);
+    const defaultForceRuleCodes = Array.from(new Set(item.errors
+      .map(issue => String(issue.code))
+      .filter(code => GENERATION_FORCEABLE_PREFLIGHT_CODES.has(code))));
+    const reviewedForceRuleCodes = review.force?.ruleCodes || defaultForceRuleCodes;
+    const forceNeedsFinalJson = generationForceRequiresFinalJson(reviewedForceRuleCodes);
     const requestDraft = requestJsonDrafts[datasetItemId]
       ?? JSON.stringify(review.finalAionRequest || audit.finalAionRequest || {}, null, 2);
 
@@ -1180,6 +1257,9 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                   force: {
                     reason: event.target.value,
                     duplicateBillingRiskConfirmed: current.force?.duplicateBillingRiskConfirmed === true,
+                    ...((current.force?.ruleCodes || defaultForceRuleCodes).length ? {
+                      ruleCodes: current.force?.ruleCodes || defaultForceRuleCodes,
+                    } : {}),
                   },
                 }))}
                 className="w-full border border-white/10 bg-slate-950 px-2 py-1.5 text-xs text-slate-200"
@@ -1194,11 +1274,25 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                   force: {
                     reason: current.force?.reason || '',
                     duplicateBillingRiskConfirmed: event.target.checked,
+                    ...((current.force?.ruleCodes || defaultForceRuleCodes).length ? {
+                      ruleCodes: current.force?.ruleCodes || defaultForceRuleCodes,
+                    } : {}),
                   },
                 }))}
               />
-              <span>我确认该请求不再保证 MCP 对齐，并理解人工覆盖或再次提交可能产生重复计费。</span>
+              <span>
+                {review.finalAionRequest
+                  ? '我确认手工 Aion JSON 可能不再保证 MCP 或模型合同对齐，并理解可能产生重复计费。'
+                  : forceNeedsFinalJson
+                    ? '我确认该规则还必须逐 case 提供最终 Aion JSON；仅勾选本项不会使 case 变为有效。'
+                    : '我确认保留当前 MCP/Aion 请求并承担已列出的素材类型或可访问性风险，并理解可能产生重复计费。'}
+              </span>
             </label>
+            {!!review.force?.ruleCodes?.length && (
+              <div className="text-[11px] text-amber-300">
+                {'\u4ec5批量确认规则: '}{review.force.ruleCodes.join(', ')}
+              </div>
+            )}
             {review.force && (
               <button
                 type="button"
@@ -1550,6 +1644,37 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                 )}
               </section>
 
+              {!!unsupportedPresetParameters.length && (
+                <section className="border border-amber-400/30 bg-amber-500/10 p-4">
+                  <h3 className="text-sm font-semibold text-amber-100">{'评测集参数合同冲突'}</h3>
+                  <p className="mt-1 text-xs leading-5 text-amber-200/80">
+                    {'下列预设列有值，但当前模型实时配置未声明支持。默认预检阻断；可明确不使用，或在预检后逐 case 提供最终 Aion JSON 强制覆盖。'}
+                  </p>
+                  <div className="mt-3 grid gap-2 md:grid-cols-2">
+                    {unsupportedPresetParameters.map(item => {
+                      const omitted = parameterBindings[item.key]?.source === 'unused';
+                      return (
+                        <div key={item.key} className="flex items-center justify-between gap-3 border border-white/10 bg-black/20 p-3">
+                          <div className="min-w-0">
+                            <div className="text-xs font-medium text-slate-100">{item.key}</div>
+                            <div className="mt-1 truncate text-[11px] text-slate-400" title={item.column}>
+                              {item.column} / {item.affected} cases
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setPresetParameterOmission(item.key, !omitted)}
+                            className={`shrink-0 border px-3 py-1.5 text-xs ${omitted ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200' : 'border-amber-300/30 text-amber-100'}`}
+                          >
+                            {omitted ? '已明确不使用' : '本批次不使用'}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
+
               {selectedModel?.supportsSeed && runtimeHealth?.executionTransport === 'model_api' && (
                 <section className="border-t border-white/10 pt-5">
                   <h3 className="mb-3 text-sm font-semibold text-slate-100">{copy.seed}</h3>
@@ -1639,6 +1764,58 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                     </section>
                   )}
 
+                  {!!forceableReviewGroups.length && (
+                    <section className="border border-red-400/30 bg-red-500/10 p-4">
+                      <h3 className="text-sm font-semibold text-red-100">{'按错误类型批量确认风险'}</h3>
+                      <p className="mt-1 text-xs leading-5 text-red-200/80">
+                        {'批量操作只写入强制原因、计费确认和当前错误码，不会生成或修改最终 Aion JSON。'}
+                      </p>
+                      <div className="mt-3 grid gap-3 md:grid-cols-[minmax(220px,0.8fr)_minmax(280px,1.4fr)]">
+                        <label className="block text-xs text-slate-300">
+                          <span className="mb-1.5 block">{'错误类型'}</span>
+                          <select
+                            value={activeBulkForceCode}
+                            onChange={event => setBulkForceCode(event.target.value)}
+                            className="w-full border border-white/10 bg-slate-950 px-3 py-2 text-xs text-slate-100"
+                          >
+                            {forceableReviewGroups.map(group => (
+                              <option key={group.code} value={group.code}>{group.code} ({group.count})</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="block text-xs text-slate-300">
+                          <span className="mb-1.5 block">{'强制提交原因'}</span>
+                          <input
+                            value={bulkForceReason}
+                            onChange={event => setBulkForceReason(event.target.value)}
+                            className="w-full border border-white/10 bg-slate-950 px-3 py-2 text-xs text-slate-100"
+                          />
+                        </label>
+                      </div>
+                      <label className="mt-3 flex items-start gap-2 text-xs text-red-100">
+                        <input
+                          type="checkbox"
+                          checked={bulkForceConfirmed}
+                          onChange={event => setBulkForceConfirmed(event.target.checked)}
+                        />
+                        <span>{'我已阅读该类风险，并确认可能产生重复计费。'}</span>
+                      </label>
+                      {generationForceRequiresFinalJson([activeBulkForceCode]) && (
+                        <div className="mt-2 text-xs text-amber-200">
+                          {'该错误必须逐 case 提供最终 Aion JSON；批量确认后仍会保持无效，直到每个影响 case 的 JSON 已填写并重新预检。'}
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        disabled={!bulkForceReason.trim() || !bulkForceConfirmed}
+                        onClick={applyBulkForceReview}
+                        className="mt-3 border border-red-300/30 bg-red-500/10 px-3 py-2 text-xs text-red-100 disabled:opacity-40"
+                      >
+                        {'应用到当前同类 case'}
+                      </button>
+                    </section>
+                  )}
+
                   <section>
                     <h3 className="mb-3 text-sm font-semibold text-slate-100">Case validation</h3>
                     <div className="max-h-72 overflow-auto border border-white/10">
@@ -1689,6 +1866,14 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                                     item.resolvedCase.compilerAudit.mcpToolInput || {}, null, 2,
                                   )}</pre>
                                 </details>
+                                {!!item.resolvedCase.compilerAudit.mediaReferences?.length && (
+                                  <details>
+                                    <summary className="cursor-pointer text-[11px] text-sky-300">{'素材角色与确定性校验'}</summary>
+                                    <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-all bg-black/30 p-2 text-[10px] text-slate-300">{JSON.stringify(
+                                      item.resolvedCase.compilerAudit.mediaReferences, null, 2,
+                                    )}</pre>
+                                  </details>
+                                )}
                                 <details>
                                   <summary className="cursor-pointer text-[11px] text-sky-300">{'\u751f\u6210\u65b9\u5f0f'}</summary>
                                   <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-all bg-black/30 p-2 text-[10px] text-slate-300">{JSON.stringify({

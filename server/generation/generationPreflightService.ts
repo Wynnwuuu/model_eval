@@ -11,6 +11,13 @@ import {
   flattenGenerationReferences,
   parseStructuredGenerationValue,
 } from '../../src/features/generation/mediaReferences.ts';
+import { inspectGenerationMediaInput } from '../../src/features/generation/mediaValidation.ts';
+import { resolveVidMuseEvaluationPresetColumns } from '../../src/features/generation/inputMapping.ts';
+import {
+  generationForceBypassableCodes,
+  generationPendingForceCodes,
+  GENERATION_FORCEABLE_PREFLIGHT_CODES,
+} from '../../src/features/generation/preflightReview.ts';
 import {
   buildAssistedVidMuseInput,
   compileVidMuseGenerationInput,
@@ -340,10 +347,17 @@ export const validateGenerationParameterBindings = (
       throw badRequest(`Unknown parameter source for ${key}.`);
     }
     if (key === 'seed') throw badRequest('Seed must use the dedicated Seed strategy.');
-    if (key === 'duration') throw badRequest('Duration must use the dedicated duration source selector.');
+    const explicitPresetOmission = request.inputMapping?.presetId === 'vidmuse_evaluation_v1'
+      && binding.source === 'unused'
+      && ['duration', 'aspect_ratio', 'resolution', 'generate_audio'].includes(key);
+    if (key === 'duration' && !explicitPresetOmission) {
+      throw badRequest('Duration must use the dedicated duration source selector.');
+    }
     const control = controlDefinitions.get(key);
     const advanced = advancedDefinitions.get(key);
-    if (!control && !advanced) throw badRequest(`The live model configuration does not declare generation parameter: ${key}.`);
+    if (!control && !advanced && !explicitPresetOmission) {
+      throw badRequest(`The live model configuration does not declare generation parameter: ${key}.`);
+    }
     if (binding.source === 'unused') continue;
     if (advanced && !binding.valueType) {
       throw badRequest(`Advanced parameter ${key} requires an explicit value type.`);
@@ -492,20 +506,6 @@ export const validateGenerationRequestOverride = (
   return JSON.parse(JSON.stringify(override)) as Record<string, unknown>;
 };
 
-const FORCEABLE_PREFLIGHT_CODES = new Set([
-  'CONTRACT_REVIEW_REQUIRED',
-  'GENERATION_TYPE_REVIEW_REQUIRED',
-  'RELATIVE_ASSET_REQUIRES_REVIEW',
-  'AUDIO_ONLY_MODE_REVIEW_REQUIRED',
-  'UNSUPPORTED_INPUT',
-  'UNSUPPORTED_GENERATION_TYPE',
-  'MISSING_REQUIRED_INPUT',
-  'INPUT_COUNT_OUT_OF_RANGE',
-  'MULTIPLE_AUDIOS_REQUIRE_AUDIOS',
-  'AUDIO_RANGE_REQUIRES_AUDIOS',
-  'MCP_AION_PROJECTION_MISMATCH',
-]);
-
 export const validateGenerationSeedConfiguration = (
   request: GenerationPreflightRequest,
   model: NormalizedGenerationModel,
@@ -580,6 +580,45 @@ export const buildGenerationCasesForPreflight = (
           field: 'modality',
           message: `Case ${caseId} is marked as ${rowModality}, but the selected model produces ${model.outputModality}.`,
         });
+      }
+
+      const headers = Array.from(new Set([
+        ...(dataset.inputSchema || []).map(field => field.key),
+        ...Object.keys(row).filter(key => key !== '_originalData'),
+      ]));
+      const presetColumns = resolveVidMuseEvaluationPresetColumns(headers, dataset.inputSchema || []);
+      for (const key of ['duration', 'aspect_ratio', 'resolution', 'generate_audio'] as const) {
+        const column = presetColumns[key];
+        const rawValue = column ? row[column] : original?.[key];
+        if (!column || !hasMappedValue(rawValue) || controlDefinitions.has(key)) continue;
+        const binding = request.parameterBindings?.[key];
+        if (binding?.source === 'unused') {
+          parameterAudit[key] = {
+            source: 'unused',
+            column,
+            value: rawValue,
+            verified: false,
+            destination: 'omitted',
+          };
+          parameterWarnings.push({
+            code: 'PRESET_PARAMETER_EXPLICITLY_OMITTED',
+            field: key,
+            message: `${key} from preset column ${column} is not supported by ${model.modelName} and was explicitly omitted for case ${caseId}.`,
+          });
+        } else {
+          parameterAudit[key] = {
+            source: 'column',
+            column,
+            value: rawValue,
+            verified: false,
+            destination: 'blocked',
+          };
+          parameterIssues.push({
+            code: 'UNSUPPORTED_PRESET_PARAMETER',
+            field: key,
+            message: `${key} has value ${JSON.stringify(rawValue)} in preset column ${column}, but ${model.modelName} does not declare that control. Select another model, explicitly omit it, or provide a reviewed final Aion JSON request.`,
+          });
+        }
       }
     }
 
@@ -669,6 +708,7 @@ export const buildGenerationCasesForPreflight = (
     }
 
     let rawCanonicalInput: Record<string, unknown>;
+    let originalAuditInput: Record<string, unknown> | undefined;
     let contentIntent: ReturnType<typeof compileGenerationContentMappingV2>['intent'] | undefined;
     if (contentMapping) {
       const content = compileGenerationContentMappingV2({
@@ -680,6 +720,7 @@ export const buildGenerationCasesForPreflight = (
       contentIntent = content.intent;
       assetIssues.push(...content.issues);
       rawCanonicalInput = { ...content.input, ...controls };
+      originalAuditInput = { ...content.rawInput, ...controls };
     } else if (mappingMode === 'mcp') {
       const mappings = { ...(input.canonicalFieldMappings || {}) };
       if (!mappings.prompt && input.promptColumn) mappings.prompt = input.promptColumn;
@@ -788,7 +829,16 @@ export const buildGenerationCasesForPreflight = (
           ? existingExtraParams : {}),
         ...advancedExtraParams,
       };
+      if (originalAuditInput) {
+        const originalExtraParams = originalAuditInput.extra_params;
+        originalAuditInput.extra_params = {
+          ...(originalExtraParams && typeof originalExtraParams === 'object' && !Array.isArray(originalExtraParams)
+            ? originalExtraParams : {}),
+          ...advancedExtraParams,
+        };
+      }
     }
+    originalAuditInput ||= JSON.parse(JSON.stringify(rawCanonicalInput)) as Record<string, unknown>;
     const compiled = compileVidMuseGenerationInput({
       model: {
         modelName: model.modelName,
@@ -908,6 +958,7 @@ export const buildGenerationCasesForPreflight = (
     if (controls.duration !== undefined && controls.duration !== '') {
       compiled.input.duration = controls.duration;
       compiled.originalInput.duration = controls.duration;
+      originalAuditInput.duration = controls.duration;
     }
 
     const extraInputs = Object.fromEntries(Object.entries(compiled.input).filter(([key]) =>
@@ -935,7 +986,7 @@ export const buildGenerationCasesForPreflight = (
         effectiveGenerationType: compiled.effectiveGenerationType,
         ...(contentIntent ? { intent: contentIntent } : {}),
         compatibilityApplied: compiled.compatibilityApplied,
-        originalInput: compiled.originalInput,
+        originalInput: originalAuditInput,
         compiledInput: compiled.input,
         bindings: compiled.bindings,
         contractFindings: compiled.contractFindings,
@@ -949,6 +1000,16 @@ export const buildGenerationCasesForPreflight = (
     if (resolvedCase.compilerAudit) {
       resolvedCase.compilerAudit.mcpToolInput = buildMcpToolInput(model, resolvedCase);
     }
+    const mediaInspection = resolvedCase.compilerAudit?.mcpToolInput
+      ? inspectGenerationMediaInput(
+          resolvedCase.compilerAudit.mcpToolInput,
+          assets,
+          resolvedCase.compilerAudit.originalInput,
+        )
+      : { references: [], errors: [], warnings: [] };
+    if (resolvedCase.compilerAudit && mediaInspection.references.length) {
+      resolvedCase.compilerAudit.mediaReferences = mediaInspection.references;
+    }
     return {
       resolvedCase,
       preparationIssues: [
@@ -958,8 +1019,13 @@ export const buildGenerationCasesForPreflight = (
         ...parameterIssues,
         ...durationIssues,
         ...seedIssues,
+        ...mediaInspection.errors,
       ],
-      preparationWarnings: [...compiled.warnings, ...parameterWarnings],
+      preparationWarnings: [
+        ...compiled.warnings,
+        ...parameterWarnings,
+        ...mediaInspection.warnings,
+      ],
     };
   });
 };
@@ -1134,34 +1200,60 @@ export const createGenerationPreflight = async (
       });
     }
     const force = review?.force;
+    const requestedForceCodes = force?.ruleCodes?.length
+      ? new Set(force.ruleCodes)
+      : undefined;
+    if (requestedForceCodes) {
+      const invalidForceCodes = Array.from(requestedForceCodes)
+        .filter(code => !GENERATION_FORCEABLE_PREFLIGHT_CODES.has(code));
+      if (invalidForceCodes.length) {
+        throw badRequest(`Case ${resolvedCase.caseId} contains unsupported force rule codes: ${invalidForceCodes.join(', ')}.`);
+      }
+      const currentCodes = new Set(errors.map(issue => issue.code));
+      const staleForceCodes = Array.from(requestedForceCodes).filter(code => !currentCodes.has(code));
+      if (staleForceCodes.length) {
+        throw badRequest(`Case ${resolvedCase.caseId} force review no longer matches: ${staleForceCodes.join(', ')}.`);
+      }
+    }
     if (review?.finalAionRequest && !force) {
       throw badRequest(`Case ${resolvedCase.caseId} must include a force reason and duplicate-billing confirmation when editing final Aion JSON.`);
     }
     if (force && (!text(force.reason) || force.duplicateBillingRiskConfirmed !== true)) {
       throw badRequest(`Case ${resolvedCase.caseId} requires a force reason and duplicate-billing confirmation.`);
     }
-    if (force && !review?.finalAionRequest && errors.some(issue => [
-      'GENERATION_TYPE_REVIEW_REQUIRED',
-      'AUDIO_ONLY_MODE_REVIEW_REQUIRED',
-      'UNSUPPORTED_GENERATION_TYPE',
-    ].includes(issue.code))) {
-      throw badRequest(`Case ${resolvedCase.caseId} requires an explicit final Aion JSON request because its generation mode is unresolved.`);
-    }
+    const bypassedRules = force
+      ? generationForceBypassableCodes({
+          errorCodes: errors.map(issue => issue.code),
+          selectedRuleCodes: requestedForceCodes,
+          hasFinalAionRequest: Boolean(review?.finalAionRequest),
+        })
+      : [];
     const finalAionRequest = review?.finalAionRequest
       ? validateGenerationRequestOverride(model, baseAionRequest, review.finalAionRequest)
       : baseAionRequest;
     const projectionDiff = mcpToolInput
       ? generationRequestProjectionDiff(model, mcpToolInput, finalAionRequest)
       : [];
-    const bypassedRules = force
-      ? errors.filter(issue => FORCEABLE_PREFLIGHT_CODES.has(issue.code)).map(issue => issue.code)
-      : [];
     if (force) {
-      errors = errors.filter(issue => !FORCEABLE_PREFLIGHT_CODES.has(issue.code));
+      const bypassedRuleSet = new Set(bypassedRules);
+      const pendingForceCodes = generationPendingForceCodes({
+        errorCodes: errors.map(issue => issue.code),
+        selectedRuleCodes: requestedForceCodes,
+        bypassedCodes: bypassedRules,
+      });
+      errors = errors.filter(issue => !bypassedRuleSet.has(issue.code));
+      const requestWasEdited = Boolean(review?.finalAionRequest);
+      const projectionPreserved = projectionDiff.length === 0;
       warnings.push({
-        code: 'AION_MANUAL_OVERRIDE',
+        code: pendingForceCodes.length
+          ? 'FORCE_REVIEW_INCOMPLETE'
+          : requestWasEdited ? 'AION_MANUAL_OVERRIDE' : 'RISK_ACCEPTED_INPUT',
         field: 'request',
-        message: `This case uses a reviewed Aion override and is no longer guaranteed to align with the VidMuse MCP contract. Reason: ${text(force.reason)}`,
+        message: pendingForceCodes.length
+          ? `The review is incomplete and this case remains invalid. A final Aion JSON request is still required for: ${pendingForceCodes.join(', ')}.`
+          : requestWasEdited
+            ? `This case uses a reviewed final Aion request. MCP projection preserved: ${projectionPreserved ? 'yes' : 'no'}. Reason: ${text(force.reason)}`
+            : `This case preserves the normalized MCP/Aion request but accepts the reviewed input risk. Reason: ${text(force.reason)}`,
       });
     }
     const finalGenerationType = model.outputModality === 'video'
@@ -1187,6 +1279,8 @@ export const createGenerationPreflight = async (
                 finalRequest: finalAionRequest,
                 bypassedRules: Array.from(new Set(bypassedRules)),
                 configFingerprint: model.configFingerprint,
+                projectionPreserved: projectionDiff.length === 0,
+                riskOnly: !review?.finalAionRequest,
               },
             } : {}),
           },
@@ -1239,6 +1333,7 @@ export const createGenerationPreflight = async (
       controls: resolved.controls,
       seed: resolved.seed,
       extraInputs: resolved.extraInputs,
+      parameterAudit: resolved.parameterAudit,
       compilerAudit: audit ? {
         compilerVersion: audit.compilerVersion,
         originalInput: audit.originalInput,
@@ -1246,6 +1341,7 @@ export const createGenerationPreflight = async (
         mcpToolInput: audit.mcpToolInput,
         finalAionRequest: audit.finalAionRequest,
         projectionDiff: audit.projectionDiff,
+        mediaReferences: audit.mediaReferences,
         appliedFindingIds: audit.appliedFindingIds,
         reviewedFindingIds: audit.reviewedFindingIds,
         overrideAudit: audit.overrideAudit ? {

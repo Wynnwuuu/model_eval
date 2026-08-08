@@ -337,6 +337,8 @@ flowchart LR
 8. 在输入意图唯一后，根据实际非空字段推导该 case 的 `generation_type`。
 9. 解析参数的唯一来源并合并到规范输入。
 
+素材引用使用同一个共享解析器：JSON 数组和 `{url}` 对象保持原顺序；单个 URL 作为完整标量，不按普通空格拆分；多 URL 只接受 JSON 或换行、管道符等明确边界。HTTP(S) URL 中的空格规范化为 `%20`，查询参数中的逗号不作为分隔符。审计同时保存原始单元格 URL 和规范化 URL，MCP 输入与最终 Aion 请求只使用规范化值。
+
 ### 7.4 Aion 实时配置校验
 
 对编译结果校验：
@@ -348,6 +350,8 @@ flowchart LR
 - Prompt 长度和结构。
 - 时长、宽高比、分辨率、布尔值和其他参数枚举/范围。
 - MCP 标准参数与模型扩展参数是否放在正确位置。
+
+`vidmuse_evaluation_v1` 预设中的 `duration`、`aspect_ratio`、`resolution`、`generate_audio` 只要单元格非空，就必须有明确处置：实时配置支持时按绑定发送；用户明确选择“不使用”时记录为 `omitted`；模型不支持且未明确省略时记录为 `blocked` 并产生 `UNSUPPORTED_PRESET_PARAMETER`。前端没有生成 binding 不能再被解释为静默省略。
 
 MCP 和实时配置取交集。例如 `image_urls` 的数量上限始终不超过 2；模型只支持 1 张时，双帧 case 无效。
 
@@ -382,6 +386,9 @@ Worker 使用预检中保存的 resolved case；人工覆盖时直接使用已�
 - `audios` 为对象数组，URL 和 range 合法。
 - URL、数组、有限数字、空值和未知字段逐项校验。
 - `model_name`、`generation_type` 不能由数据集提供。
+- 素材角色按字段确定：`image_urls/images` 和元素图片期望 image，`elements[].video_url` 期望 video，`audios[].url` 期望 audio。
+- 类型优先读取已上传素材 MIME，否则读取 URL pathname 扩展名；签名查询参数和扩展名大小写不影响判断。已知错位产生 `MEDIA_TYPE_MISMATCH`，未知类型只产生 `MEDIA_TYPE_UNVERIFIED` 警告。
+- `localhost`、回环/私网 IP 和 `http://online-mining/...` 这类单标签主机产生 `NON_PUBLIC_ASSET_URL`。校验不联网探测未知 URL。
 
 ### 8.2 Aion 实时结构化配置校验
 
@@ -668,7 +675,12 @@ ManuEval 推导：`generation_type = "reference_to_video"`。
 
 ### 14.2 强制覆盖
 
-相对 `online-mining/...` 素材、未知音频单独模式、实时配置不支持的组合或最终 Aion JSON 编辑，需要填写原因并确认重复计费风险。覆盖后标记为“不再保证 MCP 对齐”。
+强制处理分为两类，审计标签不得混用：
+
+- **素材风险确认**：`MEDIA_TYPE_MISMATCH`、`NON_PUBLIC_ASSET_URL` 等风险可在填写原因并确认计费风险后保留原通道和原 URL。最终 Aion JSON 不修改，MCP 投影仍一致，审计标记为“风险已接受”，不能标记为“MCP 不一致”。
+- **请求合同覆盖**：不支持的预设参数、未知生成模式或手工编辑请求必须逐 case 提供完整最终 Aion JSON。此时展示投影差异，并标记为“不再保证 MCP 对齐”。
+
+批量确认只按一个错误码写入原因和计费确认，不生成或套用最终 JSON。若该错误要求最终 JSON，缺少 JSON 的 case 继续保持无效，而不是解除错误或拒绝整次预检。
 
 无论是否强制，以下内容不可覆盖：
 
@@ -704,6 +716,10 @@ Worker 不自动重发生成 POST；`submission_unknown` 仍需用户明确手�
 - 预检准确展示规范化 MCP 输入、最终 Aion 请求、模式、顺序、配置快照和 description。
 - Seed 默认不发送；支持模型的派生、固定值 `0` 和数据集列准确进入 `extra_params.seed`，不支持模型和 `task_worker` 明确阻断。
 - 五类视频输入的 MCP 公共字段能从最终 Aion 请求逐值投影回来；人工覆盖差异可见且留痕。
+- 含空格的单 URL 不被截断，原值可审计，MCP/Aion 两层使用相同 `%20` 规范化值。
+- 非空预设参数在模型不支持时明确阻断；主动“不使用”与未处理阻断在审计中可区分。
+- 媒体错位、未知媒体类型、单标签主机、localhost 和私网地址按上述规则稳定分类。
+- 批量确认不代填逐 case JSON；要求 JSON 的错误在 JSON 缺失时继续保持无效。
 - 历史映射、运行中任务、Worker 恢复、稳定资产、回填和人工评测不回归。
 - 最终 dev 付费验收应分别执行“双参考图”和“双关键帧”case；执行前单独确认，禁止因测试失败自动重提付费请求。
 
@@ -718,3 +734,37 @@ Worker 不自动重发生成 POST；`submission_unknown` 仍需用户明确手�
 - 实时配置只负责判断选定模型能不能做，不能替用户重新解释素材角色。
 
 在这套链路下，两张普通参考图不会再因为数量为 2 被误当成首尾帧；只有用户明确把它们映射到双关键帧通道时，才会生成 dual-frame 请求。
+
+## 17. 2026-08-08 实际可靠性验证
+
+本轮只做预检和请求 dry-run，生成 POST 数量为 0，没有产生任何付费图片或视频。
+
+### 17.1 188 条真实已导入数据 dry-run
+
+数据集：`ds-1786108187632`，`[QA] VidMuse MCP contract 20260807`，v1，共 188 条，其中视频 164 条、图片 24 条。
+
+代表性宽能力配置：
+
+- 视频 `seedance-2.5`：98 条有效、66 条无效。
+- 图片 `gemini-3-pro-image-preview`：3 条有效、21 条无效。
+- 188 条均成功构造最终请求；请求构造失败 0，MCP/Aion 投影差异 0。
+- 共检查 360 个媒体引用；17 个原始 URL 含空格，规范化后仍含未编码空白的 URL 为 0。
+- 视频模式分布：`reference_to_video` 73、`manual_review` 20、`image_to_video` 32、`images_to_video` 17、`text_to_video` 22。
+- 明确素材问题：`MEDIA_TYPE_MISMATCH` 21 条 case / 27 处，`NON_PUBLIC_ASSET_URL` 1 条，另有 5 条相对素材需要审阅。
+- 其他阻断来自实时能力或现有合同审阅，包括 Prompt 引用越界、控制值不支持、音频单独模式、生成方式不支持和非法 element 形态；这些结果证明预检能显式暴露问题，不代表本轮已经完成人工 Prompt/素材质量修订。
+
+参数缺失能力配置：
+
+- 视频 `gemini-omni-flash-video` 不声明 `resolution` 和 `generate_audio`。
+- 164 条视频 case 全部出现 `UNSUPPORTED_PRESET_PARAMETER`，共 328 处，两个非空预设参数均未静默丢弃。
+- 此轮同样保持请求构造失败 0、MCP/Aion 投影差异 0、生成 POST 0。
+
+### 17.2 浏览器验收
+
+- 桌面端预检按错误码显示 `UNSUPPORTED_PRESET_PARAMETER (164)`，并明确提示逐 case 最终 Aion JSON。
+- 批量填写原因并确认计费风险、但不提供任何最终 JSON 后，重新预检正常返回 164 条无效 case；没有整批 400，也没有错误被绕过，提交按钮保持禁用。
+- 390px 移动视口下，预检摘要、配置、费用和错误分组没有文字或控件重叠。
+
+### 17.3 本轮范围边界
+
+本轮验证的是“接口是否接准、字段是否显式处置、最终请求是否保持 MCP 投影”，不是对 188 条 Prompt 语义矛盾、素材内容质量或适配所有模型能力的最终人工审查。后者应在本可靠性修复发布后，按模型支持的 cell 子集单独形成质量报告。

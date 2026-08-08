@@ -1,41 +1,41 @@
 {
-  "feature": "generation_seed_v2_mcp_aion_layering",
-  "previousCompletedFeature": "vidmuse_mcp_input_contract",
+  "feature": "generation_input_reliability_hardening",
+  "previousCompletedFeature": "generation_seed_v2_mcp_aion_layering",
   "requirements": [
     {
-      "id": "seed-policy-v2",
+      "id": "media-reference-normalization",
       "status": "completed",
-      "description": "Default Seed to unused and support deterministic, fixed, and dataset-column strategies without silent dropping"
+      "description": "Preserve scalar URL boundaries, ordered structured inputs, signed queries, and normalize URL spaces consistently"
     },
     {
-      "id": "live-seed-gating",
+      "id": "preset-parameter-contract",
       "status": "completed",
-      "description": "Expose Seed only for model_api models whose exact live supported_params contract contains seed"
+      "description": "Block unsupported non-empty preset values unless explicitly omitted or replaced by an audited per-case Aion request"
     },
     {
-      "id": "mcp-aion-layering",
+      "id": "media-role-validation",
       "status": "completed",
-      "description": "Persist and display source intent, MCP input, derived generation type, and final Aion JSON separately"
+      "description": "Check expected image, video, and audio roles plus deterministic non-public host risks without changing input intent"
     },
     {
-      "id": "projection-consistency",
+      "id": "review-and-audit",
       "status": "completed",
-      "description": "Reject non-reviewed MCP/Aion projection differences while auditing forced overrides"
+      "description": "Separate risk confirmation from manual JSON override and retain raw, normalized, disposition, and bypass audit"
     },
     {
-      "id": "backward-compatibility",
+      "id": "dry-run-188",
       "status": "completed",
-      "description": "Preserve historical snapshots, running tasks, retries, writeback, assets, and human evaluation without a migration"
+      "description": "Compile all 188 imported rows read-only with zero generation POST, whitespace truncation, request build failure, or projection difference"
     },
     {
       "id": "verification",
       "status": "completed",
-      "description": "Pass deterministic, PostgreSQL, API, build, and desktop/mobile browser checks without paid generation"
+      "description": "Pass generation, database, dataset, Arena, API, typecheck, build, and desktop/mobile browser checks without paid generation"
     },
     {
       "id": "release",
-      "status": "completed",
-      "description": "Fast-forward GitHub main and verify successful test, image build, dev rollout, and public runtime health"
+      "status": "pending",
+      "description": "Fast-forward GitHub main and verify CI, dev rollout, and public runtime health"
     }
   ]
 }

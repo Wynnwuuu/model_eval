@@ -559,11 +559,11 @@ export interface GenerationInvalidParameterDefinition {
 }
 
 export interface GenerationParameterAuditEntry {
-  source: 'uniform' | 'column';
+  source: 'uniform' | 'column' | 'unused';
   column?: string;
-  value: unknown;
+  value?: unknown;
   verified: boolean;
-  destination: 'control' | 'extra_params';
+  destination: 'control' | 'extra_params' | 'omitted' | 'blocked';
 }
 
 export interface GenerationModelConfig {
@@ -760,6 +760,7 @@ export interface GenerationAssetBinding {
   id: string;
   relativePath: string;
   fileName: string;
+  contentType?: string;
 }
 
 export interface GenerationPreflightIssue {
@@ -791,6 +792,7 @@ export interface GenerationCaseReview {
   force?: {
     reason: string;
     duplicateBillingRiskConfirmed: boolean;
+    ruleCodes?: string[];
   };
 }
 

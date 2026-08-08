@@ -5,6 +5,7 @@ import path from 'node:path';
 import net from 'node:net';
 
 import OSS from 'ali-oss';
+import { GENERATION_MEDIA_MIME_BY_EXTENSION } from '../../src/features/generation/mediaValidation.ts';
 
 import type { RequestUser } from '../auth/context.ts';
 import { serverConfig } from '../config.ts';
@@ -17,27 +18,9 @@ import {
 } from './generationExecutionRepository.ts';
 
 const MULTIPART_THRESHOLD = 100 * 1024 * 1024;
-const MIME_BY_EXTENSION: Record<string, string> = {
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.png': 'image/png',
-  '.webp': 'image/webp',
-  '.gif': 'image/gif',
-  '.avif': 'image/avif',
-  '.mp3': 'audio/mpeg',
-  '.wav': 'audio/wav',
-  '.m4a': 'audio/mp4',
-  '.aac': 'audio/aac',
-  '.ogg': 'audio/ogg',
-  '.flac': 'audio/flac',
-  '.mp4': 'video/mp4',
-  '.mov': 'video/quicktime',
-  '.webm': 'video/webm',
-};
-
 const normalizeUploadContentType = (fileName: string, contentType?: string) => {
   const extension = path.extname(fileName || '').toLowerCase();
-  const inferredType = MIME_BY_EXTENSION[extension];
+  const inferredType = GENERATION_MEDIA_MIME_BY_EXTENSION[extension];
   const providedType = String(contentType || '').split(';')[0].trim().toLowerCase();
   const normalizedType = !providedType || providedType === 'application/octet-stream' ? inferredType : providedType;
   if (!inferredType || !normalizedType || inferredType.split('/')[0] !== normalizedType.split('/')[0]) {
@@ -48,7 +31,7 @@ const normalizeUploadContentType = (fileName: string, contentType?: string) => {
 
 const normalizeRemoteContentType = (fileName: string, contentType?: string) => {
   const extension = path.extname(fileName || '').toLowerCase();
-  const inferredType = MIME_BY_EXTENSION[extension];
+  const inferredType = GENERATION_MEDIA_MIME_BY_EXTENSION[extension];
   const providedType = String(contentType || '').split(';')[0].trim().toLowerCase();
   const providedIsMedia = /^(?:image|audio|video)\//.test(providedType);
   if (providedIsMedia && (!inferredType || inferredType.split('/')[0] === providedType.split('/')[0])) {

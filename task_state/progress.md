@@ -390,3 +390,26 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Eval Studio Test run `31243023889` and Dev CI/CD run `31243023947` succeeded, including PostgreSQL integration, API smoke, image build, and dev rollout.
 - Public dev loaded successfully. Authenticated generation health returned HTTP 200 with `model_api`, Aion configured, Worker enabled, temporary asset mode, and a 500-case batch limit.
 - Live model discovery returned 63 models and the expected strict Seed flags: Wan 3.0 supports Seed; Seedance 2.0 Pro and MiniMax H3 do not.
+
+## 2026-08-08: Generation input reliability hardening
+
+### Completed
+
+- Replaced whitespace media splitting with one shared parser that preserves scalar URLs, ordered JSON/object inputs, signed query strings, and explicit multi-value delimiters. URL spaces normalize to `%20` in both MCP and Aion layers.
+- Added per-case `vidmuse_evaluation_v1` parameter contract checks. Non-empty unsupported preset values now block with `UNSUPPORTED_PRESET_PARAMETER`; explicit `unused` records an audited omission.
+- Added deterministic media-role checks from uploaded MIME or URL pathname extension plus public-host checks for localhost, loopback, private IP, and single-label hosts.
+- Separated risk-only confirmation from manual Aion JSON overrides. Bulk confirmation never fabricates final JSON, and final-JSON-required findings remain invalid until each case supplies one.
+- Preserved raw and normalized media references, expected channel, detected media type, evidence source, parameter disposition, and forced rules in existing JSONB audit snapshots.
+- Updated the MCP input contract with the implemented parsing, omission, validation, force-boundary, and real dataset dry-run behavior.
+
+### Validation
+
+- `test:generation`, `test:generation:db`, all dataset suites, Arena, rank ties, API smoke, `lint`, `server:build`, frontend `build`, and `git diff --check` pass.
+- Desktop and 390x844 browser checks passed with no console warnings or errors. The unsupported-parameter group remained invalid after a bulk reason/charge confirmation when per-case final JSON was absent.
+- Read-only dry-run of dataset `ds-1786108187632` covered all 188 rows without a generation POST: 360 media references, 17 source URLs containing spaces, zero normalized whitespace, zero request-build failures, and zero MCP/Aion projection differences.
+- Seedance 2.5 plus Gemini image dry-run produced 101 valid and 87 explicit invalid/review cases. Gemini Omni video produced 164 `UNSUPPORTED_PRESET_PARAMETER` cases (328 findings), proving non-empty unsupported preset values are no longer silently omitted.
+- No batch was created and no paid image or video generation was submitted.
+
+### Release
+
+- Source validation is complete. Fast-forward GitHub main, CI/dev rollout, and public runtime checks remain pending until the scoped commit is created.

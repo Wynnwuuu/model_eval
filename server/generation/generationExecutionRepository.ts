@@ -1453,7 +1453,7 @@ export const getGenerationAssetsForPreflight = async (
   if (!assetIds.length) return [];
   const result = await dbPool.query(
     `
-      SELECT id, relative_path, file_name
+      SELECT id, relative_path, file_name, content_type
       FROM generation_assets
       WHERE id = ANY($1::text[])
         AND dataset_id = $2
@@ -1467,6 +1467,7 @@ export const getGenerationAssetsForPreflight = async (
     id: String(row.id),
     relativePath: String(row.relative_path || row.file_name),
     fileName: String(row.file_name),
+    contentType: row.content_type ? String(row.content_type) : undefined,
   }));
 };
 

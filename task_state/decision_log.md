@@ -250,3 +250,21 @@ Each new case records source cells and mapping intent, normalized MCP tool input
 The final Aion request may add only transport-layer fields outside that projection, including top-level `generation_type`, immutable `features.auto_adjust_duration_to_supported=false`, and declared Aion extensions such as `extra_params.seed`. A reviewed forced override may bypass the projection check only with an audited diff and remains labeled as not MCP-guaranteed.
 
 ManuEval guarantees the HTTP JSON it sends to Aion. Provider-specific field conversion performed later by an Aion Adapter is outside the MCP request contract and is not reimplemented in ManuEval.
+
+## 2026-08-08: Media references preserve scalar URL boundaries
+
+A non-JSON media cell is a single scalar unless it uses an explicit newline or pipe delimiter. Ordinary spaces are part of that scalar URL and normalize to `%20`; commas and whitespace are never implicit multi-value separators because signed queries and filenames may contain them. JSON arrays and `{url}` objects remain the preferred ordered multi-reference form.
+
+The compiler records both source and normalized references, but MCP input and final Aion JSON use the same normalized values. Their existing value-and-order projection check remains authoritative.
+
+## 2026-08-08: Preset values require an explicit disposition
+
+For the exact `vidmuse_evaluation_v1` preset, a non-empty `duration`, `aspect_ratio`, `resolution`, or `generate_audio` cell must be sent through a supported binding, explicitly omitted by the operator, or blocked. Missing UI bindings can no longer imply omission.
+
+Unsupported values use `UNSUPPORTED_PRESET_PARAMETER`. Bypassing that contract requires a per-case final Aion JSON; bulk review may share a reason and billing confirmation but never generate or copy request JSON.
+
+## 2026-08-08: Media-role risks do not silently change intent
+
+Image, video, and audio channels are checked against uploaded MIME first and URL pathname extension second. Known mismatches are forceable risks, unknown types are warnings, and localhost/private/single-label hosts are forceable non-public risks. Confirmation preserves the original channel, normalized URL, Prompt, and derived generation mode.
+
+Risk-only confirmation can remain MCP-aligned and therefore does not need a replacement Aion JSON. Manual JSON overrides are a separate path and retain projection-difference audit. Neither path changes Aion, the worker, writeback, stable assets, or human evaluation.

@@ -60,7 +60,17 @@ import {
   resolveGenerationCaseSelection,
 } from '../src/features/generation/caseSelection.ts';
 import { DATASET_ITEM_ID_KEY } from '../src/datasetSync.ts';
-import { uniqueGenerationReferences } from '../src/features/generation/mediaReferences.ts';
+import {
+  flattenGenerationReferences,
+  uniqueGenerationReferences,
+} from '../src/features/generation/mediaReferences.ts';
+import { inspectGenerationMediaInput } from '../src/features/generation/mediaValidation.ts';
+import {
+  applyBulkGenerationForceReview,
+  generationForceBypassableCodes,
+  generationPendingForceCodes,
+  generationForceRequiresFinalJson,
+} from '../src/features/generation/preflightReview.ts';
 import {
   computeGenerationConcurrencyPolicy,
   parseGenerationVideoModelLimits,
@@ -197,6 +207,110 @@ assert.deepEqual(uniqueGenerationReferences([
   'https://assets.example.com/second.mp4',
   'https://assets.example.com/third.mp4',
 ]);
+const spacedAudioUrl = 'https://vidmuse.sandcdn.com/user/796854911166661/assets/uploads/te iubesc 2_1785886320816.mp4';
+assert.deepEqual(flattenGenerationReferences(spacedAudioUrl), [
+  'https://vidmuse.sandcdn.com/user/796854911166661/assets/uploads/te%20iubesc%202_1785886320816.mp4',
+]);
+assert.deepEqual(flattenGenerationReferences(JSON.stringify([
+  { url: 'https://assets.example.com/reference one.png' },
+  { url: 'https://assets.example.com/reference,two.png?token=a,b' },
+])), [
+  'https://assets.example.com/reference%20one.png',
+  'https://assets.example.com/reference,two.png?token=a,b',
+]);
+
+const mediaInspection = inspectGenerationMediaInput({
+  model_name: 'provider/video-pro',
+  image_urls: [
+    'https://assets.example.com/first frame.PNG?signature=1',
+    'asset://uploaded-image',
+  ],
+  elements: [
+    { frontal_image_url: 'https://assets.example.com/not-an-image.mp4' },
+    { video_url: 'https://assets.example.com/reference.jpg' },
+  ],
+  audios: [
+    { url: 'https://assets.example.com/sound.mp4' },
+    { url: 'https://assets.example.com/no-extension' },
+    { url: 'http://online-mining/reference.wav' },
+    { url: 'http://localhost/reference.wav' },
+    { url: 'http://192.168.1.8/reference.wav' },
+    { url: 'http://[::1]/reference.wav' },
+    { url: 'http://[::ffff:127.0.0.1]/reference.wav' },
+  ],
+}, [{
+  id: 'uploaded-image',
+  relativePath: 'image.bin',
+  fileName: 'image.bin',
+  contentType: 'image/png',
+}]);
+assert.equal(mediaInspection.references.length, 11);
+assert.equal(mediaInspection.references[0].normalizedUrl, 'https://assets.example.com/first%20frame.PNG?signature=1');
+assert.equal(mediaInspection.references[1].detectionSource, 'mime');
+assert.deepEqual(mediaInspection.errors.map(issue => issue.code), [
+  'MEDIA_TYPE_MISMATCH',
+  'MEDIA_TYPE_MISMATCH',
+  'MEDIA_TYPE_MISMATCH',
+  'NON_PUBLIC_ASSET_URL',
+  'NON_PUBLIC_ASSET_URL',
+  'NON_PUBLIC_ASSET_URL',
+  'NON_PUBLIC_ASSET_URL',
+  'NON_PUBLIC_ASSET_URL',
+]);
+assert.ok(mediaInspection.warnings.some(issue =>
+  issue.code === 'MEDIA_TYPE_UNVERIFIED' && issue.field === 'audios[1].url'));
+assert.deepEqual(
+  mediaInspection.references.slice(-5).map(reference => reference.nonPublicReason),
+  ['single_label_host', 'localhost', 'private_ip', 'private_ip', 'private_ip'],
+);
+
+const bulkReview = applyBulkGenerationForceReview({
+  cases: [
+    {
+      valid: false,
+      generationType: 'text_to_video',
+      errors: [{ code: 'UNSUPPORTED_PRESET_PARAMETER', field: 'generate_audio', message: 'unsupported' }],
+      warnings: [],
+      resolvedCase: { datasetItemId: 'case-a' },
+    },
+    {
+      valid: false,
+      generationType: 'reference_to_video',
+      errors: [{ code: 'MEDIA_TYPE_MISMATCH', field: 'audios[0].url', message: 'wrong type' }],
+      warnings: [],
+      resolvedCase: { datasetItemId: 'case-b' },
+    },
+  ],
+  reviews: {},
+  errorCode: 'UNSUPPORTED_PRESET_PARAMETER',
+  reason: 'Reviewed the unsupported parameter explicitly.',
+  duplicateBillingRiskConfirmed: true,
+});
+assert.deepEqual(bulkReview['case-a'].force?.ruleCodes, ['UNSUPPORTED_PRESET_PARAMETER']);
+assert.equal(bulkReview['case-a'].finalAionRequest, undefined);
+assert.equal(bulkReview['case-b'], undefined);
+assert.equal(generationForceRequiresFinalJson(['UNSUPPORTED_PRESET_PARAMETER']), true);
+assert.equal(generationForceRequiresFinalJson(['MEDIA_TYPE_MISMATCH']), false);
+assert.deepEqual(generationForceBypassableCodes({
+  errorCodes: ['UNSUPPORTED_PRESET_PARAMETER', 'MEDIA_TYPE_MISMATCH'],
+  selectedRuleCodes: ['UNSUPPORTED_PRESET_PARAMETER', 'MEDIA_TYPE_MISMATCH'],
+  hasFinalAionRequest: false,
+}), ['MEDIA_TYPE_MISMATCH']);
+assert.deepEqual(generationForceBypassableCodes({
+  errorCodes: ['UNSUPPORTED_PRESET_PARAMETER', 'MEDIA_TYPE_MISMATCH'],
+  selectedRuleCodes: ['UNSUPPORTED_PRESET_PARAMETER'],
+  hasFinalAionRequest: true,
+}), ['UNSUPPORTED_PRESET_PARAMETER']);
+assert.deepEqual(generationPendingForceCodes({
+  errorCodes: ['UNSUPPORTED_PRESET_PARAMETER', 'MEDIA_TYPE_MISMATCH'],
+  selectedRuleCodes: ['UNSUPPORTED_PRESET_PARAMETER', 'MEDIA_TYPE_MISMATCH'],
+  bypassedCodes: ['MEDIA_TYPE_MISMATCH'],
+}), ['UNSUPPORTED_PRESET_PARAMETER']);
+assert.deepEqual(generationPendingForceCodes({
+  errorCodes: ['MEDIA_TYPE_MISMATCH'],
+  selectedRuleCodes: ['MEDIA_TYPE_MISMATCH'],
+  bypassedCodes: ['MEDIA_TYPE_MISMATCH'],
+}), []);
 
 
 assert.ok(resolveGenerationCaseSelection(selectionRows, []).errors.some(issue => issue.code === 'EMPTY_SELECTION'));
@@ -564,6 +678,133 @@ const camelCaseVideoModel = {
 };
 
 const videoModel = normalizeAionModelConfig(rawVideoModel);
+const unsupportedPresetParameterModel = normalizeAionModelConfig({
+  ...rawVideoModel,
+  name: 'provider/video-without-evaluation-controls',
+  options: {
+    supported_params: ['prompt', 'image_urls', 'elements', 'audios', 'generation_type'],
+    input_schema: {
+      supported_inputs: ['prompt', 'image_urls', 'elements', 'audios'],
+      required_inputs: { text_to_video: ['prompt'] },
+      required_one_of_inputs: {},
+    },
+  },
+  input_schema: {
+    supported_inputs: ['prompt', 'image_urls', 'elements', 'audios'],
+    required_inputs: { text_to_video: ['prompt'] },
+    required_one_of_inputs: {},
+  },
+});
+const unsupportedPresetDataset = {
+  id: 'dataset-unsupported-preset-parameters',
+  inputSchema: vidMusePresetHeaders.map(key => ({ key, label: key, sourceKey: key })),
+  items: [{
+    [DATASET_ITEM_ID_KEY]: 'unsupported-preset-item',
+    case_id: 'unsupported-preset-case',
+    modality: 'video',
+    prompt: 'Use the supplied audio.',
+    duration: 5,
+    aspect_ratio: '16:9',
+    resolution: '720p',
+    generate_audio: true,
+    audio_url: spacedAudioUrl,
+    image_urls: '[]',
+    elements: '[]',
+  }],
+} as any;
+const unsupportedPresetRequest = {
+  datasetId: unsupportedPresetDataset.id,
+  datasetVersion: 1,
+  modelName: unsupportedPresetParameterModel.modelName,
+  targetColumn: 'result',
+  inputMapping: vidMuseVideoPreset,
+  defaultControls: {},
+  perCaseControlColumns: {},
+  parameterBindings: {},
+  seedMode: 'unused',
+  seedPolicyVersion: 2,
+} as any;
+const unsupportedPresetCase = buildGenerationCasesForPreflight(
+  unsupportedPresetDataset,
+  unsupportedPresetRequest,
+  unsupportedPresetParameterModel,
+  [{
+    row: unsupportedPresetDataset.items[0],
+    rowIndex: 0,
+    datasetItemId: 'unsupported-preset-item',
+  }],
+)[0];
+assert.deepEqual(
+  unsupportedPresetCase.preparationIssues
+    .filter(issue => issue.code === 'UNSUPPORTED_PRESET_PARAMETER')
+    .map(issue => issue.field),
+  ['duration', 'aspect_ratio', 'resolution', 'generate_audio'],
+);
+assert.equal(unsupportedPresetCase.resolvedCase.parameterAudit?.resolution.destination, 'blocked');
+assert.deepEqual(unsupportedPresetCase.resolvedCase.audioUrls, [
+  'https://vidmuse.sandcdn.com/user/796854911166661/assets/uploads/te%20iubesc%202_1785886320816.mp4',
+]);
+assert.deepEqual(unsupportedPresetCase.resolvedCase.compilerAudit?.mediaReferences?.[0], {
+  field: 'audios[0].url',
+  originalUrl: spacedAudioUrl,
+  normalizedUrl: 'https://vidmuse.sandcdn.com/user/796854911166661/assets/uploads/te%20iubesc%202_1785886320816.mp4',
+  expectedKind: 'audio',
+  detectedKind: 'video',
+  detectionSource: 'extension',
+});
+const unsupportedPresetMcpInput = buildMcpToolInput(
+  unsupportedPresetParameterModel,
+  unsupportedPresetCase.resolvedCase,
+);
+const unsupportedPresetAionRequest = buildAionGenerationRequest(
+  unsupportedPresetParameterModel,
+  {
+    ...unsupportedPresetCase.resolvedCase,
+    generationType: unsupportedPresetCase.resolvedCase.generationType || 'manual_review',
+  },
+).body;
+assert.deepEqual(unsupportedPresetMcpInput.audios, [{
+  url: 'https://vidmuse.sandcdn.com/user/796854911166661/assets/uploads/te%20iubesc%202_1785886320816.mp4',
+}]);
+assert.deepEqual(unsupportedPresetAionRequest.audios, unsupportedPresetMcpInput.audios);
+assert.deepEqual(generationRequestProjectionDiff(
+  unsupportedPresetParameterModel,
+  unsupportedPresetMcpInput,
+  unsupportedPresetAionRequest,
+), []);
+assert.ok(unsupportedPresetCase.preparationIssues.some(issue =>
+  issue.code === 'MEDIA_TYPE_MISMATCH' && issue.field === 'audios[0].url'));
+
+const omittedPresetRequest = {
+  ...unsupportedPresetRequest,
+  parameterBindings: {
+    duration: { source: 'unused' },
+    aspect_ratio: { source: 'unused' },
+    resolution: { source: 'unused' },
+    generate_audio: { source: 'unused' },
+  },
+} as any;
+assert.doesNotThrow(() => validateGenerationParameterBindings(
+  omittedPresetRequest,
+  unsupportedPresetParameterModel,
+  unsupportedPresetDataset,
+));
+const omittedPresetCase = buildGenerationCasesForPreflight(
+  unsupportedPresetDataset,
+  omittedPresetRequest,
+  unsupportedPresetParameterModel,
+  [{
+    row: unsupportedPresetDataset.items[0],
+    rowIndex: 0,
+    datasetItemId: 'unsupported-preset-item',
+  }],
+)[0];
+assert.equal(omittedPresetCase.preparationIssues.some(issue =>
+  issue.code === 'UNSUPPORTED_PRESET_PARAMETER'), false);
+assert.equal(omittedPresetCase.resolvedCase.parameterAudit?.generate_audio.destination, 'omitted');
+assert.equal(omittedPresetCase.resolvedCase.parameterAudit?.generate_audio.source, 'unused');
+assert.ok(omittedPresetCase.preparationWarnings.some(issue =>
+  issue.code === 'PRESET_PARAMETER_EXPLICITLY_OMITTED' && issue.field === 'generate_audio'));
 const overrideBaseRequest = {
   model_name: videoModel.modelName,
   generation_type: 'image_to_video',
