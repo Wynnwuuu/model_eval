@@ -6,7 +6,9 @@ Implementation and local validation are complete. Scalar media URLs no longer sp
 
 The real imported 188-row QA dataset passed a GET-only dry-run with zero request-build failures, zero normalized whitespace, zero MCP/Aion projection differences, and no generation POST. A second model contract exposed all unsupported non-empty preset parameters explicitly. The as-built contract and exact statistics are in `docs/manueval-vidmuse-mcp-video-input-contract-review.md`.
 
-All deterministic, PostgreSQL, API smoke, TypeScript/build, and desktop/mobile browser checks pass without paid generation. Remaining actions are scoped commit, latest-main fast-forward verification, push to GitHub main, CI/dev rollout checks, and public generation-health verification. Preserve and exclude the unrelated untracked technical report and `docs/report-assets/`.
+All deterministic, isolated PostgreSQL, API smoke, TypeScript/build, and desktop/mobile browser checks pass without paid generation. Source commit `0047b7c` is on GitHub main; test run `31248453876` and dev run `31248453941` succeeded. Authenticated public health and the 63-model list both returned HTTP 200 with `model_api` and the Worker enabled. Preserve and exclude the unrelated untracked technical report and `docs/report-assets/`.
+
+Local housekeeping: a worker-disabled API used for final smoke is still listening on port 8789. The process guard refused automatic termination because the command line resolves through the sibling worktree's shared `node_modules`; it cannot claim generation work but should be closed after explicit owner confirmation.
 
 ## Current work: Seed v2 and MCP/Aion request layering
 

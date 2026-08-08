@@ -412,4 +412,8 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 
 ### Release
 
-- Source validation is complete. Fast-forward GitHub main, CI/dev rollout, and public runtime checks remain pending until the scoped commit is created.
+- Fast-forwarded source commit `0047b7c` to `world-sim-dev/ManuEval` main without force-pushing.
+- Eval Studio Test run `31248453876` and Dev CI/CD run `31248453941` succeeded, including lint, generation tests, migrations, isolated PostgreSQL integration, API smoke, image build, and dev rollout.
+- Authenticated public dev health returned HTTP 200 with `model_api`, Aion configured, Worker enabled, temporary asset mode, and a 500-case batch limit. Live model discovery returned 63 models and the browser console remained clean.
+- Direct public requests with only `x-auth-user-id` were correctly rejected with `AUTH_REQUIRED`; the successful runtime check used the existing Feishu bearer login without exposing the token.
+- A local worker-disabled API used for final source smoke remains bound to port 8789 because the process safety guard could not distinguish its shared `node_modules` path from another worktree. It cannot consume generation jobs and requires owner-confirmed cleanup.
