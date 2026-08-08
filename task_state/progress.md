@@ -477,7 +477,7 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 
 - Fast-forward GitHub main, verify CI/dev deployment, import both verified datasets through the authenticated public UI, upload the compatibility matrix, and publish the linked Feishu report.
 
-## 2026-08-09: Root-cause generation case repair UX (in progress)
+## 2026-08-09: Root-cause generation case repair UX
 
 ### Locked behavior
 
@@ -503,6 +503,8 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Passed generation/MCP/Seed tests, isolated PostgreSQL generation integration, every dataset suite, structured evaluation audit, Arena, rank ties, isolated API smoke, TypeScript, server build, frontend build, and `git diff --check`.
 - No generation batch or paid image/video request was created.
 
-### Pending Release
+### Release
 
-- Re-fetch GitHub `main`, replay if needed, rerun final focused gates, fast-forward push without force, and verify CI/dev deployment.
+- Fast-forwarded source commit `7843f5b` to `world-sim-dev/ManuEval` `main` without force-pushing or staging the existing untracked report and report assets.
+- Eval Studio Test run `31269490007` and Dev CI/CD run `31269490078` succeeded. The latter passed tests, image build, and the Kubernetes dev rollout.
+- `https://eval-studio.sandaii.cn/generation?view=tasks` loaded the deployed task workspace with live API data and no browser console errors. No generation action was opened or submitted.
