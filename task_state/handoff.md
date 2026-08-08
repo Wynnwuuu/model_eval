@@ -6,7 +6,7 @@ The implementation and local validation are complete. New generation preflights 
 
 Every new case now audits source intent, normalized MCP tool input, derived `generation_type`, and final Aion JSON separately. Normal requests must pass a value-and-order projection check; reviewed forced overrides retain the diff and remain outside the MCP guarantee. The as-built contract is `docs/manueval-vidmuse-mcp-video-input-contract-review.md`.
 
-All deterministic suites, isolated PostgreSQL generation/API tests, builds, and desktop/mobile browser checks pass. No batch or paid generation was submitted. The remaining action is a non-force fast-forward push to GitHub main followed by CI and dev rollout checks.
+All deterministic suites, isolated PostgreSQL generation/API tests, builds, and desktop/mobile browser checks pass. Commit `4063e63` is on GitHub main; test run `31243023889` and dev run `31243023947` succeeded, and public authenticated generation health is ready on `model_api`. No batch or paid generation was submitted. No release action remains for this feature.
 
 ## Current work: independent dataset copies
 

@@ -383,3 +383,10 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Browser QA passed live model-config gating, all four Seed strategies, model-switch reset, unsupported-model hiding, one-case preflight audit, and 1440x900 / 390x844 containment.
 - The only current browser errors are 401 responses from an expired reference image already stored in the QA dataset; application API calls and the new preflight succeeded.
 - No batch was created and no paid model generation was submitted.
+
+### Release
+
+- Fast-forwarded commit `4063e63` to `world-sim-dev/ManuEval` `main` without force-pushing.
+- Eval Studio Test run `31243023889` and Dev CI/CD run `31243023947` succeeded, including PostgreSQL integration, API smoke, image build, and dev rollout.
+- Public dev loaded successfully. Authenticated generation health returned HTTP 200 with `model_api`, Aion configured, Worker enabled, temporary asset mode, and a 500-case batch limit.
+- Live model discovery returned 63 models and the expected strict Seed flags: Wan 3.0 supports Seed; Seedance 2.0 Pro and MiniMax H3 do not.

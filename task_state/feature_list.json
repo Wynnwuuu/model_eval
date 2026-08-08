@@ -34,8 +34,8 @@
     },
     {
       "id": "release",
-      "status": "in_progress",
-      "description": "Synchronize GitHub main, push without force, and verify CI and dev deployment"
+      "status": "completed",
+      "description": "Fast-forward GitHub main and verify successful test, image build, dev rollout, and public runtime health"
     }
   ]
 }
