@@ -1,4 +1,6 @@
 import type {
+  GenerationContractFinding,
+  GenerationContractProposal,
   GenerationPreflightCase,
   GenerationPreflightIssue,
 } from '../../types.js';
@@ -30,6 +32,34 @@ export interface GenerationIssueOption {
   severity: GenerationIssueSeverity;
   count: number;
   label: string;
+}
+
+export type GenerationRepairKind =
+  | 'prompt_channel_mismatch'
+  | 'prompt'
+  | 'media'
+  | 'input_structure'
+  | 'parameter'
+  | 'generation_mode'
+  | 'general';
+
+export interface GenerationRepairDiagnostic {
+  issue: GenerationPreflightIssue;
+  severity: GenerationIssueSeverity;
+  presentation: GenerationIssuePresentation;
+}
+
+export interface GenerationRepairGroup {
+  id: string;
+  kind: GenerationRepairKind;
+  field?: string;
+  title: string;
+  description: string;
+  suggestion: string;
+  severity: GenerationIssueSeverity;
+  diagnostics: GenerationRepairDiagnostic[];
+  finding?: GenerationContractFinding;
+  proposal?: GenerationContractProposal;
 }
 
 const issueCopy = (title: string, description: string, suggestion: string): GenerationIssueCopy => ({
@@ -87,6 +117,11 @@ const ISSUE_COPY: Record<string, GenerationIssueCopy> = {
   UNSUPPORTED_INPUT: issueCopy('模型不支持该输入字段', '最终请求包含实时配置未声明支持的输入。', '移除该输入或选择支持它的模型。'),
   MISSING_REQUIRED_INPUT: issueCopy('缺少模型必需输入', '实时模型配置要求的字段没有有效值。', '补充提示词或对应素材。'),
   RESERVED_MCP_INPUT: issueCopy('映射了平台保留字段', 'model_name 等字段由批次统一控制，不能从数据集读取。', '移除该字段映射。'),
+  INVALID_CASE_INPUT_OVERRIDE: issueCopy('Case 修改格式无效', '当前 case 保存的字段级修改无法按支持的版本或操作格式解析。', '清除该修改并重新填写对应字段。'),
+  CASE_OVERRIDE_FIELD_NOT_ALLOWED: issueCopy('该内容字段不允许修改', '当前模型模态不接受这个内容字段，或该字段由平台控制。', '只修改当前模型支持的 Prompt、图片、元素或音频字段。'),
+  CASE_OVERRIDE_PARAMETER_NOT_ALLOWED: issueCopy('该参数不允许逐 Case 修改', '参数未由实时模型配置声明，或属于平台保留参数。', '省略不受支持的评测集参数、切换模型，或在必要时使用专家覆盖。'),
+  CONFLICTING_CASE_REVIEW_MODES: issueCopy('修复模式发生冲突', '字段级修复和最终 Aion JSON 覆盖同时启用，系统无法明确唯一请求来源。', '只保留普通字段修复或专家 JSON 覆盖中的一种。'),
+  CONFLICTING_CASE_REVIEW_ACTIONS: issueCopy('同一字段存在多种修改', '同一 Prompt 同时启用了自定义修改和 Plugin 自动改写。', '选择采用建议，或只保留自行编辑的 Prompt。'),
   GENERATION_TYPE_REVIEW_REQUIRED: issueCopy('生成方式需要人工确定', '当前素材组合无法按基础 MCP 合同唯一推导生成方式。', '在详情中检查并提供最终 Aion JSON。'),
   AUDIO_ONLY_MODE_REVIEW_REQUIRED: issueCopy('纯音频生成方式需要人工确定', '只有音频输入时，基础 MCP 合同不足以确认模型生成方式。', '核对实时模型合同并提供最终 Aion JSON。'),
   UNSUPPORTED_GENERATION_TYPE: issueCopy('模型不支持推导出的生成方式', 'MCP 输入推导出的 generation_type 不在实时模型能力中。', '调整素材通道、切换模型，或人工提供最终请求。'),
@@ -144,6 +179,146 @@ const issuesWithSeverity = (item: GenerationPreflightCase) => [
   ...item.errors.map(issue => ({ issue, severity: 'error' as const })),
   ...item.warnings.map(issue => ({ issue, severity: 'warning' as const })),
 ];
+
+const PROMPT_CODES = new Set([
+  'INVALID_PROMPT_JSON',
+  'INVALID_PROMPT',
+  'INVALID_PROMPT_ITEM',
+  'UNKNOWN_PROMPT_FIELD',
+  'PROMPT_TOO_LONG',
+  'PROMPT_REFERENCE_OUT_OF_RANGE',
+  'UNREFERENCED_PROMPT_ASSET',
+  'MODEL_PROMPT_SHAPE_UNSUPPORTED',
+]);
+
+const MEDIA_CODES = new Set([
+  'INVALID_ASSET_URL',
+  'MISSING_ASSET',
+  'MEDIA_TYPE_MISMATCH',
+  'MEDIA_TYPE_UNVERIFIED',
+  'NON_PUBLIC_ASSET_URL',
+  'RELATIVE_ASSET_REQUIRES_REVIEW',
+  'REFERENCE_AUDIO_NOT_PUBLIC',
+]);
+
+const PARAMETER_CODES = new Set([
+  'UNSUPPORTED_PRESET_PARAMETER',
+  'PRESET_PARAMETER_EXPLICITLY_OMITTED',
+  'UNSUPPORTED_CONTROL_VALUE',
+  'CONTROL_OUT_OF_RANGE',
+  'INVALID_CONTROL_VALUE',
+  'INVALID_PARAMETER_VALUE',
+  'MISSING_PARAMETER_COLUMN_VALUE',
+  'MISSING_DURATION_COLUMN_VALUE',
+  'UNVERIFIED_EXTRA_PARAMETER',
+  'INVALID_SEED',
+]);
+
+const GENERATION_MODE_CODES = new Set([
+  'MCP_INPUT_MODE_CONFLICT',
+  'MODEL_INPUT_CONFLICT',
+  'CONFLICTING_VIDEO_AND_KEYFRAMES',
+  'GENERATION_TYPE_REVIEW_REQUIRED',
+  'AUDIO_ONLY_MODE_REVIEW_REQUIRED',
+  'UNSUPPORTED_GENERATION_TYPE',
+  'PLUGIN_MIXED_INPUT_REVIEW',
+]);
+
+const inputFieldRoot = (field = '') => field.match(/^([A-Za-z_][A-Za-z0-9_]*)/)?.[1] || field;
+
+const repairKindForIssue = (issue: GenerationPreflightIssue): GenerationRepairKind => {
+  const root = inputFieldRoot(issue.field);
+  if (PROMPT_CODES.has(issue.code) || root === 'prompt') return 'prompt';
+  if (MEDIA_CODES.has(issue.code)
+    || /^(image_urls|images|elements|audios)(?:\b|\[|\.)/.test(issue.field || '')) return 'media';
+  if (PARAMETER_CODES.has(issue.code)
+    || ['duration', 'aspect_ratio', 'resolution', 'generate_audio', 'negative_prompt', 'watermark', 'seed'].includes(root)) {
+    return 'parameter';
+  }
+  if (GENERATION_MODE_CODES.has(issue.code) || root === 'generation_type') return 'generation_mode';
+  if (/^(INVALID_|MISSING_|UNKNOWN_)/.test(issue.code)) return 'input_structure';
+  return 'general';
+};
+
+const promptChannelDiagnosticMatches = (
+  finding: GenerationContractFinding,
+  issue: GenerationPreflightIssue,
+) => {
+  if (issue.field !== 'prompt') return false;
+  if (issue.code === 'CONTRACT_REVIEW_REQUIRED') return issue.message === finding.message;
+  const imageToElement = finding.id === 'plugin-prompt-image-to-element';
+  const elementToImage = finding.id === 'plugin-prompt-element-to-image';
+  if (!imageToElement && !elementToImage) return false;
+  if (issue.code === 'PROMPT_REFERENCE_OUT_OF_RANGE') {
+    return imageToElement ? /@image\d+/i.test(issue.message) : /@Element\d+/.test(issue.message);
+  }
+  if (issue.code === 'UNREFERENCED_PROMPT_ASSET') {
+    return imageToElement ? /@Element\d+/.test(issue.message) : /@image\d+/i.test(issue.message);
+  }
+  return false;
+};
+
+export const buildGenerationRepairGroups = (item: GenerationPreflightCase): GenerationRepairGroup[] => {
+  const diagnostics = issuesWithSeverity(item).map(({ issue, severity }) => ({
+    issue,
+    severity,
+    presentation: getGenerationIssuePresentation(issue, severity),
+  }));
+  const remaining = new Set(diagnostics.map((_diagnostic, index) => index));
+  const findings = (item.resolvedCase.compilerAudit?.contractFindings || []) as GenerationContractFinding[];
+  const groups: GenerationRepairGroup[] = [];
+
+  findings.filter(finding => finding.code === 'PLUGIN_PROMPT_CHANNEL_MISMATCH'
+    && finding.proposal?.kind === 'prompt_rewrite').forEach(finding => {
+    const matched = diagnostics
+      .map((diagnostic, index) => ({ diagnostic, index }))
+      .filter(({ diagnostic, index }) => remaining.has(index)
+        && promptChannelDiagnosticMatches(finding, diagnostic.issue));
+    if (!matched.length) return;
+    matched.forEach(({ index }) => remaining.delete(index));
+    groups.push({
+      id: `finding:${finding.id}`,
+      kind: 'prompt_channel_mismatch',
+      field: 'prompt',
+      title: 'Prompt 素材引用通道错误',
+      description: 'Prompt 使用的素材占位符与这个 case 实际发送的素材通道不一致。',
+      suggestion: '核对下方素材编号，并采用建议改写或直接编辑 Prompt。',
+      severity: matched.some(({ diagnostic }) => diagnostic.severity === 'error') ? 'error' : 'warning',
+      diagnostics: matched.map(({ diagnostic }) => diagnostic),
+      finding,
+      proposal: finding.proposal,
+    });
+  });
+
+  const ordinaryGroups = new Map<string, GenerationRepairGroup>();
+  diagnostics.forEach((diagnostic, index) => {
+    if (!remaining.has(index)) return;
+    const kind = repairKindForIssue(diagnostic.issue);
+    const field = diagnostic.issue.field || '';
+    const key = `${kind}:${field || diagnostic.issue.code}`;
+    const existing = ordinaryGroups.get(key);
+    if (existing) {
+      existing.diagnostics.push(diagnostic);
+      if (diagnostic.severity === 'error') existing.severity = 'error';
+      return;
+    }
+    ordinaryGroups.set(key, {
+      id: key,
+      kind,
+      ...(field ? { field } : {}),
+      title: diagnostic.presentation.title,
+      description: diagnostic.presentation.description,
+      suggestion: diagnostic.presentation.suggestion,
+      severity: diagnostic.severity,
+      diagnostics: [diagnostic],
+    });
+  });
+
+  return [...groups, ...ordinaryGroups.values()].sort((left, right) => {
+    if (left.severity !== right.severity) return left.severity === 'error' ? -1 : 1;
+    return left.title.localeCompare(right.title, 'zh-CN');
+  });
+};
 
 export const buildGenerationIssueOptions = (cases: GenerationPreflightCase[]): GenerationIssueOption[] => {
   const groups = new Map<string, GenerationIssueOption>();

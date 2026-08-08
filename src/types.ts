@@ -560,7 +560,7 @@ export interface GenerationInvalidParameterDefinition {
 }
 
 export interface GenerationParameterAuditEntry {
-  source: 'uniform' | 'column' | 'unused';
+  source: 'uniform' | 'column' | 'unused' | 'case_override';
   column?: string;
   value?: unknown;
   verified: boolean;
@@ -785,10 +785,24 @@ export interface GenerationContractFinding extends GenerationPreflightIssue {
   proposal?: GenerationContractProposal;
 }
 
+export type GenerationCaseOverrideAction =
+  | { action: 'set'; value: unknown }
+  | { action: 'omit' };
+
+export interface GenerationCaseInputOverrideV1 {
+  version: 1;
+  content?: Partial<Record<
+    'prompt' | 'image_urls' | 'images' | 'elements' | 'audios',
+    GenerationCaseOverrideAction
+  >>;
+  parameters?: Record<string, GenerationCaseOverrideAction>;
+}
+
 export interface GenerationCaseReview {
   acceptedFindingIds?: string[];
   rejectedFindingIds?: string[];
   promptOverride?: unknown;
+  inputOverride?: GenerationCaseInputOverrideV1;
   finalAionRequest?: Record<string, unknown>;
   force?: {
     reason: string;

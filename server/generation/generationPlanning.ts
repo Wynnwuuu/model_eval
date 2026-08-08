@@ -17,6 +17,7 @@ import type {
   GenerationContractFinding,
   GenerationInvalidParameterDefinition,
   GenerationParameterAuditEntry,
+  GenerationCaseInputOverrideV1,
   GenerationSeedMode,
 } from '../../src/types.ts';
 import type { GenerationContentIntentAudit } from './generationContentMapping.ts';
@@ -88,6 +89,14 @@ export type GenerationCase = {
     reviewedFindingIds?: string[];
     contractSource?: Record<string, unknown>;
     review?: GenerationCaseReview;
+    caseInputOverride?: {
+      version: 1;
+      override: GenerationCaseInputOverrideV1;
+      sourceInput: Record<string, unknown>;
+      appliedContentFields: string[];
+      appliedParameterFields: string[];
+      effectiveInput: Record<string, unknown>;
+    };
     overrideAudit?: {
       forced: boolean;
       reason?: string;
@@ -104,7 +113,7 @@ export type GenerationCase = {
   };
   parameterAudit?: Record<string, GenerationParameterAuditEntry>;
   durationResolution?: {
-    source: 'uniform' | 'column' | 'reference_audio';
+    source: 'uniform' | 'column' | 'reference_audio' | 'case_override';
     column?: string;
     audioUrl?: string;
     detectedSeconds?: number;

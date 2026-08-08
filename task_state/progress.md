@@ -476,3 +476,33 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 ### Pending Release
 
 - Fast-forward GitHub main, verify CI/dev deployment, import both verified datasets through the authenticated public UI, upload the compatibility matrix, and publish the linked Feishu report.
+
+## 2026-08-09: Root-cause generation case repair UX (in progress)
+
+### Locked behavior
+
+- Replace the three-tab case dialog with `修复问题` and `生成预览`.
+- Group derivative diagnostics under one actionable root cause; the `@imageN` versus `elements` example must render as one Prompt-channel repair.
+- Add versioned, per-case canonical input overrides for Prompt, media arrays, and declared parameters. Overrides affect only the generation request snapshot and never mutate the source dataset.
+- Keep guided MCP-aligned repair and full final-Aion-JSON override mutually exclusive for new reviews; preserve historical snapshots.
+- Provide immediate save-and-repreflight plus draft-and-next flows. The server remains authoritative for regenerated MCP and Aion previews.
+
+### Validation gate
+
+- Add failing deterministic coverage for repair grouping and safe case overrides before implementation.
+- Run generation, PostgreSQL generation, dataset, Arena/ranking, API smoke, TypeScript, server build, frontend build, desktop/mobile browser checks, and `git diff --check`.
+- Do not submit any paid image or video generation.
+
+### Completed
+
+- Added root-cause repair groups, field-level Prompt/media/parameter editors, versioned `inputOverride`, guided/expert exclusivity, immediate authoritative re-preflight, and the two-tab read-only generation preview.
+- The real 188-row dataset and live MiniMax H3 configuration were used for no-cost preflight QA. The sample Prompt-channel case changed `@image1` to `@Element1`; a case-level `1440p` resolution override then made the case valid without editing the source dataset.
+- Immediate re-preflight now preserves the open case, switches to the refreshed preview, clears the stale-preview banner, and marks a repaired case that no longer matches the active filter.
+- A real `elements[0]` union conflict displayed the reference-video type, current `video_url`, add/remove/reorder controls, and technical diagnostics directly under the root cause.
+- Desktop and `390x844` mobile checks passed. The dialog had no internal horizontal overflow or overlapping controls; the only console error was the existing missing `/favicon.ico`.
+- Passed generation/MCP/Seed tests, isolated PostgreSQL generation integration, every dataset suite, structured evaluation audit, Arena, rank ties, isolated API smoke, TypeScript, server build, frontend build, and `git diff --check`.
+- No generation batch or paid image/video request was created.
+
+### Pending Release
+
+- Re-fetch GitHub `main`, replay if needed, rerun final focused gates, fast-forward push without force, and verify CI/dev deployment.

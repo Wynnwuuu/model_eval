@@ -296,3 +296,11 @@ The source dataset and the derived 17-column audit dataset use separately verifi
 All-model compatibility is a zero-generation compilation against captured live Aion configuration. It records MCP input, ManuEval generation type, final Aion JSON, projection diff, and one of five fixed statuses. It never calls a generation POST and does not claim that the downstream provider Adapter was executed.
 
 Prompt and media quality findings are evidence for human review, not AI scores. Relative, local, single-label, and private-literal media locations are rejected before `ffprobe` or network probing. Full source rows, media URLs, previews, matrices, and reports stay outside Git; only code and redacted fixtures are versioned.
+
+## 2026-08-09: Case review is organized by repair cause, not diagnostic layer
+
+Compiler errors, warnings, and Plugin findings that describe one actionable cause are presented as one repair group. Consequential diagnostics remain auditable but do not compete for separate user decisions.
+
+Guided review edits canonical case inputs and then reruns the authoritative server preflight. The Aion request is read-only in that mode. A full final-request override is a mutually exclusive expert path because it supersedes normal compilation and may break MCP projection.
+
+Per-case overrides are versioned and stored in the existing review JSON snapshot. They are applied after dataset mapping and before MCP compilation, are restricted to MCP content fields and live model parameters, and never update the source dataset or allow reserved request fields.

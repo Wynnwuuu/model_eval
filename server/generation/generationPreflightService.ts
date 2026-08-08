@@ -14,6 +14,11 @@ import {
 import { inspectGenerationMediaInput } from '../../src/features/generation/mediaValidation.ts';
 import { resolveVidMuseEvaluationPresetColumns } from '../../src/features/generation/inputMapping.ts';
 import {
+  applyGenerationCaseInputOverride,
+  type GenerationCaseInputOverrideAudit,
+  type GenerationCaseParameterDestination,
+} from '../../src/features/generation/caseInputOverride.ts';
+import {
   generationForceBypassableCodes,
   generationPendingForceCodes,
   GENERATION_FORCEABLE_PREFLIGHT_CODES,
@@ -549,6 +554,8 @@ export const buildGenerationCasesForPreflight = (
   return selectedRows.map(({ row, rowIndex, datasetItemId }) => {
     const caseId = getDatasetRowCaseId(row, rowIndex);
     const caseReview = request.caseReviews?.[datasetItemId];
+    const caseInputOverride = caseReview?.inputOverride;
+    const caseOverrideParameterKeys = new Set(Object.keys(caseInputOverride?.parameters || {}));
     const input = request.inputMapping || {};
     const mappingMode = input.mappingMode || 'assisted';
     const contentMapping = input.contentMappingVersion === 2 && input.contentMapping?.version === 2
@@ -559,6 +566,7 @@ export const buildGenerationCasesForPreflight = (
     const assistedIssues: PreflightIssue[] = [];
     const parameterIssues: PreflightIssue[] = [];
     const parameterWarnings: PreflightIssue[] = [];
+    const caseOverrideIssues: PreflightIssue[] = [];
     const parameterAudit: NonNullable<GenerationCase['parameterAudit']> = {};
     const advancedExtraParams: Record<string, unknown> = {};
     const durationSource = request.durationSource;
@@ -590,7 +598,24 @@ export const buildGenerationCasesForPreflight = (
       for (const key of ['duration', 'aspect_ratio', 'resolution', 'generate_audio'] as const) {
         const column = presetColumns[key];
         const rawValue = column ? row[column] : original?.[key];
-        if (!column || !hasMappedValue(rawValue) || controlDefinitions.has(key)) continue;
+        if (!column || !hasMappedValue(rawValue)) continue;
+        const caseOperation = caseInputOverride?.parameters?.[key];
+        if (caseOperation?.action === 'omit') {
+          parameterAudit[key] = {
+            source: 'case_override',
+            column,
+            value: rawValue,
+            verified: controlDefinitions.has(key),
+            destination: 'omitted',
+          };
+          parameterWarnings.push({
+            code: 'PRESET_PARAMETER_EXPLICITLY_OMITTED',
+            field: key,
+            message: `${key} from preset column ${column} was explicitly omitted for case ${caseId}.`,
+          });
+          continue;
+        }
+        if (caseOperation?.action === 'set' || controlDefinitions.has(key)) continue;
         const binding = request.parameterBindings?.[key];
         if (binding?.source === 'unused') {
           parameterAudit[key] = {
@@ -629,6 +654,7 @@ export const buildGenerationCasesForPreflight = (
       }
       const advancedKeys = new Set((model.advancedParameters || []).map(parameter => parameter.key));
       for (const [key, binding] of Object.entries(request.parameterBindings || {})) {
+        if (caseOverrideParameterKeys.has(key)) continue;
         if (!binding || binding.source === 'unused') continue;
         const definition = controlDefinitions.get(key);
         const isAdvanced = advancedKeys.has(key);
@@ -688,7 +714,7 @@ export const buildGenerationCasesForPreflight = (
         }
       }
     }
-    if (durationSource?.mode === 'column') {
+    if (durationSource?.mode === 'column' && !caseOverrideParameterKeys.has('duration')) {
       const value = durationSource.column ? row[durationSource.column] : undefined;
       if (!hasMappedValue(value)) {
         durationIssues.push({
@@ -706,9 +732,11 @@ export const buildGenerationCasesForPreflight = (
         controls[definition.key] = coerceControl(controls[definition.key], definition);
       }
     }
+    const sourceControls = JSON.parse(JSON.stringify(controls)) as Record<string, unknown>;
 
     let rawCanonicalInput: Record<string, unknown>;
     let originalAuditInput: Record<string, unknown> | undefined;
+    let caseInputOverrideAudit: GenerationCaseInputOverrideAudit | undefined;
     let contentIntent: ReturnType<typeof compileGenerationContentMappingV2>['intent'] | undefined;
     if (contentMapping) {
       const content = compileGenerationContentMappingV2({
@@ -720,7 +748,7 @@ export const buildGenerationCasesForPreflight = (
       contentIntent = content.intent;
       assetIssues.push(...content.issues);
       rawCanonicalInput = { ...content.input, ...controls };
-      originalAuditInput = { ...content.rawInput, ...controls };
+      originalAuditInput = { ...content.rawInput, ...sourceControls };
     } else if (mappingMode === 'mcp') {
       const mappings = { ...(input.canonicalFieldMappings || {}) };
       if (!mappings.prompt && input.promptColumn) mappings.prompt = input.promptColumn;
@@ -839,6 +867,93 @@ export const buildGenerationCasesForPreflight = (
       }
     }
     originalAuditInput ||= JSON.parse(JSON.stringify(rawCanonicalInput)) as Record<string, unknown>;
+    if (caseInputOverride) {
+      if (caseReview?.finalAionRequest) {
+        caseOverrideIssues.push({
+          code: 'CONFLICTING_CASE_REVIEW_MODES',
+          field: 'inputOverride',
+          message: 'Guided case input overrides cannot be combined with a final Aion JSON override.',
+        });
+      }
+      if (caseReview?.promptOverride !== undefined && caseInputOverride.content?.prompt) {
+        caseOverrideIssues.push({
+          code: 'CONFLICTING_CASE_REVIEW_ACTIONS',
+          field: 'prompt',
+          message: 'The legacy Prompt override and the versioned case Prompt override cannot both be active.',
+        });
+      }
+      if (caseInputOverride.content?.prompt
+        && (caseReview?.acceptedFindingIds || []).some(id => id.startsWith('plugin-prompt-'))) {
+        caseOverrideIssues.push({
+          code: 'CONFLICTING_CASE_REVIEW_ACTIONS',
+          field: 'prompt',
+          message: 'A custom Prompt override cannot be combined with an accepted Plugin Prompt rewrite.',
+        });
+      }
+
+      const normalizedOverride = JSON.parse(JSON.stringify(caseInputOverride)) as NonNullable<GenerationCaseReview['inputOverride']>;
+      const parameterDestinations: Record<string, GenerationCaseParameterDestination> = Object.fromEntries([
+        ...model.controls.map(definition => [definition.key, 'control' as const]),
+        ...(model.advancedParameters || []).map(definition => [definition.key, 'extra_params' as const]),
+        ...['duration', 'aspect_ratio', 'resolution', 'generate_audio']
+          .filter(key => !controlDefinitions.has(key))
+          .map(key => [key, 'omit_only' as const]),
+      ]);
+      for (const [key, operation] of Object.entries(normalizedOverride.parameters || {})) {
+        if (operation.action !== 'set') continue;
+        const definition = controlDefinitions.get(key);
+        if (!definition) continue;
+        const coerced = coerceBoundParameter(operation.value, parameterValueType(definition));
+        if ('message' in coerced) {
+          caseOverrideIssues.push({
+            code: 'INVALID_PARAMETER_VALUE',
+            field: key,
+            message: `${key}: ${coerced.message}`,
+          });
+          continue;
+        }
+        operation.value = coerced.value;
+      }
+      const overrideResult = applyGenerationCaseInputOverride({
+        input: rawCanonicalInput,
+        override: normalizedOverride,
+        outputModality: model.outputModality,
+        parameterDestinations,
+      });
+      rawCanonicalInput = overrideResult.input;
+      caseOverrideIssues.push(...overrideResult.issues);
+      caseInputOverrideAudit = overrideResult.audit;
+
+      for (const [key, operation] of Object.entries(normalizedOverride.parameters || {})) {
+        const destination = parameterDestinations[key];
+        if (!destination || (destination === 'omit_only' && operation.action === 'set')) continue;
+        if (destination === 'control' || destination === 'omit_only') {
+          if (operation.action === 'omit') delete controls[key];
+          else controls[key] = rawCanonicalInput[key];
+          parameterAudit[key] = {
+            source: 'case_override',
+            ...(operation.action === 'set' ? { value: controls[key] } : {}),
+            verified: destination === 'control',
+            destination: operation.action === 'omit' ? 'omitted' : 'control',
+          };
+        } else {
+          const extraParams = rawCanonicalInput.extra_params as Record<string, unknown> | undefined;
+          parameterAudit[key] = {
+            source: 'case_override',
+            ...(operation.action === 'set' ? { value: extraParams?.[key] } : {}),
+            verified: false,
+            destination: operation.action === 'omit' ? 'omitted' : 'extra_params',
+          };
+          if (operation.action === 'set') {
+            parameterWarnings.push({
+              code: 'UNVERIFIED_EXTRA_PARAMETER',
+              field: key,
+              message: `${key} is not covered by the unified Aion contract and will be passed through extra_params.`,
+            });
+          }
+        }
+      }
+    }
     const compiled = compileVidMuseGenerationInput({
       model: {
         modelName: model.modelName,
@@ -893,7 +1008,14 @@ export const buildGenerationCasesForPreflight = (
     }
 
     let durationResolution: GenerationCase['durationResolution'];
-    if (durationSource?.mode === 'reference_audio') {
+    if (caseOverrideParameterKeys.has('duration')) {
+      if (controls.duration !== undefined && controls.duration !== '') {
+        durationResolution = {
+          source: 'case_override',
+          resolvedDuration: Number(controls.duration),
+        };
+      }
+    } else if (durationSource?.mode === 'reference_audio') {
       const audit = durationSource.referenceAudio?.[datasetItemId];
       if (audioUrls.length !== 1) {
         durationIssues.push({
@@ -994,6 +1116,7 @@ export const buildGenerationCasesForPreflight = (
         reviewedFindingIds: compiled.reviewedFindingIds,
         contractSource: compiled.contractSource,
         review: caseReview,
+        ...(caseInputOverrideAudit ? { caseInputOverride: caseInputOverrideAudit } : {}),
       },
       ...(durationResolution ? { durationResolution } : {}),
     };
@@ -1016,6 +1139,7 @@ export const buildGenerationCasesForPreflight = (
         ...assetIssues,
         ...assistedIssues,
         ...compiled.errors,
+        ...caseOverrideIssues,
         ...parameterIssues,
         ...durationIssues,
         ...seedIssues,

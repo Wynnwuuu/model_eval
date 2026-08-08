@@ -84,6 +84,7 @@ import {
   generationForceRequiresFinalJson,
 } from '../features/generation/preflightReview';
 import {
+  buildGenerationRepairGroups,
   buildGenerationIssueOptions,
   filterGenerationPreflightCases,
   getGenerationCaseId,
@@ -362,7 +363,11 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     && GENERATION_FORCEABLE_PREFLIGHT_CODES.has(selectedCaseIssue.code)
     ? selectedCaseIssue.code
     : '';
+  const reviewDialogItem = (preflight?.cases || []).find(item =>
+    generationReviewDialogKey(item) === reviewDialogItemId);
   const reviewDialogIndex = filteredPreflightCases.findIndex(item =>
+    generationReviewDialogKey(item) === reviewDialogItemId);
+  const reviewDialogAllIndex = (preflight?.cases || []).findIndex(item =>
     generationReviewDialogKey(item) === reviewDialogItemId);
   const selectedBatchItems = batch?.items.filter(item => selectedBatchItemIds.includes(item.id)) || [];
   const selectableBatchItems = batch?.items.filter(item =>
@@ -678,7 +683,11 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     setCaseStatusFilter(resolveDefaultGenerationCaseStatus(preflight.cases));
     setCaseIssueKey('');
     setCaseSearch('');
-    setReviewDialogItemId('');
+    setReviewDialogItemId(current => (
+      current && preflight.cases.some(item => generationReviewDialogKey(item) === current)
+        ? current
+        : ''
+    ));
     setBulkForceReason('');
     setBulkForceConfirmed(false);
   }, [preflight?.requestHash]);
@@ -824,7 +833,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     invalidatePreflight();
   };
 
-  const buildRequest = (): GenerationPreflightRequest => {
+  const buildRequest = (reviews: Record<string, GenerationCaseReview> = caseReviews): GenerationPreflightRequest => {
     if (!selectedModel) throw new Error('Select a model before preflight.');
     const requestDefaultControls = durationControl && durationMode === 'uniform'
       ? { duration: defaultControls.duration }
@@ -868,25 +877,43 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
       fixedSeed: seedMode === 'fixed' ? fixedSeed : undefined,
       seedColumn: seedMode === 'column' ? seedColumn : undefined,
       assetBindings,
-      caseReviews,
+      caseReviews: reviews,
     };
   };
 
-  const runPreflight = async () => {
+  const runPreflight = async (
+    reviews: Record<string, GenerationCaseReview> = caseReviews,
+    throwOnError = false,
+  ) => {
     setError('');
     setBusy(true);
     setConfirmed(false);
     try {
-      const next = await createExecutionPreflight(buildRequest());
+      const next = await createExecutionPreflight(buildRequest(reviews));
       setPreflight(next);
       setPendingReviewIds([]);
       setReviewsDirty(false);
       setStep(3);
+      return next;
     } catch (reason) {
       setError(errorMessage(reason));
+      if (throwOnError) throw reason;
+      return undefined;
     } finally {
       setBusy(false);
     }
+  };
+
+  const saveCaseReviewAndRepreflight = async (datasetItemId: string, review: GenerationCaseReview) => {
+    const nextReviews = { ...caseReviews, [datasetItemId]: review };
+    setCaseReviews(nextReviews);
+    setPendingReviewIds(current => Array.from(new Set([...current, datasetItemId])));
+    setReviewsDirty(true);
+    setConfirmed(false);
+    const nextPreflight = await runPreflight(nextReviews, true);
+    return nextPreflight?.cases.find(item => (
+      String(item.resolvedCase.datasetItemId || '') === datasetItemId
+    ));
   };
 
   const confirmPreflight = async () => {
@@ -1710,7 +1737,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                     <div className="mt-3 min-h-[420px] max-h-[55vh] overflow-auto border border-white/10">
                       {filteredPreflightCases.map((item, index) => {
                         const primary = getPrimaryGenerationIssue(item, caseIssueKey);
-                        const issueCount = item.errors.length + item.warnings.length;
+                        const repairCount = buildGenerationRepairGroups(item).length;
                         const datasetItemId = String(item.resolvedCase.datasetItemId || '');
                         const pending = pendingReviewIds.includes(datasetItemId);
                         return (
@@ -1725,7 +1752,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                             <span className="truncate text-sky-300" title={item.generationType}>{item.generationType}</span>
                             <span className="min-w-0">
                               {primary ? <span className={primary.severity === 'error' ? 'text-red-300' : 'text-amber-300'}>{primary.title}</span> : <span className="text-emerald-300">无预检问题</span>}
-                              {issueCount > 1 && <span className="ml-2 text-slate-500">另有 {issueCount - 1} 个问题</span>}
+                              {repairCount > 1 && <span className="ml-2 text-slate-500">另有 {repairCount - 1} 个根因</span>}
                               {pending && <span className="ml-2 text-sky-300">已修改，待重新预检</span>}
                             </span>
                             <ChevronRight size={16} className="text-slate-500" />
@@ -1736,16 +1763,19 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                     </div>
                   </section>
 
-                  {reviewDialogIndex >= 0 && (
+                  {reviewDialogItem && preflight && (
                     <GenerationCaseReviewDialog
-                      item={filteredPreflightCases[reviewDialogIndex]}
-                      position={reviewDialogIndex}
-                      total={filteredPreflightCases.length}
-                      review={caseReviews[String(filteredPreflightCases[reviewDialogIndex].resolvedCase.datasetItemId || '')]}
+                      item={reviewDialogItem}
+                      model={preflight.model}
+                      position={reviewDialogIndex >= 0 ? reviewDialogIndex : Math.max(0, reviewDialogAllIndex)}
+                      total={reviewDialogIndex >= 0 ? filteredPreflightCases.length : preflight.cases.length}
+                      outsideCurrentFilter={reviewDialogIndex < 0}
+                      review={caseReviews[String(reviewDialogItem.resolvedCase.datasetItemId || '')]}
                       onClose={() => setReviewDialogItemId('')}
                       onPrevious={reviewDialogIndex > 0 ? () => setReviewDialogItemId(generationReviewDialogKey(filteredPreflightCases[reviewDialogIndex - 1])) : undefined}
                       onNext={reviewDialogIndex < filteredPreflightCases.length - 1 ? () => setReviewDialogItemId(generationReviewDialogKey(filteredPreflightCases[reviewDialogIndex + 1])) : undefined}
-                      onSave={saveCaseReview}
+                      onSaveDraft={saveCaseReview}
+                      onSaveAndRepreflight={saveCaseReviewAndRepreflight}
                       onAcceptFindingRule={acceptFindingRule}
                     />
                   )}

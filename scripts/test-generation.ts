@@ -86,12 +86,159 @@ import {
   resolveWorkspaceDataset,
 } from '../src/features/generation/workspaceNavigation.ts';
 import {
+  buildGenerationRepairGroups,
   buildGenerationIssueOptions,
   filterGenerationPreflightCases,
   getGenerationIssuePresentation,
   getPrimaryGenerationIssue,
   resolveDefaultGenerationCaseStatus,
 } from '../src/features/generation/preflightPresentation.ts';
+import { applyGenerationCaseInputOverride } from '../src/features/generation/caseInputOverride.ts';
+
+const promptChannelMismatchCase = {
+  valid: false,
+  generationType: 'reference_to_video',
+  errors: [
+    {
+      code: 'CONTRACT_REVIEW_REQUIRED',
+      field: 'prompt',
+      message: 'The Prompt references @imageN, but this case only submits elements.',
+    },
+    {
+      code: 'PROMPT_REFERENCE_OUT_OF_RANGE',
+      field: 'prompt',
+      message: '@image1 does not match any submitted image input.',
+    },
+  ],
+  warnings: [{
+    code: 'UNREFERENCED_PROMPT_ASSET',
+    field: 'prompt',
+    message: '@Element1 is submitted but not referenced.',
+  }],
+  resolvedCase: {
+    caseId: 'case-prompt-channel',
+    datasetItemId: 'item-prompt-channel',
+    prompt: '@image1 walks through the scene.',
+    compilerAudit: {
+      compiledInput: {
+        prompt: '@image1 walks through the scene.',
+        image_urls: [],
+        elements: [{ frontal_image_url: 'https://assets.example.com/person.png' }],
+        audios: [],
+      },
+      contractFindings: [{
+        id: 'plugin-prompt-image-to-element',
+        ruleId: 'plugin.prompt.elements-use-element-token',
+        code: 'PLUGIN_PROMPT_CHANNEL_MISMATCH',
+        field: 'prompt',
+        message: 'The Prompt references @imageN, but this case only submits elements.',
+        source: 'plugin_snapshot',
+        sourceVersion: 'test-plugin',
+        disposition: 'suggestion',
+        proposal: {
+          kind: 'prompt_rewrite',
+          prompt: '@Element1 walks through the scene.',
+        },
+      }],
+    },
+  },
+};
+
+const promptRepairGroups = buildGenerationRepairGroups(promptChannelMismatchCase);
+assert.equal(promptRepairGroups.length, 1, 'derivative Prompt diagnostics must form one repair group');
+assert.equal(promptRepairGroups[0].kind, 'prompt_channel_mismatch');
+assert.equal(promptRepairGroups[0].finding?.id, 'plugin-prompt-image-to-element');
+assert.deepEqual(
+  promptRepairGroups[0].diagnostics.map(item => item.issue.code),
+  ['CONTRACT_REVIEW_REQUIRED', 'PROMPT_REFERENCE_OUT_OF_RANGE', 'UNREFERENCED_PROMPT_ASSET'],
+);
+assert.equal(promptRepairGroups[0].proposal?.prompt, '@Element1 walks through the scene.');
+
+const independentRepairGroups = buildGenerationRepairGroups({
+  ...promptChannelMismatchCase,
+  errors: [
+    ...promptChannelMismatchCase.errors,
+    {
+      code: 'MEDIA_TYPE_MISMATCH',
+      field: 'elements[0].frontal_image_url',
+      message: 'Expected image but detected video.',
+    },
+  ],
+});
+assert.equal(independentRepairGroups.length, 2, 'an unrelated material failure must remain independently actionable');
+const mediaRepairGroup = independentRepairGroups.find(group => group.kind === 'media');
+assert.equal(mediaRepairGroup?.field, 'elements[0].frontal_image_url');
+
+const caseOverrideResult = applyGenerationCaseInputOverride({
+  input: {
+    prompt: 'Original Prompt',
+    image_urls: ['https://assets.example.com/first.png'],
+    elements: [{ frontal_image_url: 'https://assets.example.com/reference.png' }],
+    audios: [{ url: 'https://assets.example.com/reference.wav' }],
+    duration: 5,
+  },
+  override: {
+    version: 1,
+    content: {
+      prompt: { action: 'set', value: 'Reviewed Prompt' },
+      image_urls: { action: 'omit' },
+      elements: {
+        action: 'set',
+        value: [
+          { frontal_image_url: 'https://assets.example.com/reference-2.png' },
+          { video_url: 'https://assets.example.com/reference.mp4' },
+        ],
+      },
+    },
+    parameters: {
+      duration: { action: 'set', value: 8 },
+    },
+  },
+  outputModality: 'video',
+  parameterDestinations: { duration: 'control' },
+});
+assert.deepEqual(caseOverrideResult.issues, []);
+assert.equal(caseOverrideResult.input.prompt, 'Reviewed Prompt');
+assert.equal(caseOverrideResult.input.image_urls, undefined);
+assert.equal(caseOverrideResult.input.duration, 8);
+assert.deepEqual(caseOverrideResult.input.elements, [
+  { frontal_image_url: 'https://assets.example.com/reference-2.png' },
+  { video_url: 'https://assets.example.com/reference.mp4' },
+]);
+assert.deepEqual(caseOverrideResult.audit?.appliedContentFields, ['prompt', 'image_urls', 'elements']);
+
+const unsafeCaseOverride = applyGenerationCaseInputOverride({
+  input: { prompt: 'Original' },
+  override: {
+    version: 1,
+    content: {
+      generation_type: { action: 'set', value: 'text_to_video' },
+    } as never,
+    parameters: {
+      model_name: { action: 'set', value: 'other/model' },
+    },
+  },
+  outputModality: 'video',
+  parameterDestinations: {},
+});
+assert.deepEqual(unsafeCaseOverride.issues.map(issue => issue.code), [
+  'CASE_OVERRIDE_FIELD_NOT_ALLOWED',
+  'CASE_OVERRIDE_PARAMETER_NOT_ALLOWED',
+]);
+assert.equal(unsafeCaseOverride.input.generation_type, undefined);
+assert.equal(unsafeCaseOverride.input.model_name, undefined);
+
+const undefinedCaseOverride = applyGenerationCaseInputOverride({
+  input: { prompt: 'Original' },
+  override: {
+    version: 1,
+    content: { prompt: { action: 'set', value: undefined } },
+  },
+  outputModality: 'video',
+  parameterDestinations: {},
+});
+assert.equal(undefinedCaseOverride.input.prompt, undefined);
+assert.deepEqual(undefinedCaseOverride.issues, []);
 
 const presentationCases = [
   {
@@ -1665,6 +1812,107 @@ assert.ok(v2IntentCases[2].resolvedCase.compilerAudit?.contractFindings?.some(
   finding => finding.id === 'plugin-mixed-keyframes-to-elements',
 ));
 assert.equal(v2IntentCases[0].resolvedCase.compilerAudit?.intent?.mappingVersion, 2);
+
+const caseOverrideCases = buildGenerationCasesForPreflight(
+  v2IntentDataset,
+  {
+    ...v2IntentRequest,
+    caseReviews: {
+      'intent-keyframes': {
+        inputOverride: {
+          version: 1,
+          content: {
+            prompt: { action: 'set', value: 'Keep @Element1 and @Element2 consistent.' },
+            image_urls: { action: 'omit' },
+            elements: {
+              action: 'set',
+              value: [
+                { frontal_image_url: 'https://assets.example.com/reference-a.png' },
+                { frontal_image_url: 'https://assets.example.com/reference-b.png' },
+              ],
+            },
+          },
+          parameters: {
+            duration: { action: 'set', value: 8 },
+          },
+        },
+      },
+    },
+  },
+  hailuoH3Model,
+  [{ row: v2IntentDataset.items[1], rowIndex: 1, datasetItemId: 'intent-keyframes' }],
+);
+assert.equal(caseOverrideCases[0].resolvedCase.generationType, 'reference_to_video');
+assert.deepEqual(caseOverrideCases[0].resolvedCase.imageUrls, []);
+assert.deepEqual(caseOverrideCases[0].resolvedCase.extraInputs?.elements, [
+  { frontal_image_url: 'https://assets.example.com/reference-a.png' },
+  { frontal_image_url: 'https://assets.example.com/reference-b.png' },
+]);
+assert.equal(caseOverrideCases[0].resolvedCase.prompt, 'Keep @Element1 and @Element2 consistent.');
+assert.equal(caseOverrideCases[0].resolvedCase.controls.duration, 8);
+assert.equal(caseOverrideCases[0].resolvedCase.durationResolution?.source, 'case_override');
+assert.deepEqual(caseOverrideCases[0].resolvedCase.compilerAudit?.caseInputOverride?.appliedContentFields, [
+  'prompt',
+  'image_urls',
+  'elements',
+]);
+assert.deepEqual(caseOverrideCases[0].preparationIssues, []);
+
+const promptChannelDataset = {
+  ...v2IntentDataset,
+  items: [{
+    ...v2IntentDataset.items[0],
+    prompt: 'Keep @image1 and @image2 consistent.',
+  }],
+} as any;
+const acceptedPromptRewriteCase = buildGenerationCasesForPreflight(
+  promptChannelDataset,
+  {
+    ...v2IntentRequest,
+    caseReviews: {
+      'intent-reference': { acceptedFindingIds: ['plugin-prompt-image-to-element'] },
+    },
+  },
+  hailuoH3Model,
+  [{ row: promptChannelDataset.items[0], rowIndex: 0, datasetItemId: 'intent-reference' }],
+)[0];
+assert.equal(acceptedPromptRewriteCase.resolvedCase.prompt, 'Keep @Element1 and @Element2 consistent.');
+assert.ok(!acceptedPromptRewriteCase.preparationIssues.some(issue => [
+  'CONTRACT_REVIEW_REQUIRED',
+  'PROMPT_REFERENCE_OUT_OF_RANGE',
+].includes(issue.code)));
+assert.ok(!acceptedPromptRewriteCase.preparationWarnings.some(
+  issue => issue.code === 'UNREFERENCED_PROMPT_ASSET',
+));
+
+const conflictingReviewCase = buildGenerationCasesForPreflight(
+  v2IntentDataset,
+  {
+    ...v2IntentRequest,
+    caseReviews: {
+      'intent-keyframes': {
+        inputOverride: {
+          version: 1,
+          content: { prompt: { action: 'set', value: 'Reviewed Prompt' } },
+        },
+        finalAionRequest: {
+          model_name: hailuoH3Model.modelName,
+          generation_type: 'images_to_video',
+          prompt: 'Manual Prompt',
+          image_urls: [
+            'https://assets.example.com/first.png',
+            'https://assets.example.com/last.png',
+          ],
+        },
+      },
+    },
+  },
+  hailuoH3Model,
+  [{ row: v2IntentDataset.items[1], rowIndex: 1, datasetItemId: 'intent-keyframes' }],
+)[0];
+assert.ok(conflictingReviewCase.preparationIssues.some(
+  issue => issue.code === 'CONFLICTING_CASE_REVIEW_MODES',
+));
 
 const v2StructuredDataset = {
   id: 'dataset-mcp-v2-structured',

@@ -1,12 +1,12 @@
 # ManuEval 视频输入对接 VidMuse MCP / Aion 说明文档
 
-> 状态：Implemented v1.1，作为 ManuEval dev 新生成预检的输入合同
-> 日期：2026-08-08
+> 状态：Implemented v1.2，作为 ManuEval dev 新生成预检与 case 修复的输入合同
+> 日期：2026-08-09
 > 适用范围：ManuEval dev 的图片/视频模型批量生成  
 > 权威文档：[VidMuse MCP 工具文档](https://j0yswlgboxz.feishu.cn/wiki/Odf8w2SBmicB9skMfAMcDoqxnpd)，读取版本 revision 1813  
 > Plugin 规则快照：`general-mv-main-dsl-v2-en-0721`，commit `1029c7970b7069f2e088247cc870992bc65d1424`  
 > Aion Model API 核对版本：`aea3088770f1eefdf754473075ebdb26fe32f90b`
-> ManuEval 实现基线：`9f06bca` 之后的 MCP compiler v3；发布提交见本文所在 Git 历史
+> ManuEval 实现基线：MCP compiler v3；本轮基于 GitHub `main` `3dd0a77` 实施，发布提交见本文所在 Git 历史
 
 ## 1. 文档目的
 
@@ -658,8 +658,8 @@ ManuEval 推导：`generation_type = "reference_to_video"`。
 | MCP compiler v1/v2/v3 | `src/features/generation/vidmuseInputContract.ts` |
 | 固定 Plugin 规则快照 | `src/features/generation/vidmusePluginContracts.ts` |
 | 实时配置校验、请求构造 | `server/generation/generationPlanning.ts` |
-| case 审阅、Seed 策略、MCP/Aion 投影、强制覆盖 | `server/generation/generationPreflightService.ts` |
-| 审阅 UI 与请求预览 | `DatasetGenerationExecutionModal.tsx` |
+| case 审阅、Seed 策略、MCP/Aion 投影、强制覆盖 | `server/generation/generationPreflightService.ts`、`src/features/generation/caseInputOverride.ts` |
+| 根因目录、审阅 UI 与请求预览 | `src/features/generation/preflightPresentation.ts`、`DatasetGenerationExecutionModal.tsx`、`GenerationCaseReviewDialog.tsx` |
 | Worker 执行与素材准备 | `server/generation/generationWorker.ts` |
 
 新预检在 `GenerationContentMappingV2` 上使用 compiler v3。v3 不调用模型名 profile，不产生 H3/Wan/Seedance 特判；历史 compiler v1/v2 代码保留，仅用于历史快照与回归。数据库继续使用既有 JSONB，无迁移。
@@ -768,3 +768,68 @@ Worker 不自动重发生成 POST；`submission_unknown` 仍需用户明确手�
 ### 17.3 本轮范围边界
 
 本轮验证的是“接口是否接准、字段是否显式处置、最终请求是否保持 MCP 投影”，不是对 188 条 Prompt 语义矛盾、素材内容质量或适配所有模型能力的最终人工审查。后者应在本可靠性修复发布后，按模型支持的 cell 子集单独形成质量报告。
+
+## 18. Case 根因化审阅与字段级修复
+
+### 18.1 唯一请求来源
+
+新预检的普通审阅模式不允许用户同时维护 Prompt 和最终 Aion JSON。用户只修改当前 case 的 MCP 内容字段或模型参数，服务端重新执行完整编译；最终 Aion 请求始终由服务端生成。
+
+固定执行顺序如下：
+
+1. 读取评测集单元格并执行批次映射。
+2. 解析统一参数和参数列。
+3. 应用当前 case 的 `GenerationCaseInputOverrideV1`。
+4. 校验结构、媒体角色、参数和值域及 Aion 实时配置。
+5. 编译规范化 `mcpToolInput`。
+6. 按实际非空 MCP 素材通道推导 `generation_type`。
+7. 构造最终 Aion JSON，并执行 MCP 公共字段投影一致性校验。
+
+因此，修改 Prompt、素材或参数并重新预检后，生成预览中的 MCP 输入、生成方式和最终 Aion 请求会一起刷新；尚未重新预检的草稿必须显示为旧快照，不得伪装成已生效请求。
+
+### 18.2 字段级覆盖合同
+
+`inputOverride` 只保存在本批次现有 JSONB review 快照中，不修改原评测集，也不新增数据库迁移：
+
+```ts
+interface GenerationCaseInputOverrideV1 {
+  version: 1;
+  content?: Partial<Record<
+    'prompt' | 'image_urls' | 'images' | 'elements' | 'audios',
+    { action: 'set'; value: unknown } | { action: 'omit' }
+  >>;
+  parameters?: Record<
+    string,
+    { action: 'set'; value: unknown } | { action: 'omit' }
+  >;
+}
+```
+
+- 视频内容只允许覆盖 `prompt`、`image_urls`、`elements`、`audios`；图片内容只允许覆盖 `prompt`、`images`。
+- 参数只允许覆盖实时模型配置声明的普通/高级参数；附件预设中的 `duration`、`aspect_ratio`、`resolution`、`generate_audio` 在模型未声明时只允许明确省略。
+- `model_name`、`generation_type`、`features`、Seed、鉴权、回调和资产目录等保留字段不可通过普通模式覆盖。
+- case 覆盖可以因素材通道变化而正确改变推导模式，但不能直接指定 `generation_type`。
+- 历史 `promptOverride` 和旧预检继续按原快照执行；同一新 review 中不允许旧 Prompt 覆盖、Plugin Prompt 改写和新版 Prompt 覆盖互相冲突。
+
+### 18.3 根因与修复界面
+
+预检错误、警告和 Plugin finding 先聚合为根因，再显示一次。例如 `CONTRACT_REVIEW_REQUIRED`、`PROMPT_REFERENCE_OUT_OF_RANGE`、`UNREFERENCED_PROMPT_ASSET` 若都来自 `@imageN` 与 `elements` 通道错位，统一展示为“Prompt 素材引用通道错误”，并附上修改前后 Prompt 和实际素材编号。
+
+每个根因直接连接对应编辑器：
+
+- Prompt 问题显示原文、建议文本和当前 case 文本框。
+- `image_urls/images` 显示有序图片或关键帧列表。
+- `elements` 显示图片、视频、已有 Element ID 的互斥形态及 URL、增删和排序。
+- `audios` 显示有序 URL 和可选区间。
+- 参数问题显示当前来源、实时允许值和当前 case 设置/省略操作。
+
+完整最终 Aion JSON 仅存在于互斥的专家模式。进入专家模式会放弃普通字段草稿；返回普通模式会放弃专家 JSON。专家请求继续要求原因、重复计费确认、安全字段校验和投影差异审计。
+
+### 18.4 实际验收
+
+- 188 条真实数据集使用 MiniMax H3 只执行预检，没有创建批次或生成 POST。
+- 示例 case 的三个 Prompt 派生提示合并为一个根因；接受建议后 `@image1` 正确变为 `@Element1`。
+- 分辨率按 case 改为实时模型允许的 `1440p` 后，该 case 由无效变为有效；弹窗保持打开并显示“已修复，不再匹配当前筛选”。
+- 生成预览中的 Prompt、素材编号、`reference_to_video`、参数来源、MCP 输入和最终 Aion 请求来自同一次新预检，且没有旧快照误报。
+- `elements[0]` 形态冲突直接展示元素类型和当前 `video_url` 编辑器，不再只显示通用 Prompt 框。
+- 桌面和 `390x844` 移动视口下，两页弹窗无内部横向溢出或控件重叠。
