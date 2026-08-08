@@ -34,7 +34,7 @@
     },
     {
       "id": "release",
-      "status": "in_progress",
+      "status": "completed",
       "description": "Fast-forward GitHub main and verify CI plus dev deployment"
     }
   ]

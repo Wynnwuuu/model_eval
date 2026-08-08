@@ -438,3 +438,9 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Mock-only preflight QA verified real status/issue/search filtering, deduplicated counts, filter-scoped bulk actions, Chinese issue copy, openable missing-ID cases, unchanged-save disabling, saved drafts, and explicit re-preflight state.
 - Desktop and 390x844 mobile dialog checks passed with no internal horizontal overflow or overlapping controls. The only console error was the existing missing `/favicon.ico` resource.
 - The preflight endpoint was intercepted for review QA. No batch was created and no paid image or video generation was submitted.
+
+### Release
+
+- Fast-forwarded source commit `2ffd4b4` to `world-sim-dev/ManuEval` `main` without force-pushing or staging the existing untracked report and report assets.
+- Eval Studio Test run `31252776514` and Dev CI/CD run `31252776557` succeeded. The latter passed tests, image build, and the Kubernetes dev rollout.
+- `https://eval-studio.sandaii.cn/generation?view=tasks` loaded the unified navigation after deployment. Switching to `view=new` retained no implicit dataset selection, kept configuration disabled, and produced no browser console errors or warnings.
