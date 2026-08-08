@@ -417,3 +417,24 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Authenticated public dev health returned HTTP 200 with `model_api`, Aion configured, Worker enabled, temporary asset mode, and a 500-case batch limit. Live model discovery returned 63 models and the browser console remained clean.
 - Direct public requests with only `x-auth-user-id` were correctly rejected with `AUTH_REQUIRED`; the successful runtime check used the existing Feishu bearer login without exposing the token.
 - A local worker-disabled API used for final source smoke remains bound to port 8789 because the process safety guard could not distinguish its shared `node_modules` path from another worktree. It cannot consume generation jobs and requires owner-confirmed cleanup.
+
+## 2026-08-08: Production workspace and preflight review UX
+
+### Completed
+
+- Added canonical `tasks | new` generation routes. Batch deep links always resolve to tasks, dataset generation deep links resolve to new, and `/generation` defaults to tasks.
+- Removed implicit first-dataset selection from the production new view while retaining repository behavior. Production preview is read-only and exposes one explicit `配置生成` action.
+- Replaced duplicate task-center tabs with one stable page-level navigation and added the dataset repository handoff.
+- Added a shared Chinese preflight issue catalog, status/issue/Case ID filtering, deduplicated issue counts, and filter-scoped bulk risk confirmation.
+- Replaced dense inline case diagnostics with one-line rows and a responsive detail dialog for issues, Prompt/override editing, Plugin decisions, and request audit.
+- Clarified the video duration title, meaning, and duration-column source.
+- Cases missing a stable item ID remain openable for diagnosis but cannot save a review; unchanged dialogs also cannot create false pending-review state.
+
+### Validation
+
+- Passed `test:generation`, isolated `test:generation:db`, every dataset suite, Arena, rank ties, API smoke, `lint`, frontend `build`, server `server:build`, and `git diff --check`.
+- The first database test attempts shared the live development queue with a running Worker and were externally claimed. A separately migrated `eval_studio_codex_ui_review` database removed that interference; the full PostgreSQL integration suite then passed.
+- Browser QA verified canonical task/new routes, no implicit dataset selection, disabled configuration before an explicit selection, read-only production preview, and the clarified duration field against live model configuration.
+- Mock-only preflight QA verified real status/issue/search filtering, deduplicated counts, filter-scoped bulk actions, Chinese issue copy, openable missing-ID cases, unchanged-save disabling, saved drafts, and explicit re-preflight state.
+- Desktop and 390x844 mobile dialog checks passed with no internal horizontal overflow or overlapping controls. The only console error was the existing missing `/favicon.ico` resource.
+- The preflight endpoint was intercepted for review QA. No batch was created and no paid image or video generation was submitted.

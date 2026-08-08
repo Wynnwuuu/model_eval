@@ -80,6 +80,136 @@ import {
   generationValidationForModel,
   parseGenerationModelValidationOverrides,
 } from '../server/generation/generationValidationPolicy.ts';
+import {
+  buildGenerationRoutePath,
+  parseGenerationRouteContext,
+  resolveWorkspaceDataset,
+} from '../src/features/generation/workspaceNavigation.ts';
+import {
+  buildGenerationIssueOptions,
+  filterGenerationPreflightCases,
+  getGenerationIssuePresentation,
+  getPrimaryGenerationIssue,
+  resolveDefaultGenerationCaseStatus,
+} from '../src/features/generation/preflightPresentation.ts';
+
+const presentationCases = [
+  {
+    valid: false,
+    generationType: 'reference_to_video',
+    errors: [
+      { code: 'INPUT_COUNT_OUT_OF_RANGE', field: 'elements', message: 'Too many elements.' },
+      { code: 'INPUT_COUNT_OUT_OF_RANGE', field: 'elements', message: 'Repeated diagnostic.' },
+    ],
+    warnings: [{ code: 'MEDIA_TYPE_UNVERIFIED', field: 'elements[0]', message: 'Unknown extension.' }],
+    resolvedCase: { caseId: 'case-invalid', datasetItemId: 'item-invalid' },
+  },
+  {
+    valid: true,
+    generationType: 'text_to_video',
+    errors: [],
+    warnings: [{ code: 'MEDIA_TYPE_UNVERIFIED', field: 'audios[0]', message: 'Unknown extension.' }],
+    resolvedCase: { caseId: 'case-warning', datasetItemId: 'item-warning' },
+  },
+  {
+    valid: true,
+    generationType: 'text_to_video',
+    errors: [],
+    warnings: [],
+    resolvedCase: { caseId: 'case-valid', datasetItemId: 'item-valid' },
+  },
+];
+
+assert.equal(resolveDefaultGenerationCaseStatus(presentationCases), 'needs_attention');
+assert.deepEqual(
+  buildGenerationIssueOptions(presentationCases).map(option => [option.key, option.count]),
+  [
+    ['error:INPUT_COUNT_OUT_OF_RANGE', 1],
+    ['warning:MEDIA_TYPE_UNVERIFIED', 2],
+  ],
+  'issue counts must be deduplicated by case rather than repeated diagnostics',
+);
+assert.deepEqual(
+  filterGenerationPreflightCases(presentationCases, {
+    status: 'needs_attention',
+    issueKey: '',
+    search: '',
+  }).map(item => item.resolvedCase.caseId),
+  ['case-invalid'],
+  'needs-attention defaults to invalid cases while any invalid case exists',
+);
+assert.deepEqual(
+  filterGenerationPreflightCases(presentationCases, {
+    status: 'warning',
+    issueKey: 'warning:MEDIA_TYPE_UNVERIFIED',
+    search: 'warning',
+  }).map(item => item.resolvedCase.caseId),
+  ['case-warning'],
+  'status, issue and case search filters must all constrain the visible cases',
+);
+assert.equal(
+  getPrimaryGenerationIssue(presentationCases[0], 'warning:MEDIA_TYPE_UNVERIFIED')?.issue.code,
+  'MEDIA_TYPE_UNVERIFIED',
+  'the selected issue type must become the row primary issue',
+);
+assert.equal(getPrimaryGenerationIssue(presentationCases[0])?.issue.code, 'INPUT_COUNT_OUT_OF_RANGE');
+assert.deepEqual(
+  filterGenerationPreflightCases(presentationCases, {
+    status: 'warning',
+    issueKey: 'warning:MEDIA_TYPE_UNVERIFIED',
+    search: '',
+  }).map(item => item.resolvedCase.caseId),
+  ['case-invalid', 'case-warning'],
+  'warning status must include invalid cases that also contain the selected warning',
+);
+const unsupportedPresetPresentation = getGenerationIssuePresentation({
+  code: 'UNSUPPORTED_PRESET_PARAMETER',
+  field: 'generate_audio',
+  message: 'unsupported',
+}, 'error');
+assert.equal(unsupportedPresetPresentation.forceable, true);
+assert.equal(unsupportedPresetPresentation.requiresFinalJson, true);
+const unverifiedMediaPresentation = getGenerationIssuePresentation({
+  code: 'MEDIA_TYPE_UNVERIFIED',
+  field: 'audios[0].url',
+  message: 'unknown',
+}, 'warning');
+assert.equal(unverifiedMediaPresentation.blocking, false);
+assert.equal(unverifiedMediaPresentation.forceable, false);
+assert.match(
+  getGenerationIssuePresentation({ code: 'FUTURE_UNKNOWN_CODE', message: 'Future raw detail.' }, 'error').title,
+  /FUTURE_UNKNOWN_CODE/,
+  'unknown issues must keep their original code visible',
+);
+
+assert.equal(buildGenerationRoutePath({ generationView: 'tasks' }), '/generation?view=tasks');
+assert.equal(
+  buildGenerationRoutePath({ generationView: 'new', datasetId: 'dataset-1' }),
+  '/datasets/dataset-1/generation?view=new',
+);
+assert.equal(
+  buildGenerationRoutePath({ generationView: 'new', datasetId: 'dataset-1', generationBatchId: 'batch-1' }),
+  '/generation?view=tasks&batch=batch-1',
+  'batch deep links must always return to the task view',
+);
+assert.deepEqual(
+  parseGenerationRouteContext('/generation', new URLSearchParams()),
+  { generationView: 'tasks' },
+);
+assert.deepEqual(
+  parseGenerationRouteContext('/datasets/dataset-1/generation', new URLSearchParams()),
+  { generationView: 'new', datasetId: 'dataset-1', source: 'dataset' },
+  'legacy dataset generation links must continue to open new generation with that dataset selected',
+);
+assert.deepEqual(
+  parseGenerationRouteContext('/generation', new URLSearchParams('view=new&batch=batch-1')),
+  { generationView: 'tasks', generationBatchId: 'batch-1' },
+);
+const generationDatasets = [{ id: 'dataset-1' }, { id: 'dataset-2' }];
+assert.equal(resolveWorkspaceDataset(generationDatasets, '', false), undefined,
+  'new generation must never select the first dataset implicitly');
+assert.equal(resolveWorkspaceDataset(generationDatasets, '', true)?.id, 'dataset-1',
+  'the dataset repository retains its existing first-dataset fallback');
 
 const capacityFailure = (code: string, message: string, httpStatus?: number) => ({
   status: 'failed',

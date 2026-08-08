@@ -4,8 +4,13 @@ import { FeishuCallbackScreen } from '../components/FeishuCallbackScreen';
 import { LoginScreen } from '../components/LoginScreen';
 import { ModelEvalApp } from '../components/ModelEvalApp';
 import { AppRoute, RouteContext } from '../types';
+import {
+  buildGenerationRoutePath,
+  parseGenerationRouteContext,
+} from '../features/generation/workspaceNavigation';
 
 const buildRoutePath = (route: AppRoute, context: RouteContext = {}) => {
+  if (route === 'generation') return buildGenerationRoutePath(context);
   const search = new URLSearchParams();
 
   if (context.materialStatusFilter) {
@@ -15,10 +20,6 @@ const buildRoutePath = (route: AppRoute, context: RouteContext = {}) => {
     search.set('datasetId', context.taskDatasetId);
   }
   (context.taskModelColumns || []).forEach(column => search.append('modelColumn', column));
-  if (route === 'generation' && context.generationBatchId) {
-    search.set('batch', context.generationBatchId);
-  }
-
   if (route === 'tasks' && context.taskBuilderMode === 'create' && context.projectId) {
     search.set('projectId', context.projectId);
   }
@@ -33,8 +34,6 @@ const buildRoutePath = (route: AppRoute, context: RouteContext = {}) => {
       return context.projectId ? `/projects/${context.projectId}` : '/projects';
     case 'datasets':
       return context.datasetId ? `/datasets/${context.datasetId}` : '/datasets';
-    case 'generation':
-      return withSearch(context.datasetId ? `/datasets/${context.datasetId}/generation` : '/generation');
     case 'templates':
       return context.templateId ? `/templates/${context.templateId}` : '/templates';
     case 'tasks':
@@ -101,11 +100,18 @@ const routeFromPath = (pathname: string, searchParams: URLSearchParams): { route
   if (projectDetail) return { route: 'projects', context: { projectId: projectDetail[1], source: 'dashboard' } };
 
   if (path === '/datasets') return { route: 'datasets' };
-  const datasetGeneration = path.match(/^\/datasets\/([^/]+)\/generation$/);
-  if (datasetGeneration) return { route: 'generation', context: { datasetId: datasetGeneration[1], source: 'dataset' } };
+  const generationContext = parseGenerationRouteContext(path, searchParams);
+  if (generationContext) {
+    const canonicalPath = buildGenerationRoutePath(generationContext);
+    const currentPath = `${path}${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
+    return {
+      route: 'generation',
+      context: generationContext,
+      ...(canonicalPath !== currentPath ? { redirectTo: canonicalPath } : {}),
+    };
+  }
   const datasetDetail = path.match(/^\/datasets\/([^/]+)$/);
   if (datasetDetail) return { route: 'datasets', context: { datasetId: datasetDetail[1], source: 'dataset' } };
-  if (path === '/generation') return { route: 'generation' };
 
   if (path === '/templates') return { route: 'templates' };
   const templateDetail = path.match(/^\/templates\/([^/]+)$/);

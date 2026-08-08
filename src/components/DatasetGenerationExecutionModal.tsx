@@ -2,11 +2,13 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronRight,
   FileUp,
   FolderUp,
   Loader2,
   Play,
   RefreshCw,
+  Search,
   Square,
   Wand2,
   X,
@@ -26,6 +28,7 @@ import {
   GenerationModelConfig,
   GenerationParameterBinding,
   GenerationParameterValueType,
+  GenerationPreflightCase,
   GenerationPreflightResult,
   GenerationQueueState,
   GenerationSeedMode,
@@ -40,6 +43,7 @@ import {
 import GenerationCaseSelector from './GenerationCaseSelector';
 import DatasetGenerationContentMappingEditor from './DatasetGenerationContentMappingEditor';
 import MediaRenderer from './MediaRenderer';
+import GenerationCaseReviewDialog from './GenerationCaseReviewDialog';
 import {
   GenerationBatch,
   GenerationRuntimeHealth,
@@ -79,6 +83,14 @@ import {
   GENERATION_FORCEABLE_PREFLIGHT_CODES,
   generationForceRequiresFinalJson,
 } from '../features/generation/preflightReview';
+import {
+  buildGenerationIssueOptions,
+  filterGenerationPreflightCases,
+  getGenerationCaseId,
+  getPrimaryGenerationIssue,
+  resolveDefaultGenerationCaseStatus,
+  type GenerationCaseStatusFilter,
+} from '../features/generation/preflightPresentation';
 
 interface DatasetGenerationExecutionModalProps {
   dataset: EvalDataset;
@@ -110,7 +122,7 @@ const copy = {
   rawElements: '\u4ece elements JSON \u5217\u8bfb\u53d6',
   durationSource: '\u65f6\u957f\u6765\u6e90',
   uniformDuration: '\u7edf\u4e00\u503c',
-  durationColumn: '\u4ece\u5217\u8bfb\u53d6',
+  durationColumn: '\u65f6\u957f\u5217',
   followAudioDuration: '\u8ddf\u968f\u53c2\u8003\u97f3\u9891',
   probingAudio: '\u6b63\u5728\u8bfb\u53d6\u97f3\u9891\u65f6\u957f...',
   none: '\u4e0d\u4f7f\u7528',
@@ -131,6 +143,12 @@ const copy = {
   retry: '\u91cd\u8bd5\u5931\u8d25 case',
   createEvaluation: '\u521b\u5efa\u4eba\u5de5\u8bc4\u6d4b\u4efb\u52a1',
   explicitConfirm: '\u6211\u5df2\u6838\u5bf9\u6709\u6548/\u65e0\u6548 case\u3001\u6a21\u578b\u914d\u7f6e\u5feb\u7167\u548c\u8d39\u7528\u4fe1\u606f\u3002',
+};
+
+const generationReviewDialogKey = (item: GenerationPreflightCase) => {
+  const datasetItemId = String(item.resolvedCase.datasetItemId || '').trim();
+  if (datasetItemId) return `item:${datasetItemId}`;
+  return `case:${getGenerationCaseId(item)}:${item.resolvedCase.rowIndex ?? 'unknown'}`;
 };
 
 const emptyMapping: GenerationInputMapping = {
@@ -238,8 +256,11 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const [uploadProgress, setUploadProgress] = useState('');
   const [preflight, setPreflight] = useState<GenerationPreflightResult | null>(null);
   const [caseReviews, setCaseReviews] = useState<Record<string, GenerationCaseReview>>({});
-  const [requestJsonDrafts, setRequestJsonDrafts] = useState<Record<string, string>>({});
-  const [bulkForceCode, setBulkForceCode] = useState('');
+  const [pendingReviewIds, setPendingReviewIds] = useState<string[]>([]);
+  const [caseStatusFilter, setCaseStatusFilter] = useState<GenerationCaseStatusFilter>('needs_attention');
+  const [caseIssueKey, setCaseIssueKey] = useState('');
+  const [caseSearch, setCaseSearch] = useState('');
+  const [reviewDialogItemId, setReviewDialogItemId] = useState('');
   const [bulkForceReason, setBulkForceReason] = useState('');
   const [bulkForceConfirmed, setBulkForceConfirmed] = useState(false);
   const [reviewsDirty, setReviewsDirty] = useState(false);
@@ -330,20 +351,19 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     selectedModel,
     usesVidMuseEvaluationPreset,
   ]);
-  const forceableReviewGroups = useMemo(() => {
-    const groups = new Map<string, number>();
-    (preflight?.cases || []).forEach(item => {
-      new Set<string>(item.errors.map(issue => String(issue.code))).forEach(code => {
-        if (GENERATION_FORCEABLE_PREFLIGHT_CODES.has(code)) {
-          groups.set(code, (groups.get(code) || 0) + 1);
-        }
-      });
-    });
-    return Array.from(groups, ([code, count]) => ({ code, count }));
-  }, [preflight]);
-  const activeBulkForceCode = forceableReviewGroups.some(group => group.code === bulkForceCode)
-    ? bulkForceCode
-    : forceableReviewGroups[0]?.code || '';
+  const caseIssueOptions = useMemo(() => buildGenerationIssueOptions(preflight?.cases || []), [preflight]);
+  const selectedCaseIssue = caseIssueOptions.find(option => option.key === caseIssueKey);
+  const filteredPreflightCases = useMemo(() => filterGenerationPreflightCases(preflight?.cases || [], {
+    status: caseStatusFilter,
+    issueKey: caseIssueKey,
+    search: caseSearch,
+  }), [caseIssueKey, caseSearch, caseStatusFilter, preflight]);
+  const activeBulkForceCode = selectedCaseIssue?.severity === 'error'
+    && GENERATION_FORCEABLE_PREFLIGHT_CODES.has(selectedCaseIssue.code)
+    ? selectedCaseIssue.code
+    : '';
+  const reviewDialogIndex = filteredPreflightCases.findIndex(item =>
+    generationReviewDialogKey(item) === reviewDialogItemId);
   const selectedBatchItems = batch?.items.filter(item => selectedBatchItemIds.includes(item.id)) || [];
   const selectableBatchItems = batch?.items.filter(item =>
     ['pending', 'failed', 'submission_unknown', 'cancelled'].includes(item.status)
@@ -423,7 +443,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     setInputMapping(presetMapping);
     setPreflight(null);
     setCaseReviews({});
-    setRequestJsonDrafts({});
+    setPendingReviewIds([]);
     setReviewsDirty(false);
     setConfirmed(false);
   };
@@ -654,6 +674,16 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   }, [batch?.id]);
 
   useEffect(() => {
+    if (!preflight) return;
+    setCaseStatusFilter(resolveDefaultGenerationCaseStatus(preflight.cases));
+    setCaseIssueKey('');
+    setCaseSearch('');
+    setReviewDialogItemId('');
+    setBulkForceReason('');
+    setBulkForceConfirmed(false);
+  }, [preflight?.requestHash]);
+
+  useEffect(() => {
     const selectable = new Set(selectableBatchItems.map(item => item.id));
     setSelectedBatchItemIds(current => current.filter(itemId => selectable.has(itemId)));
   }, [selectableBatchSignature]);
@@ -698,55 +728,33 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const invalidatePreflight = () => {
     setPreflight(null);
     setCaseReviews({});
-    setRequestJsonDrafts({});
-    setBulkForceCode('');
+    setPendingReviewIds([]);
+    setCaseIssueKey('');
+    setCaseSearch('');
+    setReviewDialogItemId('');
     setBulkForceReason('');
     setBulkForceConfirmed(false);
     setReviewsDirty(false);
     setConfirmed(false);
   };
 
-  const updateCaseReview = (
-    datasetItemId: string,
-    updater: (current: GenerationCaseReview) => GenerationCaseReview,
-  ) => {
-    setCaseReviews(current => ({
-      ...current,
-      [datasetItemId]: updater(current[datasetItemId] || {}),
-    }));
+  const saveCaseReview = (datasetItemId: string, review: GenerationCaseReview) => {
+    setCaseReviews(current => ({ ...current, [datasetItemId]: review }));
+    setPendingReviewIds(current => Array.from(new Set([...current, datasetItemId])));
     setReviewsDirty(true);
     setConfirmed(false);
   };
 
-  const decideFinding = (
-    datasetItemId: string,
-    findingId: string,
-    decision: 'accept' | 'reject',
-  ) => updateCaseReview(datasetItemId, current => {
-    const accepted = new Set(current.acceptedFindingIds || []);
-    const rejected = new Set(current.rejectedFindingIds || []);
-    if (decision === 'accept') {
-      accepted.add(findingId);
-      rejected.delete(findingId);
-    } else {
-      rejected.add(findingId);
-      accepted.delete(findingId);
-    }
-    return {
-      ...current,
-      acceptedFindingIds: Array.from(accepted),
-      rejectedFindingIds: Array.from(rejected),
-    };
-  });
-
   const acceptFindingRule = (ruleId: string) => {
     if (!preflight) return;
     const next = { ...caseReviews };
+    const affectedIds: string[] = [];
     preflight.cases.forEach(item => {
       const datasetItemId = String(item.resolvedCase.datasetItemId || '');
       const findings = (item.resolvedCase.compilerAudit?.contractFindings || []) as GenerationContractFinding[];
       findings.filter(finding => finding.ruleId === ruleId && finding.disposition !== 'force_required')
         .forEach(finding => {
+          if (datasetItemId) affectedIds.push(datasetItemId);
           const current = next[datasetItemId] || {};
           next[datasetItemId] = {
             ...current,
@@ -756,6 +764,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
         });
     });
     setCaseReviews(next);
+    setPendingReviewIds(current => Array.from(new Set([...current, ...affectedIds])));
     setReviewsDirty(true);
     setConfirmed(false);
   };
@@ -773,12 +782,19 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const applyBulkForceReview = () => {
     if (!preflight || !activeBulkForceCode) return;
     setCaseReviews(current => applyBulkGenerationForceReview({
-      cases: preflight.cases,
+      cases: filteredPreflightCases,
       reviews: current,
       errorCode: activeBulkForceCode,
       reason: bulkForceReason.trim(),
       duplicateBillingRiskConfirmed: bulkForceConfirmed,
     }));
+    setPendingReviewIds(current => Array.from(new Set([
+      ...current,
+      ...filteredPreflightCases
+        .filter(item => item.errors.some(issue => issue.code === activeBulkForceCode))
+        .map(item => String(item.resolvedCase.datasetItemId || ''))
+        .filter(Boolean),
+    ])));
     setReviewsDirty(true);
     setConfirmed(false);
   };
@@ -863,7 +879,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     try {
       const next = await createExecutionPreflight(buildRequest());
       setPreflight(next);
-      setRequestJsonDrafts({});
+      setPendingReviewIds([]);
       setReviewsDirty(false);
       setStep(3);
     } catch (reason) {
@@ -1159,154 +1175,6 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     );
   };
 
-  const renderContractReview = (item: GenerationPreflightResult['cases'][number]) => {
-    const audit = item.resolvedCase.compilerAudit;
-    const findings = (audit?.contractFindings || []) as GenerationContractFinding[];
-    if (!audit || (!findings.length && audit.compilerVersion !== '3')) return null;
-    const datasetItemId = String(item.resolvedCase.datasetItemId || '');
-    const review = caseReviews[datasetItemId] || {};
-    const accepted = new Set(review.acceptedFindingIds || []);
-    const rejected = new Set(review.rejectedFindingIds || []);
-    const promptValue = review.promptOverride !== undefined
-      ? review.promptOverride
-      : item.resolvedCase.prompt;
-    const promptDraft = typeof promptValue === 'string'
-      ? promptValue
-      : JSON.stringify(promptValue ?? '', null, 2);
-    const defaultForceRuleCodes = Array.from(new Set(item.errors
-      .map(issue => String(issue.code))
-      .filter(code => GENERATION_FORCEABLE_PREFLIGHT_CODES.has(code))));
-    const reviewedForceRuleCodes = review.force?.ruleCodes || defaultForceRuleCodes;
-    const forceNeedsFinalJson = generationForceRequiresFinalJson(reviewedForceRuleCodes);
-    const requestDraft = requestJsonDrafts[datasetItemId]
-      ?? JSON.stringify(review.finalAionRequest || audit.finalAionRequest || {}, null, 2);
-
-    const applyRequestDraft = () => {
-      try {
-        const parsed = JSON.parse(requestDraft);
-        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-          throw new Error('Final Aion JSON must be an object.');
-        }
-        updateCaseReview(datasetItemId, current => ({ ...current, finalAionRequest: parsed }));
-        setError('');
-      } catch (reason) {
-        setError(errorMessage(reason));
-      }
-    };
-
-    return (
-      <div className="mt-2 space-y-2 border-l border-amber-400/30 pl-2">
-        {findings.map(finding => {
-          const isAccepted = accepted.has(finding.id);
-          const isRejected = rejected.has(finding.id);
-          return (
-            <div key={finding.id} className="border border-white/10 bg-black/20 p-2">
-              <div className="text-amber-200">[{finding.ruleId}] {finding.message}</div>
-              <div className="mt-1 text-[10px] text-slate-500">{finding.source} / {finding.sourceVersion}</div>
-              {finding.disposition !== 'force_required' && (
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <button type="button" onClick={() => decideFinding(datasetItemId, finding.id, 'accept')} className={`border px-2 py-1 text-[11px] ${isAccepted ? 'border-emerald-400 bg-emerald-500/20 text-emerald-200' : 'border-white/10 text-slate-300'}`}>接受建议</button>
-                  <button type="button" onClick={() => decideFinding(datasetItemId, finding.id, 'reject')} className={`border px-2 py-1 text-[11px] ${isRejected ? 'border-slate-400 bg-white/10 text-slate-100' : 'border-white/10 text-slate-300'}`}>拒绝建议</button>
-                  <button type="button" onClick={() => acceptFindingRule(finding.ruleId)} className="border border-white/10 px-2 py-1 text-[11px] text-sky-200">同类全部接受</button>
-                </div>
-              )}
-            </div>
-          );
-        })}
-
-        <details className="border border-white/10 bg-black/20">
-          <summary className="cursor-pointer px-2 py-1.5 text-[11px] text-sky-300">逐 case 编辑与人工覆盖</summary>
-          <div className="space-y-3 border-t border-white/10 p-3">
-            <label className="block">
-              <span className="mb-1 block text-[11px] text-slate-400">本批次 Prompt</span>
-              <textarea
-                value={promptDraft}
-                onChange={event => updateCaseReview(datasetItemId, current => ({
-                  ...current,
-                  promptOverride: event.target.value,
-                }))}
-                rows={3}
-                className="w-full border border-white/10 bg-slate-950 p-2 font-mono text-[11px] text-slate-200"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1 block text-[11px] text-slate-400">最终 Aion JSON</span>
-              <textarea
-                value={requestDraft}
-                onChange={event => {
-                  setRequestJsonDrafts(current => ({ ...current, [datasetItemId]: event.target.value }));
-                  setReviewsDirty(true);
-                  setConfirmed(false);
-                }}
-                rows={8}
-                className="w-full border border-white/10 bg-slate-950 p-2 font-mono text-[10px] text-slate-200"
-              />
-            </label>
-            <div className="flex flex-wrap gap-2">
-              <button type="button" onClick={applyRequestDraft} className="border border-red-400/30 bg-red-500/10 px-2 py-1 text-[11px] text-red-100">采用人工覆盖 JSON</button>
-              {review.finalAionRequest && (
-                <button type="button" onClick={() => updateCaseReview(datasetItemId, current => ({ ...current, finalAionRequest: undefined }))} className="border border-white/10 px-2 py-1 text-[11px] text-slate-300">移除 JSON 覆盖</button>
-              )}
-            </div>
-            <label className="block">
-              <span className="mb-1 block text-[11px] text-slate-400">强制提交原因</span>
-              <input
-                value={review.force?.reason || ''}
-                onChange={event => updateCaseReview(datasetItemId, current => ({
-                  ...current,
-                  force: {
-                    reason: event.target.value,
-                    duplicateBillingRiskConfirmed: current.force?.duplicateBillingRiskConfirmed === true,
-                    ...((current.force?.ruleCodes || defaultForceRuleCodes).length ? {
-                      ruleCodes: current.force?.ruleCodes || defaultForceRuleCodes,
-                    } : {}),
-                  },
-                }))}
-                className="w-full border border-white/10 bg-slate-950 px-2 py-1.5 text-xs text-slate-200"
-              />
-            </label>
-            <label className="flex items-start gap-2 text-[11px] text-red-200">
-              <input
-                type="checkbox"
-                checked={review.force?.duplicateBillingRiskConfirmed === true}
-                onChange={event => updateCaseReview(datasetItemId, current => ({
-                  ...current,
-                  force: {
-                    reason: current.force?.reason || '',
-                    duplicateBillingRiskConfirmed: event.target.checked,
-                    ...((current.force?.ruleCodes || defaultForceRuleCodes).length ? {
-                      ruleCodes: current.force?.ruleCodes || defaultForceRuleCodes,
-                    } : {}),
-                  },
-                }))}
-              />
-              <span>
-                {review.finalAionRequest
-                  ? '我确认手工 Aion JSON 可能不再保证 MCP 或模型合同对齐，并理解可能产生重复计费。'
-                  : forceNeedsFinalJson
-                    ? '我确认该规则还必须逐 case 提供最终 Aion JSON；仅勾选本项不会使 case 变为有效。'
-                    : '我确认保留当前 MCP/Aion 请求并承担已列出的素材类型或可访问性风险，并理解可能产生重复计费。'}
-              </span>
-            </label>
-            {!!review.force?.ruleCodes?.length && (
-              <div className="text-[11px] text-amber-300">
-                {'\u4ec5批量确认规则: '}{review.force.ruleCodes.join(', ')}
-              </div>
-            )}
-            {review.force && (
-              <button
-                type="button"
-                onClick={() => updateCaseReview(datasetItemId, current => ({ ...current, force: undefined }))}
-                className="border border-white/10 px-2 py-1 text-[11px] text-slate-300"
-              >
-                清除强制提交设置
-              </button>
-            )}
-          </div>
-        </details>
-      </div>
-    );
-  };
   const terminal = isTerminalGenerationBatch(batch || undefined);
   const completedItems = batch?.items.filter(item => ['succeeded', 'failed', 'submission_unknown', 'cancelled'].includes(item.status)).length || 0;
   const temporaryResultCount = batch?.items.filter(item => item.status === 'succeeded' && item.durability === 'temporary').length || 0;
@@ -1560,11 +1428,13 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                 <h3 className="mb-3 text-sm font-semibold text-slate-100">{copy.controls}</h3>
                 {durationControl && (
                   <div className="mb-5 border-b border-white/10 pb-5">
-                    <div className="mb-2 text-xs text-slate-400">{copy.durationSource}</div>
+                    <div className="text-sm font-medium text-slate-100">视频时长（Duration）</div>
+                    <div className="mt-1 text-xs text-slate-400">控制每个 case 请求的视频秒数。</div>
+                    <div className="mb-2 mt-3 text-xs text-slate-400">{copy.durationSource}</div>
                     <div className="mb-3 flex w-fit max-w-full flex-wrap border border-white/10 bg-black/20 p-1" role="group" aria-label={copy.durationSource}>
                       {([
                         ['uniform', copy.uniformDuration],
-                        ['column', copy.durationColumn],
+                        ['column', '\u4ece\u65f6\u957f\u5217\u8bfb\u53d6'],
                         ['reference_audio', copy.followAudioDuration],
                       ] as const).map(([mode, label]) => (
                         <button
@@ -1764,166 +1634,127 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                     </section>
                   )}
 
-                  {!!forceableReviewGroups.length && (
-                    <section className="border border-red-400/30 bg-red-500/10 p-4">
-                      <h3 className="text-sm font-semibold text-red-100">{'按错误类型批量确认风险'}</h3>
-                      <p className="mt-1 text-xs leading-5 text-red-200/80">
-                        {'批量操作只写入强制原因、计费确认和当前错误码，不会生成或修改最终 Aion JSON。'}
-                      </p>
-                      <div className="mt-3 grid gap-3 md:grid-cols-[minmax(220px,0.8fr)_minmax(280px,1.4fr)]">
-                        <label className="block text-xs text-slate-300">
-                          <span className="mb-1.5 block">{'错误类型'}</span>
-                          <select
-                            value={activeBulkForceCode}
-                            onChange={event => setBulkForceCode(event.target.value)}
-                            className="w-full border border-white/10 bg-slate-950 px-3 py-2 text-xs text-slate-100"
-                          >
-                            {forceableReviewGroups.map(group => (
-                              <option key={group.code} value={group.code}>{group.code} ({group.count})</option>
-                            ))}
-                          </select>
-                        </label>
-                        <label className="block text-xs text-slate-300">
-                          <span className="mb-1.5 block">{'强制提交原因'}</span>
-                          <input
-                            value={bulkForceReason}
-                            onChange={event => setBulkForceReason(event.target.value)}
-                            className="w-full border border-white/10 bg-slate-950 px-3 py-2 text-xs text-slate-100"
-                          />
-                        </label>
-                      </div>
-                      <label className="mt-3 flex items-start gap-2 text-xs text-red-100">
-                        <input
-                          type="checkbox"
-                          checked={bulkForceConfirmed}
-                          onChange={event => setBulkForceConfirmed(event.target.checked)}
-                        />
-                        <span>{'我已阅读该类风险，并确认可能产生重复计费。'}</span>
-                      </label>
-                      {generationForceRequiresFinalJson([activeBulkForceCode]) && (
-                        <div className="mt-2 text-xs text-amber-200">
-                          {'该错误必须逐 case 提供最终 Aion JSON；批量确认后仍会保持无效，直到每个影响 case 的 JSON 已填写并重新预检。'}
-                        </div>
-                      )}
-                      <button
-                        type="button"
-                        disabled={!bulkForceReason.trim() || !bulkForceConfirmed}
-                        onClick={applyBulkForceReview}
-                        className="mt-3 border border-red-300/30 bg-red-500/10 px-3 py-2 text-xs text-red-100 disabled:opacity-40"
-                      >
-                        {'应用到当前同类 case'}
-                      </button>
-                    </section>
-                  )}
-
                   <section>
-                    <h3 className="mb-3 text-sm font-semibold text-slate-100">Case validation</h3>
-                    <div className="max-h-72 overflow-auto border border-white/10">
-                      {preflight.cases.map((item, index) => (
-                        <div key={`${String(item.resolvedCase.caseId || index)}-${index}`} className="grid gap-2 border-b border-white/5 px-3 py-3 text-xs last:border-0 md:grid-cols-[180px_190px_1fr]">
-                          <div className="truncate text-slate-200" title={String(item.resolvedCase.caseId || '')}>{String(item.resolvedCase.caseId || `case-${index + 1}`)}</div>
-                          <div>
-                            <div className={item.valid ? 'text-emerald-300' : 'text-red-300'}>{item.valid ? '\u6709\u6548' : '\u65e0\u6548'} / {item.generationType}</div>
-                            {item.resolvedCase.compilerAudit?.effectiveGenerationType && (
-                              <div className="mt-1 text-[11px] text-sky-300">Aion effective: {item.resolvedCase.compilerAudit.effectiveGenerationType}</div>
-                            )}
-                          </div>
-                          <div className="space-y-1 text-slate-400">
-                            {item.errors.map((issue, issueIndex) => <div key={`${issue.code}-${issue.field || ''}-${issue.message}-${issueIndex}`} className="text-red-300">[{issue.code}] {issue.message}</div>)}
-                            {item.warnings.map((issue, issueIndex) => <div key={`${issue.code}-${issue.field || ''}-${issue.message}-${issueIndex}`} className="text-amber-300">[{issue.code}] {issue.message}</div>)}
-                            {renderContractReview(item)}
-                            {item.resolvedCase.compilerAudit && (
-                              <div className="space-y-1.5 border-l border-sky-400/30 pl-2 text-sky-200">
-                                <div className="flex flex-wrap gap-x-3 gap-y-1">
-                                  <span>contract v{item.resolvedCase.compilerAudit.compilerVersion}</span>
-                                  {item.resolvedCase.compilerAudit.profileId && <span>{item.resolvedCase.compilerAudit.profileId}</span>}
-                                  {item.resolvedCase.compilerAudit.compatibilityApplied && (
-                                    <span className="text-amber-300">{'\u5df2\u5e94\u7528\u517c\u5bb9\u8f6c\u6362'}</span>
-                                  )}
-                                </div>
-                                <div className="flex flex-wrap gap-2 text-[11px] text-slate-400">
-                                  {(item.resolvedCase.compilerAudit.bindings?.images || []).map((binding: any) => (
-                                    <span key={`image-${binding.index}`}>image_urls[{binding.index}]</span>
-                                  ))}
-                                  {(item.resolvedCase.compilerAudit.bindings?.elements || []).map((binding: any) => (
-                                    <span key={`element-${binding.index}`}>elements[{binding.index}]</span>
-                                  ))}
-                                  {(item.resolvedCase.compilerAudit.bindings?.audios || []).map((binding: any) => (
-                                    <span key={`audio-${binding.index}`}>audios[{binding.index}]</span>
-                                  ))}
-                                </div>
-                                <details>
-                                  <summary className="cursor-pointer text-[11px] text-sky-300">{'\u539f\u59cb\u8f93\u5165\u4e0e\u7528\u6237\u610f\u56fe'}</summary>
-                                  <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-all bg-black/30 p-2 text-[10px] text-slate-300">{JSON.stringify({
-                                    originalInput: item.resolvedCase.compilerAudit.originalInput,
-                                    inputIntent: item.resolvedCase.compilerAudit.intent,
-                                    normalizedInput: item.resolvedCase.compilerAudit.compiledInput,
-                                  }, null, 2)}</pre>
-                                </details>
-                                <details>
-                                  <summary className="cursor-pointer text-[11px] text-sky-300">{'MCP \u6807\u51c6\u8f93\u5165'}</summary>
-                                  <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-all bg-black/30 p-2 text-[10px] text-slate-300">{JSON.stringify(
-                                    item.resolvedCase.compilerAudit.mcpToolInput || {}, null, 2,
-                                  )}</pre>
-                                </details>
-                                {!!item.resolvedCase.compilerAudit.mediaReferences?.length && (
-                                  <details>
-                                    <summary className="cursor-pointer text-[11px] text-sky-300">{'素材角色与确定性校验'}</summary>
-                                    <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-all bg-black/30 p-2 text-[10px] text-slate-300">{JSON.stringify(
-                                      item.resolvedCase.compilerAudit.mediaReferences, null, 2,
-                                    )}</pre>
-                                  </details>
-                                )}
-                                <details>
-                                  <summary className="cursor-pointer text-[11px] text-sky-300">{'\u751f\u6210\u65b9\u5f0f'}</summary>
-                                  <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-all bg-black/30 p-2 text-[10px] text-slate-300">{JSON.stringify({
-                                    manuevalGenerationType: item.generationType,
-                                    aionKnownEffectiveType: item.resolvedCase.compilerAudit.effectiveGenerationType,
-                                  }, null, 2)}</pre>
-                                </details>
-                                <details>
-                                  <summary className="cursor-pointer text-[11px] text-sky-300">{'\u6700\u7ec8 Aion \u8bf7\u6c42'}</summary>
-                                  <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-all bg-black/30 p-2 text-[10px] text-slate-300">{JSON.stringify({
-                                    request: item.resolvedCase.compilerAudit.finalAionRequest,
-                                    projectionDiff: item.resolvedCase.compilerAudit.projectionDiff,
-                                    overrideAudit: item.resolvedCase.compilerAudit.overrideAudit,
-                                  }, null, 2)}</pre>
-                                </details>
-                                <details>
-                                  <summary className="cursor-pointer text-[11px] text-sky-300">{'\u53c2\u6570\u6765\u6e90'}</summary>
-                                  <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-all bg-black/30 p-2 text-[10px] text-slate-300">{JSON.stringify({
-                                    seed: {
-                                      policyVersion: item.resolvedCase.seedPolicyVersion,
-                                      mode: item.resolvedCase.seedMode,
-                                      status: item.resolvedCase.seedMode === 'unused' ? '\u672a\u53d1\u9001\uff0c\u4f7f\u7528\u6a21\u578b\u9ed8\u8ba4' : item.resolvedCase.seedMode,
-                                      value: item.resolvedCase.seed,
-                                    },
-                                    parameters: item.resolvedCase.parameterAudit,
-                                    contractSource: item.resolvedCase.compilerAudit.contractSource,
-                                    contractFindings: item.resolvedCase.compilerAudit.contractFindings,
-                                    review: item.resolvedCase.compilerAudit.review,
-                                  }, null, 2)}</pre>
-                                </details>
-                              </div>
-                            )}
-                            {item.resolvedCase.durationResolution?.source === 'reference_audio' && (
-                              <div className="text-sky-300">
-                                {'\u97f3\u9891 '}{item.resolvedCase.durationResolution.detectedSeconds}s
-                                {' \u2192 \u8bf7\u6c42 '}{item.resolvedCase.durationResolution.resolvedDuration}s
-                              </div>
-                            )}
-                            {!item.errors.length && !item.warnings.length && !item.resolvedCase.durationResolution && <span>-</span>}
-                          </div>
-                        </div>
-                      ))}
+                    <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-semibold text-slate-100">Case 预检结果</h3>
+                        <p className="mt-1 text-xs text-slate-500">当前显示 {filteredPreflightCases.length} / {preflight.cases.length} 个 case。点击一行查看问题、修改 Prompt 或审计请求。</p>
+                      </div>
+                    </div>
+                    <div className="sticky top-0 z-10 grid gap-3 border border-white/10 bg-slate-950/95 p-3 md:grid-cols-3">
+                      <label className="block text-xs text-slate-400">
+                        <span className="mb-1.5 block">状态</span>
+                        <select value={caseStatusFilter} onChange={event => setCaseStatusFilter(event.target.value as GenerationCaseStatusFilter)} className="h-10 w-full border border-white/10 bg-slate-950 px-3 text-sm text-slate-100">
+                          <option value="needs_attention">需处理</option>
+                          <option value="invalid">无效</option>
+                          <option value="warning">有警告</option>
+                          <option value="valid">有效且无警告</option>
+                          <option value="all">全部</option>
+                        </select>
+                      </label>
+                      <label className="block text-xs text-slate-400">
+                        <span className="mb-1.5 block">问题类型</span>
+                        <select
+                          value={caseIssueKey}
+                          onChange={event => {
+                            const nextKey = event.target.value;
+                            setCaseIssueKey(nextKey);
+                            const option = caseIssueOptions.find(candidate => candidate.key === nextKey);
+                            if (option) setCaseStatusFilter(option.severity === 'error' ? 'invalid' : 'warning');
+                            setBulkForceReason('');
+                            setBulkForceConfirmed(false);
+                          }}
+                          className="h-10 w-full border border-white/10 bg-slate-950 px-3 text-sm text-slate-100"
+                        >
+                          <option value="">全部问题</option>
+                          <optgroup label="阻断错误">
+                            {caseIssueOptions.filter(option => option.severity === 'error').map(option => <option key={option.key} value={option.key}>{option.label} ({option.count})</option>)}
+                          </optgroup>
+                          <optgroup label="警告">
+                            {caseIssueOptions.filter(option => option.severity === 'warning').map(option => <option key={option.key} value={option.key}>{option.label} ({option.count})</option>)}
+                          </optgroup>
+                        </select>
+                      </label>
+                      <label className="block text-xs text-slate-400">
+                        <span className="mb-1.5 block">Case ID</span>
+                        <span className="relative block">
+                          <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                          <input value={caseSearch} onChange={event => setCaseSearch(event.target.value)} placeholder="搜索 Case ID" className="h-10 w-full border border-white/10 bg-slate-950 pl-9 pr-3 text-sm text-slate-100" />
+                        </span>
+                      </label>
+                    </div>
+
+                    {activeBulkForceCode && filteredPreflightCases.length > 0 && (
+                      <div className="mt-3 border border-red-400/30 bg-red-500/10 p-4">
+                        <h4 className="text-sm font-semibold text-red-100">批量确认当前筛选风险</h4>
+                        <p className="mt-1 text-xs leading-5 text-red-200/80">
+                          当前问题：{selectedCaseIssue?.label}。批量操作只写入原因、计费确认和错误码，不会生成或修改最终 Aion JSON。
+                        </p>
+                        <label className="mt-3 block text-xs text-slate-300">
+                          <span className="mb-1.5 block">强制提交原因</span>
+                          <input value={bulkForceReason} onChange={event => setBulkForceReason(event.target.value)} className="w-full border border-white/10 bg-slate-950 px-3 py-2 text-xs text-slate-100" />
+                        </label>
+                        <label className="mt-3 flex items-start gap-2 text-xs text-red-100">
+                          <input type="checkbox" checked={bulkForceConfirmed} onChange={event => setBulkForceConfirmed(event.target.checked)} />
+                          <span>我已阅读该类风险，并确认可能产生重复计费。</span>
+                        </label>
+                        {generationForceRequiresFinalJson([activeBulkForceCode]) && (
+                          <div className="mt-2 text-xs text-amber-200">该问题必须逐 case 提供最终 Aion JSON；批量确认后仍保持无效。</div>
+                        )}
+                        <button type="button" disabled={!bulkForceReason.trim() || !bulkForceConfirmed} onClick={applyBulkForceReview} className="mt-3 border border-red-300/30 bg-red-500/10 px-3 py-2 text-xs text-red-100 disabled:opacity-40">
+                          应用到当前筛选的 {filteredPreflightCases.length} 个 case
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="mt-3 min-h-[420px] max-h-[55vh] overflow-auto border border-white/10">
+                      {filteredPreflightCases.map((item, index) => {
+                        const primary = getPrimaryGenerationIssue(item, caseIssueKey);
+                        const issueCount = item.errors.length + item.warnings.length;
+                        const datasetItemId = String(item.resolvedCase.datasetItemId || '');
+                        const pending = pendingReviewIds.includes(datasetItemId);
+                        return (
+                          <button
+                            type="button"
+                            key={`${datasetItemId || getGenerationCaseId(item)}-${index}`}
+                            onClick={() => setReviewDialogItemId(generationReviewDialogKey(item))}
+                            className="grid w-full min-w-[780px] grid-cols-[minmax(180px,0.9fr)_90px_minmax(150px,0.8fr)_minmax(260px,1.6fr)_auto] items-center gap-3 border-b border-white/5 px-3 py-3 text-left text-xs last:border-0 hover:bg-white/[0.04]"
+                          >
+                            <span className="truncate font-medium text-slate-100" title={getGenerationCaseId(item)}>{getGenerationCaseId(item)}</span>
+                            <span className={item.valid ? 'text-emerald-300' : 'text-red-300'}>{item.valid ? '有效' : '无效'}</span>
+                            <span className="truncate text-sky-300" title={item.generationType}>{item.generationType}</span>
+                            <span className="min-w-0">
+                              {primary ? <span className={primary.severity === 'error' ? 'text-red-300' : 'text-amber-300'}>{primary.title}</span> : <span className="text-emerald-300">无预检问题</span>}
+                              {issueCount > 1 && <span className="ml-2 text-slate-500">另有 {issueCount - 1} 个问题</span>}
+                              {pending && <span className="ml-2 text-sky-300">已修改，待重新预检</span>}
+                            </span>
+                            <ChevronRight size={16} className="text-slate-500" />
+                          </button>
+                        );
+                      })}
+                      {!filteredPreflightCases.length && <div className="flex min-h-[220px] items-center justify-center text-sm text-slate-500">没有符合当前筛选条件的 case。</div>}
                     </div>
                   </section>
 
+                  {reviewDialogIndex >= 0 && (
+                    <GenerationCaseReviewDialog
+                      item={filteredPreflightCases[reviewDialogIndex]}
+                      position={reviewDialogIndex}
+                      total={filteredPreflightCases.length}
+                      review={caseReviews[String(filteredPreflightCases[reviewDialogIndex].resolvedCase.datasetItemId || '')]}
+                      onClose={() => setReviewDialogItemId('')}
+                      onPrevious={reviewDialogIndex > 0 ? () => setReviewDialogItemId(generationReviewDialogKey(filteredPreflightCases[reviewDialogIndex - 1])) : undefined}
+                      onNext={reviewDialogIndex < filteredPreflightCases.length - 1 ? () => setReviewDialogItemId(generationReviewDialogKey(filteredPreflightCases[reviewDialogIndex + 1])) : undefined}
+                      onSave={saveCaseReview}
+                      onAcceptFindingRule={acceptFindingRule}
+                    />
+                  )}
+
                   {reviewsDirty && (
                     <div className="flex flex-wrap items-center justify-between gap-3 border border-sky-400/30 bg-sky-500/10 px-4 py-3 text-sm text-sky-100">
-                      <span>审阅内容已修改。重新预检后才会生成新的请求哈希和最终请求快照。</span>
+                      <span>已保存 {pendingReviewIds.length} 条修改。重新预检后才会生成新的请求哈希和最终请求快照。</span>
                       <button type="button" disabled={busy} onClick={() => { void runPreflight(); }} className="inline-flex items-center gap-2 border border-sky-300/30 px-3 py-1.5 text-xs disabled:opacity-40">
-                        {busy ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} 应用审阅并重新预检
+                        {busy ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} 应用 {pendingReviewIds.length} 条修改并重新预检
                       </button>
                     </div>
                   )}

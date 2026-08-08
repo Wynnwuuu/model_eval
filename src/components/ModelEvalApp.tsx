@@ -832,6 +832,14 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
             onBack={() => navigate('overview')}
             mode={currentRoute === 'generation' ? 'generation' : 'repository'}
             initialDatasetId={routeContext.datasetId}
+            generationView={routeContext.generationView}
+            initialGenerationBatchId={routeContext.generationBatchId}
+            onGenerationNavigate={(generationView, context: { datasetId?: string; generationBatchId?: string } = {}) => navigate('generation', {
+              generationView,
+              datasetId: context.datasetId,
+              generationBatchId: context.generationBatchId,
+            })}
+            onOpenDatasetRepository={(datasetId) => navigate('datasets', { datasetId })}
             onCreateEvaluation={(datasetId, resultColumn) => navigate('tasks', {
               taskBuilderMode: 'create',
               source: 'dataset',

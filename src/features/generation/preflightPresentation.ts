@@ -1,0 +1,222 @@
+import type {
+  GenerationPreflightCase,
+  GenerationPreflightIssue,
+} from '../../types.js';
+import {
+  GENERATION_FORCEABLE_PREFLIGHT_CODES,
+  GENERATION_FINAL_JSON_REQUIRED_CODES,
+} from './preflightReview.js';
+
+export type GenerationCaseStatusFilter = 'needs_attention' | 'invalid' | 'warning' | 'valid' | 'all';
+export type GenerationIssueSeverity = 'error' | 'warning';
+
+interface GenerationIssueCopy {
+  title: string;
+  description: string;
+  suggestion: string;
+}
+
+export interface GenerationIssuePresentation extends GenerationIssueCopy {
+  issue: GenerationPreflightIssue;
+  severity: GenerationIssueSeverity;
+  blocking: boolean;
+  forceable: boolean;
+  requiresFinalJson: boolean;
+}
+
+export interface GenerationIssueOption {
+  key: string;
+  code: string;
+  severity: GenerationIssueSeverity;
+  count: number;
+  label: string;
+}
+
+const issueCopy = (title: string, description: string, suggestion: string): GenerationIssueCopy => ({
+  title,
+  description,
+  suggestion,
+});
+
+const ISSUE_COPY: Record<string, GenerationIssueCopy> = {
+  INVALID_STRUCTURED_INPUT: issueCopy('结构化输入格式不正确', '映射到数组或对象的单元格无法按要求解析。', '检查对应列并使用有效 JSON，数组字段应使用 JSON 数组。'),
+  INVALID_PROMPT_JSON: issueCopy('Prompt JSON 格式不正确', '多镜头或保留 JSON 类型的 Prompt 无法解析。', '修正 Prompt JSON，或将 Prompt 格式改为普通文本。'),
+  INVALID_PROMPT: issueCopy('Prompt 内容无效', 'Prompt 的数据类型或内容不符合当前映射格式。', '填写非空文本，或选择与单元格内容一致的 Prompt 格式。'),
+  INVALID_PROMPT_ITEM: issueCopy('多镜头 Prompt 子项无效', '至少一个镜头缺少 Prompt 或合法时长。', '检查每个镜头对象的 prompt 和 duration。'),
+  UNKNOWN_PROMPT_FIELD: issueCopy('Prompt 包含未知字段', '多镜头 Prompt 中包含 MCP 合同未声明的字段。', '删除未知字段，保留 prompt 和 duration。'),
+  PROMPT_TOO_LONG: issueCopy('Prompt 超出模型长度限制', '当前 Prompt 长度超过实时模型配置允许范围。', '精简 Prompt，或选择支持更长 Prompt 的模型。'),
+  PROMPT_REFERENCE_OUT_OF_RANGE: issueCopy('Prompt 引用了不存在的素材编号', 'Prompt 中的素材占位符没有对应的实际输入。', '修正编号，或补充对应素材。'),
+  UNREFERENCED_PROMPT_ASSET: issueCopy('素材未在 Prompt 中引用', '已传入素材，但 Prompt 没有引用它。模型仍可能使用该素材。', '确认这是预期行为，或在 Prompt 中补充模型支持的占位符。'),
+  INVALID_ASSET_URL: issueCopy('素材地址无效', '素材不是可提交的 HTTP(S)、上传资产或允许的相对地址。', '替换为有效公网 URL 或先上传素材。'),
+  MISSING_ASSET: issueCopy('本地素材未找到', '评测集引用的本地文件没有匹配到已上传资产。', '上传缺失文件，并检查相对路径或文件名。'),
+  MEDIA_TYPE_MISMATCH: issueCopy('素材类型与输入通道不匹配', '地址或 MIME 显示的媒体类型与图片、视频或音频通道不一致。', '把素材映射到正确通道，或确认风险后保留原值。'),
+  MEDIA_TYPE_UNVERIFIED: issueCopy('无法确认素材类型', '素材地址和 MIME 都不足以确认实际媒体类型。', '人工检查素材可播放性和类型后再继续。'),
+  NON_PUBLIC_ASSET_URL: issueCopy('素材地址可能无法被模型访问', '地址指向本机、内网或非标准公网主机。', '改用公网可访问地址，或确认模型侧确实能够访问。'),
+  RELATIVE_ASSET_REQUIRES_REVIEW: issueCopy('相对素材地址需要确认', '该地址不是完整公网 URL，Aion 是否能解析取决于运行环境。', '确认相对地址在 Aion 中可解析，或改成完整公网 URL。'),
+  INVALID_ELEMENT: issueCopy('参考元素格式不正确', 'elements 中至少一个条目不是合法对象。', '使用图片元素、视频元素或已有 element_id 三种结构之一。'),
+  UNKNOWN_ELEMENT_FIELD: issueCopy('参考元素包含未知字段', '元素对象包含 MCP 合同未声明的字段。', '删除未知字段，按 MCP elements 结构填写。'),
+  INVALID_ELEMENT_ID: issueCopy('Element ID 无效', 'element_id 不是非负整数。', '填写有效的已有元素 ID。'),
+  INVALID_ELEMENT_MODE: issueCopy('参考元素形态冲突', '同一元素同时使用了图片、视频或 element_id 中的多种形态。', '每个元素只保留一种形态。'),
+  MODEL_ELEMENT_IMAGE_LIMIT: issueCopy('元素图片数量超出模型限制', '图片元素包含的参考图数量超过当前模型合同。', '减少图片数量或拆分为模型支持的元素结构。'),
+  INVALID_AUDIO_INPUT: issueCopy('参考音频格式不正确', 'audios 中至少一个条目缺少有效 URL。', '使用 {"url":"...","range":[start,end]} 结构。'),
+  UNKNOWN_AUDIO_FIELD: issueCopy('参考音频包含未知字段', '音频对象包含 MCP 合同未声明的字段。', '只保留 url 和可选 range。'),
+  INVALID_AUDIO_RANGE: issueCopy('参考音频区间无效', '音频区间必须满足 0 ≤ 开始时间 < 结束时间。', '修正 range 或改为使用完整音频。'),
+  AUDIO_RANGE_WITHOUT_URL: issueCopy('音频区间缺少地址', '设置了截取区间，但没有音频 URL。', '补充音频地址或删除区间。'),
+  AUDIO_RANGE_REQUIRES_AUDIOS: issueCopy('音频区间需要 audios 通道', '当前模型或请求形态不能在旧音频字段中表达区间。', '使用 MCP audios 对象数组，或人工审阅最终请求。'),
+  MULTIPLE_AUDIOS_REQUIRE_AUDIOS: issueCopy('多音频需要 audios 通道', '多个音频不能通过单值旧字段准确发送。', '使用 MCP audios 对象数组。'),
+  MULTIPLE_REFERENCE_AUDIOS: issueCopy('参考音频数量不符合时长跟随规则', '跟随参考音频时长时，每个 case 必须能唯一确定一个音频。', '只保留一个参考音频，或改用统一时长/时长列。'),
+  MISSING_REFERENCE_AUDIO: issueCopy('缺少参考音频', '当前 case 选择跟随参考音频时长，但没有音频输入。', '补充音频，或改用其他时长来源。'),
+  UNKNOWN_AUDIO_DURATION: issueCopy('无法读取参考音频时长', '平台未能可靠探测该音频的时长。', '检查音频公网可达性，或改用统一时长/时长列。'),
+  REFERENCE_AUDIO_NOT_PUBLIC: issueCopy('参考音频不是公网地址', '模型服务可能无法读取该音频。', '提供公网音频 URL。'),
+  AUDIO_DURATION_URL_MISMATCH: issueCopy('音频时长记录与地址不一致', '预检探测的音频与当前 case 实际音频不同。', '重新探测并执行预检。'),
+  AUDIO_DURATION_RESOLUTION_MISMATCH: issueCopy('音频时长解析结果不一致', '保存的探测结果无法对应当前输入。', '重新探测并执行预检。'),
+  REFERENCE_AUDIO_DURATION_UNSUPPORTED: issueCopy('模型不支持该音频时长', '参考音频解析出的时长不在模型允许范围。', '裁剪音频或选择受支持的时长。'),
+  MCP_KEYFRAME_COUNT_EXCEEDED: issueCopy('关键帧数量超过 MCP 上限', 'image_urls 是关键帧通道，只允许一张驱动图或首尾两帧。', '普通参考图改放 elements，关键帧最多保留两张。'),
+  MISSING_FIRST_FRAME: issueCopy('缺少首帧', 'case 提供了尾帧但没有首帧。', '补充首帧，或移除尾帧。'),
+  MISSING_START_IMAGE: issueCopy('缺少驱动图或首帧', '当前生成方式需要首张关键帧。', '补充首帧输入。'),
+  INVALID_IMAGE_ROLE_COUNT: issueCopy('关键帧角色数量无效', '首帧或尾帧映射产生了不允许的数量。', '确保每个 case 最多一张首帧和一张尾帧。'),
+  CONFLICTING_IMAGE_ROLES: issueCopy('图片角色发生冲突', '同一素材或输入同时被解释为不同图片角色。', '明确区分关键帧与普通参考元素。'),
+  MCP_INPUT_MODE_CONFLICT: issueCopy('关键帧与参考输入冲突', 'MCP 没有定义关键帧与 elements/audios 混合时的统一生成方式。', '选择关键帧生成或参考生成；需要例外时人工审阅最终请求。'),
+  MODEL_INPUT_CONFLICT: issueCopy('模型不支持当前素材组合', '实时合同不允许这些输入通道同时使用。', '按模型限制减少或调整素材通道。'),
+  CONFLICTING_VIDEO_AND_KEYFRAMES: issueCopy('参考视频与关键帧冲突', '当前模型不能同时接收参考视频和关键帧。', '二选一后重新预检。'),
+  CONFLICTING_REFERENCE_VIDEO_INPUTS: issueCopy('参考视频来源冲突', '同一 case 同时使用了互斥的参考视频输入方式。', '只保留一种参考视频来源。'),
+  REFERENCE_VIDEO_NOT_SUPPORTED: issueCopy('模型不支持参考视频', '实时模型配置未声明参考视频能力。', '选择支持参考视频的模型或移除该输入。'),
+  REFERENCE_VIDEO_COUNT_OUT_OF_RANGE: issueCopy('参考视频数量超出范围', '参考视频数量不符合实时模型配置。', '调整视频数量到允许范围。'),
+  INPUT_COUNT_OUT_OF_RANGE: issueCopy('素材数量超出模型范围', '一个或多个输入通道的素材数量不符合实时模型限制。', '根据字段和模型说明减少或补充素材。'),
+  MULTIPLE_VALUES_FOR_SINGLE_INPUT: issueCopy('单值输入包含多个素材', '该字段只能接收一个值，但当前 case 解析出了多个。', '改用数组通道或只保留一个素材。'),
+  UNSUPPORTED_INPUT: issueCopy('模型不支持该输入字段', '最终请求包含实时配置未声明支持的输入。', '移除该输入或选择支持它的模型。'),
+  MISSING_REQUIRED_INPUT: issueCopy('缺少模型必需输入', '实时模型配置要求的字段没有有效值。', '补充提示词或对应素材。'),
+  RESERVED_MCP_INPUT: issueCopy('映射了平台保留字段', 'model_name 等字段由批次统一控制，不能从数据集读取。', '移除该字段映射。'),
+  GENERATION_TYPE_REVIEW_REQUIRED: issueCopy('生成方式需要人工确定', '当前素材组合无法按基础 MCP 合同唯一推导生成方式。', '在详情中检查并提供最终 Aion JSON。'),
+  AUDIO_ONLY_MODE_REVIEW_REQUIRED: issueCopy('纯音频生成方式需要人工确定', '只有音频输入时，基础 MCP 合同不足以确认模型生成方式。', '核对实时模型合同并提供最终 Aion JSON。'),
+  UNSUPPORTED_GENERATION_TYPE: issueCopy('模型不支持推导出的生成方式', 'MCP 输入推导出的 generation_type 不在实时模型能力中。', '调整素材通道、切换模型，或人工提供最终请求。'),
+  CONTRACT_REVIEW_REQUIRED: issueCopy('输入合同需要人工确认', 'Plugin 或合同规则发现需要人工决定的输入语义。', '查看规则建议，接受、拒绝或编辑最终请求。'),
+  PLUGIN_MIXED_INPUT_REVIEW: issueCopy('Plugin 发现混合输入风险', '当前模型的 Plugin 规则提示素材组合可能互斥。', '核对模型说明后决定保留哪种输入。'),
+  PLUGIN_PROMPT_CHANNEL_MISMATCH: issueCopy('Prompt 占位符与素材通道错位', 'Prompt 引用的通道与实际素材通道可能不一致。', '审阅 Plugin 建议并确认是否改写 Prompt。'),
+  MODEL_PROMPT_SHAPE_UNSUPPORTED: issueCopy('模型不支持当前 Prompt 结构', 'Prompt 的文本或多镜头数组形态与模型合同不一致。', '切换 Prompt 格式或按模型要求重组。'),
+  AUDIO_ONLY_NOT_SUPPORTED: issueCopy('模型不支持纯音频参考生成', '当前 case 只有参考音频，模型还需要图片或视频参考。', '补充参考元素或移除音频。'),
+  UNVERIFIED_MODEL_COMBINATION: issueCopy('该素材组合尚未专项验证', '组合通过基础合同，但没有经过该模型的专项兼容验证。', '提交前人工核对模型说明和最终请求。'),
+  COMPATIBILITY_FRAME_USAGE_UNCLEAR: issueCopy('转换后的关键帧用途不明确', '兼容转换后 Prompt 没有明确说明原关键帧用途。', '编辑 Prompt，明确这些参考元素的作用。'),
+  COMPATIBILITY_REFERENCE_FALLBACK: issueCopy('关键帧已转换为参考元素', '当前请求不再使用真正的首尾帧约束。', '确认参考生成符合评测意图。'),
+  UNSUPPORTED_PRESET_PARAMETER: issueCopy('评测集参数不受模型支持', '评测集单元格有值，但实时模型合同不支持该参数。', '切换模型、明确设为不使用，或逐 case 提供最终 Aion JSON。'),
+  PRESET_PARAMETER_EXPLICITLY_OMITTED: issueCopy('评测集参数已明确省略', '该列有值，但用户选择了不发送此参数。', '确认省略符合本次评测设置。'),
+  UNSUPPORTED_CONTROL_VALUE: issueCopy('参数值不受模型支持', '单元格值不在实时模型配置允许的枚举中。', '改为允许值或切换模型。'),
+  CONTROL_OUT_OF_RANGE: issueCopy('参数值超出模型范围', '数值低于最小值或高于最大值。', '调整到实时模型配置允许范围。'),
+  INVALID_CONTROL_VALUE: issueCopy('生成参数格式不正确', '参数值无法按模型要求解析。', '检查数字、布尔、枚举或 JSON 格式。'),
+  INVALID_PARAMETER_VALUE: issueCopy('参数列值格式不正确', '该 case 的参数列无法按声明类型解析。', '修正单元格值。'),
+  MISSING_PARAMETER_COLUMN_VALUE: issueCopy('参数列缺少值', '已选择从列读取，但该 case 的单元格为空。', '补充单元格，或改为统一值/不使用。'),
+  MISSING_DURATION_COLUMN_VALUE: issueCopy('时长列缺少值', '已选择从时长列读取，但该 case 没有时长。', '补充视频秒数，或改用统一时长。'),
+  UNVERIFIED_EXTRA_PARAMETER: issueCopy('高级模型参数尚未验证', '该参数来自实时配置，但不属于已确认的通用合同。', '检查最终请求和模型说明后再提交。'),
+  INVALID_SEED: issueCopy('Seed 值无效', 'Seed 必须是模型和平台允许范围内的整数。', '修正固定值或数据集列。'),
+  MCP_AION_PROJECTION_MISMATCH: issueCopy('MCP 输入与 Aion 请求不一致', 'MCP 公共字段投影到最终 Aion 请求时发生了值或顺序变化。', '查看请求差异并修正编译或人工请求。'),
+  DATASET_MODALITY_MISMATCH: issueCopy('Case 模态与模型不一致', '该 case 的 modality 不适用于当前模型输出类型。', '选择同模态 case 或切换模型。'),
+  TARGET_NOT_EMPTY: issueCopy('目标结果列已有内容', '为避免覆盖旧结果，该 case 不能写入当前目标列。', '选择空目标列或新建结果列。'),
+  MISSING_STABLE_ITEM_ID: issueCopy('Case 缺少稳定 ID', '平台无法保证生成结果回填到正确行。', '重新导入或修复评测集稳定 ID。'),
+};
+
+export const getGenerationIssueKey = (severity: GenerationIssueSeverity, code: string) =>
+  `${severity}:${code}`;
+
+export const getGenerationCaseId = (item: GenerationPreflightCase) =>
+  String(item.resolvedCase.caseId || item.resolvedCase.datasetItemId || `row-${item.resolvedCase.rowIndex ?? '?'}`);
+
+export const getGenerationIssuePresentation = (
+  issue: GenerationPreflightIssue,
+  severity: GenerationIssueSeverity,
+): GenerationIssuePresentation => {
+  const known = ISSUE_COPY[issue.code];
+  const fallback = issueCopy(
+    `未识别的预检问题（${issue.code || 'UNKNOWN'}）`,
+    '当前前端尚未登记这个问题码，原始信息已保留在技术信息中。',
+    '查看原始错误并联系维护者补充问题说明。',
+  );
+  return {
+    ...(known || fallback),
+    issue,
+    severity,
+    blocking: severity === 'error',
+    forceable: severity === 'error' && GENERATION_FORCEABLE_PREFLIGHT_CODES.has(issue.code),
+    requiresFinalJson: severity === 'error' && GENERATION_FINAL_JSON_REQUIRED_CODES.has(issue.code),
+  };
+};
+
+const issuesWithSeverity = (item: GenerationPreflightCase) => [
+  ...item.errors.map(issue => ({ issue, severity: 'error' as const })),
+  ...item.warnings.map(issue => ({ issue, severity: 'warning' as const })),
+];
+
+export const buildGenerationIssueOptions = (cases: GenerationPreflightCase[]): GenerationIssueOption[] => {
+  const groups = new Map<string, GenerationIssueOption>();
+  cases.forEach(item => {
+    const seen = new Set<string>();
+    issuesWithSeverity(item).forEach(({ issue, severity }) => {
+      const key = getGenerationIssueKey(severity, issue.code);
+      if (seen.has(key)) return;
+      seen.add(key);
+      const current = groups.get(key);
+      const presentation = getGenerationIssuePresentation(issue, severity);
+      groups.set(key, {
+        key,
+        code: issue.code,
+        severity,
+        count: (current?.count || 0) + 1,
+        label: presentation.title,
+      });
+    });
+  });
+  return Array.from(groups.values()).sort((left, right) => {
+    if (left.severity !== right.severity) return left.severity === 'error' ? -1 : 1;
+    return left.label.localeCompare(right.label, 'zh-CN');
+  });
+};
+
+export const resolveDefaultGenerationCaseStatus = (cases: GenerationPreflightCase[]): GenerationCaseStatusFilter => {
+  if (cases.some(item => !item.valid || item.errors.length > 0)) return 'needs_attention';
+  if (cases.some(item => item.warnings.length > 0)) return 'needs_attention';
+  return 'all';
+};
+
+const matchesStatus = (
+  item: GenerationPreflightCase,
+  status: GenerationCaseStatusFilter,
+  allCases: GenerationPreflightCase[],
+) => {
+  if (status === 'all') return true;
+  if (status === 'invalid') return !item.valid || item.errors.length > 0;
+  if (status === 'warning') return item.warnings.length > 0;
+  if (status === 'valid') return item.valid && item.warnings.length === 0;
+  const hasInvalid = allCases.some(candidate => !candidate.valid || candidate.errors.length > 0);
+  if (hasInvalid) return !item.valid || item.errors.length > 0;
+  const hasWarning = allCases.some(candidate => candidate.warnings.length > 0);
+  return hasWarning ? item.warnings.length > 0 : true;
+};
+
+export const filterGenerationPreflightCases = (
+  cases: GenerationPreflightCase[],
+  filters: {
+    status: GenerationCaseStatusFilter;
+    issueKey: string;
+    search: string;
+  },
+) => {
+  const normalizedSearch = filters.search.trim().toLocaleLowerCase();
+  return cases.filter(item => {
+    if (!matchesStatus(item, filters.status, cases)) return false;
+    if (filters.issueKey && !issuesWithSeverity(item).some(({ issue, severity }) =>
+      getGenerationIssueKey(severity, issue.code) === filters.issueKey)) return false;
+    if (normalizedSearch && !getGenerationCaseId(item).toLocaleLowerCase().includes(normalizedSearch)) return false;
+    return true;
+  });
+};
+
+export const getPrimaryGenerationIssue = (
+  item: GenerationPreflightCase,
+  selectedIssueKey = '',
+): GenerationIssuePresentation | undefined => {
+  const issues = issuesWithSeverity(item);
+  const selected = selectedIssueKey
+    ? issues.find(({ issue, severity }) => getGenerationIssueKey(severity, issue.code) === selectedIssueKey)
+    : undefined;
+  const primary = selected || issues.find(candidate => candidate.severity === 'error') || issues[0];
+  return primary ? getGenerationIssuePresentation(primary.issue, primary.severity) : undefined;
+};

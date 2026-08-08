@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useSearchParams } from 'react-router-dom';
 import {
   AlertTriangle,
   ArrowRight,
@@ -69,6 +68,10 @@ import { getExecutionBatch } from '../features/generation/executionApi';
 import { subscribeGenerationJobs } from '../features/generation/api';
 import { parseVidMuseDatasetJson } from '../features/generation/vidmuseInputContract';
 import {
+  resolveWorkspaceDataset,
+  type GenerationWorkspaceView,
+} from '../features/generation/workspaceNavigation';
+import {
   DATASET_MODALITIES,
   STANDARD_DATASET_FIELDS,
   appendDatasetVersion,
@@ -92,6 +95,13 @@ interface DatasetRepositoryScreenProps {
   onBack: () => void;
   mode?: 'repository' | 'generation';
   initialDatasetId?: string;
+  generationView?: GenerationWorkspaceView;
+  initialGenerationBatchId?: string;
+  onGenerationNavigate?: (
+    view: GenerationWorkspaceView,
+    context?: { datasetId?: string; generationBatchId?: string },
+  ) => void;
+  onOpenDatasetRepository?: (datasetId?: string) => void;
   onCreateEvaluation?: (datasetId: string, resultColumn: string) => void;
 }
 
@@ -716,11 +726,15 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   onBack,
   mode = 'repository',
   initialDatasetId,
+  generationView,
+  initialGenerationBatchId,
+  onGenerationNavigate,
+  onOpenDatasetRepository,
   onCreateEvaluation,
 }) => {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const batchQueryId = mode === 'generation' ? searchParams.get('batch') : null;
-  const [generationWorkspaceView, setGenerationWorkspaceView] = useState<'tasks' | 'new'>('tasks');
+  const [fallbackGenerationView, setFallbackGenerationView] = useState<GenerationWorkspaceView>('tasks');
+  const generationWorkspaceView = generationView || fallbackGenerationView;
+  const batchQueryId = mode === 'generation' ? initialGenerationBatchId : undefined;
   const [datasets, setDatasets] = useState<EvalDataset[]>([]);
   const [tasks, setTasks] = useState<EvalTask[]>([]);
   const [datasetToDelete, setDatasetToDelete] = useState<string | null>(null);
@@ -737,28 +751,41 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   const [dimensionFilter, setDimensionFilter] = useState('');
   const [generationModalOpen, setGenerationModalOpen] = useState(false);
   const [selectedGenerationBatchId, setSelectedGenerationBatchId] = useState<string | undefined>();
-  const clearGenerationBatchQuery = () => {
-    setSearchParams(current => {
-      const next = new URLSearchParams(current);
-      next.delete('batch');
-      return next;
-    }, { replace: true });
+  const navigateGeneration = (
+    view: GenerationWorkspaceView,
+    context: { datasetId?: string; generationBatchId?: string } = {},
+  ) => {
+    setFallbackGenerationView(view);
+    onGenerationNavigate?.(view, context);
   };
-  const setGenerationBatchQuery = (batchId: string) => {
+  const setGenerationBatchRoute = (batchId: string) => {
     setSelectedGenerationBatchId(batchId);
-    setSearchParams({ batch: batchId }, { replace: true });
+    navigateGeneration('tasks', { generationBatchId: batchId });
+  };
+  const showNewGenerationView = (datasetId?: string) => {
+    setGenerationModalOpen(false);
+    setSelectedGenerationBatchId(undefined);
+    setSelectedDatasetId(datasetId || '');
+    navigateGeneration('new', datasetId ? { datasetId } : {});
+  };
+  const showGenerationTasks = () => {
+    setGenerationModalOpen(false);
+    setSelectedGenerationBatchId(undefined);
+    navigateGeneration('tasks');
   };
   const openNewGeneration = () => {
-    setGenerationWorkspaceView('new');
+    if (!selectedDataset || isViewingHistoricalVersion) return;
+    if (mode !== 'generation') {
+      showNewGenerationView(selectedDataset.id);
+      return;
+    }
     setSelectedGenerationBatchId(undefined);
     setGenerationModalOpen(true);
-    clearGenerationBatchQuery();
   };
   const openGenerationBatch = (job: DatasetGenerationJob) => {
-    setGenerationWorkspaceView('tasks');
     setSelectedDatasetId(job.datasetId);
     setGenerationModalOpen(true);
-    setGenerationBatchQuery(job.id);
+    setGenerationBatchRoute(job.id);
   };
 
   const [generationJobs, setGenerationJobs] = useState<DatasetGenerationJob[]>([]);
@@ -908,20 +935,24 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   }), [normalizedDatasets, searchTerm, modalityFilter, tagFilter, dimensionFilter]);
 
   useEffect(() => {
-    if (!selectedDatasetId && filteredDatasets.length) {
+    if (mode === 'repository' && !selectedDatasetId && filteredDatasets.length) {
       setSelectedDatasetId(filteredDatasets[0].id);
       return;
     }
-    if (selectedDatasetId && !filteredDatasets.some(dataset => dataset.id === selectedDatasetId) && filteredDatasets.length) {
-      setSelectedDatasetId(filteredDatasets[0].id);
+    if (mode === 'repository' && selectedDatasetId && !filteredDatasets.some(dataset => dataset.id === selectedDatasetId)) {
+      setSelectedDatasetId(filteredDatasets.length ? filteredDatasets[0].id : '');
+    } else if (mode === 'generation' && selectedDatasetId && !normalizedDatasets.some(dataset => dataset.id === selectedDatasetId)) {
+      setSelectedDatasetId('');
     }
-  }, [filteredDatasets, selectedDatasetId]);
+  }, [filteredDatasets, mode, normalizedDatasets, selectedDatasetId]);
 
   useEffect(() => {
     if (initialDatasetId && normalizedDatasets.some(dataset => dataset.id === initialDatasetId)) {
       setSelectedDatasetId(initialDatasetId);
+    } else if (mode === 'generation' && generationWorkspaceView === 'new' && !initialDatasetId) {
+      setSelectedDatasetId('');
     }
-  }, [initialDatasetId, normalizedDatasets]);
+  }, [generationWorkspaceView, initialDatasetId, mode, normalizedDatasets]);
 
   useEffect(() => {
     if (!batchQueryId || mode !== 'generation') return;
@@ -930,7 +961,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     void getExecutionBatch(batchQueryId)
       .then(loaded => {
         if (!active) return;
-        setGenerationWorkspaceView('tasks');
+        setFallbackGenerationView('tasks');
         setSelectedDatasetId(loaded.datasetId);
         setSelectedGenerationBatchId(loaded.id);
         setGenerationModalOpen(true);
@@ -943,7 +974,11 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     };
   }, [batchQueryId, generationModalOpen, mode, selectedGenerationBatchId]);
 
-  const selectedDataset = normalizedDatasets.find(dataset => dataset.id === selectedDatasetId) || filteredDatasets[0];
+  const selectedDataset = resolveWorkspaceDataset<EvalDataset>(
+    mode === 'repository' ? filteredDatasets : normalizedDatasets,
+    selectedDatasetId,
+    mode === 'repository',
+  );
   const tableDataset = viewingVersionDataset || selectedDataset;
   const isViewingHistoricalVersion = !!viewingVersionDataset;
   const selectedMappings = getDatasetColumnMappings(tableDataset);
@@ -2015,15 +2050,15 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
           <div className="group flex max-w-[280px] items-center gap-1">
           <button
             type="button"
-            onDoubleClick={() => openInlineColumnRename(column)}
-            disabled={isViewingHistoricalVersion}
-            title={isViewingHistoricalVersion ? '历史版本为只读' : '双击修改列名'}
+            onDoubleClick={isGenerationMode ? undefined : () => openInlineColumnRename(column)}
+            disabled={isViewingHistoricalVersion || isGenerationMode}
+            title={isViewingHistoricalVersion || isGenerationMode ? '只读预览' : '双击修改列名'}
             className="group flex max-w-[260px] items-center gap-1 text-left uppercase tracking-wide text-slate-400 disabled:cursor-not-allowed"
           >
             <span className="truncate">{displayLabel}</span>
-            {!isViewingHistoricalVersion && <Pencil size={12} className="opacity-0 transition-opacity group-hover:opacity-70" />}
+            {!isViewingHistoricalVersion && !isGenerationMode && <Pencil size={12} className="opacity-0 transition-opacity group-hover:opacity-70" />}
           </button>
-            {!isViewingHistoricalVersion && (
+            {!isViewingHistoricalVersion && !isGenerationMode && (
               <button
                 type="button"
                 onClick={event => {
@@ -2692,62 +2727,90 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
             </p>
           </div>
         </div>
-        <div className="flex flex-wrap gap-3">
-          {isGenerationMode && generationWorkspaceView === 'new' && (
-            <button type="button" onClick={() => setGenerationWorkspaceView('tasks')} className="flex items-center gap-2 rounded-md border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-slate-300 hover:bg-white/10">
-              <ClipboardList size={18} /> {'\u4efb\u52a1\u5217\u8868'}
+        {isGenerationMode ? (
+          <button
+            type="button"
+            onClick={() => onOpenDatasetRepository?.(selectedDataset?.id)}
+            className="inline-flex items-center gap-2 border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-slate-300 hover:bg-white/10"
+          >
+            <Database size={17} /> 前往评测集仓库
+          </button>
+        ) : (
+          <div className="flex flex-wrap gap-3">
+            <button onClick={openNewGeneration} disabled={!selectedDataset || isViewingHistoricalVersion} className="flex items-center gap-2 border border-amber-500/20 bg-amber-500/10 px-4 py-2.5 text-sm font-medium text-amber-300 hover:bg-amber-500/20 disabled:opacity-40">
+              <Wand2 size={18} /> 批量生产产物
             </button>
-          )}
-          <button onClick={openNewGeneration} disabled={!selectedDataset || isViewingHistoricalVersion} className={`${isGenerationMode ? 'bg-gradient-accent text-black shadow-lg shadow-amber-500/20 hover:opacity-90' : 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/20'} flex items-center gap-2 px-4 py-2.5 rounded-xl font-medium text-sm disabled:opacity-40`}>
-            <Wand2 size={18} /> {isGenerationMode ? '开始批量生产' : '批量生产产物'}
-          </button>
-          <button onClick={() => selectedDataset && openWizard('append', selectedDataset)} disabled={!selectedDataset || isViewingHistoricalVersion} className="flex items-center gap-2 bg-white/5 glass-panel-hover text-slate-300 px-4 py-2.5 rounded-xl font-medium text-sm border border-white/10 disabled:opacity-40">
-            <Upload size={18} /> 追加内容
-          </button>
-          <button onClick={openColumnRenameEditor} disabled={!selectedDataset || isViewingHistoricalVersion} className="flex items-center gap-2 bg-white/5 glass-panel-hover text-slate-300 px-4 py-2.5 rounded-xl font-medium text-sm border border-white/10 disabled:opacity-40">
-            <Settings size={18} /> {'\u7ba1\u7406\u5217'}
-          </button>
-          <button onClick={() => openWizard('create')} className="flex items-center gap-2 bg-gradient-accent text-black px-5 py-2.5 rounded-xl font-medium text-sm shadow-lg shadow-amber-500/20 transition-all hover:opacity-90">
-            <Plus size={18} /> 新建/导入评测集
-          </button>
-        </div>
+            <button onClick={() => selectedDataset && openWizard('append', selectedDataset)} disabled={!selectedDataset || isViewingHistoricalVersion} className="flex items-center gap-2 border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-slate-300 hover:bg-white/10 disabled:opacity-40">
+              <Upload size={18} /> 追加内容
+            </button>
+            <button onClick={openColumnRenameEditor} disabled={!selectedDataset || isViewingHistoricalVersion} className="flex items-center gap-2 border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-slate-300 hover:bg-white/10 disabled:opacity-40">
+              <Settings size={18} /> {'\u7ba1\u7406\u5217'}
+            </button>
+            <button onClick={() => openWizard('create')} className="flex items-center gap-2 bg-gradient-accent px-5 py-2.5 text-sm font-medium text-black shadow-lg shadow-amber-500/20 transition-all hover:opacity-90">
+              <Plus size={18} /> 新建/导入评测集
+            </button>
+          </div>
+        )}
       </div>
+
+      {isGenerationMode && (
+        <nav className="mb-5 flex border-b border-white/10" aria-label="生产工作台视图">
+          <button
+            type="button"
+            onClick={showGenerationTasks}
+            aria-current={generationWorkspaceView === 'tasks' ? 'page' : undefined}
+            className={`inline-flex min-h-11 items-center gap-2 border-b-2 px-5 text-sm font-medium ${generationWorkspaceView === 'tasks' ? 'border-amber-400 text-amber-200' : 'border-transparent text-slate-400 hover:text-slate-100'}`}
+          >
+            <ClipboardList size={16} /> 生产任务
+          </button>
+          <button
+            type="button"
+            onClick={() => { if (generationWorkspaceView !== 'new') showNewGenerationView(); }}
+            aria-current={generationWorkspaceView === 'new' ? 'page' : undefined}
+            className={`inline-flex min-h-11 items-center gap-2 border-b-2 px-5 text-sm font-medium ${generationWorkspaceView === 'new' ? 'border-amber-400 text-amber-200' : 'border-transparent text-slate-400 hover:text-slate-100'}`}
+          >
+            <Wand2 size={16} /> 新建生产
+          </button>
+        </nav>
+      )}
 
       {isGenerationMode && generationWorkspaceView === 'tasks' && (
         <GenerationTaskCenter
           datasets={normalizedDatasets}
           onOpenBatch={openGenerationBatch}
-          onNewGeneration={() => setGenerationWorkspaceView('new')}
+          onNewGeneration={() => showNewGenerationView()}
         />
       )}
 
       <div className={isGenerationMode && generationWorkspaceView === 'tasks' ? 'hidden' : undefined}>
       {isGenerationMode && (
-        <div className="mb-5 rounded-2xl border border-amber-500/20 bg-amber-500/[0.06] p-5">
+        <section className="mb-5 border border-amber-500/20 bg-amber-500/[0.06] p-5" aria-label="当前生产评测集">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
             <div className="min-w-0">
-              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-300">Generation Pipeline</div>
-              <h2 className="mt-2 text-xl font-semibold text-slate-100">从评测集直接生产模型产物列</h2>
-              <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-300">
-                当前入口只服务于生产：选择左侧评测集，确认 prompt、参考图/音频、首尾帧和控制变量后启动批量生成；成功结果会立即写回为新的输出列，可继续用于评测物料构建。
+              <div className="text-xs font-semibold text-amber-300">当前选择</div>
+              <h2 className="mt-2 truncate text-lg font-semibold text-slate-100" title={selectedDataset?.name}>
+                {selectedDataset?.name || '尚未选择评测集'}
+              </h2>
+              <p className="mt-1 text-sm text-slate-400">
+                {selectedDataset ? '以下数据仅供生产前核对，不会在此页面修改评测集。' : '请从下方列表明确选择一个评测集，再配置生成。'}
               </p>
             </div>
-            <div className="grid min-w-[280px] grid-cols-3 gap-2 text-center text-xs">
-              <div className="rounded-xl border border-white/10 bg-black/20 p-3">
-                <div className="text-slate-400">当前评测集</div>
-                <div className="mt-1 truncate text-sm font-semibold text-slate-100" title={selectedDataset?.name}>{selectedDataset?.name || '未选择'}</div>
+            <div className="grid min-w-[360px] grid-cols-3 gap-px border border-white/10 bg-white/10 text-center text-xs">
+              <div className="bg-slate-950/80 p-3">
+                <div className="text-slate-400">版本</div>
+                <div className="mt-1 text-sm font-semibold text-slate-100">{selectedDataset ? `v${selectedDataset.version || 1}` : '-'}</div>
               </div>
-              <div className="rounded-xl border border-white/10 bg-black/20 p-3">
-                <div className="text-slate-400">输出列</div>
-                <div className="mt-1 text-sm font-semibold text-slate-100">{outputColumns.length}</div>
+              <div className="bg-slate-950/80 p-3">
+                <div className="text-slate-400">模态</div>
+                <div className="mt-1 text-sm font-semibold text-slate-100">{selectedDataset ? DATASET_MODALITIES.find(item => item.key === selectedDataset.modality)?.label || '其他' : '-'}</div>
               </div>
-              <div className="rounded-xl border border-white/10 bg-black/20 p-3">
-                <div className="text-slate-400">运行批次</div>
-                <div className="mt-1 text-sm font-semibold text-slate-100">{runningGenerationJobs.length}</div>
+              <div className="bg-slate-950/80 p-3">
+                <div className="text-slate-400">Case 数</div>
+                <div className="mt-1 text-sm font-semibold text-slate-100">{selectedDataset?.items.length ?? '-'}</div>
               </div>
             </div>
             <button onClick={openNewGeneration} disabled={!selectedDataset || isViewingHistoricalVersion} className="btn-primary shrink-0 disabled:opacity-40">
-              <Wand2 size={18} /> 配置并启动生产
+              <Wand2 size={18} /> 配置生成
             </button>
           </div>
           {latestGenerationJob && (
@@ -2759,12 +2822,12 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
               {!!latestGenerationJob.failed && <span className="text-red-300">失败 {latestGenerationJob.failed}</span>}
             </div>
           )}
-        </div>
+        </section>
       )}
 
       <div
         ref={repositoryLayoutRef}
-        className="grid grid-cols-1 xl:grid-cols-[var(--dataset-left)_minmax(0,1fr)_var(--dataset-right)] gap-4"
+        className={`grid grid-cols-1 gap-4 ${isGenerationMode ? 'xl:grid-cols-[minmax(260px,var(--dataset-left))_minmax(0,1fr)]' : 'xl:grid-cols-[var(--dataset-left)_minmax(0,1fr)_var(--dataset-right)]'}`}
         style={{
           '--dataset-left': `${layoutWidths.left}px`,
           '--dataset-right': `${layoutWidths.right}px`,
@@ -2827,7 +2890,11 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
             <div className="text-xs text-slate-400 mb-2">{isGenerationMode ? '可生产评测集' : '评测集'}</div>
             <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
               {filteredDatasets.map(dataset => (
-                <button key={dataset.id} onClick={() => { setSelectedDatasetId(dataset.id); setSelectedRowIndex(0); }} className={`w-full text-left p-3 rounded-xl border transition-colors ${selectedDataset?.id === dataset.id ? 'bg-white/10 border-amber-400/40' : 'bg-white/5 border-white/10 hover:bg-white/[0.08]'}`}>
+                <button key={dataset.id} onClick={() => {
+                  setSelectedDatasetId(dataset.id);
+                  setSelectedRowIndex(0);
+                  if (isGenerationMode) navigateGeneration('new', { datasetId: dataset.id });
+                }} className={`w-full text-left p-3 rounded-xl border transition-colors ${selectedDataset?.id === dataset.id ? 'bg-white/10 border-amber-400/40' : 'bg-white/5 border-white/10 hover:bg-white/[0.08]'}`}>
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-medium text-slate-100 text-sm line-clamp-1">{dataset.name}</span>
                     <span className="text-[10px] text-slate-400">{dataset.items.length}</span>
@@ -2848,13 +2915,13 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                   <div className="flex flex-wrap items-center gap-2">
                     <h2
                       className="text-xl font-bold text-slate-100"
-                      onDoubleClick={() => openManifestEditor('name', '评测集名称', selectedDataset.name)}
-                      title={isViewingHistoricalVersion ? '历史版本只读' : '双击编辑评测集名称'}
+                      onDoubleClick={isGenerationMode ? undefined : () => openManifestEditor('name', '评测集名称', selectedDataset.name)}
+                      title={isGenerationMode || isViewingHistoricalVersion ? '只读预览' : '双击编辑评测集名称'}
                     >{selectedDataset.name}</h2>
                     <span
                       className="px-2 py-1 rounded-md bg-white/10 text-xs text-slate-300"
-                      onDoubleClick={() => openManifestEditor('modality', '评测产物模态', selectedDataset.modality || 'other', 'modality')}
-                      title={isViewingHistoricalVersion ? '历史版本只读' : '双击编辑评测产物模态'}
+                      onDoubleClick={isGenerationMode ? undefined : () => openManifestEditor('modality', '评测产物模态', selectedDataset.modality || 'other', 'modality')}
+                      title={isGenerationMode || isViewingHistoricalVersion ? '只读预览' : '双击编辑评测产物模态'}
                     >产物：{DATASET_MODALITIES.find(item => item.key === selectedDataset.modality)?.label || '未分类'}</span>
                     {isViewingHistoricalVersion && (
                       <span className="px-2 py-1 rounded-md bg-purple-500/15 text-xs text-purple-200 border border-purple-400/20">
@@ -2867,8 +2934,8 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                   </div>
                   <p
                     className="text-sm text-slate-400 mt-1 line-clamp-2"
-                    onDoubleClick={() => openManifestEditor('description', '评测集描述', selectedDataset.description)}
-                    title={isViewingHistoricalVersion ? '历史版本只读' : '双击编辑评测集描述'}
+                    onDoubleClick={isGenerationMode ? undefined : () => openManifestEditor('description', '评测集描述', selectedDataset.description)}
+                    title={isGenerationMode || isViewingHistoricalVersion ? '只读预览' : '双击编辑评测集描述'}
                   >{selectedDataset.description || '暂无描述'}</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -2901,14 +2968,14 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                       </span>
                     )}
                   </button>
-                  {isViewingHistoricalVersion && (
+                  {!isGenerationMode && isViewingHistoricalVersion && (
                     <button onClick={() => { setViewingVersionDataset(null); setSelectedRowIndex(0); }} className="px-3 py-2 rounded-xl bg-purple-500/10 hover:bg-purple-500/20 text-purple-200 text-sm flex items-center gap-2 border border-purple-400/20">
                       <RotateCcw size={16} /> 返回当前版本
                     </button>
                   )}
-                  <button onClick={openNewGeneration} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-sm flex items-center gap-2 border border-amber-500/20 disabled:opacity-40">
+                  {!isGenerationMode && <button onClick={openNewGeneration} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-sm flex items-center gap-2 border border-amber-500/20 disabled:opacity-40">
                     <Wand2 size={16} /> 批量生产
-                  </button>
+                  </button>}
                   {!isGenerationMode && (
                     <button
                       type="button"
@@ -2919,18 +2986,22 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                       <Copy size={16} /> 创建副本
                     </button>
                   )}
-                  <button onClick={() => tableDataset && downloadCsv(tableDataset.items.length ? `${selectedDataset.name}_v${tableDataset.version || selectedDataset.version || 1}_data.csv` : `template_${selectedDataset.id}.csv`, tableDataset.items.length ? tableDataset.items : tableDataset.inputSchema.map(field => field.key))} className="px-3 py-2 rounded-xl bg-white/5 glass-panel-hover text-slate-300 text-sm flex items-center gap-2 border border-white/10">
-                    <Download size={16} /> {tableDataset?.items.length ? '下载数据' : '下载模板'}
-                  </button>
-                  <button onClick={openColumnRenameEditor} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-white/5 glass-panel-hover text-slate-300 text-sm flex items-center gap-2 border border-white/10 disabled:opacity-40">
-                    <Settings size={16} /> {'\u7ba1\u7406\u5217'}
-                  </button>
-                  <button onClick={() => openWizard('append', selectedDataset)} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-sm flex items-center gap-2 border border-amber-500/20 disabled:opacity-40">
-                    <Upload size={16} /> 追加
-                  </button>
-                  <button onClick={() => setDatasetToDelete(selectedDataset.id)} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-300 text-sm flex items-center gap-2 border border-red-500/20 disabled:opacity-40">
-                    <Trash2 size={16} /> 删除
-                  </button>
+                  {!isGenerationMode && (
+                    <>
+                      <button onClick={() => tableDataset && downloadCsv(tableDataset.items.length ? `${selectedDataset.name}_v${tableDataset.version || selectedDataset.version || 1}_data.csv` : `template_${selectedDataset.id}.csv`, tableDataset.items.length ? tableDataset.items : tableDataset.inputSchema.map(field => field.key))} className="px-3 py-2 rounded-xl bg-white/5 glass-panel-hover text-slate-300 text-sm flex items-center gap-2 border border-white/10">
+                        <Download size={16} /> {tableDataset?.items.length ? '下载数据' : '下载模板'}
+                      </button>
+                      <button onClick={openColumnRenameEditor} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-white/5 glass-panel-hover text-slate-300 text-sm flex items-center gap-2 border border-white/10 disabled:opacity-40">
+                        <Settings size={16} /> {'\u7ba1\u7406\u5217'}
+                      </button>
+                      <button onClick={() => openWizard('append', selectedDataset)} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-sm flex items-center gap-2 border border-amber-500/20 disabled:opacity-40">
+                        <Upload size={16} /> 追加
+                      </button>
+                      <button onClick={() => setDatasetToDelete(selectedDataset.id)} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-300 text-sm flex items-center gap-2 border border-red-500/20 disabled:opacity-40">
+                        <Trash2 size={16} /> 删除
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
               {cloneNotice && (
@@ -3022,7 +3093,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                         column.label
                       ))}
                       <th className="min-w-[72px] bg-slate-950 px-4 py-3">{'\u6821\u9a8c'}</th>
-                      <th className="min-w-[88px] bg-slate-950 px-4 py-3">{'\u64cd\u4f5c'}</th>
+                      {!isGenerationMode && <th className="min-w-[88px] bg-slate-950 px-4 py-3">{'\u64cd\u4f5c'}</th>}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/10">
@@ -3040,8 +3111,8 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                                 key={column.key}
                                 data-column-key={column.key}
                                 className={`px-4 py-3 align-top ${column.lockedVisible ? 'sticky left-0 z-10 bg-slate-950/95 font-mono text-sm text-slate-200' : ''}`}
-                                onDoubleClick={() => openCaseEditor(index, column.key)}
-                                title={isViewingHistoricalVersion ? '\u5386\u53f2\u7248\u672c\u53ea\u8bfb' : `\u53cc\u51fb\u7f16\u8f91 ${column.label}`}
+                                onDoubleClick={isGenerationMode ? undefined : () => openCaseEditor(index, column.key)}
+                                title={isViewingHistoricalVersion || isGenerationMode ? '\u53ea\u8bfb\u9884\u89c8' : `\u53cc\u51fb\u7f16\u8f91 ${column.label}`}
                               >
                                 {column.lockedVisible ? caseIdValue : column.role === 'dimension' ? (
                                   serializeCellValue(value) ? (
@@ -3058,7 +3129,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                           <td className="px-4 py-3">
                             <CheckCircle2 size={16} className="text-emerald-400" />
                           </td>
-                          <td className="px-4 py-3">
+                          {!isGenerationMode && <td className="px-4 py-3">
                             <button
                               type="button"
                               onClick={event => {
@@ -3071,7 +3142,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                             >
                               <Trash2 size={13} /> {'\u5220\u9664'}
                             </button>
-                          </td>
+                          </td>}
                         </tr>
                       );
                     })}
@@ -3079,7 +3150,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                 </table>
                 {selectedRows.length === 0 && (
                   <div className="py-16 text-center text-slate-400">
-                    这个评测集还没有 case。点击“追加内容”上传或粘贴表格。
+                    {isGenerationMode ? '这个评测集还没有可预览的 case。' : '这个评测集还没有 case。点击“追加内容”上传或粘贴表格。'}
                   </div>
                 )}
               </div>
@@ -3087,12 +3158,12 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
           ) : (
             <div className="py-24 text-center text-slate-400">
               <Database size={40} className="mx-auto mb-4 text-slate-500" />
-              暂无评测集。点击右上角“新建/导入评测集”开始。
+              {isGenerationMode ? '请先从评测集列表中选择本次生产使用的数据。' : '暂无评测集。点击右上角“新建/导入评测集”开始。'}
             </div>
           )}
         </main>
 
-        <aside className="glass-panel rounded-2xl border border-white/10 p-5 h-fit xl:sticky xl:top-4 min-w-0 relative">
+        {!isGenerationMode && <aside className="glass-panel rounded-2xl border border-white/10 p-5 h-fit xl:sticky xl:top-4 min-w-0 relative">
           <button
             type="button"
             role="separator"
@@ -3262,20 +3333,24 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
           ) : (
             <div className="text-sm text-slate-400">选择一个评测集后查看 Dataset Card。</div>
           )}
-        </aside>
+        </aside>}
       </div>
 
-      {renderWizard()}
-      {renderColumnRenameModal()}
-      {renderColumnDeleteModal()}
+      {!isGenerationMode && renderWizard()}
+      {!isGenerationMode && renderColumnRenameModal()}
+      {!isGenerationMode && renderColumnDeleteModal()}
       </div>
       {generationModalOpen && selectedDataset && !isViewingHistoricalVersion && (
         <DatasetGenerationExecutionModal
           dataset={selectedDataset}
           initialBatchId={selectedGenerationBatchId}
-          onBatchChange={setGenerationBatchQuery}
+          onBatchChange={setGenerationBatchRoute}
           onCreateEvaluation={onCreateEvaluation}
-          onClose={() => { setGenerationModalOpen(false); setSelectedGenerationBatchId(undefined); clearGenerationBatchQuery(); }}
+          onClose={() => {
+            setGenerationModalOpen(false);
+            setSelectedGenerationBatchId(undefined);
+            if (selectedGenerationBatchId) navigateGeneration('tasks');
+          }}
         />
       )}
 

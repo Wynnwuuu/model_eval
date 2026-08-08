@@ -1,41 +1,41 @@
 {
-  "feature": "generation_input_reliability_hardening",
-  "previousCompletedFeature": "generation_seed_v2_mcp_aion_layering",
+  "feature": "generation_workspace_review_ux",
+  "previousCompletedFeature": "generation_input_reliability_hardening",
   "requirements": [
     {
-      "id": "media-reference-normalization",
+      "id": "generation-navigation",
       "status": "completed",
-      "description": "Preserve scalar URL boundaries, ordered structured inputs, signed queries, and normalize URL spaces consistently"
+      "description": "Use stable tasks/new routes and one fixed page-level navigation"
     },
     {
-      "id": "preset-parameter-contract",
+      "id": "explicit-dataset-selection",
       "status": "completed",
-      "description": "Block unsupported non-empty preset values unless explicitly omitted or replaced by an audited per-case Aion request"
+      "description": "Disable configuration until the operator explicitly selects a read-only production dataset"
     },
     {
-      "id": "media-role-validation",
+      "id": "duration-copy",
       "status": "completed",
-      "description": "Check expected image, video, and audio roles plus deterministic non-public host risks without changing input intent"
+      "description": "Identify video duration, its purpose, and the duration-column source"
     },
     {
-      "id": "review-and-audit",
+      "id": "case-filtering",
       "status": "completed",
-      "description": "Separate risk confirmation from manual JSON override and retain raw, normalized, disposition, and bypass audit"
+      "description": "Filter cases by status, issue type, and Case ID with filter-scoped bulk confirmation"
     },
     {
-      "id": "dry-run-188",
+      "id": "case-review-dialog",
       "status": "completed",
-      "description": "Compile all 188 imported rows read-only with zero generation POST, whitespace truncation, request build failure, or projection difference"
+      "description": "Use compact rows and a responsive detail dialog with saved drafts and explicit re-preflight"
     },
     {
       "id": "verification",
       "status": "completed",
-      "description": "Pass generation, database, dataset, Arena, API, typecheck, build, and desktop/mobile browser checks without paid generation"
+      "description": "Run full regression, desktop/mobile browser checks, and no-paid-generation safety validation"
     },
     {
       "id": "release",
-      "status": "completed",
-      "description": "Fast-forward GitHub main and verify CI, dev rollout, and public runtime health"
+      "status": "in_progress",
+      "description": "Fast-forward GitHub main and verify CI plus dev deployment"
     }
   ]
 }

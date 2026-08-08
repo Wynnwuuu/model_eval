@@ -193,16 +193,8 @@ const GenerationTaskCenter: React.FC<GenerationTaskCenterProps> = ({
 
   return (
     <section className="border border-white/10 bg-black/20">
-      <header className="flex flex-col gap-4 border-b border-white/10 px-4 py-4 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex items-center gap-2" role="tablist" aria-label={'\u751f\u4ea7\u4efb\u52a1\u89c6\u56fe'}>
-          <button type="button" role="tab" aria-selected="true" className="border-b-2 border-amber-400 px-3 py-2 text-sm font-medium text-amber-200">
-            {'\u4efb\u52a1\u5217\u8868'}
-          </button>
-          <button type="button" role="tab" aria-selected="false" onClick={onNewGeneration} className="border-b-2 border-transparent px-3 py-2 text-sm text-slate-400 hover:text-slate-100">
-            {'\u65b0\u5efa\u751f\u4ea7'}
-          </button>
-        </div>
-        <div className="grid grid-cols-2 border border-white/10 bg-black/20 sm:min-w-[360px]">
+      <header className="flex justify-end border-b border-white/10 px-4 py-4">
+        <div className="grid w-full grid-cols-2 border border-white/10 bg-black/20 sm:w-auto sm:min-w-[360px]">
           <QueueLane icon={<Image size={14} />} label={'\u56fe\u7247\u5bb9\u91cf'} lane={queue?.image} />
           <QueueLane icon={<Video size={14} />} label={'\u89c6\u9891\u5bb9\u91cf'} lane={queue?.video} />
         </div>

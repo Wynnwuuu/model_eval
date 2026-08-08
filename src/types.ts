@@ -248,6 +248,7 @@ export interface RouteContext {
   materialStatusFilter?: 'draft' | 'active' | 'completed';
   datasetId?: string;
   generationBatchId?: string;
+  generationView?: 'tasks' | 'new';
   taskDatasetId?: string;
   taskModelColumns?: string[];
   source?: 'dashboard' | 'task' | 'dataset';

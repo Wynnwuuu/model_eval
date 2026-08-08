@@ -268,3 +268,13 @@ Unsupported values use `UNSUPPORTED_PRESET_PARAMETER`. Bypassing that contract r
 Image, video, and audio channels are checked against uploaded MIME first and URL pathname extension second. Known mismatches are forceable risks, unknown types are warnings, and localhost/private/single-label hosts are forceable non-public risks. Confirmation preserves the original channel, normalized URL, Prompt, and derived generation mode.
 
 Risk-only confirmation can remain MCP-aligned and therefore does not need a replacement Aion JSON. Manual JSON overrides are a separate path and retain projection-difference audit. Neither path changes Aion, the worker, writeback, stable assets, or human evaluation.
+
+## 2026-08-08: Production navigation and review use one explicit scope
+
+The production workspace has one URL-backed view state. Task buttons switch to dataset selection without opening configuration, and configuration remains disabled until an operator explicitly selects a dataset. Dataset repository browsing keeps its historical first-item fallback, but the production new view never inherits it.
+
+Preflight issue selection is both a presentation filter and the batch-review scope. Counts are deduplicated per case, search and status further narrow the same case array, and bulk confirmation consumes that exact visible array. Final-JSON-required errors remain invalid after bulk confirmation.
+
+Per-case edits are local to the detail dialog until saved into the existing `caseReviews` snapshot. Saved reviews are visibly pending and only affect a request after one explicit re-preflight, preserving request-hash and billing confirmation semantics.
+
+Cases without a stable dataset item ID use a presentation-only dialog key so the operator can still inspect their blocking error and request audit. They cannot save a review because there is no safe persistence key. Likewise, an unchanged dialog cannot be saved, preventing a false “pending re-preflight” state.
