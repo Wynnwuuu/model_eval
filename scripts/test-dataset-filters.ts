@@ -15,6 +15,7 @@ import {
 } from '../src/features/generation/caseScope.ts';
 import { DATASET_ITEM_ID_KEY } from '../src/datasetSync.ts';
 import type { EvalDataset } from '../src/types.ts';
+import { resolveDatasetFilterPopoverPosition } from '../src/components/DatasetColumnFilterMenu.tsx';
 
 const rows: Record<string, unknown>[] = [
   { [DATASET_ITEM_ID_KEY]: 'item-0', case_id: 'case-0', CELL_ID: 'AI', modality: 'video', group: 'one', typed: 1, note: '' },
@@ -145,5 +146,16 @@ assert.deepEqual(eligibility.counts, {
   modalityMismatch: 1,
   missingStableId: 1,
 }, 'scope counts must classify each row once using the same rules as selection');
+
+assert.deepEqual(
+  resolveDatasetFilterPopoverPosition({ left: 900, right: 928, top: 120, bottom: 148 }, 1024, 768),
+  { left: 568, top: 154, maxHeight: 460 },
+  'desktop popovers must stay inside the viewport and open below when space allows',
+);
+assert.deepEqual(
+  resolveDatasetFilterPopoverPosition({ left: 340, right: 368, top: 720, bottom: 748 }, 390, 844),
+  { left: 8, top: 254, maxHeight: 460 },
+  'mobile popovers must open above a low trigger without horizontal overflow',
+);
 
 console.log('Dataset row filtering and generation scope tests passed.');

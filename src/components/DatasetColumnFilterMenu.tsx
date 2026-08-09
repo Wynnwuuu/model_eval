@@ -22,6 +22,30 @@ interface PopoverPosition {
   maxHeight: number;
 }
 
+interface PopoverAnchorRect {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
+export const resolveDatasetFilterPopoverPosition = (
+  rect: PopoverAnchorRect,
+  viewportWidth: number,
+  viewportHeight: number,
+): PopoverPosition => {
+  const width = Math.min(360, Math.max(288, viewportWidth - 16));
+  const left = Math.max(8, Math.min(viewportWidth - width - 8, rect.right - width));
+  const spaceBelow = viewportHeight - rect.bottom - 8;
+  const spaceAbove = rect.top - 8;
+  const openAbove = spaceBelow < 300 && spaceAbove > spaceBelow;
+  const maxHeight = Math.max(160, Math.min(460, openAbove ? spaceAbove : spaceBelow));
+  const top = openAbove
+    ? Math.max(8, rect.top - maxHeight - 6)
+    : Math.min(viewportHeight - 8, rect.bottom + 6);
+  return { left, top, maxHeight };
+};
+
 const FILTER_KIND_LABELS = {
   blank: '\u7a7a\u767d',
   string: '\u6587\u672c',
@@ -64,17 +88,11 @@ const DatasetColumnFilterMenu: React.FC<DatasetColumnFilterMenuProps> = ({
 
   useLayoutEffect(() => {
     if (!open || !triggerRef.current) return;
-    const rect = triggerRef.current.getBoundingClientRect();
-    const width = Math.min(360, Math.max(288, window.innerWidth - 16));
-    const left = Math.max(8, Math.min(window.innerWidth - width - 8, rect.right - width));
-    const spaceBelow = window.innerHeight - rect.bottom - 8;
-    const spaceAbove = rect.top - 8;
-    const openAbove = spaceBelow < 300 && spaceAbove > spaceBelow;
-    const maxHeight = Math.max(240, Math.min(460, openAbove ? spaceAbove : spaceBelow));
-    const top = openAbove
-      ? Math.max(8, rect.top - maxHeight - 6)
-      : Math.min(window.innerHeight - 8, rect.bottom + 6);
-    setPosition({ left, top, maxHeight });
+    setPosition(resolveDatasetFilterPopoverPosition(
+      triggerRef.current.getBoundingClientRect(),
+      window.innerWidth,
+      window.innerHeight,
+    ));
   }, [open]);
 
   useEffect(() => {
@@ -87,19 +105,24 @@ const DatasetColumnFilterMenu: React.FC<DatasetColumnFilterMenuProps> = ({
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setOpen(false);
     };
-    const handleScroll = (event: Event) => {
+    const handleViewportChange = (event: Event) => {
       if (event.target instanceof Node && popoverRef.current?.contains(event.target)) return;
-      setOpen(false);
+      if (!triggerRef.current) return;
+      setPosition(resolveDatasetFilterPopoverPosition(
+        triggerRef.current.getBoundingClientRect(),
+        window.innerWidth,
+        window.innerHeight,
+      ));
     };
     document.addEventListener('pointerdown', handlePointerDown);
     document.addEventListener('keydown', handleEscape);
-    window.addEventListener('resize', handleScroll);
-    window.addEventListener('scroll', handleScroll, true);
+    window.addEventListener('resize', handleViewportChange);
+    window.addEventListener('scroll', handleViewportChange, true);
     return () => {
       document.removeEventListener('pointerdown', handlePointerDown);
       document.removeEventListener('keydown', handleEscape);
-      window.removeEventListener('resize', handleScroll);
-      window.removeEventListener('scroll', handleScroll, true);
+      window.removeEventListener('resize', handleViewportChange);
+      window.removeEventListener('scroll', handleViewportChange, true);
     };
   }, [open]);
 
