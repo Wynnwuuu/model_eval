@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 
 import { analyzeStructuredEvaluationDataset } from '../server/audit/structuredEvaluationQualityAudit.ts';
+import { summarizeStructuredIssuesForReview } from '../server/audit/structuredEvaluationIssuePresentation.ts';
 import { getMediaProbeUrlRejection } from './lib/mediaProbe.ts';
 import { ensureStableDatasetItemIds } from '../src/datasetSync.ts';
 import { VIDMUSE_STRUCTURED_EVALUATION_COLUMNS } from '../src/features/datasets/preservedSourceImport.ts';
@@ -80,5 +81,25 @@ assert(audit.cases.find(item => item.caseId === 'missing-audio-placeholder')?.is
   && issue.message.includes('@audio1')
   && issue.severity === 'high'));
 assert.equal(audit.mediaReferences.length, 5);
+
+const repeatedPromptIssues = audit.cases.find(item => item.caseId === 'placeholder-mismatch')?.issues
+  .filter(issue => issue.code === 'PROMPT_REFERENCE_OUT_OF_RANGE') || [];
+const reviewSummary = summarizeStructuredIssuesForReview([...repeatedPromptIssues, ...repeatedPromptIssues]);
+assert.equal(reviewSummary.length, 1);
+assert.equal(reviewSummary[0]?.count, 2);
+assert.match(reviewSummary[0]?.explanation || '', /Prompt.*占位符/);
+assert.match(reviewSummary[0]?.recommendation || '', /修正占位符/);
+assert.deepEqual(reviewSummary[0]?.evidence, ['@Image2']);
+
+const fallbackSummary = summarizeStructuredIssuesForReview([{
+  code: 'FUTURE_RULE',
+  severity: 'medium',
+  category: 'mcp',
+  field: 'future_field',
+  message: 'future message',
+  recommendation: 'future recommendation',
+}]);
+assert.match(fallbackSummary[0]?.explanation || '', /尚未配置专门的中文说明/);
+assert.match(fallbackSummary[0]?.recommendation || '', /重新运行预检/);
 
 console.log('Structured evaluation quality tests passed.');

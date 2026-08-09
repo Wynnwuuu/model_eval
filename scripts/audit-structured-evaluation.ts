@@ -8,6 +8,7 @@ import {
   type StructuredEvaluationCaseAudit,
   type StructuredEvaluationIssue,
 } from '../server/audit/structuredEvaluationQualityAudit.ts';
+import { summarizeStructuredIssuesForReview } from '../server/audit/structuredEvaluationIssuePresentation.ts';
 import type {
   DatasetCompatibilityAuditResult,
   DatasetCompatibilityStatus,
@@ -471,10 +472,24 @@ const matrixCsv = [
 
 const manualQueue = quality.cases.map(item => {
   const sourceRow = envelope.dataset.items[item.rowIndex];
+  const issueDetails = summarizeStructuredIssuesForReview(item.issues);
+  const issueSummary = issueDetails.length
+    ? issueDetails.map(current => `${current.code}(${current.severity}${current.count > 1 ? `, ${current.count}处` : ''})`).join(', ')
+    : 'none';
+  const issueReview = issueDetails.length
+    ? `- issue 说明：\n${issueDetails.map(current => {
+      const context = [
+        current.fields.length ? `字段: ${current.fields.join(', ')}` : '',
+        current.evidence.length ? `证据: ${current.evidence.join(', ')}` : '',
+      ].filter(Boolean).join('；');
+      return `  - \`${current.code}\` (${current.severity}${current.count > 1 ? `；${current.count} 处` : ''}${context ? `；${context}` : ''})：是什么：${current.explanation} 怎么改：${current.recommendation}`;
+    }).join('\n')}\n`
+    : '- issue 说明：未发现确定性问题。\n';
   return `## ${item.rowIndex + 1}. ${item.caseId} / ${item.variantLabel || '-'}\n\n`+
     `- cell/modality: ${item.cellId} / ${item.modality}\n`+
     `- status: MCP=${item.mcpContractStatus}, Prompt=${item.promptStatus}, Media=${item.mediaStatus}, Severity=${item.severity}\n`+
-    `- issues: ${item.issues.map(current => `${current.code}(${current.severity})`).join(', ') || 'none'}\n`+
+    `- issues: ${issueSummary}\n`+
+    issueReview+
     `- prompt: ${String(sourceRow.prompt || '').replace(/\s+/g, ' ').slice(0, 1200)}\n`;
 }).join('\n');
 
