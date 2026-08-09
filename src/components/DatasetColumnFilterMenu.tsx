@@ -47,10 +47,10 @@ export const resolveDatasetFilterPopoverPosition = (
 };
 
 const FILTER_KIND_LABELS = {
-  blank: '\u7a7a\u767d',
-  string: '\u6587\u672c',
-  number: '\u6570\u5b57',
-  boolean: '\u5e03\u5c14',
+  blank: '空白',
+  string: '文本',
+  number: '数字',
+  boolean: '布尔',
   json: 'JSON',
 } as const;
 
@@ -169,8 +169,8 @@ const DatasetColumnFilterMenu: React.FC<DatasetColumnFilterMenuProps> = ({
           if (open) setOpen(false);
           else openMenu();
         }}
-        title={`${active ? '\u4fee\u6539' : '\u7b5b\u9009'} ${column.label}`}
-        aria-label={`${active ? '\u4fee\u6539\u7b5b\u9009' : '\u7b5b\u9009'} ${column.label}`}
+        title={`${active ? '修改' : '筛选'} ${column.label}`}
+        aria-label={`${active ? '修改筛选' : '筛选'} ${column.label}`}
         aria-expanded={open}
         className={`relative inline-flex h-7 w-7 shrink-0 items-center justify-center border transition-colors ${active
           ? 'border-amber-400/50 bg-amber-500/15 text-amber-200'
@@ -188,16 +188,16 @@ const DatasetColumnFilterMenu: React.FC<DatasetColumnFilterMenuProps> = ({
         <section
           ref={popoverRef}
           role="dialog"
-          aria-label={`${column.label} \u5217\u7b5b\u9009`}
+          aria-label={`${column.label} 列筛选`}
           className="fixed z-[140] flex w-[min(360px,calc(100vw-16px))] flex-col border border-white/15 bg-slate-950 shadow-2xl"
           style={{ left: position.left, top: position.top, maxHeight: position.maxHeight }}
         >
           <header className="flex items-start justify-between gap-3 border-b border-white/10 px-4 py-3">
             <div className="min-w-0">
               <div className="truncate text-sm font-semibold text-slate-100" title={column.label}>{column.label}</div>
-              <div className="mt-1 text-[11px] text-slate-500">\u540c\u5217\u591a\u9009\u4efb\u610f\u5339\u914d\uff0c\u4e0e\u5176\u4ed6\u5217\u540c\u65f6\u6ee1\u8db3</div>
+              <div className="mt-1 text-[11px] text-slate-500">同列多选任意匹配，与其他列同时满足</div>
             </div>
-            <button type="button" onClick={() => setOpen(false)} aria-label="\u53d6\u6d88\u7b5b\u9009" className="inline-flex h-8 w-8 shrink-0 items-center justify-center border border-white/10 text-slate-400 hover:text-white">
+            <button type="button" onClick={() => setOpen(false)} aria-label="取消筛选" className="inline-flex h-8 w-8 shrink-0 items-center justify-center border border-white/10 text-slate-400 hover:text-white">
               <X size={15} />
             </button>
           </header>
@@ -208,7 +208,7 @@ const DatasetColumnFilterMenu: React.FC<DatasetColumnFilterMenuProps> = ({
               <input
                 value={query}
                 onChange={event => setQuery(event.target.value)}
-                placeholder="\u641c\u7d22\u503c"
+                placeholder="搜索值"
                 autoFocus
                 className="w-full border border-white/10 bg-black/30 py-2 pl-9 pr-3 text-sm normal-case tracking-normal text-slate-100 outline-none focus:border-amber-400/50"
               />
@@ -223,9 +223,9 @@ const DatasetColumnFilterMenu: React.FC<DatasetColumnFilterMenuProps> = ({
                   onChange={toggleVisible}
                   className="h-4 w-4 accent-amber-400"
                 />
-                <span className="truncate">\u5168\u9009\u5f53\u524d\u641c\u7d22\u7ed3\u679c</span>
+                <span className="truncate">全选当前搜索结果</span>
               </label>
-              <button type="button" onClick={() => setDraftKeys([])} className="shrink-0 text-slate-400 hover:text-slate-100">\u6e05\u7a7a\u9009\u62e9</button>
+              <button type="button" onClick={() => setDraftKeys([])} className="shrink-0 text-slate-400 hover:text-slate-100">清空选择</button>
             </div>
           </div>
 
@@ -245,14 +245,14 @@ const DatasetColumnFilterMenu: React.FC<DatasetColumnFilterMenuProps> = ({
                 <span className={`shrink-0 font-mono ${option.count ? 'text-slate-400' : 'text-slate-600'}`}>{option.count}</span>
               </label>
             ))}
-            {!visibleOptions.length && <div className="px-3 py-8 text-center text-xs text-slate-500">\u6ca1\u6709\u5339\u914d\u7684\u503c</div>}
+            {!visibleOptions.length && <div className="px-3 py-8 text-center text-xs text-slate-500">没有匹配的值</div>}
           </div>
 
           <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-white/10 p-3">
-            <button type="button" onClick={clearFilter} disabled={!active} className="px-2 py-2 text-xs text-slate-400 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-40">\u6e05\u9664\u6b64\u5217\u7b5b\u9009</button>
+            <button type="button" onClick={clearFilter} disabled={!active} className="px-2 py-2 text-xs text-slate-400 hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-40">清除此列筛选</button>
             <div className="flex gap-2">
-              <button type="button" onClick={() => setOpen(false)} className="border border-white/10 px-3 py-2 text-xs text-slate-300 hover:bg-white/5">\u53d6\u6d88</button>
-              <button type="button" onClick={apply} disabled={!draftKeys.length} className="bg-amber-400 px-4 py-2 text-xs font-semibold text-black hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-40">\u5e94\u7528</button>
+              <button type="button" onClick={() => setOpen(false)} className="border border-white/10 px-3 py-2 text-xs text-slate-300 hover:bg-white/5">取消</button>
+              <button type="button" onClick={apply} disabled={!draftKeys.length} className="bg-amber-400 px-4 py-2 text-xs font-semibold text-black hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-40">应用</button>
             </div>
           </footer>
         </section>,

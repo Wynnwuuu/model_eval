@@ -526,3 +526,4 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - The local app is running at `http://localhost:3000/datasets`, but the Codex in-app browser blocked local HTTP navigation. Desktop/mobile UI verification remains a post-deploy check on the public dev URL.
 - No preflight submission, generation batch, or paid image/video request was created.
 - First public-dev interaction found that opening a header filter could immediately close it when locator/focus scrolling fired. Scroll and resize now recompute the portal position; only outside clicks or Escape close it. Desktop/mobile placement has deterministic regression coverage.
+- The same public check exposed JSX text-node Unicode escapes rendering literally. All filter instructions, placeholders and actions now use normal Chinese labels; typed value names and counts were already correct.
