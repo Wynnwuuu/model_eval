@@ -28,6 +28,7 @@
     "test:dataset-column-deletion": "tsx scripts/test-dataset-column-deletion.ts",
     "test:dataset-import-mappings": "tsx scripts/test-dataset-import-mappings.ts",
     "test:dataset-table-columns": "tsx scripts/test-dataset-table-columns.ts",
+    "test:dataset-filters": "tsx scripts/test-dataset-filters.ts",
     "test:structured-evaluation-audit": "tsx scripts/test-preserved-source-import.ts && tsx scripts/test-dataset-compatibility-audit.ts && tsx scripts/test-structured-evaluation-quality.ts",
     "import:feishu-evaluation": "tsx scripts/import-feishu-base-evaluation.ts",
     "publish:structured-evaluation": "tsx scripts/publish-structured-evaluation-datasets.ts",

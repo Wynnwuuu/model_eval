@@ -508,3 +508,20 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Fast-forwarded source commit `7843f5b` to `world-sim-dev/ManuEval` `main` without force-pushing or staging the existing untracked report and report assets.
 - Eval Studio Test run `31269490007` and Dev CI/CD run `31269490078` succeeded. The latter passed tests, image build, and the Kubernetes dev rollout.
 - `https://eval-studio.sandaii.cn/generation?view=tasks` loaded the deployed task workspace with live API data and no browser console errors. No generation action was opened or submitted.
+
+## 2026-08-09: Dataset column filters and filtered generation scope
+
+### Completed
+
+- Added typed Excel-style value filters to every dataset business-column header. Same-column selections use OR, cross-column filters use AND, blank values share one option, and JSON cells remain whole values.
+- Preserved original row indexes for repository view/edit/delete actions. Hidden filtered columns keep their conditions, and dataset/version changes clear the session-only filter state.
+- Added a versioned frontend generation-scope snapshot. Active filters default the generation dialog to the frozen filtered result; the existing case selector then performs the final stable-ID selection within that scope.
+- Added explicit filtered/all scope switching, mutually exclusive eligibility counts, zero-result blocking, and stable-ID-first snapshot resolution. No API, database, Worker, Aion, writeback, or historical batch contract changed.
+- The supplied 188-row CSV passed a read-only dry-run: `cell_id=AI|AIM` matched 24 rows (`AI=10`, `AIM=14`) in original source order.
+
+### Validation
+
+- Passed `test:dataset-filters`, generation/MCP/Seed tests, every non-DB dataset suite, Arena, rank ties, TypeScript, server build, and frontend build.
+- Local PostgreSQL and Docker Desktop were unavailable, so database generation and API smoke remain to be covered by CI/dev deployment.
+- The local app is running at `http://localhost:3000/datasets`, but the Codex in-app browser blocked local HTTP navigation. Desktop/mobile UI verification remains a post-deploy check on the public dev URL.
+- No preflight submission, generation batch, or paid image/video request was created.

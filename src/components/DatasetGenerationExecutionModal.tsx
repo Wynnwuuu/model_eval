@@ -92,10 +92,18 @@ import {
   resolveDefaultGenerationCaseStatus,
   type GenerationCaseStatusFilter,
 } from '../features/generation/preflightPresentation';
+import {
+  generationCaseScopeIsCurrent,
+  resolveGenerationCaseScopeRows,
+  summarizeGenerationCaseScope,
+  type GenerationCaseScopeMode,
+  type GenerationCaseScopeSnapshot,
+} from '../features/generation/caseScope';
 
 interface DatasetGenerationExecutionModalProps {
   dataset: EvalDataset;
   initialBatchId?: string;
+  initialCaseScope?: GenerationCaseScopeSnapshot;
   onClose: () => void;
   onBatchChange?: (batchId: string) => void;
   onCreateEvaluation?: (datasetId: string, resultColumn: string) => void;
@@ -232,6 +240,7 @@ const hasConfiguredInputValue = (value: unknown) => {
 const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalProps> = ({
   dataset,
   initialBatchId,
+  initialCaseScope,
   onClose,
   onBatchChange,
   onCreateEvaluation,
@@ -243,6 +252,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const [modelId, setModelId] = useState('');
   const [targetMode, setTargetMode] = useState<GenerationTargetMode>('new');
   const [targetColumn, setTargetColumn] = useState('');
+  const [caseScopeMode, setCaseScopeMode] = useState<GenerationCaseScopeMode>(initialCaseScope ? 'filtered' : 'all');
   const [selectedDatasetItemIds, setSelectedDatasetItemIds] = useState<string[]>([]);
   const [inputMapping, setInputMapping] = useState<GenerationInputMapping>(emptyMapping);
   const [defaultControls, setDefaultControls] = useState<Record<string, unknown>>({});
@@ -311,18 +321,24 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     [dataset.inputSchema, headers],
   );
   const usesVidMuseEvaluationPreset = hasVidMuseEvaluationPreset(headers, dataset.inputSchema || []);
-  const eligibleDatasetItemIds = useMemo(() => dataset.items
-    .filter(row => String(row[DATASET_ITEM_ID_KEY] || '').trim()
-      && !String(row[targetColumn] ?? '').trim()
-      && (!usesVidMuseEvaluationPreset
-        || !selectedModel
-        || generationRowMatchesModality(row, selectedModel.outputModality)))
-    .map(row => String(row[DATASET_ITEM_ID_KEY]).trim()), [
-      dataset.items,
-      selectedModel,
-      targetColumn,
-      usesVidMuseEvaluationPreset,
-    ]);
+  const scopeSnapshotCurrent = !initialCaseScope || generationCaseScopeIsCurrent(dataset, initialCaseScope);
+  const scopedRows = useMemo(
+    () => resolveGenerationCaseScopeRows(dataset, caseScopeMode, initialCaseScope),
+    [caseScopeMode, dataset, initialCaseScope],
+  );
+  const scopeSourceRowIndexes = useMemo(
+    () => caseScopeMode === 'filtered' ? scopedRows.map(item => item.sourceIndex) : undefined,
+    [caseScopeMode, scopedRows],
+  );
+  const scopeEligibility = useMemo(() => summarizeGenerationCaseScope(
+    scopedRows,
+    targetColumn,
+    row => !usesVidMuseEvaluationPreset
+      || !selectedModel
+      || generationRowMatchesModality(row, selectedModel.outputModality),
+  ), [scopedRows, selectedModel, targetColumn, usesVidMuseEvaluationPreset]);
+  const eligibleDatasetItemIds = scopeEligibility.eligibleDatasetItemIds;
+  const scopeCounts = scopeEligibility.counts;
   const eligibleSelectionSignature = eligibleDatasetItemIds.join('|');
   const maxBatchSize = runtimeHealth?.maxBatchSize || 500;
   const selectionTooLarge = selectedDatasetItemIds.length > maxBatchSize;
@@ -752,6 +768,21 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     setPendingReviewIds(current => Array.from(new Set([...current, datasetItemId])));
     setReviewsDirty(true);
     setConfirmed(false);
+  };
+
+  const changeCaseScopeMode = (mode: GenerationCaseScopeMode) => {
+    if (mode === caseScopeMode) return;
+    const nextRows = resolveGenerationCaseScopeRows(dataset, mode, initialCaseScope);
+    const nextEligibility = summarizeGenerationCaseScope(
+      nextRows,
+      targetColumn,
+      row => !usesVidMuseEvaluationPreset
+        || !selectedModel
+        || generationRowMatchesModality(row, selectedModel.outputModality),
+    );
+    setCaseScopeMode(mode);
+    setSelectedDatasetItemIds(nextEligibility.eligibleDatasetItemIds);
+    invalidatePreflight();
   };
 
   const acceptFindingRule = (ruleId: string) => {
@@ -1596,12 +1627,77 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                 </section>
               )}
 
+              <section className="border-y border-white/10 py-5" data-testid="generation-case-scope">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-100">生产范围</h3>
+                    <p className="mt-1 text-xs text-slate-400">
+                      {caseScopeMode === 'filtered' ? '当前筛选结果快照' : '评测集全量'} · 数据集 v{dataset.version || 1}
+                    </p>
+                  </div>
+                  <div className="flex border border-white/10 bg-black/20 p-1" role="group" aria-label="生产范围来源">
+                    {initialCaseScope && (
+                      <button
+                        type="button"
+                        onClick={() => changeCaseScopeMode('filtered')}
+                        disabled={!scopeSnapshotCurrent}
+                        aria-pressed={caseScopeMode === 'filtered'}
+                        className={`px-3 py-2 text-xs font-medium ${caseScopeMode === 'filtered' ? 'bg-amber-400 text-black' : 'text-slate-300 hover:bg-white/5'} disabled:cursor-not-allowed disabled:opacity-40`}
+                      >
+                        当前筛选结果 {initialCaseScope.filteredSourceRowIndexes.length}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => changeCaseScopeMode('all')}
+                      aria-pressed={caseScopeMode === 'all'}
+                      className={`px-3 py-2 text-xs font-medium ${caseScopeMode === 'all' ? 'bg-amber-400 text-black' : 'text-slate-300 hover:bg-white/5'}`}
+                    >
+                      评测集全量 {dataset.items.length}
+                    </button>
+                  </div>
+                </div>
+
+                {initialCaseScope && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {initialCaseScope.filters.map(filter => (
+                      <span key={filter.columnKey} className="max-w-full border border-amber-400/20 bg-amber-500/10 px-2 py-1 text-xs text-amber-100" title={`${filter.columnLabel}: ${filter.selectedLabels.join('、')}`}>
+                        {filter.columnLabel}: {filter.selectedLabels.slice(0, 3).join('、') || '无匹配值'}{filter.selectedLabels.length > 3 ? ` +${filter.selectedLabels.length - 3}` : ''}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {caseScopeMode === 'filtered' && !scopeSnapshotCurrent && (
+                  <div className="mt-3 border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+                    筛选快照对应的数据集版本已变化。请关闭配置并重新筛选，或明确切换到评测集全量。
+                  </div>
+                )}
+
+                <div className="mt-4 grid grid-cols-2 gap-px border border-white/10 bg-white/10 text-xs sm:grid-cols-3 lg:grid-cols-6">
+                  {[
+                    ['范围 case', scopeCounts.total, 'text-slate-100'],
+                    ['可生成', scopeCounts.eligible, 'text-emerald-300'],
+                    ['已有结果', scopeCounts.targetFilled, 'text-sky-300'],
+                    ['模态不匹配', scopeCounts.modalityMismatch, 'text-amber-300'],
+                    ['缺稳定 ID', scopeCounts.missingStableId, 'text-red-300'],
+                    ['最终已选', selectedDatasetItemIds.length, 'text-amber-200'],
+                  ].map(([label, value, tone]) => (
+                    <div key={String(label)} className="bg-slate-950 px-3 py-2.5">
+                      <div className={`text-base font-semibold ${tone}`}>{value}</div>
+                      <div className="mt-0.5 text-slate-500">{label}</div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
               <GenerationCaseSelector
                 dataset={dataset}
                 inputMapping={inputMapping}
                 outputModality={selectedModel?.outputModality}
                 targetColumn={targetColumn}
                 selectedDatasetItemIds={selectedDatasetItemIds}
+                scopeSourceRowIndexes={scopeSourceRowIndexes}
                 maxBatchSize={maxBatchSize}
                 onSelectionChange={updateCaseSelection}
               />

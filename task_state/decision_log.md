@@ -304,3 +304,11 @@ Compiler errors, warnings, and Plugin findings that describe one actionable caus
 Guided review edits canonical case inputs and then reruns the authoritative server preflight. The Aion request is read-only in that mode. A full final-request override is a mutually exclusive expert path because it supersedes normal compilation and may break MCP projection.
 
 Per-case overrides are versioned and stored in the existing review JSON snapshot. They are applied after dataset mapping and before MCP compilation, are restricted to MCP content fields and live model parameters, and never update the source dataset or allow reserved request fields.
+
+## 2026-08-09: Filters are temporary views; stable item IDs are generation facts
+
+Dataset column filters are deterministic frontend state only. Exact typed values are compared case-sensitively, search is case-insensitive, same-column values use OR, and different columns use AND. Filters change the table view and generation candidate scope only; downloads, copies, deletion, versions, and stored dataset content remain full-dataset operations.
+
+Opening generation freezes the current dataset ID, version, filter summary, stable item IDs, and presentation indexes for rows lacking stable IDs. Scope resolution treats stable IDs as authoritative; source indexes retain only otherwise unaddressable rows so the UI can report them as blocked. The server never receives a filter expression or source index, only the final ordered `selectedDatasetItemIds` from the existing selector.
+
+Switching between filtered and full scope explicitly resets selection to every currently eligible case in that scope. A zero-row filtered result stays empty and blocked; it never falls back to full-dataset generation. Historical jobs and retries continue to use their stored task snapshots.

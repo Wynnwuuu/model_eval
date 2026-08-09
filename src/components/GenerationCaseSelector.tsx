@@ -15,6 +15,7 @@ interface GenerationCaseSelectorProps {
   outputModality?: 'image' | 'video';
   targetColumn: string;
   selectedDatasetItemIds: string[];
+  scopeSourceRowIndexes?: number[];
   maxBatchSize: number;
   onSelectionChange: (ids: string[]) => void;
 }
@@ -136,12 +137,17 @@ const GenerationCaseSelector: React.FC<GenerationCaseSelectorProps> = ({
   outputModality,
   targetColumn,
   selectedDatasetItemIds,
+  scopeSourceRowIndexes,
   maxBatchSize,
   onSelectionChange,
 }) => {
   const [query, setQuery] = useState('');
   const selectAllRef = useRef<HTMLInputElement | null>(null);
   const selectedSet = useMemo<Set<string>>(() => new Set(selectedDatasetItemIds), [selectedDatasetItemIds]);
+  const scopeIndexSet = useMemo(
+    () => scopeSourceRowIndexes ? new Set(scopeSourceRowIndexes) : undefined,
+    [scopeSourceRowIndexes],
+  );
   const promptColumn = inputMapping.contentMappingVersion === 2
     ? inputMapping.contentMapping?.prompt.column
     : inputMapping.mappingMode === 'mcp'
@@ -149,13 +155,14 @@ const GenerationCaseSelector: React.FC<GenerationCaseSelectorProps> = ({
       : inputMapping.promptColumn;
   const mediaColumns = useMemo(() => mappedMediaColumns(inputMapping), [inputMapping]);
 
-  const cases = useMemo<SelectableCase[]>(() => (dataset.items || []).map((row, rowIndex) => {
+  const cases = useMemo<SelectableCase[]>(() => (dataset.items || []).flatMap((row, rowIndex) => {
+    if (scopeIndexSet && !scopeIndexSet.has(rowIndex)) return [];
     const datasetItemId = text(row[DATASET_ITEM_ID_KEY]);
     const targetFilled = Boolean(text(row[targetColumn]));
     const modalityMatches = !inputMapping.presetId
       || !outputModality
       || generationRowMatchesModality(row, outputModality);
-    return {
+    return [{
       rowIndex,
       datasetItemId,
       caseId: getDatasetRowCaseId(row, rowIndex),
@@ -164,8 +171,8 @@ const GenerationCaseSelector: React.FC<GenerationCaseSelectorProps> = ({
       targetFilled,
       modalityMatches,
       eligible: Boolean(datasetItemId) && !targetFilled && modalityMatches,
-    };
-  }), [dataset.items, inputMapping.presetId, mediaColumns, outputModality, promptColumn, targetColumn]);
+    }];
+  }), [dataset.items, inputMapping.presetId, mediaColumns, outputModality, promptColumn, scopeIndexSet, targetColumn]);
 
   const normalizedQuery = query.trim().toLowerCase();
   const filteredCases = useMemo(() => cases.filter(item => !normalizedQuery
@@ -227,7 +234,7 @@ const GenerationCaseSelector: React.FC<GenerationCaseSelectorProps> = ({
             className="w-full border border-white/10 bg-slate-900 py-2 pl-9 pr-3 text-sm text-slate-100"
           />
         </label>
-        <button type="button" onClick={() => onSelectionChange(eligibleIds)} className="border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-200 hover:bg-white/10">{'\u5168\u9009\u6240\u6709\u53ef\u751f\u6210\u9879'}</button>
+        <button type="button" onClick={() => onSelectionChange(eligibleIds)} className="border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-200 hover:bg-white/10">{'\u9009\u62e9\u5f53\u524d\u8303\u56f4\u5168\u90e8\u53ef\u751f\u6210\u9879'}</button>
         <button type="button" onClick={() => onSelectionChange([])} className="border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-300 hover:bg-white/10">{'\u6e05\u7a7a\u9009\u62e9'}</button>
       </div>
 

@@ -38,6 +38,7 @@ import { auth } from '../auth';
 import { ConfirmModal } from './ConfirmModal';
 import MediaRenderer from './MediaRenderer';
 import DatasetGenerationExecutionModal from './DatasetGenerationExecutionModal';
+import DatasetColumnFilterMenu from './DatasetColumnFilterMenu';
 import { normalizeUrl } from '../utils';
 import GenerationTaskCenter from './GenerationTaskCenter';
 import {
@@ -63,6 +64,13 @@ import {
   isDatasetTableColumnVisible,
 } from '../datasetTableColumns';
 import type { DatasetColumnVisibilityOverrides, DatasetTableColumnDescriptor } from '../datasetTableColumns';
+import {
+  applyDatasetColumnFilters,
+  datasetFilterLabels,
+  hasDatasetColumnFilters,
+  indexDatasetRows,
+  type DatasetColumnFilterMap,
+} from '../datasetRowFilters';
 import { subscribeTasks } from '../features/tasks/api';
 import { getExecutionBatch } from '../features/generation/executionApi';
 import { subscribeGenerationJobs } from '../features/generation/api';
@@ -76,6 +84,10 @@ import {
   resolveWorkspaceDataset,
   type GenerationWorkspaceView,
 } from '../features/generation/workspaceNavigation';
+import {
+  createGenerationCaseScopeSnapshot,
+  type GenerationCaseScopeSnapshot,
+} from '../features/generation/caseScope';
 import {
   DATASET_MODALITIES,
   STANDARD_DATASET_FIELDS,
@@ -754,8 +766,10 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   const [modalityFilter, setModalityFilter] = useState<DatasetModality | 'all'>('all');
   const [tagFilter, setTagFilter] = useState('');
   const [dimensionFilter, setDimensionFilter] = useState('');
+  const [columnFilters, setColumnFilters] = useState<DatasetColumnFilterMap>({});
   const [generationModalOpen, setGenerationModalOpen] = useState(false);
   const [selectedGenerationBatchId, setSelectedGenerationBatchId] = useState<string | undefined>();
+  const [generationScopeSnapshot, setGenerationScopeSnapshot] = useState<GenerationCaseScopeSnapshot | undefined>();
   const navigateGeneration = (
     view: GenerationWorkspaceView,
     context: { datasetId?: string; generationBatchId?: string } = {},
@@ -767,27 +781,39 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     setSelectedGenerationBatchId(batchId);
     navigateGeneration('tasks', { generationBatchId: batchId });
   };
-  const showNewGenerationView = (datasetId?: string) => {
+  const showNewGenerationView = (datasetId?: string, preserveScope = false) => {
     setGenerationModalOpen(false);
     setSelectedGenerationBatchId(undefined);
+    if (!preserveScope) setGenerationScopeSnapshot(undefined);
     setSelectedDatasetId(datasetId || '');
     navigateGeneration('new', datasetId ? { datasetId } : {});
   };
   const showGenerationTasks = () => {
     setGenerationModalOpen(false);
     setSelectedGenerationBatchId(undefined);
+    setGenerationScopeSnapshot(undefined);
     navigateGeneration('tasks');
   };
   const openNewGeneration = () => {
     if (!selectedDataset || isViewingHistoricalVersion) return;
+    const nextScope = hasDatasetColumnFilters(columnFilters)
+      ? createGenerationCaseScopeSnapshot({
+        dataset: selectedDataset,
+        filteredRows: filteredSelectedRows,
+        filters: columnFilters,
+        columnLabels: Object.fromEntries(tableColumns.map(column => [column.key, column.label])),
+      })
+      : undefined;
+    setGenerationScopeSnapshot(nextScope);
     if (mode !== 'generation') {
-      showNewGenerationView(selectedDataset.id);
+      showNewGenerationView(selectedDataset.id, true);
       return;
     }
     setSelectedGenerationBatchId(undefined);
     setGenerationModalOpen(true);
   };
   const openGenerationBatch = (job: DatasetGenerationJob) => {
+    setGenerationScopeSnapshot(undefined);
     setSelectedDatasetId(job.datasetId);
     setGenerationModalOpen(true);
     setGenerationBatchRoute(job.id);
@@ -968,6 +994,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
       .then(loaded => {
         if (!active) return;
         setFallbackGenerationView('tasks');
+        setGenerationScopeSnapshot(undefined);
         setSelectedDatasetId(loaded.datasetId);
         setSelectedGenerationBatchId(loaded.id);
         setGenerationModalOpen(true);
@@ -988,10 +1015,26 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   const tableDataset = viewingVersionDataset || selectedDataset;
   const isViewingHistoricalVersion = !!viewingVersionDataset;
   const selectedMappings = getDatasetColumnMappings(tableDataset);
-  const selectedRows = tableDataset?.items || [];
-  const selectedRow = selectedRows[Math.min(selectedRowIndex, Math.max(selectedRows.length - 1, 0))];
+  const selectedRows = useMemo(() => tableDataset?.items || [], [tableDataset]);
+  const indexedSelectedRows = useMemo(() => indexDatasetRows(selectedRows), [selectedRows]);
+  const filteredSelectedRows = useMemo(
+    () => applyDatasetColumnFilters(indexedSelectedRows, columnFilters),
+    [columnFilters, indexedSelectedRows],
+  );
+  const selectedRowVisible = filteredSelectedRows.some(item => item.sourceIndex === selectedRowIndex);
+  const selectedRow = selectedRowVisible ? selectedRows[selectedRowIndex] : undefined;
   const outputColumns = selectedMappings.outputColumns;
   const tableColumns = useMemo(() => buildDatasetTableColumns(tableDataset), [tableDataset]);
+  const activeColumnFilters = hasDatasetColumnFilters(columnFilters);
+  const columnFilterSummaries = useMemo(() => tableColumns.flatMap(column => {
+    const selectedKeys = columnFilters[column.key] || [];
+    if (!selectedKeys.length) return [];
+    return [{
+      columnKey: column.key,
+      columnLabel: column.label,
+      selectedLabels: datasetFilterLabels(indexedSelectedRows, column.key, selectedKeys),
+    }];
+  }), [columnFilters, indexedSelectedRows, tableColumns]);
   const columnVisibilityOverrides = selectedDataset
     ? columnVisibilityByDataset[selectedDataset.id] || {}
     : {};
@@ -1006,6 +1049,17 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     }))
     .filter(group => group.columns.length > 0), [tableColumns]);
   const hiddenTableColumnCount = tableColumns.length - visibleTableColumns.length;
+
+  const updateColumnFilter = (columnKey: string, selectedKeys?: string[]) => {
+    setColumnFilters(current => {
+      if (!selectedKeys?.length) {
+        const next = { ...current };
+        delete next[columnKey];
+        return next;
+      }
+      return { ...current, [columnKey]: selectedKeys };
+    });
+  };
 
   const saveColumnVisibilityOverrides = (overrides: DatasetColumnVisibilityOverrides) => {
     if (!selectedDataset) return;
@@ -1115,6 +1169,17 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     setVersionToRollback(null);
     setSelectedRowIndex(0);
   }, [selectedDatasetId]);
+
+  useEffect(() => {
+    setColumnFilters({});
+  }, [isViewingHistoricalVersion, selectedDatasetId, tableDataset?.version]);
+
+  useEffect(() => {
+    if (!filteredSelectedRows.length) return;
+    if (!filteredSelectedRows.some(item => item.sourceIndex === selectedRowIndex)) {
+      setSelectedRowIndex(filteredSelectedRows[0].sourceIndex);
+    }
+  }, [filteredSelectedRows, selectedRowIndex]);
 
   const formatEditDraft = (value: unknown, editor: DatasetValueEditor) => {
     if (editor === 'json') return JSON.stringify(value ?? null, null, 2);
@@ -2108,6 +2173,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
 
   const renderEditableHeader = (column: string, className = 'px-4 py-3', displayLabel = column) => {
     const isEditing = inlineRenameColumn === column;
+    const descriptor = tableColumns.find(item => item.key === column);
     return (
       <th key={column} data-column-key={column} className={className}>
         {isEditing ? (
@@ -2140,6 +2206,14 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
             <span className="truncate">{displayLabel}</span>
             {!isViewingHistoricalVersion && !isGenerationMode && <Pencil size={12} className="opacity-0 transition-opacity group-hover:opacity-70" />}
           </button>
+            {descriptor && (
+              <DatasetColumnFilterMenu
+                column={descriptor}
+                rows={indexedSelectedRows}
+                filters={columnFilters}
+                onChange={updateColumnFilter}
+              />
+            )}
             {!isViewingHistoricalVersion && !isGenerationMode && (
               <button
                 type="button"
@@ -3182,6 +3256,37 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                   当前表格是 v{tableDataset?.version} 的只读快照。若要恢复，请在右侧版本记录点击“回退”，系统会复制该快照生成新的当前版本。
                 </div>
               )}
+              <div className="flex flex-wrap items-center gap-2 border-b border-white/10 bg-black/15 px-5 py-3" data-testid="dataset-row-filter-summary">
+                <span className="text-xs font-medium text-slate-300">
+                  当前显示 {filteredSelectedRows.length} / {selectedRows.length} case
+                </span>
+                {columnFilterSummaries.map(summary => {
+                  const visibleLabels = summary.selectedLabels.slice(0, 2);
+                  const remaining = summary.selectedLabels.length - visibleLabels.length;
+                  const label = visibleLabels.join('、') || '已选择的值不存在';
+                  return (
+                    <span key={summary.columnKey} className="inline-flex max-w-full items-center gap-1.5 border border-amber-400/25 bg-amber-500/10 px-2 py-1 text-xs text-amber-100">
+                      <span className="max-w-[280px] truncate" title={`${summary.columnLabel}: ${summary.selectedLabels.join('、')}`}>
+                        {summary.columnLabel}: {label}{remaining > 0 ? ` +${remaining}` : ''}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => updateColumnFilter(summary.columnKey, undefined)}
+                        aria-label={`清除 ${summary.columnLabel} 筛选`}
+                        title={`清除 ${summary.columnLabel} 筛选`}
+                        className="inline-flex h-5 w-5 shrink-0 items-center justify-center text-amber-200/70 hover:text-white"
+                      >
+                        <X size={12} />
+                      </button>
+                    </span>
+                  );
+                })}
+                {activeColumnFilters && (
+                  <button type="button" onClick={() => setColumnFilters({})} className="ml-auto text-xs text-slate-400 hover:text-slate-100">
+                    清除全部筛选
+                  </button>
+                )}
+              </div>
               <div className="max-h-[calc(100vh-250px)] min-h-[360px] overflow-auto" data-testid="dataset-schema-table">
                 <table className="w-full min-w-max border-collapse text-left">
                   <thead className="sticky top-0 z-20 bg-slate-950 text-xs uppercase tracking-wide text-slate-400">
@@ -3196,10 +3301,10 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/10">
-                    {selectedRows.map((row, index) => {
+                    {filteredSelectedRows.map(({ row, sourceIndex: index, stableItemId }) => {
                       const rowSelected = index === selectedRowIndex;
                       return (
-                        <tr key={`${getDatasetDisplayValue(row, idKeys) || index}-${index}`} onClick={() => setSelectedRowIndex(index)} className={`cursor-pointer ${rowSelected ? 'bg-amber-500/10' : 'hover:bg-white/[0.04]'}`}>
+                        <tr key={stableItemId || `${getDatasetDisplayValue(row, idKeys) || index}-${index}`} onClick={() => setSelectedRowIndex(index)} className={`cursor-pointer ${rowSelected ? 'bg-amber-500/10' : 'hover:bg-white/[0.04]'}`}>
                           {visibleTableColumns.map(column => {
                             const value = row[column.key];
                             const caseIdValue = column.lockedVisible
@@ -3247,9 +3352,13 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                     })}
                   </tbody>
                 </table>
-                {selectedRows.length === 0 && (
+                {filteredSelectedRows.length === 0 && (
                   <div className="py-16 text-center text-slate-400">
-                    {isGenerationMode ? '这个评测集还没有可预览的 case。' : '这个评测集还没有 case。点击“追加内容”上传或粘贴表格。'}
+                    {selectedRows.length
+                      ? '没有符合当前筛选条件的 case。请修改或清除筛选。'
+                      : isGenerationMode
+                        ? '这个评测集还没有可预览的 case。'
+                        : '这个评测集还没有 case。点击“追加内容”上传或粘贴表格。'}
                   </div>
                 )}
               </div>
@@ -3443,11 +3552,13 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
         <DatasetGenerationExecutionModal
           dataset={selectedDataset}
           initialBatchId={selectedGenerationBatchId}
+          initialCaseScope={generationScopeSnapshot}
           onBatchChange={setGenerationBatchRoute}
           onCreateEvaluation={onCreateEvaluation}
           onClose={() => {
             setGenerationModalOpen(false);
             setSelectedGenerationBatchId(undefined);
+            setGenerationScopeSnapshot(undefined);
             if (selectedGenerationBatchId) navigateGeneration('tasks');
           }}
         />

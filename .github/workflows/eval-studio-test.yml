@@ -63,6 +63,8 @@ jobs:
 
       - run: npm run test:generation
 
+      - run: npm run test:dataset-filters
+
       - run: npm run build
 
       - run: npm run server:build
