@@ -22,7 +22,7 @@
 
 ### Release
 
-- Release and dev shadow-mode observation remain pending final `origin/main` synchronization and non-force push.
+- Commit `a5514b8` reached main and both Test and Dev CI/CD succeeded. The first rollout exposed a pre-existing version-2 capacity row, so the corrected 12, 24, 48 platform policy is being released as version 3 to force a fresh ten-minute shadow period before takeover.
 
 ## 2026-08-08: Structured evaluation Base import and audit
 

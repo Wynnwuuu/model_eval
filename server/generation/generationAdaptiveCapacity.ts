@@ -83,7 +83,7 @@ export type GenerationCapacityOutcome = {
 };
 
 export const DEFAULT_GENERATION_VIDEO_ADAPTIVE_POLICY: GenerationVideoAdaptivePolicy = {
-  policyVersion: 2,
+  policyVersion: 3,
   hardLimit: 48,
   initialGlobalLimit: 12,
   coldStartLimit: 2,

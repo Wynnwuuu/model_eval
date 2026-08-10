@@ -415,6 +415,7 @@ assert.throws(() => parseGenerationVideoModelLimits(JSON.stringify({
 }), 8), /minimum/);
 
 const adaptivePolicy = parseGenerationVideoAdaptivePolicy(undefined);
+assert.equal(adaptivePolicy.policyVersion, 3);
 assert.equal(adaptivePolicy.hardLimit, 48);
 assert.equal(adaptivePolicy.initialGlobalLimit, 12);
 assert.equal(adaptivePolicy.coldStartLimit, 2);
