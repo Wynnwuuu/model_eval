@@ -74,7 +74,8 @@ const ISSUE_COPY: Record<string, GenerationIssueCopy> = {
   INVALID_PROMPT: issueCopy('Prompt 内容无效', 'Prompt 的数据类型或内容不符合当前映射格式。', '填写非空文本，或选择与单元格内容一致的 Prompt 格式。'),
   INVALID_PROMPT_ITEM: issueCopy('多镜头 Prompt 子项无效', '至少一个镜头缺少 Prompt 或合法时长。', '检查每个镜头对象的 prompt 和 duration。'),
   UNKNOWN_PROMPT_FIELD: issueCopy('Prompt 包含未知字段', '多镜头 Prompt 中包含 MCP 合同未声明的字段。', '删除未知字段，保留 prompt 和 duration。'),
-  PROMPT_TOO_LONG: issueCopy('Prompt 超出模型长度限制', '当前 Prompt 长度超过实时模型配置允许范围。', '精简 Prompt，或选择支持更长 Prompt 的模型。'),
+  PROMPT_TOO_LONG: issueCopy('Prompt 超出模型长度限制', '当前 Prompt 超出已解析的模型长度合同。', '精简 Prompt，或选择支持更长 Prompt 的模型。'),
+  PROMPT_LENGTH_NOT_VERIFIED: issueCopy('数组 Prompt 长度尚未验证', '模型合同没有声明数组 Prompt 的长度作用范围，因此平台未进行近似或猜测性拦截。', '提交前核对模型合同；最终长度校验仍由 Aion Adapter 执行。'),
   PROMPT_REFERENCE_OUT_OF_RANGE: issueCopy('Prompt 引用了不存在的素材编号', 'Prompt 中的素材占位符没有对应的实际输入。', '修正编号，或补充对应素材。'),
   UNREFERENCED_PROMPT_ASSET: issueCopy('素材未在 Prompt 中引用', '已传入素材，但 Prompt 没有引用它。模型仍可能使用该素材。', '确认这是预期行为，或在 Prompt 中补充模型支持的占位符。'),
   INVALID_ASSET_URL: issueCopy('素材地址无效', '素材不是可提交的 HTTP(S)、上传资产或允许的相对地址。', '替换为有效公网 URL 或先上传素材。'),
@@ -155,11 +156,45 @@ export const getGenerationIssueKey = (severity: GenerationIssueSeverity, code: s
 export const getGenerationCaseId = (item: GenerationPreflightCase) =>
   String(item.resolvedCase.caseId || item.resolvedCase.datasetItemId || `row-${item.resolvedCase.rowIndex ?? '?'}`);
 
+const promptLengthSourceLabel = (
+  source: NonNullable<GenerationPreflightIssue['promptLength']>['source'],
+) => ({
+  aion_input_schema: 'Aion input schema',
+  aion_parameter_schema: 'Aion parameter schema',
+  aion_options: 'Aion options',
+  manueval_compatibility: 'ManuEval 兼容配置',
+}[String(source)] || '未声明');
+
+const promptLengthIssueCopy = (issue: GenerationPreflightIssue): GenerationIssueCopy | undefined => {
+  const audit = issue.promptLength;
+  if (!audit) return undefined;
+  if (issue.code === 'PROMPT_LENGTH_NOT_VERIFIED') {
+    return issueCopy(
+      '数组 Prompt 长度尚未验证',
+      `该数组包含 ${audit.measuredLength} 个原始文本 Unicode 字符，但模型合同未声明应逐段校验还是按 Adapter 规范化后的总长校验。平台没有使用近似规则，也没有改写 Aion 请求。`,
+      '提交前核对模型的数组 Prompt 合同；最终长度校验仍由 Aion Adapter 执行。',
+    );
+  }
+  if (issue.code !== 'PROMPT_TOO_LONG' || audit.maximumLength === undefined) return undefined;
+  const subject = audit.scope === 'array_item'
+    ? `第 ${(audit.itemIndex ?? 0) + 1} 段 Prompt`
+    : audit.scope === 'array_joined'
+      ? '按合同规范化后的数组 Prompt'
+      : 'Prompt';
+  return issueCopy(
+    'Prompt 超出模型长度限制',
+    `${subject}为 ${audit.measuredLength} / ${audit.maximumLength} Unicode 字符。判定单位是字符，不是单词数或 Token 数；规则来源：${promptLengthSourceLabel(audit.source)}。`,
+    audit.scope === 'array_item'
+      ? `精简第 ${(audit.itemIndex ?? 0) + 1} 段 Prompt，或选择支持更长分段 Prompt 的模型。`
+      : '精简 Prompt，或选择支持更长 Prompt 的模型。',
+  );
+};
+
 export const getGenerationIssuePresentation = (
   issue: GenerationPreflightIssue,
   severity: GenerationIssueSeverity,
 ): GenerationIssuePresentation => {
-  const known = ISSUE_COPY[issue.code];
+  const known = promptLengthIssueCopy(issue) || ISSUE_COPY[issue.code];
   const fallback = issueCopy(
     `未识别的预检问题（${issue.code || 'UNKNOWN'}）`,
     '当前前端尚未登记这个问题码，原始信息已保留在技术信息中。',
@@ -186,6 +221,7 @@ const PROMPT_CODES = new Set([
   'INVALID_PROMPT_ITEM',
   'UNKNOWN_PROMPT_FIELD',
   'PROMPT_TOO_LONG',
+  'PROMPT_LENGTH_NOT_VERIFIED',
   'PROMPT_REFERENCE_OUT_OF_RANGE',
   'UNREFERENCED_PROMPT_ASSET',
   'MODEL_PROMPT_SHAPE_UNSUPPORTED',

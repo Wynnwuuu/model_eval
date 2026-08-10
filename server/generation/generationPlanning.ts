@@ -18,10 +18,14 @@ import type {
   GenerationInvalidParameterDefinition,
   GenerationParameterAuditEntry,
   GenerationCaseInputOverrideV1,
+  GenerationPromptLengthAudit,
   GenerationSeedMode,
 } from '../../src/types.ts';
 import type { GenerationContentIntentAudit } from './generationContentMapping.ts';
-import type { GenerationModelValidationOverride } from './generationValidationPolicy.ts';
+import {
+  evaluatePromptLength,
+  type GenerationModelValidationPolicy,
+} from './generationValidationPolicy.ts';
 import type { GenerationMediaReferenceAudit } from '../../src/features/generation/mediaValidation.ts';
 
 export type GenerationModality = 'image' | 'video';
@@ -122,6 +126,7 @@ export type GenerationCase = {
   seed?: number;
   seedMode?: GenerationSeedMode;
   seedPolicyVersion?: 2;
+  promptLengthAudit?: GenerationPromptLengthAudit[];
   extraInputs?: Record<string, any>;
   generationType?: string;
 };
@@ -130,6 +135,7 @@ export type PreflightIssue = {
   code: string;
   message: string;
   field?: string;
+  promptLength?: GenerationPromptLengthAudit;
 };
 
 export type PreflightCaseResult = {
@@ -675,12 +681,12 @@ const suppliedInputs = (
 export const preflightGenerationCase = (
   model: NormalizedGenerationModel,
   item: GenerationCase,
-  validation: GenerationModelValidationOverride = {},
+  validation: GenerationModelValidationPolicy = {},
 ): PreflightCaseResult => {
   const errors: PreflightIssue[] = [];
   const warnings: PreflightIssue[] = [];
   const generationType = resolveGenerationType(model, item);
-  const resolvedCase = { ...item, generationType };
+  let resolvedCase = { ...item, generationType };
   const inputs = suppliedInputs(model, item, generationType);
   const hasReferenceVideos = Boolean(item.videoUrls?.length);
   const hasRawElements = hasConfiguredValue(item.extraInputs?.elements);
@@ -798,16 +804,28 @@ export const preflightGenerationCase = (
   if (model.outputModality === 'video' && generationType === 'text_to_video' && !inputs.prompt) {
     errors.push({ code: 'MISSING_REQUIRED_INPUT', field: 'prompt', message: 'Text-to-video generation requires a prompt.' });
   }
-  if (inputs.prompt && validation.promptMaxLength) {
-    const promptLength = Array.from(String(inputs.prompt)).length;
-    if (promptLength > validation.promptMaxLength) {
+  const promptLengthAudit = evaluatePromptLength(inputs.prompt, validation);
+  if (promptLengthAudit.length) resolvedCase = { ...resolvedCase, promptLengthAudit };
+  promptLengthAudit.forEach(measurement => {
+    if (measurement.scope === 'array_unverified') {
+      warnings.push({
+        code: 'PROMPT_LENGTH_NOT_VERIFIED',
+        field: 'prompt',
+        message: 'The model contract does not declare whether array Prompt limits apply per item or after Adapter normalization; no blocking length comparison was performed.',
+        promptLength: measurement,
+      });
+      return;
+    }
+    if (measurement.maximumLength !== undefined
+      && measurement.measuredLength > measurement.maximumLength) {
       errors.push({
         code: 'PROMPT_TOO_LONG',
-        field: 'prompt',
-        message: `Prompt length ${promptLength} exceeds the supported maximum ${validation.promptMaxLength}.`,
+        field: measurement.itemIndex === undefined ? 'prompt' : `prompt[${measurement.itemIndex}]`,
+        message: `Prompt length ${measurement.measuredLength} exceeds the supported maximum ${measurement.maximumLength} Unicode code points.`,
+        promptLength: measurement,
       });
     }
-  }
+  });
   const effectiveGenerationType = item.compilerAudit?.effectiveGenerationType;
   const validationGenerationTypes = Array.from(new Set([
     generationType,

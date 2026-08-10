@@ -22,7 +22,10 @@ import {
   buildGenerationCasesForPreflight,
   type GenerationPreflightRequest,
 } from './generationPreflightService.ts';
-import { generationValidationForModel } from './generationValidationPolicy.ts';
+import {
+  generationValidationForModel,
+  type GenerationModelValidationOverrides,
+} from './generationValidationPolicy.ts';
 
 export type DatasetCompatibilityStatus =
   | 'ready_as_authored'
@@ -184,6 +187,7 @@ const suggestedOverridesFor = (
 const auditModel = (
   dataset: EvalDataset,
   model: NormalizedGenerationModel,
+  validationOverrides: GenerationModelValidationOverrides,
 ): DatasetModelCompatibilityCase[] => {
   const headers = (dataset.inputSchema || []).map(field => field.key);
   const mapping = defaultGenerationInputMapping(
@@ -222,7 +226,7 @@ const auditModel = (
     const validation = preflightGenerationCase(
       model,
       item.resolvedCase,
-      generationValidationForModel(model, {}),
+      generationValidationForModel(model, validationOverrides),
     );
     const errors = [...item.preparationIssues, ...validation.errors];
     const warnings = [...item.preparationWarnings, ...validation.warnings];
@@ -282,8 +286,9 @@ const emptyStatusCounts = (): Record<DatasetCompatibilityStatus, number> => ({
 export const auditDatasetAgainstModels = (
   dataset: EvalDataset,
   models: NormalizedGenerationModel[],
+  validationOverrides: GenerationModelValidationOverrides = {},
 ): DatasetCompatibilityAuditResult => {
-  const cases = models.flatMap(model => auditModel(dataset, model));
+  const cases = models.flatMap(model => auditModel(dataset, model, validationOverrides));
   const byStatus = emptyStatusCounts();
   const byModel: Record<string, Record<DatasetCompatibilityStatus, number>> = {};
   const byCell: Record<string, Record<DatasetCompatibilityStatus, number>> = {};

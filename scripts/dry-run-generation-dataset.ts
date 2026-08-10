@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
 import { auditDatasetAgainstModels } from '../server/generation/generationDatasetAudit.ts';
+import { serverConfig } from '../server/config.ts';
 import type { NormalizedGenerationModel } from '../server/generation/generationPlanning.ts';
 import type { EvalDataset } from '../src/types.ts';
 
@@ -67,7 +68,11 @@ const selectedModels = hasFlag('all-models')
   : models.filter(model => (requestedModels.length ? requestedModels : legacyModels).includes(model.modelName));
 
 if (!selectedModels.length) throw new Error('No matching live image/video models were found.');
-const audit = auditDatasetAgainstModels(dataset, selectedModels);
+const audit = auditDatasetAgainstModels(
+  dataset,
+  selectedModels,
+  serverConfig.generationModelValidationOverrides,
+);
 const output = {
   ...audit,
   source,

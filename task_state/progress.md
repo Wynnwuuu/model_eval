@@ -527,3 +527,19 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - No preflight submission, generation batch, or paid image/video request was created.
 - First public-dev interaction found that opening a header filter could immediately close it when locator/focus scrolling fired. Scroll and resize now recompute the portal position; only outside clicks or Escape close it. Desktop/mobile placement has deterministic regression coverage.
 - The same public check exposed JSX text-node Unicode escapes rendering literally. All filter instructions, placeholders and actions now use normal Chinese labels; typed value names and counts were already correct.
+
+## 2026-08-10: Generic Prompt length contracts
+
+### Completed
+
+- Replaced scalar-only Prompt length validation with a shape-aware contract for strings, per-array-item limits, and explicitly configured joined-array limits. Unicode code points are the only supported measurement unit; bytes and tokens are never approximated.
+- Extracted string and array Prompt limits from Aion input/parameter JSON Schema, including `oneOf` and `anyOf`, with Aion options and validated ManuEval compatibility configuration as lower-priority sources.
+- Removed the `String(array)` path. Arrays without a reliable contract now emit `PROMPT_LENGTH_NOT_VERIFIED`, preserve the final Aion request unchanged, and defer final enforcement to the Adapter.
+- Added structured issue evidence and UI copy with measured value, maximum, unit, scope, source, and array item index. Online preflight and offline dataset audit now use the same resolver and compatibility configuration.
+- Preserved the legacy `promptMaxLength` setting as a string-only fallback. No model-name branch, description parsing, database migration, Aion change, or paid generation was introduced.
+
+### Validation
+
+- Passed generation/MCP/Seed tests, structured evaluation audit, PostgreSQL generation integration, every dataset suite, Arena, rank ties, API smoke, TypeScript, server build, frontend build, and `git diff --check`.
+- A zero-generation dry-run compiled 188 source cases against 63 captured live models: 7,952 case-model evaluations and exactly 0 generation POSTs.
+- Independent Unicode code-point counting found 15 source Prompts over 5,000 characters. The dry-run reported the same 15 unique cases, with 0 false positives and 0 measurement mismatches.

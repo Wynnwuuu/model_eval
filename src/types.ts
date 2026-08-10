@@ -764,10 +764,24 @@ export interface GenerationAssetBinding {
   contentType?: string;
 }
 
+export interface GenerationPromptLengthAudit {
+  measuredLength: number;
+  maximumLength?: number;
+  unit: 'unicode_code_points';
+  scope: 'string' | 'array_item' | 'array_joined' | 'array_unverified';
+  source?:
+    | 'aion_input_schema'
+    | 'aion_parameter_schema'
+    | 'aion_options'
+    | 'manueval_compatibility';
+  itemIndex?: number;
+}
+
 export interface GenerationPreflightIssue {
   code: string;
   message: string;
   field?: string;
+  promptLength?: GenerationPromptLengthAudit;
 }
 
 export interface GenerationContractProposal {

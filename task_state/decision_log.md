@@ -312,3 +312,11 @@ Dataset column filters are deterministic frontend state only. Exact typed values
 Opening generation freezes the current dataset ID, version, filter summary, stable item IDs, and presentation indexes for rows lacking stable IDs. Scope resolution treats stable IDs as authoritative; source indexes retain only otherwise unaddressable rows so the UI can report them as blocked. The server never receives a filter expression or source index, only the final ordered `selectedDatasetItemIds` from the existing selector.
 
 Switching between filtered and full scope explicitly resets selection to every currently eligible case in that scope. A zero-row filtered result stays empty and blocked; it never falls back to full-dataset generation. Historical jobs and retries continue to use their stored task snapshots.
+
+## 2026-08-10: Prompt length validation is shape- and contract-aware
+
+Prompt length is measured on the final compiled Prompt using Unicode code points. A scalar limit applies only to a string; arrays require an explicit per-item or joined-text contract. Joined contracts own their separator, trimming, and empty-item behavior so ManuEval does not invent provider semantics.
+
+Structured Aion schemas are authoritative when available, followed by Aion options and then validated ManuEval compatibility rules. Legacy `promptMaxLength` remains a string-only fallback. Model names and natural-language descriptions never select length behavior.
+
+An array without a reliable contract is not converted with `String(array)` and is not approximately measured. It produces a visible `PROMPT_LENGTH_NOT_VERIFIED` warning and is sent unchanged for Aion Adapter validation. Online preflight and offline compatibility audit share this resolver and configuration, preventing the same case from receiving contradictory conclusions.

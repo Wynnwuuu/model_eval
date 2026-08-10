@@ -118,4 +118,22 @@ assert.equal(audit.cases.find(item => item.caseId === 'ready')?.mcpToolInput?.mo
 assert.equal(audit.cases.find(item => item.caseId === 'ready')?.finalAionRequest?.generation_type, 'text_to_video');
 assert.equal(audit.summary.totalEvaluations, 5);
 
+const promptLengthAudit = auditDatasetAgainstModels({
+  ...dataset,
+  id: 'ds-audit-prompt-length',
+  items: ensureStableDatasetItemIds('ds-audit-prompt-length', [rows[0]]).map(item => ({
+    ...item,
+    prompt: '123456',
+  })),
+}, [model], {
+  [model.modelName]: { promptMaxLength: 5 },
+});
+const promptLengthCase = promptLengthAudit.cases[0];
+assert.equal(promptLengthCase.status, 'unsupported_by_model');
+assert.ok(promptLengthCase.errors.some(item => (
+  item.code === 'PROMPT_TOO_LONG'
+  && item.promptLength?.measuredLength === 6
+  && item.promptLength?.maximumLength === 5
+)));
+
 console.log('Dataset compatibility audit tests passed.');

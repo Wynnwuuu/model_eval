@@ -407,9 +407,45 @@ const validationOverrides = parseGenerationModelValidationOverrides(JSON.stringi
   'wan/wan3.0-video': { promptMaxLength: 5000 },
 }));
 assert.deepEqual(validationOverrides['wan/wan3.0-video'], { promptMaxLength: 5000 });
+const structuredValidationOverrides = parseGenerationModelValidationOverrides(JSON.stringify({
+  'provider/future-video': {
+    promptLength: {
+      unit: 'unicode_code_points',
+      string: { maxLength: 5000 },
+      array: {
+        scope: 'array_joined',
+        maxLength: 5000,
+        separator: '\n',
+        trimItems: true,
+        omitEmptyItems: true,
+      },
+    },
+  },
+}));
+assert.deepEqual(structuredValidationOverrides['provider/future-video'], {
+  promptLength: {
+    unit: 'unicode_code_points',
+    string: { maxLength: 5000 },
+    array: {
+      scope: 'array_joined',
+      maxLength: 5000,
+      separator: '\n',
+      trimItems: true,
+      omitEmptyItems: true,
+    },
+  },
+});
 assert.throws(() => parseGenerationModelValidationOverrides(JSON.stringify({
   'wan/wan3.0-video': { promptMaxLength: 0 },
 })), /positive integer/);
+assert.throws(() => parseGenerationModelValidationOverrides(JSON.stringify({
+  'provider/future-video': {
+    promptLength: {
+      unit: 'tokens',
+      array: { scope: 'array_joined', maxLength: 1000 },
+    },
+  },
+})), /unicode_code_points/);
 
 const selectionRows = [
   { [DATASET_ITEM_ID_KEY]: 'item-1', case_id: 'case-1', prompt: 'One' },
@@ -2423,6 +2459,17 @@ assert.equal(promptTooLongCase.valid, false);
 assert.ok(promptTooLongCase.errors.some(item => (
   item.code === 'PROMPT_TOO_LONG' && item.field === 'prompt'
 )));
+const promptTooLongIssue = promptTooLongCase.errors.find(item => item.code === 'PROMPT_TOO_LONG');
+assert.deepEqual(promptTooLongIssue?.promptLength, {
+  measuredLength: 6,
+  maximumLength: 5,
+  unit: 'unicode_code_points',
+  scope: 'string',
+  source: 'manueval_compatibility',
+});
+const promptTooLongPresentation = getGenerationIssuePresentation(promptTooLongIssue as any, 'error');
+assert.match(promptTooLongPresentation.description, /6 \/ 5 Unicode/);
+assert.match(promptTooLongPresentation.description, /不是单词数或 Token 数/);
 
 const structuredPromptModel = {
   ...videoModel,
@@ -2433,7 +2480,210 @@ const structuredPromptModel = {
 };
 assert.deepEqual(generationValidationForModel(structuredPromptModel, {
   [videoModel.modelName]: { promptMaxLength: 10 },
-}), { promptMaxLength: 5 });
+}), {
+  promptLength: {
+    unit: 'unicode_code_points',
+    string: { maxLength: 5, source: 'aion_input_schema' },
+  },
+});
+
+const unionPromptModel = {
+  ...videoModel,
+  inputSchema: {
+    ...videoModel.inputSchema,
+    properties: {
+      prompt: {
+        oneOf: [
+          { type: 'string', maxLength: 8 },
+          {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: { prompt: { type: 'string', maxLength: 4 } },
+            },
+          },
+        ],
+      },
+    },
+  },
+};
+assert.deepEqual(generationValidationForModel(unionPromptModel, {}), {
+  promptLength: {
+    unit: 'unicode_code_points',
+    string: { maxLength: 8, source: 'aion_input_schema' },
+    array: { scope: 'array_item', maxLength: 4, source: 'aion_input_schema' },
+  },
+});
+const anyOfPromptModel = {
+  ...videoModel,
+  inputSchema: {
+    ...videoModel.inputSchema,
+    properties: {
+      prompt: {
+        anyOf: [
+          { type: 'string', maxLength: 12 },
+          {
+            type: 'array',
+            items: {
+              anyOf: [{
+                type: 'object',
+                properties: { prompt: { type: 'string', maxLength: 6 } },
+              }],
+            },
+          },
+        ],
+      },
+    },
+  },
+};
+assert.deepEqual(generationValidationForModel(anyOfPromptModel, {}), {
+  promptLength: {
+    unit: 'unicode_code_points',
+    string: { maxLength: 12, source: 'aion_input_schema' },
+    array: { scope: 'array_item', maxLength: 6, source: 'aion_input_schema' },
+  },
+});
+const parameterSchemaPromptModel = {
+  ...videoModel,
+  options: {
+    ...videoModel.options,
+    parameter_schema: {
+      properties: { prompt: { type: 'string', maxLength: 7 } },
+    },
+    prompt_max_length: 20,
+  },
+};
+assert.deepEqual(generationValidationForModel(parameterSchemaPromptModel, {}), {
+  promptLength: {
+    unit: 'unicode_code_points',
+    string: { maxLength: 7, source: 'aion_parameter_schema' },
+  },
+});
+const optionsPromptModel = {
+  ...videoModel,
+  options: { ...videoModel.options, prompt_max_length: 20 },
+};
+assert.deepEqual(generationValidationForModel(optionsPromptModel, {}), {
+  promptLength: {
+    unit: 'unicode_code_points',
+    string: { maxLength: 20, source: 'aion_options' },
+  },
+});
+
+const unicodePromptLength = preflightGenerationCase(videoModel, {
+  ...validTextCase.resolvedCase,
+  caseId: 'case-unicode-prompt-length',
+  datasetItemId: 'item-unicode-prompt-length',
+  prompt: '中😀e\u0301',
+}, { promptMaxLength: 3 });
+assert.equal(unicodePromptLength.errors[0]?.promptLength?.measuredLength, 4);
+const trimmedPromptLength = preflightGenerationCase(videoModel, {
+  ...validTextCase.resolvedCase,
+  caseId: 'case-trimmed-prompt-length',
+  datasetItemId: 'item-trimmed-prompt-length',
+  prompt: ' 12345 ',
+}, { promptMaxLength: 5 });
+assert.equal(trimmedPromptLength.valid, true, 'string Prompt length must use the trimmed value sent to Aion');
+const wordCountIsNotCharacterCount = preflightGenerationCase(videoModel, {
+  ...validTextCase.resolvedCase,
+  caseId: 'case-word-character-count',
+  datasetItemId: 'item-word-character-count',
+  prompt: 'longword '.repeat(700).trim(),
+}, { promptMaxLength: 5000 });
+assert.equal(wordCountIsNotCharacterCount.errors[0]?.promptLength?.measuredLength, 6299);
+
+const multiPromptCase = {
+  ...validTextCase.resolvedCase,
+  caseId: 'case-multi-prompt-length',
+  datasetItemId: 'item-multi-prompt-length',
+  prompt: [
+    { prompt: '1234', duration: 2 },
+    { prompt: '5678', duration: 2 },
+  ],
+};
+const perItemPromptLength = preflightGenerationCase(unionPromptModel, {
+  ...multiPromptCase,
+  prompt: [
+    { prompt: '12345', duration: 2 },
+    { prompt: '6789', duration: 2 },
+  ],
+}, generationValidationForModel(unionPromptModel, {}));
+assert.ok(perItemPromptLength.errors.some(item => (
+  item.code === 'PROMPT_TOO_LONG'
+  && item.field === 'prompt[0]'
+  && item.promptLength?.measuredLength === 5
+  && item.promptLength?.maximumLength === 4
+  && item.promptLength?.scope === 'array_item'
+)));
+const validPerItemPromptLength = preflightGenerationCase(
+  unionPromptModel,
+  multiPromptCase,
+  generationValidationForModel(unionPromptModel, {}),
+);
+assert.equal(validPerItemPromptLength.valid, true, 'per-item limits must not be applied to the combined array length');
+assert.match(
+  getGenerationIssuePresentation(perItemPromptLength.errors[0] as any, 'error').description,
+  /Aion input schema/,
+);
+
+const joinedPromptPolicy = generationValidationForModel(videoModel, {
+  [videoModel.modelName]: structuredValidationOverrides['provider/future-video'],
+});
+const joinedPromptLength = preflightGenerationCase(videoModel, multiPromptCase, {
+  promptLength: {
+    ...joinedPromptPolicy.promptLength,
+    array: {
+      scope: 'array_joined',
+      maxLength: 8,
+      separator: '\n',
+      trimItems: true,
+      omitEmptyItems: true,
+      source: 'manueval_compatibility',
+    },
+  },
+});
+assert.ok(joinedPromptLength.errors.some(item => (
+  item.code === 'PROMPT_TOO_LONG'
+  && item.field === 'prompt'
+  && item.promptLength?.measuredLength === 9
+  && item.promptLength?.scope === 'array_joined'
+)));
+const normalizedJoinedPromptLength = preflightGenerationCase(videoModel, {
+  ...multiPromptCase,
+  prompt: [
+    { prompt: ' 12 ', duration: 2 },
+    { prompt: '', duration: 1 },
+    { prompt: '34', duration: 2 },
+  ],
+}, {
+  promptLength: {
+    unit: 'unicode_code_points',
+    array: {
+      scope: 'array_joined',
+      maxLength: 5,
+      separator: '\n',
+      trimItems: true,
+      omitEmptyItems: true,
+      source: 'manueval_compatibility',
+    },
+  },
+});
+assert.equal(normalizedJoinedPromptLength.valid, true);
+assert.equal(normalizedJoinedPromptLength.resolvedCase.promptLengthAudit?.[0]?.measuredLength, 5);
+
+const unknownArrayLength = preflightGenerationCase(videoModel, multiPromptCase, {
+  promptMaxLength: 5,
+});
+assert.equal(unknownArrayLength.valid, true, 'an unknown array-length contract must not invent a blocking limit');
+assert.ok(unknownArrayLength.warnings.some(item => (
+  item.code === 'PROMPT_LENGTH_NOT_VERIFIED'
+  && item.promptLength?.scope === 'array_unverified'
+)));
+assert.deepEqual(
+  buildAionGenerationRequest(videoModel, unknownArrayLength.resolvedCase).body.prompt,
+  multiPromptCase.prompt,
+  'length auditing must not rewrite the Aion Prompt payload',
+);
 
 const invalidDuration = preflightGenerationCase(videoModel, {
   caseId: 'case-2',
