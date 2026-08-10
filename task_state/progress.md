@@ -599,4 +599,10 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 
 - Passed generation/MCP/Seed tests, PostgreSQL generation integration, structured evaluation audit, every dataset suite, Arena, rank ties, API smoke, TypeScript, server build, frontend build, and `git diff --check`.
 - Browser-validated the real 188-row dataset with mocked zero-cost model/preflight responses on desktop and `390x844` mobile. Selecting an alternate column immediately changed the sample from one invalid case to one valid case with no new runtime error or layout overlap.
-- No generation batch, paid request, source-dataset mutation, push, or deployment was performed.
+- No generation batch, paid request, or source-dataset mutation was performed.
+
+### Release
+
+- Commit `e9760eb` was rebased onto the latest `world-sim-dev/ManuEval` main, including adaptive-capacity commits `0c12ce0` and `83e09f5`, then fast-forward pushed without force.
+- Eval Studio Test run `31387716322` and Dev CI/CD run `31387716394` succeeded. The latter passed tests, image build, and the Kubernetes dev rollout.
+- `https://eval-studio.sandaii.cn/` returned HTTP 200 after rollout. The unauthenticated generation-health request returned the expected `AUTH_REQUIRED`, confirming the public auth boundary remains active.
