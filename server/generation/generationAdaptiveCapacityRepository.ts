@@ -170,7 +170,8 @@ const ensureGlobalState = async (
     'SELECT * FROM generation_capacity_states WHERE capacity_key = $1 FOR UPDATE',
     [GLOBAL_CAPACITY_KEY],
   );
-  if (Number(result.rows[0]?.policy_version || 0) !== policy.policyVersion) {
+  if (Number(result.rows[0]?.policy_version || 0) !== policy.policyVersion
+    || !result.rows[0]?.enforce_after) {
     const reset = createInitialGenerationCapacityState(policy, now, policy.initialGlobalLimit);
     reset.submitRatePerMinute = policy.globalSubmitRatePerSecond * 60;
     reset.submitTokens = policy.globalSubmitBurst;
@@ -208,6 +209,29 @@ const ensureGlobalState = async (
     await saveState(client, record);
   }
   return record;
+};
+
+export const initializeAdaptiveGenerationCapacity = async () => {
+  if (!serverConfig.generationVideoAdaptiveEnabled) return;
+  const existing = await dbPool.query(
+    'SELECT policy_version, enforce_after FROM generation_capacity_states WHERE capacity_key = $1',
+    [GLOBAL_CAPACITY_KEY],
+  );
+  if (Number(existing.rows[0]?.policy_version || 0)
+    === serverConfig.generationVideoAdaptivePolicy.policyVersion
+    && existing.rows[0]?.enforce_after) return;
+  const client = await dbPool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['manueval:generation:video']);
+    await ensureGlobalState(client, Date.now());
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 };
 
 const replayBucketHistory = async (
@@ -614,6 +638,7 @@ export const reconcileAdaptiveGenerationOutcomes = async () => {
 };
 
 export const getAdaptiveVideoCapacitySnapshot = async (organizationId?: string) => {
+  await initializeAdaptiveGenerationCapacity();
   const policy = serverConfig.generationVideoAdaptivePolicy;
   const [stateResult, countResult] = await Promise.all([
     dbPool.query('SELECT * FROM generation_capacity_states'),

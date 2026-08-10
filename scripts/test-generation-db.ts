@@ -938,6 +938,31 @@ try {
 
 
   serverConfig.generationVideoAdaptiveEnabled = true;
+  const shadowResetStartedAt = Date.now();
+  await dbPool.query(
+    `
+      UPDATE generation_capacity_states
+      SET policy_version = $1,
+          enforce_after = now() - interval '1 second',
+          updated_at = now()
+      WHERE capacity_key = '__video_global__'
+    `,
+    [serverConfig.generationVideoAdaptivePolicy.policyVersion - 1],
+  );
+  const shadowQueue = await getGenerationQueueState(user.organizationId);
+  const resetGlobalState = (await dbPool.query(
+    `
+      SELECT policy_version, enforce_after
+      FROM generation_capacity_states
+      WHERE capacity_key = '__video_global__'
+    `,
+  )).rows[0];
+  assert.equal(shadowQueue.video.adaptiveEnforced, false,
+    'a queue snapshot must restart shadow mode when the persisted policy version is stale');
+  assert.equal(shadowQueue.video.limit, serverConfig.generationVideoConcurrency);
+  assert.equal(resetGlobalState.policy_version, serverConfig.generationVideoAdaptivePolicy.policyVersion);
+  assert.ok(new Date(resetGlobalState.enforce_after).getTime()
+    >= shadowResetStartedAt + serverConfig.generationVideoAdaptivePolicy.shadowMs - 1_000);
   const adaptiveConfigId = `adaptive-video-config-${suffix}`;
   const adaptivePreflight = createPreflightRecord(
     (await getDataset(datasetId))!,

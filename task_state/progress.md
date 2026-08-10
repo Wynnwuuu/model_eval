@@ -22,7 +22,7 @@
 
 ### Release
 
-- Commit `a5514b8` reached main and both Test and Dev CI/CD succeeded. The first rollout exposed a pre-existing version-2 capacity row, so the corrected 12, 24, 48 platform policy is being released as version 3 to force a fresh ten-minute shadow period before takeover.
+- Commit `a5514b8` reached main and both Test and Dev CI/CD succeeded. The first rollout exposed a pre-existing version-2 capacity row; version 3 now synchronizes policy state at Worker startup and before queue snapshots, forcing a fresh ten-minute shadow period before takeover even when no case is pending.
 
 ## 2026-08-08: Structured evaluation Base import and audit
 

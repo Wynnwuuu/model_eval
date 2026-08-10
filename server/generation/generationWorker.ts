@@ -24,7 +24,10 @@ import {
   type GenerationClaimPurpose,
   type ClaimedGenerationItem,
 } from './generationExecutionRepository.ts';
-import { markAdaptiveGenerationSubmissionAccepted } from './generationAdaptiveCapacityRepository.ts';
+import {
+  initializeAdaptiveGenerationCapacity,
+  markAdaptiveGenerationSubmissionAccepted,
+} from './generationAdaptiveCapacityRepository.ts';
 import { writeGenerationBatchToDataset } from './generationWritebackService.ts';
 
 const TERMINAL_PROVIDER_STATUSES = new Set(['succeed', 'succeeded', 'success', 'completed']);
@@ -761,19 +764,26 @@ export const startGenerationWorker = () => {
     return null;
   }
   stopRequested = false;
-  const lanes = [
-    ...Array.from({ length: serverConfig.generationImageConcurrency }, (_, index) => lane('image', index)),
-    ...Array.from(
-      { length: serverConfig.generationVideoAdaptivePolicy.submitWorkers },
-      (_, index) => lane('video', index, 'submit'),
-    ),
-    ...Array.from(
-      { length: serverConfig.generationVideoAdaptivePolicy.pollWorkers },
-      (_, index) => lane('video', index, 'poll'),
-    ),
-    writebackLane(),
-  ];
-  workerPromise = Promise.all(lanes).then(() => undefined);
+  workerPromise = (async () => {
+    await initializeAdaptiveGenerationCapacity().catch(error => {
+      console.error('[generation-capacity] startup synchronization deferred', {
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
+    const lanes = [
+      ...Array.from({ length: serverConfig.generationImageConcurrency }, (_, index) => lane('image', index)),
+      ...Array.from(
+        { length: serverConfig.generationVideoAdaptivePolicy.submitWorkers },
+        (_, index) => lane('video', index, 'submit'),
+      ),
+      ...Array.from(
+        { length: serverConfig.generationVideoAdaptivePolicy.pollWorkers },
+        (_, index) => lane('video', index, 'poll'),
+      ),
+      writebackLane(),
+    ];
+    await Promise.all(lanes);
+  })();
   console.log('[generation-worker] started', {
     imageConcurrency: serverConfig.generationImageConcurrency,
     legacyVideoConcurrency: serverConfig.generationVideoConcurrency,

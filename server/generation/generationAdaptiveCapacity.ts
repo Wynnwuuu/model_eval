@@ -83,6 +83,7 @@ export type GenerationCapacityOutcome = {
 };
 
 export const DEFAULT_GENERATION_VIDEO_ADAPTIVE_POLICY: GenerationVideoAdaptivePolicy = {
+  // Bump this whenever persisted controller semantics change so rollout restarts shadow mode.
   policyVersion: 3,
   hardLimit: 48,
   initialGlobalLimit: 12,
