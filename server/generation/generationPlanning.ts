@@ -94,6 +94,11 @@ export type GenerationCase = {
     reviewedFindingIds?: string[];
     contractSource?: Record<string, unknown>;
     review?: GenerationCaseReview;
+    promptColumnOverride?: {
+      version: 1;
+      column: string;
+      rawValue?: unknown;
+    };
     caseInputOverride?: {
       version: 1;
       override: GenerationCaseInputOverrideV1;

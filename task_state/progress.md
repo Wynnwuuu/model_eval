@@ -584,3 +584,19 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 
 - Passed filter tests, generation/MCP/Seed tests, every dataset suite, structured evaluation audit, Arena, rank ties, TypeScript, frontend build, and server build.
 - Passed generation database integration and API smoke against an isolated PostgreSQL database. The temporary API, database, Docker network, volume, and logs were removed afterward.
+
+## 2026-08-10: Bulk replacement for over-limit Prompts
+
+### Completed
+
+- Added a manual alternate-Prompt-column source for `PROMPT_TOO_LONG` cases. The bulk action always targets every matching case in the selected preflight scope; display status, issue, and Case ID filters do not narrow it.
+- The server reads alternate values from the locked dataset version by stable item ID. Empty, malformed, and still-over-limit values never fall back to the primary Prompt and are reported by the immediate authoritative re-preflight.
+- Bulk replacement clears only prior Prompt edits and Prompt Plugin decisions. Media, parameter, and unrelated review state remain intact. Any expert final Aion JSON blocks the entire bulk action.
+- Candidate columns exclude the active Prompt, outputs, references/media, case IDs, system/internal fields, dimensions, and rubrics. The supplied structured dataset no longer offers `audio_url`, `image_urls`, `elements`, or `case_id` as alternate Prompt columns.
+- Added the same source-column choice to the single-case repair dialog and recorded the source column/raw value in compiler audit without changing the source dataset.
+
+### Validation
+
+- Passed generation/MCP/Seed tests, PostgreSQL generation integration, structured evaluation audit, every dataset suite, Arena, rank ties, API smoke, TypeScript, server build, frontend build, and `git diff --check`.
+- Browser-validated the real 188-row dataset with mocked zero-cost model/preflight responses on desktop and `390x844` mobile. Selecting an alternate column immediately changed the sample from one invalid case to one valid case with no new runtime error or layout overlap.
+- No generation batch, paid request, source-dataset mutation, push, or deployment was performed.

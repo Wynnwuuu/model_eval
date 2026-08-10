@@ -46,6 +46,7 @@ interface GenerationCaseReviewDialogProps {
   total: number;
   outsideCurrentFilter?: boolean;
   review?: GenerationCaseReview;
+  promptColumnOptions: Array<{ column: string; value: unknown }>;
   onClose: () => void;
   onPrevious?: () => void;
   onNext?: () => void;
@@ -85,6 +86,7 @@ const compactReview = (review: GenerationCaseReview): GenerationCaseReview => {
   if (!next.acceptedFindingIds?.length) delete next.acceptedFindingIds;
   if (!next.rejectedFindingIds?.length) delete next.rejectedFindingIds;
   if (next.promptOverride === undefined) delete next.promptOverride;
+  if (!next.promptColumnOverride?.column) delete next.promptColumnOverride;
   if (!next.force) delete next.force;
   if (!next.finalAionRequest) delete next.finalAionRequest;
   return next;
@@ -279,6 +281,7 @@ const GenerationCaseReviewDialog: React.FC<GenerationCaseReviewDialogProps> = ({
   total,
   outsideCurrentFilter = false,
   review,
+  promptColumnOptions,
   onClose,
   onPrevious,
   onNext,
@@ -322,6 +325,10 @@ const GenerationCaseReviewDialog: React.FC<GenerationCaseReviewDialogProps> = ({
   const dirty = initialSnapshot !== currentSnapshot;
   const previewStale = dirty || JSON.stringify(compactReview(cloneReview(review))) !== JSON.stringify(compactReview(cloneReview(audit.review)));
   const sourceInput = asRecord(audit.caseInputOverride?.sourceInput || audit.compiledInput);
+  const promptColumnValues = useMemo(
+    () => new Map(promptColumnOptions.map(option => [option.column, option.value])),
+    [promptColumnOptions],
+  );
 
   const guardLeave = (action: () => void) => {
     if (dirty && !window.confirm('当前 case 有尚未保存的修改，确定放弃吗？')) return;
@@ -347,6 +354,7 @@ const GenerationCaseReviewDialog: React.FC<GenerationCaseReviewDialogProps> = ({
       content[field] = omit ? { action: 'omit' } : { action: 'set', value };
       next.inputOverride = { version: 1, content, parameters: next.inputOverride?.parameters };
       if (field === 'prompt') {
+        delete next.promptColumnOverride;
         delete next.promptOverride;
         const ids = new Set(promptFindingIds(findings));
         next.acceptedFindingIds = (next.acceptedFindingIds || []).filter(id => !ids.has(id));
@@ -363,6 +371,7 @@ const GenerationCaseReviewDialog: React.FC<GenerationCaseReviewDialogProps> = ({
       delete content[field];
       next.inputOverride = { version: 1, content, parameters: next.inputOverride?.parameters };
       if (field === 'prompt') {
+        delete next.promptColumnOverride;
         const ids = new Set(promptFindingIds(findings));
         next.rejectedFindingIds = (next.rejectedFindingIds || []).filter(id => !ids.has(id));
       }
@@ -391,6 +400,9 @@ const GenerationCaseReviewDialog: React.FC<GenerationCaseReviewDialogProps> = ({
   };
 
   const effectiveContent = (field: ContentField) => {
+    if (field === 'prompt' && draftReview.promptColumnOverride) {
+      return promptColumnValues.get(draftReview.promptColumnOverride.column);
+    }
     const operation = draftReview.inputOverride?.content?.[field];
     if (operation?.action === 'omit') return undefined;
     if (operation?.action === 'set') return operation.value;
@@ -406,6 +418,7 @@ const GenerationCaseReviewDialog: React.FC<GenerationCaseReviewDialogProps> = ({
         accepted.add(finding.id);
         rejected.delete(finding.id);
         if (finding.proposal?.kind === 'prompt_rewrite') {
+          delete next.promptColumnOverride;
           const content = { ...(next.inputOverride?.content || {}) };
           delete content.prompt;
           next.inputOverride = { version: 1, content, parameters: next.inputOverride?.parameters };
@@ -417,6 +430,24 @@ const GenerationCaseReviewDialog: React.FC<GenerationCaseReviewDialogProps> = ({
       }
       next.acceptedFindingIds = Array.from(accepted);
       next.rejectedFindingIds = Array.from(rejected);
+      return compactReview(next);
+    });
+  };
+
+  const setPromptColumnOperation = (column: string) => {
+    setDraftReview(current => {
+      const next = cloneReview(current);
+      const content = { ...(next.inputOverride?.content || {}) };
+      delete content.prompt;
+      next.inputOverride = { version: 1, content, parameters: next.inputOverride?.parameters };
+      delete next.promptOverride;
+      const ids = new Set(promptFindingIds(findings));
+      next.acceptedFindingIds = (next.acceptedFindingIds || [])
+        .filter(id => !ids.has(id) && !id.startsWith('plugin-prompt-'));
+      next.rejectedFindingIds = (next.rejectedFindingIds || [])
+        .filter(id => !ids.has(id) && !id.startsWith('plugin-prompt-'));
+      if (column) next.promptColumnOverride = { version: 1, column };
+      else delete next.promptColumnOverride;
       return compactReview(next);
     });
   };
@@ -461,6 +492,7 @@ const GenerationCaseReviewDialog: React.FC<GenerationCaseReviewDialogProps> = ({
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('最终 Aion JSON 必须是一个 JSON 对象。');
       delete next.inputOverride;
       delete next.promptOverride;
+      delete next.promptColumnOverride;
       delete next.acceptedFindingIds;
       delete next.rejectedFindingIds;
       next.finalAionRequest = parsed;
@@ -576,10 +608,21 @@ const GenerationCaseReviewDialog: React.FC<GenerationCaseReviewDialogProps> = ({
             </div>
           )}
           <label className="block">
+            <span className="mb-1.5 block text-xs text-slate-400">从评测集备用 Prompt 列读取</span>
+            <select
+              value={draftReview.promptColumnOverride?.column || ''}
+              onChange={event => setPromptColumnOperation(event.target.value)}
+              className="mb-3 w-full border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+            >
+              <option value="">使用主 Prompt 或手工编辑</option>
+              {promptColumnOptions.map(option => (
+                <option key={option.column} value={option.column}>{option.column}</option>
+              ))}
+            </select>
             <span className="mb-1.5 block text-xs text-slate-400">本批次当前 case 的 Prompt</span>
             <textarea value={serializePrompt(promptValue)} onChange={event => setContentOperation('prompt', event.target.value)} rows={9} className="w-full border border-white/10 bg-slate-950 p-3 font-mono text-xs leading-5 text-slate-100" />
           </label>
-          <button type="button" onClick={() => clearContentOperation('prompt')} className="border border-white/10 px-3 py-2 text-xs text-slate-300">恢复评测集 Prompt</button>
+          <button type="button" onClick={() => { clearContentOperation('prompt'); setPromptColumnOperation(''); }} className="border border-white/10 px-3 py-2 text-xs text-slate-300">恢复主 Prompt 列</button>
         </div>
       );
     }
@@ -714,7 +757,7 @@ const GenerationCaseReviewDialog: React.FC<GenerationCaseReviewDialogProps> = ({
               <details className="border border-white/10">
                 <summary className="flex cursor-pointer items-center gap-2 px-4 py-3 text-sm font-medium text-slate-200"><Code2 size={15} /> 技术详情</summary>
                 <div className="grid gap-4 border-t border-white/10 p-4 xl:grid-cols-2">
-                  <JsonPanel label="评测集输入、映射意图与 Case 覆盖" value={{ originalInput: audit.originalInput, inputIntent: audit.intent, caseInputOverride: audit.caseInputOverride }} />
+                  <JsonPanel label="评测集输入、映射意图与 Case 覆盖" value={{ originalInput: audit.originalInput, inputIntent: audit.intent, promptColumnOverride: audit.promptColumnOverride, caseInputOverride: audit.caseInputOverride }} />
                   <JsonPanel label="素材类型与可达性校验" value={audit.mediaReferences} />
                   <JsonPanel label="MCP 投影差异与人工覆盖" value={{ projectionDiff: audit.projectionDiff, overrideAudit: audit.overrideAudit }} />
                   <JsonPanel label="合同与 Plugin 规则" value={{ contractSource: audit.contractSource, contractFindings: audit.contractFindings, review: audit.review }} />

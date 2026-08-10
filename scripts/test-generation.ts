@@ -34,6 +34,7 @@ import {
   validateGenerationRequestOverride,
   validateGenerationContentMappingConfiguration,
   validateGenerationParameterBindings,
+  validateGenerationPromptColumnOverrides,
   validateGenerationSeedConfiguration,
   validateDurationSourceConfiguration,
 } from '../server/generation/generationPreflightService.ts';
@@ -67,6 +68,8 @@ import {
 import { inspectGenerationMediaInput } from '../src/features/generation/mediaValidation.ts';
 import {
   applyBulkGenerationForceReview,
+  applyBulkPromptColumnReview,
+  generationPromptReplacementColumns,
   generationForceBypassableCodes,
   generationPendingForceCodes,
   generationForceRequiresFinalJson,
@@ -773,6 +776,114 @@ const bulkReview = applyBulkGenerationForceReview({
 assert.deepEqual(bulkReview['case-a'].force?.ruleCodes, ['UNSUPPORTED_PRESET_PARAMETER']);
 assert.equal(bulkReview['case-a'].finalAionRequest, undefined);
 assert.equal(bulkReview['case-b'], undefined);
+
+const bulkPromptCases = [
+  {
+    valid: false,
+    generationType: 'text_to_video',
+    errors: [{ code: 'PROMPT_TOO_LONG', field: 'prompt', message: 'too long' }],
+    warnings: [],
+    resolvedCase: {
+      datasetItemId: 'prompt-case-a',
+      compilerAudit: {
+        contractFindings: [{ id: 'plugin-prompt-a', field: 'prompt', proposal: { kind: 'prompt_rewrite' } }],
+      },
+    },
+  },
+  {
+    valid: false,
+    generationType: 'text_to_video',
+    errors: [
+      { code: 'PROMPT_TOO_LONG', field: 'prompt[0]', message: 'too long' },
+      { code: 'PROMPT_TOO_LONG', field: 'prompt[1]', message: 'too long' },
+    ],
+    warnings: [],
+    resolvedCase: { datasetItemId: 'prompt-case-b' },
+  },
+  {
+    valid: true,
+    generationType: 'text_to_video',
+    errors: [],
+    warnings: [],
+    resolvedCase: { datasetItemId: 'prompt-case-c' },
+  },
+] as any;
+const bulkPromptResult = applyBulkPromptColumnReview({
+  cases: bulkPromptCases,
+  reviews: {
+    'prompt-case-a': {
+      acceptedFindingIds: ['plugin-prompt-a', 'plugin-media-a'],
+      rejectedFindingIds: ['plugin-prompt-old'],
+      promptOverride: 'legacy prompt',
+      inputOverride: {
+        version: 1,
+        content: {
+          prompt: { action: 'set', value: 'manual prompt' },
+          elements: { action: 'set', value: [{ element_id: 7 }] },
+        },
+        parameters: { duration: { action: 'set', value: 8 } },
+      },
+      force: {
+        reason: 'reviewed media risk',
+        duplicateBillingRiskConfirmed: true,
+        ruleCodes: ['MEDIA_TYPE_MISMATCH'],
+      },
+    },
+  },
+  column: 'prompt_zh',
+});
+assert.deepEqual(bulkPromptResult.targetIds, ['prompt-case-a', 'prompt-case-b']);
+assert.equal(bulkPromptResult.overwrittenPromptReviewCount, 1);
+assert.deepEqual(bulkPromptResult.expertConflictIds, []);
+assert.deepEqual(bulkPromptResult.reviews['prompt-case-a'].promptColumnOverride, {
+  version: 1,
+  column: 'prompt_zh',
+});
+assert.equal(bulkPromptResult.reviews['prompt-case-a'].promptOverride, undefined);
+assert.equal(bulkPromptResult.reviews['prompt-case-a'].inputOverride?.content?.prompt, undefined);
+assert.deepEqual(bulkPromptResult.reviews['prompt-case-a'].inputOverride?.content?.elements, {
+  action: 'set',
+  value: [{ element_id: 7 }],
+});
+assert.deepEqual(bulkPromptResult.reviews['prompt-case-a'].inputOverride?.parameters?.duration, {
+  action: 'set',
+  value: 8,
+});
+assert.deepEqual(bulkPromptResult.reviews['prompt-case-a'].acceptedFindingIds, ['plugin-media-a']);
+assert.equal(bulkPromptResult.reviews['prompt-case-a'].rejectedFindingIds, undefined);
+assert.deepEqual(bulkPromptResult.reviews['prompt-case-a'].force?.ruleCodes, ['MEDIA_TYPE_MISMATCH']);
+assert.deepEqual(bulkPromptResult.reviews['prompt-case-b'].promptColumnOverride, {
+  version: 1,
+  column: 'prompt_zh',
+});
+assert.equal(bulkPromptResult.reviews['prompt-case-c'], undefined);
+
+const expertBulkPromptReviews = {
+  'prompt-case-b': { finalAionRequest: { prompt: 'expert' } },
+};
+const expertBulkPromptResult = applyBulkPromptColumnReview({
+  cases: bulkPromptCases,
+  reviews: expertBulkPromptReviews,
+  column: 'prompt_zh',
+});
+assert.deepEqual(expertBulkPromptResult.expertConflictIds, ['prompt-case-b']);
+assert.equal(expertBulkPromptResult.reviews, expertBulkPromptReviews,
+  'an expert conflict must block the entire bulk operation');
+assert.deepEqual(generationPromptReplacementColumns({
+  headers: ['case_id', 'prompt', 'prompt_zh', 'notes', 'image', 'elements', 'legacy_media', 'result', '__hidden'],
+  inputSchema: [
+    { key: 'case_id', label: 'Case ID', type: 'text', role: 'case_id' },
+    { key: 'prompt', label: 'Prompt', type: 'text', role: 'input' },
+    { key: 'prompt_zh', label: 'Prompt 中文', type: 'text', role: 'input' },
+    { key: 'notes', label: 'Notes', type: 'text', role: 'metadata' },
+    { key: 'image', label: 'Image', type: 'image_url', role: 'media' },
+    { key: 'elements', label: 'Elements', type: 'text', role: 'reference' },
+    { key: 'result', label: 'Result', type: 'video_url', role: 'output' },
+  ],
+  primaryPromptColumn: 'prompt',
+  outputColumns: ['result'],
+  referenceColumns: ['legacy_media'],
+}), ['prompt_zh', 'notes']);
 assert.equal(generationForceRequiresFinalJson(['UNSUPPORTED_PRESET_PARAMETER']), true);
 assert.equal(generationForceRequiresFinalJson(['MEDIA_TYPE_MISMATCH']), false);
 assert.deepEqual(generationForceBypassableCodes({
@@ -2064,6 +2175,178 @@ assert.deepEqual(caseOverrideCases[0].resolvedCase.compilerAudit?.caseInputOverr
   'elements',
 ]);
 assert.deepEqual(caseOverrideCases[0].preparationIssues, []);
+
+const promptColumnDataset = {
+  id: 'dataset-prompt-column-override',
+  columnMappings: {
+    inputColumns: ['prompt', 'prompt_zh'],
+    outputColumns: ['legacy_result'],
+    dimensionColumns: [],
+    referenceColumns: ['legacy_media'],
+    standard: {},
+  },
+  inputSchema: [
+    { key: 'case_id', label: 'Case ID', type: 'text', role: 'case_id' },
+    { key: 'prompt', label: 'Prompt', type: 'text', role: 'input' },
+    { key: 'prompt_zh', label: 'Prompt 中文', type: 'text', role: 'input' },
+    { key: 'result', label: 'Result', type: 'video_url', role: 'output' },
+  ],
+  items: [
+    {
+      [DATASET_ITEM_ID_KEY]: 'prompt-source-a',
+      case_id: 'prompt-source-a',
+      prompt: 'A very long English prompt.',
+      prompt_zh: '中文甲',
+      legacy_result: 'https://example.com/old-result.mp4',
+      legacy_media: 'https://example.com/reference.png',
+    },
+    {
+      [DATASET_ITEM_ID_KEY]: 'prompt-source-b',
+      case_id: 'prompt-source-b',
+      prompt: 'Another long English prompt.',
+      prompt_zh: '中文乙',
+    },
+    {
+      [DATASET_ITEM_ID_KEY]: 'prompt-source-empty',
+      case_id: 'prompt-source-empty',
+      prompt: 'English fallback must not be used.',
+      prompt_zh: '',
+    },
+  ],
+} as any;
+const promptColumnRequest = {
+  ...v2IntentRequest,
+  datasetId: promptColumnDataset.id,
+  caseReviews: Object.fromEntries(promptColumnDataset.items.map((row: Record<string, unknown>) => [
+    String(row[DATASET_ITEM_ID_KEY]),
+    { promptColumnOverride: { version: 1 as const, column: 'prompt_zh' } },
+  ])),
+};
+assert.doesNotThrow(() => validateGenerationPromptColumnOverrides(
+  promptColumnRequest,
+  promptColumnDataset,
+  promptColumnDataset.items.map((row: Record<string, unknown>, rowIndex: number) => ({
+    row,
+    rowIndex,
+    datasetItemId: String(row[DATASET_ITEM_ID_KEY]),
+  })),
+));
+assert.throws(() => validateGenerationPromptColumnOverrides({
+  ...promptColumnRequest,
+  caseReviews: {
+    'prompt-source-a': { promptColumnOverride: { version: 1, column: 'case_id' } },
+  },
+}, promptColumnDataset, [{
+  row: promptColumnDataset.items[0],
+  rowIndex: 0,
+  datasetItemId: 'prompt-source-a',
+}]), /visible non-output text column/i);
+assert.throws(() => validateGenerationPromptColumnOverrides({
+  ...promptColumnRequest,
+  caseReviews: {
+    'prompt-source-a': { promptColumnOverride: { version: 1, column: 'result' } },
+  },
+}, promptColumnDataset, [{
+  row: promptColumnDataset.items[0],
+  rowIndex: 0,
+  datasetItemId: 'prompt-source-a',
+}]), /visible non-output text column/i);
+assert.throws(() => validateGenerationPromptColumnOverrides({
+  ...promptColumnRequest,
+  caseReviews: {
+    'prompt-source-a': { promptColumnOverride: { version: 1, column: 'legacy_media' } },
+  },
+}, promptColumnDataset, [{
+  row: promptColumnDataset.items[0],
+  rowIndex: 0,
+  datasetItemId: 'prompt-source-a',
+}]), /visible non-output text column/i);
+assert.throws(() => validateGenerationPromptColumnOverrides({
+  ...promptColumnRequest,
+  caseReviews: {
+    'prompt-source-a': { promptColumnOverride: { version: 1, column: 'legacy_result' } },
+  },
+}, promptColumnDataset, [{
+  row: promptColumnDataset.items[0],
+  rowIndex: 0,
+  datasetItemId: 'prompt-source-a',
+}]), /visible non-output text column/i);
+assert.throws(() => validateGenerationPromptColumnOverrides({
+  ...promptColumnRequest,
+  caseReviews: {
+    'prompt-source-a': {
+      promptColumnOverride: { version: 1, column: 'prompt_zh' },
+      finalAionRequest: { prompt: 'expert' },
+    },
+  },
+}, promptColumnDataset, [{
+  row: promptColumnDataset.items[0],
+  rowIndex: 0,
+  datasetItemId: 'prompt-source-a',
+}]), /final Aion JSON/i);
+const promptColumnCases = buildGenerationCasesForPreflight(
+  promptColumnDataset,
+  promptColumnRequest,
+  hailuoH3Model,
+  [
+    { row: promptColumnDataset.items[1], rowIndex: 1, datasetItemId: 'prompt-source-b' },
+    { row: promptColumnDataset.items[0], rowIndex: 0, datasetItemId: 'prompt-source-a' },
+    { row: promptColumnDataset.items[2], rowIndex: 2, datasetItemId: 'prompt-source-empty' },
+  ],
+);
+assert.equal(promptColumnCases[0].resolvedCase.prompt, '中文乙');
+assert.equal(promptColumnCases[1].resolvedCase.prompt, '中文甲');
+assert.equal(promptColumnCases[2].resolvedCase.prompt, undefined,
+  'an empty alternate Prompt must not fall back to the primary Prompt');
+assert.deepEqual(promptColumnCases[0].resolvedCase.compilerAudit?.promptColumnOverride, {
+  version: 1,
+  column: 'prompt_zh',
+  rawValue: '中文乙',
+});
+assert.equal(promptColumnCases[0].resolvedCase.compilerAudit?.originalInput?.prompt,
+  'Another long English prompt.');
+const emptyPromptColumnPreflight = preflightGenerationCase(
+  hailuoH3Model,
+  promptColumnCases[2].resolvedCase,
+);
+assert.ok(emptyPromptColumnPreflight.errors.some(issue => issue.code === 'MISSING_REQUIRED_INPUT'));
+
+const promptColumnMultiDataset = {
+  id: 'dataset-prompt-column-multi',
+  inputSchema: [
+    { key: 'prompt', label: 'Prompt', type: 'text', role: 'input' },
+    { key: 'prompt_zh', label: 'Prompt 中文', type: 'text', role: 'input' },
+  ],
+  items: [{
+    [DATASET_ITEM_ID_KEY]: 'prompt-multi-a',
+    case_id: 'prompt-multi-a',
+    prompt: '[{"prompt":"English shot","duration":2.5}]',
+    prompt_zh: '[{"prompt":"中文镜头😀","duration":2.5}]',
+  }],
+} as any;
+const promptColumnMultiCase = buildGenerationCasesForPreflight(
+  promptColumnMultiDataset,
+  {
+    ...v2IntentRequest,
+    datasetId: promptColumnMultiDataset.id,
+    inputMapping: {
+      ...v2IntentRequest.inputMapping,
+      contentMapping: {
+        ...v2IntentRequest.inputMapping.contentMapping,
+        prompt: { column: 'prompt', format: 'multi_prompt_json' as const },
+      },
+    },
+    caseReviews: {
+      'prompt-multi-a': { promptColumnOverride: { version: 1, column: 'prompt_zh' } },
+    },
+  },
+  hailuoH3Model,
+  [{ row: promptColumnMultiDataset.items[0], rowIndex: 0, datasetItemId: 'prompt-multi-a' }],
+)[0];
+assert.deepEqual(promptColumnMultiCase.resolvedCase.prompt, [
+  { prompt: '中文镜头😀', duration: 2.5 },
+]);
+assert.deepEqual(promptColumnMultiCase.preparationIssues, []);
 
 const promptChannelDataset = {
   ...v2IntentDataset,

@@ -80,7 +80,9 @@ import {
 } from '../features/generation/mediaReferences';
 import {
   applyBulkGenerationForceReview,
+  applyBulkPromptColumnReview,
   GENERATION_FORCEABLE_PREFLIGHT_CODES,
+  generationPromptReplacementColumns,
   generationForceRequiresFinalJson,
 } from '../features/generation/preflightReview';
 import {
@@ -274,6 +276,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const [reviewDialogItemId, setReviewDialogItemId] = useState('');
   const [bulkForceReason, setBulkForceReason] = useState('');
   const [bulkForceConfirmed, setBulkForceConfirmed] = useState(false);
+  const [bulkPromptColumn, setBulkPromptColumn] = useState('');
   const [reviewsDirty, setReviewsDirty] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [batch, setBatch] = useState<GenerationBatch | null>(null);
@@ -370,6 +373,16 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   ]);
   const caseIssueOptions = useMemo(() => buildGenerationIssueOptions(preflight?.cases || []), [preflight]);
   const selectedCaseIssue = caseIssueOptions.find(option => option.key === caseIssueKey);
+  const primaryPromptColumn = inputMapping.contentMappingVersion === 2
+    ? inputMapping.contentMapping?.prompt.column
+    : inputMapping.promptColumn || inputMapping.canonicalFieldMappings?.prompt;
+  const promptReplacementColumns = useMemo(() => generationPromptReplacementColumns({
+    headers,
+    inputSchema: dataset.inputSchema || [],
+    primaryPromptColumn,
+    outputColumns,
+    referenceColumns: dataset.columnMappings?.referenceColumns || [],
+  }), [dataset.columnMappings?.referenceColumns, dataset.inputSchema, headers, outputColumns, primaryPromptColumn]);
   const filteredPreflightCases = useMemo(() => filterGenerationPreflightCases(preflight?.cases || [], {
     status: caseStatusFilter,
     issueKey: caseIssueKey,
@@ -385,6 +398,26 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     generationReviewDialogKey(item) === reviewDialogItemId);
   const reviewDialogAllIndex = (preflight?.cases || []).findIndex(item =>
     generationReviewDialogKey(item) === reviewDialogItemId);
+  const bulkPromptPlan = useMemo(() => applyBulkPromptColumnReview({
+    cases: preflight?.cases || [],
+    reviews: caseReviews,
+    column: bulkPromptColumn,
+  }), [bulkPromptColumn, caseReviews, preflight]);
+  const datasetRowsById = useMemo(() => new Map(dataset.items.map(row => [
+    String(row[DATASET_ITEM_ID_KEY] || ''),
+    row,
+  ])), [dataset.items]);
+  const bulkPromptEmptyCount = bulkPromptColumn
+    ? bulkPromptPlan.targetIds.filter(datasetItemId => (
+        !hasConfiguredInputValue(datasetRowsById.get(datasetItemId)?.[bulkPromptColumn])
+      )).length
+    : 0;
+  const reviewDialogDatasetItemId = String(reviewDialogItem?.resolvedCase.datasetItemId || '');
+  const reviewDialogRow = datasetRowsById.get(reviewDialogDatasetItemId);
+  const reviewDialogPromptColumnOptions = promptReplacementColumns.map(column => ({
+    column,
+    value: reviewDialogRow?.[column],
+  }));
   const selectedBatchItems = batch?.items.filter(item => selectedBatchItemIds.includes(item.id)) || [];
   const selectableBatchItems = batch?.items.filter(item =>
     ['pending', 'failed', 'submission_unknown', 'cancelled'].includes(item.status)
@@ -465,6 +498,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     setPreflight(null);
     setCaseReviews({});
     setPendingReviewIds([]);
+    setBulkPromptColumn('');
     setReviewsDirty(false);
     setConfirmed(false);
   };
@@ -706,6 +740,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     ));
     setBulkForceReason('');
     setBulkForceConfirmed(false);
+    setBulkPromptColumn('');
   }, [preflight?.requestHash]);
 
   useEffect(() => {
@@ -759,6 +794,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     setReviewDialogItemId('');
     setBulkForceReason('');
     setBulkForceConfirmed(false);
+    setBulkPromptColumn('');
     setReviewsDirty(false);
     setConfirmed(false);
   };
@@ -837,6 +873,23 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     ])));
     setReviewsDirty(true);
     setConfirmed(false);
+  };
+
+  const applyBulkPromptColumnOverride = async () => {
+    if (!preflight || !bulkPromptColumn || bulkPromptPlan.expertConflictIds.length || bulkPromptPlan.missingStableIdCount) return;
+    const nextReviews = bulkPromptPlan.reviews;
+    setCaseReviews(nextReviews);
+    setPendingReviewIds(current => Array.from(new Set([
+      ...current,
+      ...bulkPromptPlan.targetIds,
+    ])));
+    setReviewsDirty(true);
+    setConfirmed(false);
+    try {
+      await runPreflight(nextReviews, true);
+    } catch {
+      // runPreflight keeps the pending reviews and exposes the server error in the modal.
+    }
   };
 
   const changeTargetMode = (mode: GenerationTargetMode) => {
@@ -923,6 +976,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
       const next = await createExecutionPreflight(buildRequest(reviews));
       setPreflight(next);
       setPendingReviewIds([]);
+      setBulkPromptColumn('');
       setReviewsDirty(false);
       setStep(3);
       return next;
@@ -1807,6 +1861,58 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                       </label>
                     </div>
 
+                    {selectedCaseIssue?.code === 'PROMPT_TOO_LONG' && bulkPromptPlan.targetIds.length > 0 && (
+                      <div className="mt-3 border border-sky-400/30 bg-sky-500/10 p-4">
+                        <h4 className="text-sm font-semibold text-sky-100">批量替换超限 Prompt</h4>
+                        <p className="mt-1 text-xs leading-5 text-sky-200/80">
+                          作用于本次预检中全部 {bulkPromptPlan.targetIds.length} 个 Prompt 超限 case；上方状态筛选和 Case ID 搜索只影响列表展示，不会缩小批量范围。平台不会修改原评测集或自动判断翻译质量。
+                        </p>
+                        <label className="mt-3 block text-xs text-slate-300">
+                          <span className="mb-1.5 block">备用 Prompt 列</span>
+                          <select
+                            value={bulkPromptColumn}
+                            onChange={event => setBulkPromptColumn(event.target.value)}
+                            className="w-full border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-100"
+                          >
+                            <option value="">选择列，例如 prompt_zh</option>
+                            {promptReplacementColumns.map(column => <option key={column} value={column}>{column}</option>)}
+                          </select>
+                        </label>
+                        <div className="mt-3 grid gap-2 text-xs text-slate-300 sm:grid-cols-3">
+                          <div>将替换：<span className="text-sky-200">{bulkPromptPlan.targetIds.length}</span></div>
+                          <div>备用列空值：<span className={bulkPromptEmptyCount ? 'text-amber-300' : 'text-emerald-300'}>{bulkPromptColumn ? bulkPromptEmptyCount : '-'}</span></div>
+                          <div>覆盖已有 Prompt 修复：<span className={bulkPromptPlan.overwrittenPromptReviewCount ? 'text-amber-300' : 'text-slate-200'}>{bulkPromptPlan.overwrittenPromptReviewCount}</span></div>
+                        </div>
+                        {bulkPromptEmptyCount > 0 && (
+                          <div className="mt-2 text-xs leading-5 text-amber-200">
+                            空值也会按当前策略替换；重新预检后这些 case 将明确报告缺少 Prompt，不会回退原 Prompt。
+                          </div>
+                        )}
+                        {bulkPromptPlan.expertConflictIds.length > 0 && (
+                          <div className="mt-2 text-xs leading-5 text-red-200">
+                            有 {bulkPromptPlan.expertConflictIds.length} 个目标 case 已使用专家最终 Aion JSON。请先逐条退出专家模式，批量操作不会静默覆盖这些请求。
+                          </div>
+                        )}
+                        {bulkPromptPlan.missingStableIdCount > 0 && (
+                          <div className="mt-2 text-xs leading-5 text-red-200">
+                            有 {bulkPromptPlan.missingStableIdCount} 个目标 case 缺少 stable item ID，无法安全按行覆盖。请先修复数据集标识后重新预检。
+                          </div>
+                        )}
+                        {!promptReplacementColumns.length && (
+                          <div className="mt-2 text-xs text-amber-200">当前数据集没有其他可用的文本业务列。</div>
+                        )}
+                        <button
+                          type="button"
+                          disabled={!bulkPromptColumn || busy || bulkPromptPlan.expertConflictIds.length > 0 || bulkPromptPlan.missingStableIdCount > 0}
+                          onClick={() => { void applyBulkPromptColumnOverride(); }}
+                          className="mt-3 inline-flex items-center gap-2 border border-sky-300/30 bg-sky-500/10 px-3 py-2 text-xs text-sky-100 disabled:opacity-40"
+                        >
+                          {busy ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                          替换 {bulkPromptPlan.targetIds.length} 个 case 并立即重新预检
+                        </button>
+                      </div>
+                    )}
+
                     {activeBulkForceCode && filteredPreflightCases.length > 0 && (
                       <div className="mt-3 border border-red-400/30 bg-red-500/10 p-4">
                         <h4 className="text-sm font-semibold text-red-100">批量确认当前筛选风险</h4>
@@ -1867,6 +1973,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                       total={reviewDialogIndex >= 0 ? filteredPreflightCases.length : preflight.cases.length}
                       outsideCurrentFilter={reviewDialogIndex < 0}
                       review={caseReviews[String(reviewDialogItem.resolvedCase.datasetItemId || '')]}
+                      promptColumnOptions={reviewDialogPromptColumnOptions}
                       onClose={() => setReviewDialogItemId('')}
                       onPrevious={reviewDialogIndex > 0 ? () => setReviewDialogItemId(generationReviewDialogKey(filteredPreflightCases[reviewDialogIndex - 1])) : undefined}
                       onNext={reviewDialogIndex < filteredPreflightCases.length - 1 ? () => setReviewDialogItemId(generationReviewDialogKey(filteredPreflightCases[reviewDialogIndex + 1])) : undefined}

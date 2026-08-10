@@ -338,3 +338,11 @@ New bucket targets grow through 2, 4, 8, 16, 32 and 48 after saturated successes
 Platform capacity starts at 12 and can grow to the hard ceiling of 48. A failure in one bucket cannot reduce the platform window; platform circuit breaking requires recent availability evidence from at least two distinct buckets. Capacity reductions never cancel submitted work.
 
 Policy version changes restart a ten-minute shadow period. During shadow mode and whenever `GENERATION_VIDEO_ADAPTIVE_ENABLED=false`, the existing global-eight and configured model limits remain authoritative. This is the operational rollback path and does not rewrite active or pending task records.
+
+## 2026-08-10: Alternate Prompt columns are explicit review sources
+
+An alternate Prompt column is a versioned per-case review source, not an automatic language fallback. ManuEval does not translate, infer language, judge semantic equivalence, or update the dataset. The existing Prompt format remains authoritative, so text, typed values, and multi-shot JSON are compiled through the same path after replacement.
+
+The server resolves the selected cell from the locked dataset version and stable item ID. Empty values intentionally remove Prompt and must fail normal validation; client-supplied row values are never trusted. Output, reference/media, case-ID, system/internal, dimension, and rubric columns are not eligible sources.
+
+Bulk replacement consumes all `PROMPT_TOO_LONG` cases in the selected preflight, independent of presentation filters. It supersedes Prompt-only edits and Prompt Plugin decisions while preserving other repairs. Expert final Aion JSON is mutually exclusive and blocks the entire operation. Every application creates a new preflight/hash; old preflights remain immutable and cannot silently become the submitted request.

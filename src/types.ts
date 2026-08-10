@@ -853,10 +853,16 @@ export interface GenerationCaseInputOverrideV1 {
   parameters?: Record<string, GenerationCaseOverrideAction>;
 }
 
+export interface GenerationPromptColumnOverrideV1 {
+  version: 1;
+  column: string;
+}
+
 export interface GenerationCaseReview {
   acceptedFindingIds?: string[];
   rejectedFindingIds?: string[];
   promptOverride?: unknown;
+  promptColumnOverride?: GenerationPromptColumnOverrideV1;
   inputOverride?: GenerationCaseInputOverrideV1;
   finalAionRequest?: Record<string, unknown>;
   force?: {

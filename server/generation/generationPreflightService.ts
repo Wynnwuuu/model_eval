@@ -187,6 +187,68 @@ const activeParameterBinding = (binding: GenerationParameterBinding | undefined)
 const datasetHasColumn = (dataset: { items?: Array<Record<string, unknown>> }, column: string) =>
   Boolean(column) && Boolean(dataset.items?.some(row => Object.prototype.hasOwnProperty.call(row, column)));
 
+const reservedPromptOverrideColumn = (column: string) =>
+  column === '_originalData' || column.startsWith('__');
+
+export const validateGenerationPromptColumnOverrides = (
+  request: GenerationPreflightRequest,
+  dataset: {
+    items?: Array<Record<string, unknown>>;
+    inputSchema?: Array<{
+      key: string;
+      type?: string;
+      role?: string;
+    }>;
+    columnMappings?: {
+      outputColumns?: string[];
+      referenceColumns?: string[];
+    };
+  },
+  selectedRows: GenerationSelectionRow[],
+) => {
+  const selectedIds = new Set(selectedRows.map(item => item.datasetItemId));
+  for (const [datasetItemId, review] of Object.entries(request.caseReviews || {})) {
+    const override = review.promptColumnOverride;
+    if (!override || !selectedIds.has(datasetItemId)) continue;
+    if (override.version !== 1 || typeof override.column !== 'string' || !override.column.trim()) {
+      throw badRequest(`Case ${datasetItemId} has an invalid Prompt column override.`);
+    }
+    const column = override.column;
+    const field = dataset.inputSchema?.find(candidate => candidate.key === column);
+    const configuredOutputColumn = dataset.columnMappings?.outputColumns?.includes(column);
+    const configuredReferenceColumn = dataset.columnMappings?.referenceColumns?.includes(column);
+    const disallowedRole = field && [
+      'output',
+      'system',
+      'media',
+      'reference',
+      'case_id',
+      'dimension',
+      'rubric',
+    ].includes(String(field.role || ''));
+    const disallowedType = field && field.type !== 'text';
+    if (reservedPromptOverrideColumn(column)
+      || column === request.targetColumn
+      || configuredOutputColumn
+      || configuredReferenceColumn
+      || !datasetHasColumn(dataset, column)
+      || disallowedRole
+      || disallowedType) {
+      throw badRequest(`Prompt replacement column ${column} must be a visible non-output text column in this dataset version.`);
+    }
+    if (review.finalAionRequest) {
+      throw badRequest(`Case ${datasetItemId} cannot combine a Prompt column override with final Aion JSON.`);
+    }
+    if (review.promptOverride !== undefined || review.inputOverride?.content?.prompt) {
+      throw badRequest(`Case ${datasetItemId} has more than one Prompt override source.`);
+    }
+    if ([...(review.acceptedFindingIds || []), ...(review.rejectedFindingIds || [])]
+      .some(id => id.startsWith('plugin-prompt-'))) {
+      throw badRequest(`Case ${datasetItemId} cannot combine a Prompt column override with a Plugin Prompt decision.`);
+    }
+  }
+};
+
 export const validateGenerationContentMappingConfiguration = (
   request: GenerationPreflightRequest,
   model: NormalizedGenerationModel,
@@ -736,6 +798,11 @@ export const buildGenerationCasesForPreflight = (
 
     let rawCanonicalInput: Record<string, unknown>;
     let originalAuditInput: Record<string, unknown> | undefined;
+    let promptColumnOverrideAudit: {
+      version: 1;
+      column: string;
+      rawValue?: unknown;
+    } | undefined;
     let caseInputOverrideAudit: GenerationCaseInputOverrideAudit | undefined;
     let contentIntent: ReturnType<typeof compileGenerationContentMappingV2>['intent'] | undefined;
     if (contentMapping) {
@@ -867,6 +934,17 @@ export const buildGenerationCasesForPreflight = (
       }
     }
     originalAuditInput ||= JSON.parse(JSON.stringify(rawCanonicalInput)) as Record<string, unknown>;
+    if (caseReview?.promptColumnOverride) {
+      const { column } = caseReview.promptColumnOverride;
+      const rawValue = row[column];
+      if (rawValue === undefined || rawValue === null || rawValue === '') delete rawCanonicalInput.prompt;
+      else rawCanonicalInput.prompt = rawValue;
+      promptColumnOverrideAudit = {
+        version: 1,
+        column,
+        ...(rawValue !== undefined ? { rawValue: JSON.parse(JSON.stringify(rawValue)) } : {}),
+      };
+    }
     if (caseInputOverride) {
       if (caseReview?.finalAionRequest) {
         caseOverrideIssues.push({
@@ -1116,6 +1194,7 @@ export const buildGenerationCasesForPreflight = (
         reviewedFindingIds: compiled.reviewedFindingIds,
         contractSource: compiled.contractSource,
         review: caseReview,
+        ...(promptColumnOverrideAudit ? { promptColumnOverride: promptColumnOverrideAudit } : {}),
         ...(caseInputOverrideAudit ? { caseInputOverride: caseInputOverrideAudit } : {}),
       },
       ...(durationResolution ? { durationResolution } : {}),
@@ -1283,6 +1362,7 @@ export const createGenerationPreflight = async (
     targetMode,
     selectedDatasetItemIds: selection.normalizedIds,
   };
+  validateGenerationPromptColumnOverrides(request, dataset, selection.rows);
 
   const requestedAssetIds = Array.from(new Set((request.assetBindings || []).map(asset => String(asset.id))));
   const verifiedAssets = await getGenerationAssetsForPreflight(requestedAssetIds, request.datasetId, user);
