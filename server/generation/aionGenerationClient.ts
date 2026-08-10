@@ -275,11 +275,54 @@ export class AionGenerationClient {
       if (!response.ok) {
         const detail = body?.detail?.message || body?.detail;
         const message = detail || body?.message || `Aion request failed with HTTP ${response.status}`;
+        const responseError = body?.error && typeof body.error === 'object' ? body.error : {};
+        const detailError = body?.detail && typeof body.detail === 'object' ? body.detail : {};
+        const header = (...names: string[]) => names
+          .map(name => response.headers.get(name))
+          .find(value => value !== null && value !== undefined && value !== '');
+        const retryAfter = header('retry-after');
+        const retryAfterSeconds = retryAfter ? Number(retryAfter) : Number.NaN;
+        const retryAfterMs = Number.isFinite(retryAfterSeconds)
+          ? Math.max(0, retryAfterSeconds * 1000)
+          : retryAfter && Number.isFinite(Date.parse(retryAfter))
+            ? Math.max(0, Date.parse(retryAfter) - Date.now())
+            : undefined;
         const error = new Error(
           typeof message === 'string' ? message : JSON.stringify(message),
-        ) as Error & { status?: number; responseBody?: any };
+        ) as Error & {
+          status?: number;
+          responseBody?: any;
+          errorType?: string;
+          errorCode?: string;
+          retryable?: boolean;
+          retryAfterMs?: number;
+        };
         error.status = response.status;
         error.responseBody = body;
+        error.errorType = String(
+          header('x-model-api-error-type', 'x-aion-error-type')
+          || responseError.type
+          || detailError.type
+          || body?.error_type
+          || body?.errorType
+          || '',
+        ) || undefined;
+        error.errorCode = String(
+          header('x-model-api-error-code', 'x-aion-error-code')
+          || responseError.code
+          || detailError.code
+          || body?.error_code
+          || body?.errorCode
+          || '',
+        ) || undefined;
+        const retryable = header('x-model-api-error-retryable', 'x-aion-error-retryable')
+          ?? responseError.retryable
+          ?? detailError.retryable
+          ?? body?.retryable;
+        if (retryable !== undefined && retryable !== null && retryable !== '') {
+          error.retryable = retryable === true || String(retryable).toLowerCase() === 'true';
+        }
+        error.retryAfterMs = retryAfterMs;
         throw error;
       }
       return body;

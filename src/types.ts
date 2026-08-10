@@ -480,6 +480,45 @@ export interface GenerationQueueLane {
   pending: number;
   models?: GenerationModelQueueState[];
   reconciling: number;
+  hardLimit?: number;
+  recommendedLimit?: number;
+  adaptiveEnabled?: boolean;
+  adaptiveEnforced?: boolean;
+  shadowEndsAt?: number;
+  phase?: GenerationCapacityPhase;
+  submitRatePerMinute?: number;
+  submitWorkers?: number;
+  pollWorkers?: number;
+}
+
+export type GenerationCapacityPhase =
+  | 'slow_start'
+  | 'stable'
+  | 'congestion_avoidance'
+  | 'rate_limited'
+  | 'cooling'
+  | 'circuit_open';
+
+export interface GenerationCapacityBucketQueueState {
+  capacityKey: string;
+  modelConfigId: string;
+  groupId?: string;
+  generationType: string;
+  active: number;
+  pending: number;
+  organizationActive: number;
+  organizationPending: number;
+  currentLimit: number;
+  verifiedLimit: number;
+  submitRatePerMinute: number;
+  phase: GenerationCapacityPhase;
+  cooldownUntil?: number;
+  circuitOpenUntil?: number;
+  lastEvidence?: string;
+  lastEvidenceAt?: number;
+  nextProbeRequires: number;
+  saturatedSuccesses: number;
+  probeInFlight: boolean;
 }
 
 export interface GenerationModelQueueState {
@@ -499,7 +538,9 @@ export interface GenerationModelQueueState {
   capacityFailures: number;
   capacityFailureRate: number;
   mode: 'initial' | 'ramping' | 'maximum' | 'minimum';
+  phase?: GenerationCapacityPhase;
   reason: string;
+  buckets?: GenerationCapacityBucketQueueState[];
 }
 
 

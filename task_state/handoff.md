@@ -1,5 +1,13 @@
 # Arena And Arena-rank Handoff
 
+## Current work: generic adaptive video capacity control
+
+Implementation and local validation are complete on `codex/adaptive-video-capacity`, based on GitHub main `62f857d`. Normal video scheduling uses persistent buckets keyed by Aion model configuration ID plus `generation_type`, starts unknown buckets at two, and learns provider in-flight capacity independently from RPM. The platform window follows 12, 24, 48; bucket slow start follows 2, 4, 8, 16, 32, 48 with one unverified probe at a time. Explicit `groupId` is the only warm-start bridge.
+
+Video execution now has two submit workers and six poll workers. Aion error headers and structured codes feed capacity classification; deterministic failures are excluded, ambiguous POST outcomes are never retried automatically, and cross-bucket availability evidence is required before shrinking the platform window. Policy version 2 starts ten minutes of shadow mode, after which existing pending work is admitted adaptively; `GENERATION_VIDEO_ADAPTIVE_ENABLED=false` immediately restores the old global-eight/model-override scheduler without changing active task IDs.
+
+Migration `012_generation_adaptive_capacity.sql`, queue API detail, and expandable task-center capacity rows are included. Generation simulations, PostgreSQL dual-worker tests, all relevant dataset/Arena suites, API smoke, TypeScript, server and frontend builds, and 1280x720/390x844 browser checks pass. No Aion generation request or paid batch was created. Remaining work is commit, non-force push to main, CI/dev rollout, and shadow/takeover observation without creating a new batch.
+
 ## Current work: generation input reliability hardening
 
 Implementation and local validation are complete. Scalar media URLs no longer split on spaces, URL spaces normalize to `%20`, exact VidMuse preset parameters cannot disappear silently, and deterministic role/type/public-host findings are available per case. Risk-only confirmation remains distinct from manual Aion JSON override, and bulk review cannot make a final-JSON-required case valid.

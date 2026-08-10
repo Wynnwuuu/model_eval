@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Clock3,
@@ -77,6 +78,15 @@ const modelPolicyLabel = (mode: NonNullable<GenerationQueueLane['models']>[numbe
   minimum: '\u6700\u8fd1\u5bb9\u91cf\u5931\u8d25\u540e\u56de\u5230\u6700\u5c0f\u5e76\u53d1',
 }[mode]);
 
+const capacityPhaseLabel = (phase: NonNullable<GenerationQueueLane['phase']>) => ({
+  slow_start: '\u6162\u542f\u52a8',
+  stable: '\u7a33\u5b9a',
+  congestion_avoidance: '\u62e5\u585e\u907f\u514d',
+  rate_limited: '\u63d0\u4ea4\u9650\u901f',
+  cooling: '\u51b7\u5374',
+  circuit_open: '\u7194\u65ad',
+}[phase]);
+
 const queueReason = (job: DatasetGenerationJob, queue?: GenerationQueueState) => {
   if ((job.unresolved || 0) > 0) return `${job.unresolved} \u4e2a case \u5f85\u5904\u7406`;
   if ((job.statusCounts?.reconciling || 0) > 0) {
@@ -144,6 +154,7 @@ const GenerationTaskCenter: React.FC<GenerationTaskCenterProps> = ({
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState('');
+  const [expandedCapacityModels, setExpandedCapacityModels] = useState<Set<string>>(() => new Set());
 
   const load = useCallback(async (quiet = false) => {
     if (quiet) setRefreshing(true);
@@ -192,42 +203,96 @@ const GenerationTaskCenter: React.FC<GenerationTaskCenterProps> = ({
   );
 
   return (
-    <section className="border border-white/10 bg-black/20">
+    <section className="min-w-0 max-w-full overflow-hidden border border-white/10 bg-black/20">
       <header className="flex justify-end border-b border-white/10 px-4 py-4">
         <div className="grid w-full grid-cols-2 border border-white/10 bg-black/20 sm:w-auto sm:min-w-[360px]">
           <QueueLane icon={<Image size={14} />} label={'\u56fe\u7247\u5bb9\u91cf'} lane={queue?.image} />
-          <QueueLane icon={<Video size={14} />} label={'\u89c6\u9891\u5bb9\u91cf'} lane={queue?.video} />
+          <QueueLane
+            icon={<Video size={14} />}
+            label={queue?.video.adaptiveEnforced ? '\u89c6\u9891\u81ea\u9002\u5e94\u5bb9\u91cf' : '\u89c6\u9891\u5bb9\u91cf'}
+            lane={queue?.video}
+          />
         </div>
       </header>
       {!!queue?.video.models?.length && (
         <div className="border-b border-white/10">
           <div className="flex items-center justify-between gap-3 px-4 py-2 text-xs text-slate-400">
-            <span>{'\u89c6\u9891\u6a21\u578b\u81ea\u9002\u5e94\u5bb9\u91cf'}</span>
-            <span>{'\u8fd1 24 \u5c0f\u65f6 / \u6700\u8fd1 24 \u6761\u6709\u6548\u7ed3\u679c'}</span>
+            <span>
+              {'\u89c6\u9891\u5bb9\u91cf\u63a7\u5236'}
+              {' \u00b7 '}
+              {queue.video.adaptiveEnforced
+                ? '\u5df2\u63a5\u7ba1'
+                : queue.video.adaptiveEnabled ? '\u5f71\u5b50\u6a21\u5f0f' : '\u65e7\u7b56\u7565'}
+              {queue.video.phase ? ` \u00b7 ${capacityPhaseLabel(queue.video.phase)}` : ''}
+            </span>
+            <span>
+              {'\u5efa\u8bae\u7a97\u53e3'} {queue.video.recommendedLimit || queue.video.limit}
+              {' / \u786c\u4e0a\u9650'} {queue.video.hardLimit || queue.video.limit}
+              {' \u00b7 \u63d0\u4ea4'} {queue.video.submitWorkers || 0}
+              {' / \u8f6e\u8be2'} {queue.video.pollWorkers || 0}
+            </span>
           </div>
           <div className="overflow-x-auto">
-            <div className="min-w-[720px]">
-              {queue.video.models.map(modelQueue => (
-                <div key={modelQueue.modelName} className="grid grid-cols-[minmax(220px,1.4fr)_100px_120px_minmax(300px,1.8fr)] items-center gap-4 border-t border-white/10 px-4 py-2 text-xs">
-                  <span className="truncate font-medium text-slate-200" title={modelQueue.modelName}>{modelQueue.modelName}</span>
-                  <span className="tabular-nums text-slate-300">
-                    {'\u5728\u9014'} {modelQueue.active}/{modelQueue.effectiveLimit}
-                  </span>
-                  <span className="tabular-nums text-slate-400">
-                    {'\u7b49\u5f85'} {modelQueue.organizationPending}
-                  </span>
-                  <span className={modelQueue.mode === 'minimum' ? 'text-red-300' : modelQueue.mode === 'ramping' ? 'text-amber-300' : 'text-slate-400'}>
-                    {modelPolicyLabel(modelQueue.mode)}
-                    {' \u00b7 '}
-                    {'\u8fde\u80dc'} {modelQueue.successStreak}
-                    {' \u00b7 '}
-                    {modelQueue.minLimit}/{modelQueue.initialLimit}/{modelQueue.maxLimit}
-                    {' \u00b7 '}
-                    {'\u5f53\u524d'} {modelQueue.effectiveLimit}
-                    {modelQueue.reconciling ? ` \u00b7 \u5f85\u6838\u5bf9 ${modelQueue.reconciling}` : ''}
-                  </span>
-                </div>
-              ))}
+            <div className="min-w-[900px]">
+              {queue.video.models.map(modelQueue => {
+                const expanded = expandedCapacityModels.has(modelQueue.modelName);
+                return (
+                  <React.Fragment key={modelQueue.modelName}>
+                    <div className="grid grid-cols-[28px_minmax(210px,1.4fr)_100px_120px_minmax(300px,1.8fr)] items-center gap-3 border-t border-white/10 px-4 py-2 text-xs">
+                      <button
+                        type="button"
+                        className="inline-flex h-7 w-7 items-center justify-center text-slate-400 hover:text-slate-100 disabled:opacity-30"
+                        disabled={!modelQueue.buckets?.length}
+                        title={expanded ? '\u6536\u8d77\u751f\u6210\u6a21\u5f0f' : '\u5c55\u5f00\u751f\u6210\u6a21\u5f0f'}
+                        onClick={() => setExpandedCapacityModels(current => {
+                          const next = new Set(current);
+                          if (next.has(modelQueue.modelName)) next.delete(modelQueue.modelName);
+                          else next.add(modelQueue.modelName);
+                          return next;
+                        })}
+                      >
+                        <ChevronDown size={15} className={expanded ? 'rotate-180 transition-transform' : 'transition-transform'} />
+                      </button>
+                      <span className="truncate font-medium text-slate-200" title={modelQueue.modelName}>{modelQueue.modelName}</span>
+                      <span className="tabular-nums text-slate-300">
+                        {'\u5728\u9014'} {modelQueue.active}/{modelQueue.effectiveLimit}
+                      </span>
+                      <span className="tabular-nums text-slate-400">
+                        {'\u7b49\u5f85'} {modelQueue.organizationPending}
+                      </span>
+                      <span className={modelQueue.mode === 'minimum' ? 'text-red-300' : modelQueue.mode === 'ramping' ? 'text-amber-300' : 'text-slate-400'}>
+                        {modelQueue.phase ? capacityPhaseLabel(modelQueue.phase) : modelPolicyLabel(modelQueue.mode)}
+                        {' \u00b7 '}
+                        {modelQueue.buckets?.length || 0} {'\u4e2a\u751f\u6210\u6a21\u5f0f'}
+                        {' \u00b7 '}
+                        {'\u5f53\u524d'} {modelQueue.effectiveLimit}
+                        {modelQueue.reconciling ? ` \u00b7 \u5f85\u6838\u5bf9 ${modelQueue.reconciling}` : ''}
+                      </span>
+                    </div>
+                    {expanded && modelQueue.buckets?.map(bucket => (
+                      <div key={bucket.capacityKey} className="grid grid-cols-[minmax(260px,1.4fr)_100px_140px_minmax(300px,1.8fr)] items-center gap-4 border-t border-white/5 bg-white/[0.02] py-2 pl-12 pr-4 text-xs text-slate-400">
+                        <span className="truncate" title={`${bucket.modelConfigId} / ${bucket.generationType}`}>
+                          {bucket.generationType}
+                        </span>
+                        <span className="tabular-nums">
+                          {bucket.active}/{bucket.currentLimit}
+                        </span>
+                        <span className="tabular-nums">
+                          {'\u5df2\u9a8c\u8bc1'} {bucket.verifiedLimit}
+                          {' \u00b7 '} {Math.round(bucket.submitRatePerMinute)} RPM
+                        </span>
+                        <span className={bucket.phase === 'circuit_open' || bucket.phase === 'cooling' ? 'text-red-300' : bucket.phase === 'rate_limited' || bucket.phase === 'slow_start' ? 'text-amber-300' : 'text-slate-400'}>
+                          {capacityPhaseLabel(bucket.phase)}
+                          {' \u00b7 '}
+                          {'\u9971\u548c\u6210\u529f'} {bucket.saturatedSuccesses}/{bucket.nextProbeRequires}
+                          {bucket.probeInFlight ? ' \u00b7 \u63a2\u6d4b\u4e2d' : ''}
+                          {bucket.lastEvidence ? ` \u00b7 ${bucket.lastEvidence}` : ''}
+                        </span>
+                      </div>
+                    ))}
+                  </React.Fragment>
+                );
+              })}
             </div>
           </div>
         </div>

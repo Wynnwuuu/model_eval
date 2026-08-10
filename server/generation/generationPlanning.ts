@@ -46,6 +46,7 @@ export type NormalizedGenerationModel = {
   displayName: string;
   description: string;
   provider: string;
+  groupId?: string;
   outputModality: GenerationModality;
   previewType: GenerationModality;
   capabilities: string[];
@@ -528,6 +529,7 @@ export const normalizeAionModelConfig = (raw: Record<string, any>): NormalizedGe
     name: modelName,
     model_type: modelType,
     provider: raw.provider,
+    group_id: raw.group_id ?? raw.groupId,
     capabilities: raw.capabilities,
     options,
     input_schema: inputSchema,
@@ -543,6 +545,7 @@ export const normalizeAionModelConfig = (raw: Record<string, any>): NormalizedGe
     displayName: String(raw.display_name || raw.displayName || modelName),
     description: String(raw.description || ''),
     provider: String(raw.provider || ''),
+    groupId: raw.group_id ?? raw.groupId ? String(raw.group_id ?? raw.groupId) : undefined,
     outputModality: modelType,
     previewType: modelType,
     capabilities: normalizeCapabilities(raw.capabilities),

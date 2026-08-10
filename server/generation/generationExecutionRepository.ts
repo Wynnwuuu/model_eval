@@ -12,6 +12,13 @@ import {
   type GenerationConcurrencyPolicy,
   type GenerationCapacityOutcome,
 } from './generationConcurrencyPolicy.ts';
+import {
+  generationCapacityDescriptor,
+  getAdaptiveVideoCapacitySnapshot,
+  observeAdaptiveGenerationOutcome,
+  reconcileAdaptiveGenerationOutcomes,
+  reserveAdaptiveVideoCapacity,
+} from './generationAdaptiveCapacityRepository.ts';
 
 
 export type StoredGenerationPreflight = {
@@ -535,13 +542,14 @@ export const getGenerationBatch = async (jobId: string, organizationId?: string)
   return mapBatch(jobResult.rows[0], itemResult.rows);
 };
 
+export type GenerationClaimPurpose = 'any' | 'submit' | 'poll';
+
 export const claimNextGenerationItem = async (
   modality: 'image' | 'video',
   owner: string,
+  purpose: GenerationClaimPurpose = 'any',
 ): Promise<ClaimedGenerationItem | null> => {
-  const concurrencyLimit = modality === 'image'
-    ? serverConfig.generationImageConcurrency
-    : serverConfig.generationVideoConcurrency;
+  if (modality === 'video') await reconcileAdaptiveGenerationOutcomes();
   const videoPolicies = modality === 'video'
     ? await loadGenerationVideoPolicies()
     : new Map<string, GenerationConcurrencyPolicy>();
@@ -552,69 +560,12 @@ export const claimNextGenerationItem = async (
       'SELECT pg_advisory_xact_lock(hashtext($1))',
       [`manueval:generation:${modality}`],
     );
-    const activeResult = await client.query(
-      `
-        SELECT count(*)::int AS active
-        FROM generation_job_items item
-        JOIN generation_jobs job ON job.id = item.job_id
-        WHERE job.model_config_json->>'outputModality' = $1
-          AND item.status <> 'reconciling'
-          AND item.lease_expires_at > now()
-      `,
-      [modality],
-    );
-    if (Number(activeResult.rows[0]?.active || 0) >= concurrencyLimit) {
-      await client.query('COMMIT');
-      return null;
-    }
 
-    let providerActive = 0;
-    let eligibleVideoModels: string[] = [];
-    if (modality === 'video') {
-      const modelCapacityResult = await client.query(
+    let row: any;
+    let schedulerLog: Record<string, unknown> | undefined;
+    if (purpose !== 'submit') {
+      const due = await client.query(
         `
-          SELECT
-            ${GENERATION_MODEL_NAME_SQL} AS model_name,
-            count(*) FILTER (
-              WHERE item.status IN ('submitting', 'submitted', 'processing')
-                OR (item.status = 'pending' AND item.lease_expires_at > now())
-            )::int AS active
-          FROM generation_jobs job
-          JOIN generation_job_items item ON item.job_id = job.id
-          WHERE job.model_config_json->>'outputModality' = 'video'
-            AND item.status IN ('pending', 'submitting', 'submitted', 'processing')
-          GROUP BY ${GENERATION_MODEL_NAME_SQL}
-        `,
-      );
-      providerActive = modelCapacityResult.rows.reduce(
-        (total, row) => total + Number(row.active || 0),
-        0,
-      );
-      eligibleVideoModels = modelCapacityResult.rows
-        .filter(row => Number(row.active || 0) < policyForModel(
-          videoPolicies,
-          String(row.model_name || 'unknown-video-model'),
-        ).effectiveLimit)
-        .map(row => String(row.model_name || 'unknown-video-model'));
-    } else {
-      const providerActiveResult = await client.query(
-        `
-          SELECT count(*) FILTER (
-            WHERE item.status IN ('submitting', 'submitted', 'processing')
-              OR (item.status = 'pending' AND item.lease_expires_at > now())
-          )::int AS active
-          FROM generation_job_items item
-          JOIN generation_jobs job ON job.id = item.job_id
-          WHERE job.model_config_json->>'outputModality' = $1
-        `,
-        [modality],
-      );
-      providerActive = Number(providerActiveResult.rows[0]?.active || 0);
-    }
-
-    const result = await client.query(
-      `
-        WITH due_active AS (
           SELECT item.id
           FROM generation_job_items item
           JOIN generation_jobs job ON job.id = item.job_id
@@ -622,52 +573,115 @@ export const claimNextGenerationItem = async (
             AND item.status IN ('submitting', 'submitted', 'processing', 'reconciling', 'archiving')
             AND (item.next_poll_at IS NULL OR item.next_poll_at <= now())
             AND (item.lease_expires_at IS NULL OR item.lease_expires_at < now())
-          ORDER BY item.next_poll_at NULLS FIRST, item.created_at
+          ORDER BY item.next_poll_at NULLS FIRST, item.created_at, item.id
           FOR UPDATE OF item SKIP LOCKED
           LIMIT 1
-        ),
-        organization_load AS (
-          SELECT
-            dataset.organization_id,
-            count(*) FILTER (
-              WHERE item.status IN ('submitting', 'submitted', 'processing')
-                OR (item.status = 'pending' AND item.lease_expires_at > now())
-            )::int AS active_count,
-            max(item.submission_started_at) AS last_served_at
-          FROM generation_jobs job
-          JOIN datasets dataset ON dataset.id = job.dataset_id
-          JOIN generation_job_items item ON item.job_id = job.id
+        `,
+        [modality],
+      );
+      if (due.rows[0]) {
+        const claimed = await client.query(
+          `
+            UPDATE generation_job_items
+            SET lease_owner = $2,
+                lease_expires_at = now() + ($3::bigint * interval '1 millisecond'),
+                updated_at = now()
+            WHERE id = $1
+            RETURNING *
+          `,
+          [due.rows[0].id, owner, serverConfig.generationLeaseMs],
+        );
+        row = claimed.rows[0];
+      }
+    }
+
+    if (!row && purpose !== 'poll') {
+      const activeResult = await client.query(
+        `
+          SELECT item.request_json, job.model_config_json
+          FROM generation_job_items item
+          JOIN generation_jobs job ON job.id = item.job_id
           WHERE job.model_config_json->>'outputModality' = $1
-          GROUP BY dataset.organization_id
-        ),
-        dataset_load AS (
+            AND (
+              item.status IN ('submitting', 'submitted', 'processing')
+              OR (item.status = 'pending' AND item.lease_expires_at > now())
+            )
+        `,
+        [modality],
+      );
+      const providerActive = activeResult.rowCount || 0;
+      if (modality === 'image' && providerActive >= serverConfig.generationImageConcurrency) {
+        await client.query('COMMIT');
+        return null;
+      }
+      const activeByCapacityKey = new Map<string, number>();
+      const activeByModelName = new Map<string, number>();
+      if (modality === 'video') {
+        for (const activeRow of activeResult.rows) {
+          const descriptor = generationCapacityDescriptor(
+            activeRow.model_config_json || {},
+            activeRow.request_json || {},
+          );
+          activeByCapacityKey.set(
+            descriptor.capacityKey,
+            (activeByCapacityKey.get(descriptor.capacityKey) || 0) + 1,
+          );
+          const normalizedModelName = descriptor.modelName.trim().toLowerCase();
+          activeByModelName.set(
+            normalizedModelName,
+            (activeByModelName.get(normalizedModelName) || 0) + 1,
+          );
+        }
+      }
+      const candidates = await client.query(
+        `
+          WITH organization_load AS (
+            SELECT
+              dataset.organization_id,
+              count(*) FILTER (
+                WHERE item.status IN ('submitting', 'submitted', 'processing')
+                  OR (item.status = 'pending' AND item.lease_expires_at > now())
+              )::int AS active_count,
+              max(item.submission_started_at) AS last_served_at
+            FROM generation_jobs job
+            JOIN datasets dataset ON dataset.id = job.dataset_id
+            JOIN generation_job_items item ON item.job_id = job.id
+            WHERE job.model_config_json->>'outputModality' = $1
+            GROUP BY dataset.organization_id
+          ),
+          dataset_load AS (
+            SELECT
+              job.dataset_id,
+              count(*) FILTER (
+                WHERE item.status IN ('submitting', 'submitted', 'processing')
+                  OR (item.status = 'pending' AND item.lease_expires_at > now())
+              )::int AS active_count,
+              max(item.submission_started_at) AS last_served_at
+            FROM generation_jobs job
+            JOIN generation_job_items item ON item.job_id = job.id
+            WHERE job.model_config_json->>'outputModality' = $1
+            GROUP BY job.dataset_id
+          ),
+          job_load AS (
+            SELECT
+              job.id AS job_id,
+              count(*) FILTER (
+                WHERE item.status IN ('submitting', 'submitted', 'processing')
+                  OR (item.status = 'pending' AND item.lease_expires_at > now())
+              )::int AS active_count,
+              max(item.submission_started_at) AS last_served_at
+            FROM generation_jobs job
+            JOIN generation_job_items item ON item.job_id = job.id
+            WHERE job.model_config_json->>'outputModality' = $1
+            GROUP BY job.id
+          )
           SELECT
+            item.id,
+            item.request_json,
+            job.model_config_json,
             job.dataset_id,
-            count(*) FILTER (
-              WHERE item.status IN ('submitting', 'submitted', 'processing')
-                OR (item.status = 'pending' AND item.lease_expires_at > now())
-            )::int AS active_count,
-            max(item.submission_started_at) AS last_served_at
-          FROM generation_jobs job
-          JOIN generation_job_items item ON item.job_id = job.id
-          WHERE job.model_config_json->>'outputModality' = $1
-          GROUP BY job.dataset_id
-        ),
-        job_load AS (
-          SELECT
             job.id AS job_id,
-            count(*) FILTER (
-              WHERE item.status IN ('submitting', 'submitted', 'processing')
-                OR (item.status = 'pending' AND item.lease_expires_at > now())
-            )::int AS active_count,
-            max(item.submission_started_at) AS last_served_at
-          FROM generation_jobs job
-          JOIN generation_job_items item ON item.job_id = job.id
-          WHERE job.model_config_json->>'outputModality' = $1
-          GROUP BY job.id
-        ),
-        pending_candidate AS (
-          SELECT item.id
+            dataset.organization_id
           FROM generation_job_items item
           JOIN generation_jobs job ON job.id = item.job_id
           JOIN datasets dataset ON dataset.id = job.dataset_id
@@ -676,11 +690,6 @@ export const claimNextGenerationItem = async (
           LEFT JOIN job_load ON job_load.job_id = job.id
           WHERE job.model_config_json->>'outputModality' = $1
             AND item.status = 'pending'
-            AND $4::int < $5::int
-            AND (
-              $1 = 'image'
-              OR ${GENERATION_MODEL_NAME_SQL} = ANY($6::text[])
-            )
             AND (item.next_poll_at IS NULL OR item.next_poll_at <= now())
             AND (item.lease_expires_at IS NULL OR item.lease_expires_at < now())
             AND job.cancel_requested = false
@@ -695,32 +704,107 @@ export const claimNextGenerationItem = async (
             item.created_at,
             item.id
           FOR UPDATE OF item SKIP LOCKED
-          LIMIT 1
-        ),
-        candidate AS (
-          SELECT id FROM due_active
-          UNION ALL
-          SELECT id FROM pending_candidate WHERE NOT EXISTS (SELECT 1 FROM due_active)
-          LIMIT 1
-        )
-        UPDATE generation_job_items item
-        SET lease_owner = $2,
-            lease_expires_at = now() + ($3::bigint * interval '1 millisecond'),
-            updated_at = now()
-        FROM candidate
-        WHERE item.id = candidate.id
-        RETURNING item.*
-      `,
-      [
-        modality,
-        owner,
-        serverConfig.generationLeaseMs,
-        providerActive,
-        concurrencyLimit,
-        eligibleVideoModels,
-      ],
-    );
-    const row = result.rows[0];
+          LIMIT 100
+        `,
+        [modality],
+      );
+
+      let selected: any;
+      let capacityReservation: Awaited<ReturnType<typeof reserveAdaptiveVideoCapacity>> | undefined;
+      for (const candidate of candidates.rows) {
+        if (modality === 'image') {
+          selected = candidate;
+          break;
+        }
+        const descriptor = generationCapacityDescriptor(
+          candidate.model_config_json || {},
+          candidate.request_json || {},
+        );
+        const bucketActive = activeByCapacityKey.get(descriptor.capacityKey) || 0;
+        const legacyModelActive = activeByModelName.get(descriptor.modelName.trim().toLowerCase()) || 0;
+        const reservation = await reserveAdaptiveVideoCapacity(
+          client,
+          descriptor,
+          bucketActive,
+          providerActive,
+        );
+        if (!reservation.enforced) {
+          const modelPolicy = policyForModel(videoPolicies, descriptor.modelName);
+          if (providerActive >= serverConfig.generationVideoConcurrency
+            || legacyModelActive >= modelPolicy.effectiveLimit) {
+            continue;
+          }
+        } else if (!reservation.allowed) {
+          continue;
+        }
+        selected = candidate;
+        capacityReservation = reservation;
+        schedulerLog = {
+          modality,
+          capacityKey: descriptor.capacityKey,
+          modelName: descriptor.modelName,
+          generationType: descriptor.generationType,
+          organizationId: candidate.organization_id,
+          datasetId: candidate.dataset_id,
+          batchId: candidate.job_id,
+          adaptiveEnforced: reservation.enforced,
+          globalActive: providerActive,
+          globalLimit: reservation.enforced
+            ? reservation.globalLimit
+            : serverConfig.generationVideoConcurrency,
+          bucketActive: reservation.enforced ? bucketActive : legacyModelActive,
+          bucketLimit: reservation.enforced
+            ? reservation.bucketLimit
+            : policyForModel(videoPolicies, descriptor.modelName).effectiveLimit,
+          bucketProbe: reservation.bucketProbe,
+          globalProbe: reservation.globalProbe,
+        };
+        break;
+      }
+      if (selected) {
+        const params: any[] = [selected.id, owner, serverConfig.generationLeaseMs];
+        let capacityAssignments = '';
+        if (modality === 'video' && capacityReservation) {
+          params.push(
+            capacityReservation.capacityKey,
+            (activeByCapacityKey.get(capacityReservation.capacityKey) || 0) + 1,
+            capacityReservation.enforced
+              ? capacityReservation.bucketLimit
+              : policyForModel(videoPolicies, String(selected.model_config_json?.modelName || selected.model_config_json?.name || '')).effectiveLimit,
+            providerActive + 1,
+            capacityReservation.enforced
+              ? capacityReservation.globalLimit
+              : serverConfig.generationVideoConcurrency,
+            String(selected.model_config_json?.configFingerprint || ''),
+            capacityReservation.bucketProbe,
+            capacityReservation.globalProbe,
+          );
+          capacityAssignments = `,
+            capacity_bucket_key = $4,
+            capacity_active_at_submit = $5,
+            capacity_limit_at_submit = $6,
+            capacity_global_active_at_submit = $7,
+            capacity_global_limit_at_submit = $8,
+            capacity_config_fingerprint = NULLIF($9, ''),
+            capacity_probe = $10,
+            capacity_global_probe = $11`;
+        }
+        const claimed = await client.query(
+          `
+            UPDATE generation_job_items
+            SET lease_owner = $2,
+                lease_expires_at = now() + ($3::bigint * interval '1 millisecond'),
+                updated_at = now()
+                ${capacityAssignments}
+            WHERE id = $1
+            RETURNING *
+          `,
+          params,
+        );
+        row = claimed.rows[0];
+      }
+    }
+
     if (!row) {
       await client.query('COMMIT');
       return null;
@@ -738,24 +822,7 @@ export const claimNextGenerationItem = async (
     await client.query('COMMIT');
     if (!job) return null;
 
-    if (row.status === 'pending' && modality === 'video') {
-      const modelName = String(
-        job.model_config_json?.modelName || job.model_config_json?.name || 'unknown-video-model',
-      );
-      const modelPolicy = modality === 'video'
-        ? policyForModel(videoPolicies, modelName)
-        : undefined;
-      console.info('[generation-scheduler] pending item claimed', {
-        modality,
-        modelName,
-        organizationId: job.organization_id,
-        datasetId: job.dataset_id,
-        batchId: job.id,
-        globalLimit: concurrencyLimit,
-        effectiveModelLimit: modelPolicy?.effectiveLimit,
-        policyMode: modelPolicy?.mode,
-      });
-    }
+    if (schedulerLog) console.info('[generation-scheduler] pending item claimed', schedulerLog);
     return {
       id: row.id,
       jobId: row.job_id,
@@ -844,6 +911,14 @@ export const updateGenerationItem = async (itemId: string, values: Record<string
     `,
     [itemId, ...params],
   );
+  if (['succeeded', 'completed', 'failed', 'submission_unknown', 'cancelled'].includes(String(nextValues.status || ''))) {
+    await observeAdaptiveGenerationOutcome(itemId).catch(error => {
+      console.error('[generation-capacity] outcome observation deferred', {
+        itemId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
 };
 
 export const beginGenerationSubmission = async (
@@ -968,7 +1043,7 @@ export const isGenerationDatasetInOrganization = async (datasetId: string, organ
   return Boolean(result.rows[0]);
 };
 export const getGenerationQueueState = async (organizationId?: string) => {
-  const [result, modelResult, videoPolicies] = await Promise.all([
+  const [result, adaptiveSnapshot, videoPolicies] = await Promise.all([
     dbPool.query(
       `
         SELECT
@@ -988,51 +1063,7 @@ export const getGenerationQueueState = async (organizationId?: string) => {
         GROUP BY job.model_config_json->>'outputModality'
       `,
     ),
-    dbPool.query(
-      `
-        WITH organization_models AS (
-          SELECT DISTINCT ${GENERATION_MODEL_NAME_SQL} AS model_name
-          FROM generation_jobs job
-          JOIN datasets dataset ON dataset.id = job.dataset_id
-          JOIN generation_job_items item ON item.job_id = job.id
-          WHERE job.model_config_json->>'outputModality' = 'video'
-            AND ($1::text IS NULL OR dataset.organization_id = $1)
-            AND item.status IN ('pending', 'submitting', 'submitted', 'processing', 'reconciling')
-        ),
-        model_counts AS (
-          SELECT
-            ${GENERATION_MODEL_NAME_SQL} AS model_name,
-            count(*) FILTER (
-              WHERE item.status IN ('submitting', 'submitted', 'processing')
-            )::int AS active,
-            count(*) FILTER (
-              WHERE item.status = 'pending' AND job.cancel_requested = false
-            )::int AS pending,
-            count(*) FILTER (
-              WHERE item.status IN ('submitting', 'submitted', 'processing')
-                AND ($1::text IS NULL OR dataset.organization_id = $1)
-            )::int AS organization_active,
-            count(*) FILTER (
-              WHERE item.status = 'pending'
-                AND job.cancel_requested = false
-                AND ($1::text IS NULL OR dataset.organization_id = $1)
-            )::int AS organization_pending,
-            count(*) FILTER (
-              WHERE item.status = 'reconciling'
-            )::int AS reconciling
-          FROM generation_jobs job
-          JOIN datasets dataset ON dataset.id = job.dataset_id
-          JOIN generation_job_items item ON item.job_id = job.id
-          WHERE job.model_config_json->>'outputModality' = 'video'
-          GROUP BY ${GENERATION_MODEL_NAME_SQL}
-        )
-        SELECT model_counts.*
-        FROM model_counts
-        JOIN organization_models USING (model_name)
-        ORDER BY model_name
-      `,
-      [organizationId || null],
-    ),
+    getAdaptiveVideoCapacitySnapshot(organizationId),
     loadGenerationVideoPolicies(),
   ]);
   const counts = new Map(result.rows.map(row => [row.modality, row]));
@@ -1042,31 +1073,95 @@ export const getGenerationQueueState = async (organizationId?: string) => {
     pending: Number(counts.get(modality)?.pending || 0),
     reconciling: Number(counts.get(modality)?.reconciling || 0),
   });
+  const bucketsByModel = new Map<string, typeof adaptiveSnapshot.buckets>();
+  for (const bucket of adaptiveSnapshot.buckets) {
+    const buckets = bucketsByModel.get(bucket.modelName) || [];
+    buckets.push(bucket);
+    bucketsByModel.set(bucket.modelName, buckets);
+  }
   return {
     image: lane('image', serverConfig.generationImageConcurrency),
     video: {
-      ...lane('video', serverConfig.generationVideoConcurrency),
-      models: modelResult.rows.map(row => {
-        const modelName = String(row.model_name || 'unknown-video-model');
-        const policy = policyForModel(videoPolicies, modelName);
+      ...lane(
+        'video',
+        adaptiveSnapshot.enforced
+          ? adaptiveSnapshot.globalState.currentWindow
+          : serverConfig.generationVideoConcurrency,
+      ),
+      hardLimit: adaptiveSnapshot.hardLimit,
+      recommendedLimit: adaptiveSnapshot.globalState.currentWindow,
+      adaptiveEnabled: adaptiveSnapshot.enabled,
+      adaptiveEnforced: adaptiveSnapshot.enforced,
+      shadowEndsAt: adaptiveSnapshot.shadowEndsAt,
+      phase: adaptiveSnapshot.globalState.phase,
+      submitRatePerMinute: serverConfig.generationVideoAdaptivePolicy.globalSubmitRatePerSecond * 60,
+      submitWorkers: serverConfig.generationVideoAdaptivePolicy.submitWorkers,
+      pollWorkers: serverConfig.generationVideoAdaptivePolicy.pollWorkers,
+      models: [...bucketsByModel.entries()].map(([modelName, buckets]) => {
+        const legacyPolicy = policyForModel(videoPolicies, modelName);
+        const effectiveLimit = adaptiveSnapshot.enforced
+          ? buckets.reduce((total, bucket) => total + bucket.state.currentWindow, 0)
+          : legacyPolicy.effectiveLimit;
+        const phases = new Set(buckets.map(bucket => bucket.state.phase));
+        const phase = phases.has('circuit_open') ? 'circuit_open'
+          : phases.has('cooling') ? 'cooling'
+            : phases.has('rate_limited') ? 'rate_limited'
+              : phases.has('congestion_avoidance') ? 'congestion_avoidance'
+                : phases.has('slow_start') ? 'slow_start'
+                  : 'stable';
+        const mode = ['circuit_open', 'cooling', 'rate_limited'].includes(phase)
+          ? 'minimum'
+          : phase === 'stable' ? 'maximum' : 'ramping';
         return {
           modelName,
-          active: Number(row.active || 0),
-          pending: Number(row.pending || 0),
-          organizationActive: Number(row.organization_active || 0),
-          organizationPending: Number(row.organization_pending || 0),
-          minLimit: policy.min,
-          initialLimit: policy.initial,
-          maxLimit: policy.max,
-          effectiveLimit: policy.effectiveLimit,
-          successStreak: policy.successStreak,
-          lastCapacityFailureAt: policy.lastCapacityFailureAt,
-          reconciling: Number(row.reconciling || 0),
-          sampleSize: policy.sampleSize,
-          capacityFailures: policy.capacityFailures,
-          capacityFailureRate: policy.capacityFailureRate,
-          mode: policy.mode,
-          reason: policy.reason,
+          active: buckets.reduce((total, bucket) => total + bucket.active, 0),
+          pending: buckets.reduce((total, bucket) => total + bucket.pending, 0),
+          organizationActive: buckets.reduce((total, bucket) => total + bucket.organizationActive, 0),
+          organizationPending: buckets.reduce((total, bucket) => total + bucket.organizationPending, 0),
+          minLimit: serverConfig.generationVideoAdaptivePolicy.coldStartLimit,
+          initialLimit: serverConfig.generationVideoAdaptivePolicy.coldStartLimit,
+          maxLimit: serverConfig.generationVideoAdaptivePolicy.hardLimit,
+          effectiveLimit,
+          successStreak: buckets.reduce((total, bucket) => total + bucket.state.saturatedSuccesses, 0),
+          lastCapacityFailureAt: Math.max(0, ...buckets.map(bucket => bucket.state.lastEvidenceAt || 0)) || undefined,
+          reconciling: buckets.reduce((total, bucket) => total + bucket.reconciling, 0),
+          sampleSize: buckets.reduce((total, bucket) => total + bucket.state.recentSaturatedOutcomes.length, 0),
+          capacityFailures: buckets.reduce(
+            (total, bucket) => total + bucket.state.recentSaturatedOutcomes.filter(value => value === 'timeout').length,
+            0,
+          ),
+          capacityFailureRate: 0,
+          mode,
+          phase,
+          reason: adaptiveSnapshot.enforced
+            ? `Adaptive capacity is enforced across ${buckets.length} generation mode${buckets.length === 1 ? '' : 's'}.`
+            : adaptiveSnapshot.enabled
+              ? 'Shadow mode is computing adaptive capacity while the legacy limit remains enforced.'
+              : 'Adaptive capacity is disabled; the legacy model limit is enforced.',
+          buckets: buckets.map(bucket => ({
+            capacityKey: bucket.capacityKey,
+            modelConfigId: bucket.modelConfigId,
+            groupId: bucket.groupId,
+            generationType: bucket.generationType,
+            active: bucket.active,
+            pending: bucket.pending,
+            organizationActive: bucket.organizationActive,
+            organizationPending: bucket.organizationPending,
+            currentLimit: bucket.state.currentWindow,
+            verifiedLimit: bucket.state.verifiedWindow,
+            submitRatePerMinute: bucket.state.submitRatePerMinute,
+            phase: bucket.state.phase,
+            cooldownUntil: bucket.state.cooldownUntil,
+            circuitOpenUntil: bucket.state.circuitOpenUntil,
+            lastEvidence: bucket.state.lastEvidence,
+            lastEvidenceAt: bucket.state.lastEvidenceAt,
+            nextProbeRequires: Math.max(
+              2,
+              Math.min(bucket.state.currentWindow, serverConfig.generationVideoAdaptivePolicy.maxSuccessesPerWave),
+            ),
+            saturatedSuccesses: bucket.state.saturatedSuccesses,
+            probeInFlight: bucket.state.probeInFlight,
+          })),
         };
       }),
     },

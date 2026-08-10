@@ -55,6 +55,7 @@ const fairnessDatasetId = `generation-db-fairness-dataset-${suffix}`;
 
 const fairnessDatasetCId = `generation-db-fairness-dataset-c-${suffix}`;
 const fairnessOtherOrganizationDatasetId = `generation-db-fairness-other-org-${suffix}`;
+const originalAdaptiveEnabled = serverConfig.generationVideoAdaptiveEnabled;
 const model = normalizeAionModelConfig({
   name: 'fake/image-model',
   displayName: 'Fake image model',
@@ -158,6 +159,7 @@ const createPreflightRecord = (
 };
 
 try {
+  serverConfig.generationVideoAdaptiveEnabled = false;
   await dbPool.query(
     `DELETE FROM datasets WHERE id LIKE 'generation-db-%'`,
   );
@@ -935,6 +937,148 @@ try {
   });
 
 
+  serverConfig.generationVideoAdaptiveEnabled = true;
+  const adaptiveConfigId = `adaptive-video-config-${suffix}`;
+  const adaptivePreflight = createPreflightRecord(
+    (await getDataset(datasetId))!,
+    `adaptive_capacity_${suffix}`,
+    `request-${suffix}-adaptive-capacity`,
+    [0, 1, 2],
+  );
+  adaptivePreflight.result.model = {
+    ...adaptivePreflight.result.model,
+    id: adaptiveConfigId,
+    configId: adaptiveConfigId,
+    modelName: `test/adaptive-video-${suffix}`,
+    outputModality: 'video',
+  };
+  adaptivePreflight.result.cases = adaptivePreflight.result.cases.map(item => ({
+    ...item,
+    generationType: 'text_to_video',
+    resolvedCase: { ...item.resolvedCase, generationType: 'text_to_video' },
+  }));
+  await saveGenerationPreflight(adaptivePreflight);
+  const adaptiveJob = await createGenerationBatchFromPreflight(adaptivePreflight, user);
+  await dbPool.query(
+    `
+      UPDATE generation_capacity_states
+      SET enforce_after = now() - interval '1 second',
+          state_json = state_json || $1::jsonb,
+          updated_at = now()
+      WHERE capacity_key = '__video_global__'
+    `,
+    [JSON.stringify({
+      currentWindow: 12,
+      verifiedWindow: 12,
+      phase: 'slow_start',
+      cooldownUntil: null,
+      circuitOpenUntil: null,
+      submitTokens: 2,
+      submitTokenUpdatedAt: Date.now(),
+    })],
+  );
+  const adaptiveFirstAttempts = await Promise.all([
+    claimNextGenerationItem('video', `adaptive-submit-a-${suffix}`, 'submit'),
+    claimNextGenerationItem('video', `adaptive-submit-b-${suffix}`, 'submit'),
+  ]);
+  const adaptiveFirstClaims = adaptiveFirstAttempts.filter(Boolean);
+  assert.equal(adaptiveFirstClaims.length, 1,
+    'a cold bucket must enforce its initial 20 RPM token even with two submit workers');
+  const adaptiveBucketKey = (await dbPool.query(
+    'SELECT capacity_bucket_key FROM generation_job_items WHERE id = $1',
+    [adaptiveFirstClaims[0]!.id],
+  )).rows[0].capacity_bucket_key;
+  await dbPool.query(
+    `
+      UPDATE generation_capacity_states
+      SET state_json = state_json || $2::jsonb,
+          updated_at = now()
+      WHERE capacity_key = $1
+    `,
+    [adaptiveBucketKey, JSON.stringify({ submitTokens: 1, submitTokenUpdatedAt: Date.now() })],
+  );
+  const adaptiveSecondClaim = await claimNextGenerationItem(
+    'video',
+    `adaptive-submit-c-${suffix}`,
+    'submit',
+  );
+  assert.ok(adaptiveSecondClaim, 'a replenished token may fill the second cold-start slot');
+  await dbPool.query(
+    `
+      UPDATE generation_capacity_states
+      SET state_json = state_json || $2::jsonb,
+          updated_at = now()
+      WHERE capacity_key = $1
+    `,
+    [adaptiveBucketKey, JSON.stringify({ submitTokens: 1, submitTokenUpdatedAt: Date.now() })],
+  );
+  assert.equal(
+    await claimNextGenerationItem('video', `adaptive-submit-blocked-${suffix}`, 'submit'),
+    null,
+    'the adaptive database gate must not claim beyond an unknown bucket window of two',
+  );
+  const adaptiveQueue = await getGenerationQueueState(user.organizationId);
+  const adaptiveModelQueue = adaptiveQueue.video.models.find(
+    item => item.modelName === adaptivePreflight.result.model.modelName,
+  );
+  assert.equal(adaptiveQueue.video.adaptiveEnforced, true);
+  assert.equal(adaptiveModelQueue?.buckets?.[0]?.generationType, 'text_to_video');
+  assert.equal(adaptiveModelQueue?.buckets?.[0]?.currentLimit, 2);
+
+  for (const [index, claim] of [...adaptiveFirstClaims, adaptiveSecondClaim!].entries()) {
+    assert.equal(await beginGenerationSubmission(claim.id, 1, Date.now(), Date.now()), true);
+    await updateGenerationItem(claim.id, {
+      status: 'processing',
+      providerTaskId: `adaptive-provider-${index}-${suffix}`,
+      providerStatus: 'processing',
+      nextPollAt: Date.now() + 60_000,
+    });
+    await releaseGenerationItemLease(claim.id);
+  }
+
+  const adaptiveModePreflight = createPreflightRecord(
+    fairnessDatasetC,
+    `adaptive_mode_${suffix}`,
+    `request-${suffix}-adaptive-mode`,
+  );
+  adaptiveModePreflight.result.model = { ...adaptivePreflight.result.model };
+  adaptiveModePreflight.result.cases = adaptiveModePreflight.result.cases.map(item => ({
+    ...item,
+    generationType: 'reference_to_video',
+    resolvedCase: { ...item.resolvedCase, generationType: 'reference_to_video' },
+  }));
+  await saveGenerationPreflight(adaptiveModePreflight);
+  const adaptiveModeJob = await createGenerationBatchFromPreflight(adaptiveModePreflight, user);
+  await dbPool.query(
+    `
+      UPDATE generation_capacity_states
+      SET state_json = state_json || $1::jsonb,
+          updated_at = now()
+      WHERE capacity_key = '__video_global__'
+    `,
+    [JSON.stringify({ submitTokens: 2, submitTokenUpdatedAt: Date.now() })],
+  );
+  const independentModeClaim = await claimNextGenerationItem(
+    'video',
+    `adaptive-mode-${suffix}`,
+    'submit',
+  );
+  assert.equal(independentModeClaim?.jobId, adaptiveModeJob.id,
+    'a different generation type must use an independent capacity bucket');
+  await releaseGenerationItemLease(independentModeClaim!.id);
+  await requestGenerationCancellation(adaptiveModeJob.id, user);
+  for (const claim of [...adaptiveFirstClaims, adaptiveSecondClaim!]) {
+    await updateGenerationItem(claim.id, {
+      status: 'succeeded',
+      result: { resultUrl: `https://assets.example.com/${claim.id}.mp4` },
+      finishedAt: Date.now(),
+      nextPollAt: null,
+    });
+  }
+  await requestGenerationCancellation(adaptiveJob.id, user);
+  serverConfig.generationVideoAdaptiveEnabled = false;
+
+
 
   const capacityPreflight = createPreflightRecord(
     (await getDataset(datasetId))!,
@@ -1035,6 +1179,7 @@ try {
 
   console.log('Generation PostgreSQL integration tests passed.');
 } finally {
+  serverConfig.generationVideoAdaptiveEnabled = originalAdaptiveEnabled;
   await dbPool.query('DELETE FROM datasets WHERE id = $1', [datasetId]).catch(() => undefined);
   await dbPool.query('DELETE FROM datasets WHERE id = $1', [fairnessDatasetId]).catch(() => undefined);
   await dbPool.query('DELETE FROM datasets WHERE id = $1', [fairnessDatasetCId]).catch(() => undefined);

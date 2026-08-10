@@ -1,5 +1,29 @@
 # Arena Implementation Progress
 
+## 2026-08-10: Generic adaptive video capacity control
+
+### Completed
+
+- Replaced normal-path video model-name limits with persistent capacity buckets keyed by Aion model configuration ID and `generation_type`; explicit `groupId` is the only warm-start bridge.
+- Added a versioned controller with a 48 hard ceiling, platform window growth through 12, 24 and 48, cold bucket window 2, slow start, one-at-a-time probes, additive recovery after congestion, independent RPM throttling, timeout clustering, cooldowns and circuit breakers.
+- Added a ten-minute shadow period and an immediate `GENERATION_VIDEO_ADAPTIVE_ENABLED=false` rollback to the existing global-8/model-limit scheduler.
+- Split video execution into two submit workers and six poll workers. Existing provider tasks keep their IDs and are polled without consuming new-submission probes.
+- Captured Aion error type/code/retryability/Retry-After metadata, while preserving the existing no-auto-resubmit rule for ambiguous POST outcomes.
+- Added migration `012`, seven-day capacity history replay, config/idle decay, queue API detail and expandable task-center rows for each generation mode.
+- Kept image concurrency at four and left Aion, VidMuse, MCP, assets, writeback and human-evaluation contracts unchanged.
+
+### Validation
+
+- Deterministic provider simulations converge at capacities 1, 5, 20 and 48 for a provider capacity of 100 without exceeding the hard ceiling.
+- `test:generation` and `test:generation:db` pass, including shadow fallback, atomic cold-start/RPM gating, two-worker contention, generation-mode isolation, organization/dataset fairness and polling priority.
+- Dataset sync/import/deletion/filter, Arena, rank-tie, API smoke, TypeScript, server build and frontend build pass.
+- Browser QA passed at 1280x720 and 390x844. Capacity rows expand by generation mode, and mobile document overflow is zero with local horizontal scrolling for wide details.
+- No Aion generation request or paid task was created during implementation or verification.
+
+### Release
+
+- Release and dev shadow-mode observation remain pending final `origin/main` synchronization and non-force push.
+
 ## 2026-08-08: Structured evaluation Base import and audit
 
 ### In progress

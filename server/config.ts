@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { parseGenerationVideoAdaptivePolicy } from './generation/generationAdaptiveCapacity.ts';
 import { parseGenerationVideoModelLimits } from './generation/generationConcurrencyPolicy.ts';
 import { parseGenerationModelValidationOverrides } from './generation/generationValidationPolicy.ts';
 
@@ -20,6 +21,9 @@ const generationVideoConcurrency = parsePort(process.env.GENERATION_VIDEO_CONCUR
 const generationVideoModelLimits = parseGenerationVideoModelLimits(
   process.env.GENERATION_VIDEO_MODEL_LIMITS_JSON,
   generationVideoConcurrency,
+);
+const generationVideoAdaptivePolicy = parseGenerationVideoAdaptivePolicy(
+  process.env.GENERATION_VIDEO_ADAPTIVE_POLICY_JSON,
 );
 
 const generationModelValidationOverrides = parseGenerationModelValidationOverrides(
@@ -51,6 +55,8 @@ export const serverConfig = {
   generationImageConcurrency: parsePort(process.env.GENERATION_IMAGE_CONCURRENCY, 4),
   generationVideoConcurrency,
   generationVideoModelLimits,
+  generationVideoAdaptiveEnabled: process.env.GENERATION_VIDEO_ADAPTIVE_ENABLED !== 'false',
+  generationVideoAdaptivePolicy,
   generationModelValidationOverrides,
   generationPollIntervalMs: parsePort(process.env.GENERATION_POLL_INTERVAL_MS, 5000),
   generationLeaseMs: parsePort(process.env.GENERATION_LEASE_MS, 60000),

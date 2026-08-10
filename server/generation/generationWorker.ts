@@ -21,8 +21,10 @@ import {
   releaseGenerationItemLease,
   renewGenerationItemLease,
   updateGenerationItem,
+  type GenerationClaimPurpose,
   type ClaimedGenerationItem,
 } from './generationExecutionRepository.ts';
+import { markAdaptiveGenerationSubmissionAccepted } from './generationAdaptiveCapacityRepository.ts';
 import { writeGenerationBatchToDataset } from './generationWritebackService.ts';
 
 const TERMINAL_PROVIDER_STATUSES = new Set(['succeed', 'succeeded', 'success', 'completed']);
@@ -130,8 +132,21 @@ export const archivedGenerationResult = (
   durability: 'manueval_oss' as const,
 });
 
-const nextPollAt = (attempt: number) =>
-  Date.now() + Math.min(30000, serverConfig.generationPollIntervalMs * Math.max(1, 2 ** Math.min(attempt, 3)));
+const nextPollAt = (attempt: number, modality: 'image' | 'video') => {
+  if (modality === 'image') {
+    return Date.now() + Math.min(
+      30_000,
+      serverConfig.generationPollIntervalMs * Math.max(1, 2 ** Math.min(attempt, 3)),
+    );
+  }
+  const policy = serverConfig.generationVideoAdaptivePolicy;
+  const base = Math.min(
+    policy.pollMaxMs,
+    policy.pollMinMs * Math.max(1, 2 ** Math.min(attempt, 2)),
+  );
+  const jittered = Math.round(base * (0.85 + Math.random() * 0.3));
+  return Date.now() + Math.max(policy.pollMinMs, Math.min(policy.pollMaxMs, jittered));
+};
 
 
 export type GenerationPollPhase = 'normal' | 'start_reconciling' | 'reconciling' | 'expired';
@@ -321,6 +336,10 @@ const handleProviderPayload = async (
   }
 
   if (FAILED_PROVIDER_STATUSES.has(providerStatus)) {
+    const structuredError = payload.error && typeof payload.error === 'object' ? payload.error : {};
+    const errorCode = payload.error_code ?? payload.errorCode ?? structuredError.code;
+    const errorType = payload.error_type ?? payload.errorType ?? structuredError.type;
+    const retryable = payload.retryable ?? structuredError.retryable;
     await updateGenerationItem(item.id, {
       status: 'failed',
       providerTaskId: taskId,
@@ -329,6 +348,9 @@ const handleProviderPayload = async (
       error: {
         code: 'PROVIDER_FAILED',
         message: String(payload.task_status_msg || payload.message || 'Aion provider task failed'),
+        ...(errorCode ? { errorCode: String(errorCode) } : {}),
+        ...(errorType ? { errorType: String(errorType) } : {}),
+        ...(retryable !== undefined ? { retryable: retryable === true || String(retryable).toLowerCase() === 'true' } : {}),
         response: payload,
       },
       finishedAt: Date.now(),
@@ -394,7 +416,7 @@ const handleProviderPayload = async (
     providerTaskId: taskId,
     providerEndpointType: endpointType,
     providerStatus: providerStatus || 'submitted',
-    nextPollAt: nextPollAt(item.attempt),
+    nextPollAt: nextPollAt(item.attempt, item.job.model.outputModality),
     ...successfulPoll,
   });
 };
@@ -403,6 +425,10 @@ export type GenerationSubmissionErrorDiagnostics = {
   httpStatus?: number;
   errorName?: string;
   transportCode?: string;
+  errorType?: string;
+  errorCode?: string;
+  retryable?: boolean;
+  retryAfterMs?: number;
   definitelyRejected: boolean;
 };
 
@@ -421,10 +447,23 @@ export const generationSubmissionErrorDiagnostics = (
   const errorName = safeDiagnosticToken(error instanceof Error ? error.name : undefined);
   const transportCode = safeDiagnosticToken((error as any)?.code)
     || safeDiagnosticToken((error as any)?.cause?.code);
+  const errorType = safeDiagnosticToken((error as any)?.errorType);
+  const errorCode = safeDiagnosticToken((error as any)?.errorCode);
+  const retryable = typeof (error as any)?.retryable === 'boolean'
+    ? (error as any).retryable as boolean
+    : undefined;
+  const rawRetryAfterMs = Number((error as any)?.retryAfterMs);
+  const retryAfterMs = Number.isFinite(rawRetryAfterMs) && rawRetryAfterMs >= 0
+    ? Math.round(rawRetryAfterMs)
+    : undefined;
   return {
     ...(httpStatus ? { httpStatus } : {}),
     ...(errorName ? { errorName } : {}),
     ...(transportCode ? { transportCode } : {}),
+    ...(errorType ? { errorType } : {}),
+    ...(errorCode ? { errorCode } : {}),
+    ...(retryable !== undefined ? { retryable } : {}),
+    ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
     definitelyRejected: Boolean(httpStatus && httpStatus >= 400 && httpStatus < 500),
   };
 };
@@ -463,6 +502,15 @@ const submitItem = async (item: ClaimedGenerationItem) => {
 
   try {
     const payload = await aionGenerationClient.submit(request.path, request.body);
+    const normalized = normalizeProviderPayload(payload);
+    if (normalized.task_id || providerResult(normalized, { mediaType: item.job.model.outputModality })) {
+      await markAdaptiveGenerationSubmissionAccepted(item.id).catch(error => {
+        console.error('[generation-capacity] accepted probe update deferred', {
+          itemId: item.id,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
     await handleProviderPayload({
       ...item,
       attempt: item.attempt + 1,
@@ -479,6 +527,10 @@ const submitItem = async (item: ClaimedGenerationItem) => {
       httpStatus: diagnostics.httpStatus,
       errorName: diagnostics.errorName,
       transportCode: diagnostics.transportCode,
+      errorType: diagnostics.errorType,
+      errorCode: diagnostics.errorCode,
+      retryable: diagnostics.retryable,
+      retryAfterMs: diagnostics.retryAfterMs,
       definitelyRejected,
     });
     await updateGenerationItem(item.id, {
@@ -491,6 +543,10 @@ const submitItem = async (item: ClaimedGenerationItem) => {
         ...(diagnostics.httpStatus ? { httpStatus: diagnostics.httpStatus } : {}),
         ...(diagnostics.errorName ? { errorName: diagnostics.errorName } : {}),
         ...(diagnostics.transportCode ? { transportCode: diagnostics.transportCode } : {}),
+        ...(diagnostics.errorType ? { errorType: diagnostics.errorType } : {}),
+        ...(diagnostics.errorCode ? { errorCode: diagnostics.errorCode } : {}),
+        ...(diagnostics.retryable !== undefined ? { retryable: diagnostics.retryable } : {}),
+        ...(diagnostics.retryAfterMs !== undefined ? { retryAfterMs: diagnostics.retryAfterMs } : {}),
       },
       finishedAt: Date.now(),
       nextPollAt: null,
@@ -588,7 +644,7 @@ const pollItem = async (item: ClaimedGenerationItem) => {
         message: error instanceof Error ? error.message : String(error),
       },
       consecutivePollFailures,
-      nextPollAt: nextPollAt(item.attempt + 1),
+      nextPollAt: nextPollAt(item.attempt + 1, item.job.model.outputModality),
     });
   }
 };
@@ -618,7 +674,7 @@ const resumeArchive = async (item: ClaimedGenerationItem) => {
         code: 'ARCHIVE_RETRY',
         message: error instanceof Error ? error.message : String(error),
       },
-      nextPollAt: nextPollAt(item.attempt + 1),
+      nextPollAt: nextPollAt(item.attempt + 1, item.job.model.outputModality),
     });
   }
 };
@@ -660,16 +716,21 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 let stopRequested = false;
 let workerPromise: Promise<void> | null = null;
 
-const lane = async (modality: 'image' | 'video', laneIndex: number) => {
-  const owner = `${process.pid}-${randomUUID()}-${modality}-${laneIndex}`;
+const lane = async (
+  modality: 'image' | 'video',
+  laneIndex: number,
+  purpose: GenerationClaimPurpose = 'any',
+) => {
+  const owner = `${process.pid}-${randomUUID()}-${modality}-${purpose}-${laneIndex}`;
   while (!stopRequested) {
     try {
-      const item = await claimNextGenerationItem(modality, owner);
+      const item = await claimNextGenerationItem(modality, owner, purpose);
       if (item) await processClaimedItem(item, owner);
       else await sleep(1000);
     } catch (error) {
       console.error('[generation-worker] lane failed', {
         modality,
+        purpose,
         laneIndex,
         message: error instanceof Error ? error.message : String(error),
       });
@@ -702,13 +763,25 @@ export const startGenerationWorker = () => {
   stopRequested = false;
   const lanes = [
     ...Array.from({ length: serverConfig.generationImageConcurrency }, (_, index) => lane('image', index)),
-    ...Array.from({ length: serverConfig.generationVideoConcurrency }, (_, index) => lane('video', index)),
+    ...Array.from(
+      { length: serverConfig.generationVideoAdaptivePolicy.submitWorkers },
+      (_, index) => lane('video', index, 'submit'),
+    ),
+    ...Array.from(
+      { length: serverConfig.generationVideoAdaptivePolicy.pollWorkers },
+      (_, index) => lane('video', index, 'poll'),
+    ),
     writebackLane(),
   ];
   workerPromise = Promise.all(lanes).then(() => undefined);
   console.log('[generation-worker] started', {
     imageConcurrency: serverConfig.generationImageConcurrency,
-    videoConcurrency: serverConfig.generationVideoConcurrency,
+    legacyVideoConcurrency: serverConfig.generationVideoConcurrency,
+    videoAdaptiveEnabled: serverConfig.generationVideoAdaptiveEnabled,
+    videoHardLimit: serverConfig.generationVideoAdaptivePolicy.hardLimit,
+    videoInitialGlobalLimit: serverConfig.generationVideoAdaptivePolicy.initialGlobalLimit,
+    videoSubmitWorkers: serverConfig.generationVideoAdaptivePolicy.submitWorkers,
+    videoPollWorkers: serverConfig.generationVideoAdaptivePolicy.pollWorkers,
     assetMode: generationAssetService.mode(),
     executionTransport: aionGenerationClient.executionTransport(),
   });

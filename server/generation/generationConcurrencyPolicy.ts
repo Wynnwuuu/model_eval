@@ -39,12 +39,7 @@ export const GENERATION_POLICY_CACHE_MS = 10_000;
 
 export const DEFAULT_GENERATION_VIDEO_MODEL_LIMITS: GenerationVideoModelLimits = {
   default: { min: 1, initial: 1, max: 4 },
-  models: {
-    'wan/wan3.0-video': { min: 1, initial: 1, max: 6 },
-    'minimax/hailuo-h3': { min: 2, initial: 4, max: 8 },
-    'seedance-2.0-fast': { min: 2, initial: 4, max: 8 },
-    'seedance-2.0-pro': { min: 2, initial: 4, max: 8 },
-  },
+  models: {},
 };
 
 const normalizeModelName = (value: string) => value.trim().toLowerCase();

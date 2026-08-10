@@ -61,6 +61,11 @@ generationRoutes.get('/health', async (_req, res) => {
     maxBatchSize: serverConfig.generationMaxBatchSize,
     imageConcurrency: serverConfig.generationImageConcurrency,
     videoConcurrency: serverConfig.generationVideoConcurrency,
+    videoAdaptiveEnabled: serverConfig.generationVideoAdaptiveEnabled,
+    videoHardLimit: serverConfig.generationVideoAdaptivePolicy.hardLimit,
+    videoInitialGlobalLimit: serverConfig.generationVideoAdaptivePolicy.initialGlobalLimit,
+    videoSubmitWorkers: serverConfig.generationVideoAdaptivePolicy.submitWorkers,
+    videoPollWorkers: serverConfig.generationVideoAdaptivePolicy.pollWorkers,
     taskTimeoutMs: serverConfig.generationTaskTimeoutMs,
   });
 });

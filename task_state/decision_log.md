@@ -326,3 +326,15 @@ An array without a reliable contract is not converted with `String(array)` and i
 When a column menu opens, ManuEval applies every other active column filter and ignores only the current column. Unselected values with zero matching rows are omitted, matching Excel's cascading AutoFilter behavior. A current-column value that was already selected but has become unavailable remains visible in a separate zero-match section until the operator removes it or clears that column.
 
 Filter criteria remain independent. Selecting exact case IDs after a broader `cell_id` filter stores those IDs as their own condition; clearing the earlier `cell_id` filter does not silently expand the selected case set. Generation continues to freeze only the final visible stable item IDs, not candidate-list expressions.
+
+## 2026-08-10: Video capacity is learned from configuration-and-mode evidence
+
+Normal scheduling no longer infers provider capacity from model names, display names or public provider labels. A capacity bucket is the stable Aion model configuration ID plus the compiled `generation_type`; only an explicit Aion `groupId` may warm a replacement configuration, and inheritance is capped at four.
+
+The controller separates provider in-flight capacity from request rate and Worker HTTP concurrency. Video uses two submission executors and six polling executors; RPM errors reduce only the bucket token rate, while confirmed concurrency boundaries reduce its in-flight window. A single timeout is reliability evidence only, and deterministic validation, content, billing and input failures do not train capacity.
+
+New bucket targets grow through 2, 4, 8, 16, 32 and 48 after saturated successes. Capacity beyond the verified window is submitted one probe at a time and becomes verified only after Aion explicitly accepts the request. The first congestion event switches future recovery to additive increase.
+
+Platform capacity starts at 12 and can grow to the hard ceiling of 48. A failure in one bucket cannot reduce the platform window; platform circuit breaking requires recent availability evidence from at least two distinct buckets. Capacity reductions never cancel submitted work.
+
+Policy version changes restart a ten-minute shadow period. During shadow mode and whenever `GENERATION_VIDEO_ADAPTIVE_ENABLED=false`, the existing global-eight and configured model limits remain authoritative. This is the operational rollback path and does not rewrite active or pending task records.
