@@ -20,6 +20,11 @@ export interface DatasetFilterValueOption extends DatasetFilterValue {
   totalCount: number;
 }
 
+export interface DatasetFilterValueOptionGroups {
+  available: DatasetFilterValueOption[];
+  unavailableSelected: DatasetFilterValueOption[];
+}
+
 const BLANK_FILTER_KEY = 'blank:';
 const BLANK_FILTER_LABEL = '\uff08\u7a7a\u767d\uff09';
 
@@ -85,6 +90,7 @@ export const buildDatasetFilterValueOptions = (
   columnKey: string,
   filters: DatasetColumnFilterMap,
 ): DatasetFilterValueOption[] => {
+  const selectedKeys = new Set(filters[columnKey] || []);
   const descriptors = new Map<string, DatasetFilterValue>();
   const totals = new Map<string, number>();
   rows.forEach(item => {
@@ -105,10 +111,22 @@ export const buildDatasetFilterValueOptions = (
       count: counts.get(descriptor.key) || 0,
       totalCount: totals.get(descriptor.key) || 0,
     }))
+    .filter(option => option.count > 0 || selectedKeys.has(option.key))
     .sort((left, right) => {
       if (left.blank !== right.blank) return left.blank ? 1 : -1;
       return left.label.localeCompare(right.label, 'zh-CN', { numeric: true, sensitivity: 'base' });
     });
+};
+
+export const partitionDatasetFilterValueOptions = (
+  options: DatasetFilterValueOption[],
+  selectedKeys: string[],
+): DatasetFilterValueOptionGroups => {
+  const selected = new Set(selectedKeys);
+  return {
+    available: options.filter(option => option.count > 0),
+    unavailableSelected: options.filter(option => option.count === 0 && selected.has(option.key)),
+  };
 };
 
 export const datasetFilterLabels = (

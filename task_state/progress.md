@@ -543,3 +543,17 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Passed generation/MCP/Seed tests, structured evaluation audit, PostgreSQL generation integration, every dataset suite, Arena, rank ties, API smoke, TypeScript, server build, frontend build, and `git diff --check`.
 - A zero-generation dry-run compiled 188 source cases against 63 captured live models: 7,952 case-model evaluations and exactly 0 generation POSTs.
 - Independent Unicode code-point counting found 15 source Prompts over 5,000 characters. The dry-run reported the same 15 unique cases, with 0 false positives and 0 measurement mismatches.
+
+## 2026-08-10: Excel-style cascading filter candidates
+
+### Completed
+
+- Reproduced the reported behavior: candidate counts honored other columns, but the menu still rendered every unique value, including unselected zero-count IDs.
+- Changed candidate construction to return positive-count values plus only the current column's selected zero-count values. The latter render in a separate `已选但当前无匹配` section so an active condition is never hidden.
+- Added candidate/full-column counts to the menu. Search and select-all operate only on currently available values; exact downstream selections remain active when an earlier filter is cleared.
+- Confirmed the live source dataset contains 201 rows and the expected typed `cell_id`/`用例ID` columns. No generation request was submitted.
+
+### Validation
+
+- Passed filter tests, generation/MCP/Seed tests, every dataset suite, structured evaluation audit, Arena, rank ties, TypeScript, frontend build, and server build.
+- Passed generation database integration and API smoke against an isolated PostgreSQL database. The temporary API, database, Docker network, volume, and logs were removed afterward.

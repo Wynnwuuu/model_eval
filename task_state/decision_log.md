@@ -320,3 +320,9 @@ Prompt length is measured on the final compiled Prompt using Unicode code points
 Structured Aion schemas are authoritative when available, followed by Aion options and then validated ManuEval compatibility rules. Legacy `promptMaxLength` remains a string-only fallback. Model names and natural-language descriptions never select length behavior.
 
 An array without a reliable contract is not converted with `String(array)` and is not approximately measured. It produces a visible `PROMPT_LENGTH_NOT_VERIFIED` warning and is sent unchanged for Aion Adapter validation. Online preflight and offline compatibility audit share this resolver and configuration, preventing the same case from receiving contradictory conclusions.
+
+## 2026-08-10: Column filter menus expose the current cascading domain
+
+When a column menu opens, ManuEval applies every other active column filter and ignores only the current column. Unselected values with zero matching rows are omitted, matching Excel's cascading AutoFilter behavior. A current-column value that was already selected but has become unavailable remains visible in a separate zero-match section until the operator removes it or clears that column.
+
+Filter criteria remain independent. Selecting exact case IDs after a broader `cell_id` filter stores those IDs as their own condition; clearing the earlier `cell_id` filter does not silently expand the selected case set. Generation continues to freeze only the final visible stable item IDs, not candidate-list expressions.

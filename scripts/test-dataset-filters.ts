@@ -5,6 +5,7 @@ import {
   buildDatasetFilterValueOptions,
   datasetFilterValue,
   indexDatasetRows,
+  partitionDatasetFilterValueOptions,
   type DatasetColumnFilterMap,
 } from '../src/datasetRowFilters.ts';
 import {
@@ -30,6 +31,7 @@ const aiKey = datasetFilterValue('AI').key;
 const aimKey = datasetFilterValue('AIM').key;
 const videoKey = datasetFilterValue('video').key;
 const blankKey = datasetFilterValue('').key;
+const groupThreeKey = datasetFilterValue('three').key;
 
 const cellFilter: DatasetColumnFilterMap = { CELL_ID: [aiKey, aimKey] };
 assert.deepEqual(
@@ -68,13 +70,54 @@ assert.notEqual(
 const groupOptions = buildDatasetFilterValueOptions(indexed, 'group', cellFilter);
 assert.deepEqual(
   Object.fromEntries(groupOptions.map(option => [option.label, option.count])),
+  { one: 2, two: 1 },
+  'cascading options must hide unselected values that have no rows under the other filters',
+);
+const groupOptionsWithUnavailableSelection = buildDatasetFilterValueOptions(indexed, 'group', {
+  ...cellFilter,
+  group: [groupThreeKey],
+});
+assert.deepEqual(
+  Object.fromEntries(groupOptionsWithUnavailableSelection.map(option => [option.label, option.count])),
   { one: 2, three: 0, two: 1 },
-  'option counts must apply filters from other columns while retaining zero-count values',
+  'a selected value that becomes unavailable must remain visible so its active condition is not hidden',
+);
+const groupedOptions = partitionDatasetFilterValueOptions(
+  groupOptionsWithUnavailableSelection,
+  [groupThreeKey],
+);
+assert.deepEqual(
+  groupedOptions.available.map(option => option.label),
+  ['one', 'two'],
+  'only positive-count values belong to the selectable cascading candidate list',
+);
+assert.deepEqual(
+  groupedOptions.unavailableSelected.map(option => option.label),
+  ['three'],
+  'selected zero-count values must render in a separate unavailable section',
+);
+assert.deepEqual(
+  buildDatasetFilterValueOptions(indexed, 'case_id', cellFilter).map(option => option.label),
+  ['case-0', 'case-1', 'case-2'],
+  'a later ID filter must only offer IDs from rows visible under the earlier CELL_ID filter',
+);
+assert.deepEqual(
+  buildDatasetFilterValueOptions(indexed, 'CELL_ID', { ...cellFilter, modality: [videoKey] })
+    .map(option => [option.label, option.count]),
+  [['AI', 1], ['ai', 1], ['AIM', 1], ['OTHER', 1]],
+  'the current column filter must be ignored while its candidate list is calculated',
 );
 assert.equal(
   applyDatasetColumnFilters(indexed, { CELL_ID: [datasetFilterValue('ai').key] }).length,
   1,
   'exact value identity remains case-sensitive',
+);
+
+const selectedCaseIdKeys = [datasetFilterValue('case-0').key, datasetFilterValue('case-2').key];
+assert.deepEqual(
+  applyDatasetColumnFilters(indexed, { case_id: selectedCaseIdKeys }).map(item => item.row.case_id),
+  ['case-0', 'case-2'],
+  'clearing an earlier filter must not expand a later exact ID selection',
 );
 
 const dataset: EvalDataset = {

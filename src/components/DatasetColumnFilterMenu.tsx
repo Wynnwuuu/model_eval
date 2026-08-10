@@ -4,6 +4,7 @@ import { Filter, Search, X } from 'lucide-react';
 
 import {
   buildDatasetFilterValueOptions,
+  partitionDatasetFilterValueOptions,
   type DatasetColumnFilterMap,
   type IndexedDatasetRow,
 } from '../datasetRowFilters';
@@ -73,9 +74,25 @@ const DatasetColumnFilterMenu: React.FC<DatasetColumnFilterMenuProps> = ({
     () => buildDatasetFilterValueOptions(rows, column.key, filters),
     [column.key, filters, rows],
   );
+  const allColumnOptions = useMemo(
+    () => buildDatasetFilterValueOptions(rows, column.key, {}),
+    [column.key, rows],
+  );
+  const { available: availableOptions, unavailableSelected: unavailableSelectedOptions } = useMemo(
+    () => partitionDatasetFilterValueOptions(options, selectedKeys),
+    [options, selectedKeys],
+  );
   const normalizedQuery = query.trim().toLocaleLowerCase();
-  const visibleOptions = useMemo(() => options.filter(option => !normalizedQuery
-    || option.label.toLocaleLowerCase().includes(normalizedQuery)), [normalizedQuery, options]);
+  const matchesQuery = (label: string) => !normalizedQuery
+    || label.toLocaleLowerCase().includes(normalizedQuery);
+  const visibleOptions = useMemo(
+    () => availableOptions.filter(option => matchesQuery(option.label)),
+    [availableOptions, normalizedQuery],
+  );
+  const visibleUnavailableSelectedOptions = useMemo(
+    () => unavailableSelectedOptions.filter(option => matchesQuery(option.label)),
+    [normalizedQuery, unavailableSelectedOptions],
+  );
   const draftSet = useMemo(() => new Set(draftKeys), [draftKeys]);
   const allVisibleSelected = visibleOptions.length > 0 && visibleOptions.every(option => draftSet.has(option.key));
   const someVisibleSelected = visibleOptions.some(option => draftSet.has(option.key));
@@ -128,7 +145,7 @@ const DatasetColumnFilterMenu: React.FC<DatasetColumnFilterMenuProps> = ({
 
   const openMenu = () => {
     setQuery('');
-    setDraftKeys(active ? selectedKeys : options.map(option => option.key));
+    setDraftKeys(active ? selectedKeys : availableOptions.map(option => option.key));
     setOpen(true);
   };
 
@@ -196,6 +213,9 @@ const DatasetColumnFilterMenu: React.FC<DatasetColumnFilterMenuProps> = ({
             <div className="min-w-0">
               <div className="truncate text-sm font-semibold text-slate-100" title={column.label}>{column.label}</div>
               <div className="mt-1 text-[11px] text-slate-500">同列多选任意匹配，与其他列同时满足</div>
+              <div className="mt-1 text-[11px] text-slate-400">
+                基于其他筛选，可选 {availableOptions.length} 个 / 全列 {allColumnOptions.length} 个
+              </div>
             </div>
             <button type="button" onClick={() => setOpen(false)} aria-label="取消筛选" className="inline-flex h-8 w-8 shrink-0 items-center justify-center border border-white/10 text-slate-400 hover:text-white">
               <X size={15} />
@@ -245,7 +265,34 @@ const DatasetColumnFilterMenu: React.FC<DatasetColumnFilterMenuProps> = ({
                 <span className={`shrink-0 font-mono ${option.count ? 'text-slate-400' : 'text-slate-600'}`}>{option.count}</span>
               </label>
             ))}
-            {!visibleOptions.length && <div className="px-3 py-8 text-center text-xs text-slate-500">没有匹配的值</div>}
+            {visibleUnavailableSelectedOptions.length > 0 && (
+              <div className="mt-2 border-t border-amber-400/20 pt-2">
+                <div className="px-2 pb-1 text-[11px] font-medium text-amber-200">
+                  已选但当前无匹配 ({visibleUnavailableSelectedOptions.length})
+                </div>
+                <div className="px-2 pb-2 text-[10px] leading-4 text-slate-500">
+                  这些条件仍在生效。取消勾选或清除此列筛选后，相关限制才会移除。
+                </div>
+                {visibleUnavailableSelectedOptions.map(option => (
+                  <label key={option.key} className="flex cursor-pointer items-start gap-2 bg-amber-500/[0.04] px-2 py-2 text-xs hover:bg-amber-500/[0.08]">
+                    <input
+                      type="checkbox"
+                      checked={draftSet.has(option.key)}
+                      onChange={() => toggleKey(option.key)}
+                      className="mt-0.5 h-4 w-4 shrink-0 accent-amber-400"
+                    />
+                    <span className="min-w-0 flex-1 break-all text-slate-300" title={option.label}>{option.label}</span>
+                    <span className="shrink-0 border border-white/10 px-1 py-0.5 text-[9px] text-slate-500">
+                      {FILTER_KIND_LABELS[option.kind]}
+                    </span>
+                    <span className="shrink-0 font-mono text-amber-300/70">0</span>
+                  </label>
+                ))}
+              </div>
+            )}
+            {!visibleOptions.length && !visibleUnavailableSelectedOptions.length && (
+              <div className="px-3 py-8 text-center text-xs text-slate-500">没有匹配的值</div>
+            )}
           </div>
 
           <footer className="flex flex-wrap items-center justify-between gap-2 border-t border-white/10 p-3">
