@@ -22,7 +22,10 @@
 
 ### Release
 
-- Commit `a5514b8` reached main and both Test and Dev CI/CD succeeded. The first rollout exposed a pre-existing version-2 capacity row; version 3 now synchronizes policy state at Worker startup and before queue snapshots, forcing a fresh ten-minute shadow period before takeover even when no case is pending.
+- Commits `a5514b8`, `fa9a691`, and `0c12ce0` reached `world-sim-dev/ManuEval` main without force-pushing. Version 3 synchronizes policy state at Worker startup and before queue snapshots, forcing a fresh ten-minute shadow period even when no case is pending.
+- Final Test run `31383573140` and Dev CI/CD run `31383573640` succeeded, including migration, PostgreSQL generation integration, API smoke, image build, and Kubernetes rollout.
+- Before the final startup synchronization fix, dev UI verification exposed the stale-policy display and confirmed the queue had naturally drained to zero active/pending video cases. The browser security policy later blocked a refresh-only recheck, so the shadow reset is covered by the deterministic database regression rather than a second UI assertion.
+- No Aion generation request, retry, or paid batch was created during implementation or release.
 
 ## 2026-08-08: Structured evaluation Base import and audit
 
