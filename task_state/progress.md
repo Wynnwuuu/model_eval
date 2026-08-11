@@ -1,5 +1,16 @@
 # Arena Implementation Progress
 
+## 2026-08-11: Live Aion 500 and optimistic-wave validation
+
+### Completed
+
+- Started from an idle dev lane at image `0/4` and video `0/24`, then made 34 bounded real Aion submissions: eight historical Seedance 2.0 Pro retries, one Seedance 2.0 Fast canary, one lowest-cost Seedance 1.0 Pro Fast canary, and two concurrent 12-case Seedance 1.0 Pro Fast batches from different datasets.
+- All 34 requests received an explicit Aion HTTP 500 with `Billing failed while processing the request.` before any task ID was created. Every item was recorded as `failed / AION_HTTP_ERROR`, released its slot immediately, and retained the factual "Aion explicitly returned an error" UI. No item became `submission_unknown`, no automatic retry ran, and no five-minute model cooldown or global pause recurred.
+- The two 12-case batches were created concurrently and drained in about 11 seconds. Their submission timestamps alternated across datasets from `19:44:06` through `19:44:17`, validating fair queue continuation under repeated capacity-neutral HTTP failures. Both writebacks completed, the queue returned to video `0/24` with zero waiting items, and both pages had zero browser console warnings/errors.
+- Live batches: Pro retry `gen-06c4da28-692e-4205-a45b-67f8fae2a4ec`; Fast canary `gen-0c47a784-73eb-4dfb-a8ab-d34fd8069829`; low-cost canary `gen-458a14cb-40b5-4c84-849e-f90eb3d4879d`; 12-case batch A `gen-872cf536-0a61-408f-89aa-74accede2a4e`; 12-case batch B `gen-853ba0f1-606d-44d8-b27a-1e496549dc01`.
+- Accepted-submission expansion `8 -> 16 -> 24`, unique task IDs, and one-attempt persistence could not be revalidated in this run because billing rejected even the 10-credit canary before provider submission. Aion source maps insufficient balance to a distinct `Insufficient credits` error; the observed generic billing failure instead covers billing-service authentication/network/configuration or another unclassified pre-deduction exception. Exact root cause requires Aion/Zeus logs or an authorized balance/configuration check.
+- Generation planning/client, seed, and VidMuse MCP input-contract tests passed. The PostgreSQL generation suite exposed a one-millisecond Node/PostgreSQL clock-boundary flake in two due-poll assertions; moving the synthetic due time five seconds into the past made the test deterministic, after which the complete suite passed twice consecutively. No runtime scheduling logic changed.
+
 ## 2026-08-11: Aion HTTP 500 classification and queue recovery
 
 ### Release

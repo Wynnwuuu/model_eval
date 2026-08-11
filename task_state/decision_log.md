@@ -1,5 +1,11 @@
 # Arena Decision Log
 
+## 2026-08-11: Separate failure-flow validation from accepted-capacity validation
+
+Immediate Aion rejection cannot prove provider in-flight capacity, so failure-flow evidence and accepted-capacity evidence must be reported separately. The live run used immutable retry/new-batch audit trails and distinct output columns; it never overwrote an existing result or automatically retried an ambiguous or paid failure.
+
+After eight historical HTTP 500 retries and two single-case model/cost canaries all failed in Aion pre-deduction, two concurrent 12-case batches were still run to exercise queue continuation and cross-dataset fairness at useful volume. Their 24 explicit failures drained in about 11 seconds with near-alternating dataset submissions and no capacity cooldown. This validates HTTP-error neutrality and fair scheduling, but not optimistic-wave growth: no request received a task ID, so `8 -> 16 -> 24`, task-ID uniqueness, and accepted-attempt persistence remain unclaimed for this run.
+
 ## 2026-08-11: Received HTTP errors are not submission uncertainty
 
 An Aion POST that returns any HTTP response is a completed rejection from ManuEval's perspective. HTTP 4xx and 5xx items therefore become `failed`; only a timeout, reset, or disconnect before any response remains `submission_unknown`. Neither ordinary 5xx nor true submission uncertainty changes model or global capacity, because neither proves a concurrency boundary. Explicit 429, queue-full, concurrency-full, and request-rate signals remain the only capacity feedback.

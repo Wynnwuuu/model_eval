@@ -898,7 +898,7 @@ try {
     });
     await releaseGenerationItemLease(claim.id);
   }
-  await updateGenerationItem(modelCapClaimsA[0].id, { nextPollAt: Date.now() - 1 });
+  await updateGenerationItem(modelCapClaimsA[0].id, { nextPollAt: Date.now() - 5_000 });
   const dueAtModelCap = await claimNextGenerationItem('video', `model-cap-a-poll-${suffix}`);
   assert.equal(
     dueAtModelCap?.id,
@@ -1354,7 +1354,7 @@ try {
   }
   assert.equal(await claimNextGenerationItem('image', `worker-outstanding-block-${suffix}`), null,
     'outstanding provider tasks must block new submissions at the configured capacity');
-  await updateGenerationItem(outstandingItems[0].id, { nextPollAt: Date.now() - 1 });
+  await updateGenerationItem(outstandingItems[0].id, { nextPollAt: Date.now() - 5_000 });
   const pollClaim = await claimNextGenerationItem('image', `worker-outstanding-poll-${suffix}`);
   assert.equal(pollClaim?.id, outstandingItems[0].id,
     'due provider tasks must remain pollable while submission capacity is full');
