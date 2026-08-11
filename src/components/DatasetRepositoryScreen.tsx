@@ -82,6 +82,7 @@ import {
 } from '../features/datasets/preservedSourceImport';
 import {
   resolveWorkspaceDataset,
+  shouldClearGenerationWorkspaceDataset,
   type GenerationWorkspaceView,
 } from '../features/generation/workspaceNavigation';
 import {
@@ -973,7 +974,8 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     }
     if (mode === 'repository' && selectedDatasetId && !filteredDatasets.some(dataset => dataset.id === selectedDatasetId)) {
       setSelectedDatasetId(filteredDatasets.length ? filteredDatasets[0].id : '');
-    } else if (mode === 'generation' && selectedDatasetId && !normalizedDatasets.some(dataset => dataset.id === selectedDatasetId)) {
+    } else if (mode === 'generation'
+      && shouldClearGenerationWorkspaceDataset(normalizedDatasets, selectedDatasetId)) {
       setSelectedDatasetId('');
     }
   }, [filteredDatasets, mode, normalizedDatasets, selectedDatasetId]);

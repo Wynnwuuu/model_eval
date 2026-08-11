@@ -99,6 +99,7 @@ import {
   buildGenerationRoutePath,
   parseGenerationRouteContext,
   resolveWorkspaceDataset,
+  shouldClearGenerationWorkspaceDataset,
 } from '../src/features/generation/workspaceNavigation.ts';
 import {
   buildGenerationRepairGroups,
@@ -372,6 +373,10 @@ assert.equal(resolveWorkspaceDataset(generationDatasets, '', false), undefined,
   'new generation must never select the first dataset implicitly');
 assert.equal(resolveWorkspaceDataset(generationDatasets, '', true)?.id, 'dataset-1',
   'the dataset repository retains its existing first-dataset fallback');
+assert.equal(shouldClearGenerationWorkspaceDataset([], 'dataset-1'), false,
+  'deep-link dataset selection must survive while the async dataset list is still empty');
+assert.equal(shouldClearGenerationWorkspaceDataset(generationDatasets, 'dataset-missing'), true);
+assert.equal(shouldClearGenerationWorkspaceDataset(generationDatasets, 'dataset-1'), false);
 
 const capacityFailure = (code: string, message: string, httpStatus?: number) => ({
   status: 'failed',

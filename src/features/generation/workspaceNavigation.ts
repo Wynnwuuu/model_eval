@@ -26,6 +26,15 @@ export const resolveWorkspaceDataset = <T extends { id: string }>(
 ) => datasets.find(dataset => dataset.id === selectedDatasetId)
   || (allowFirstDatasetFallback ? datasets[0] : undefined);
 
+export const shouldClearGenerationWorkspaceDataset = <T extends { id: string }>(
+  datasets: T[],
+  selectedDatasetId: string,
+) => Boolean(
+  selectedDatasetId
+  && datasets.length > 0
+  && !datasets.some(dataset => dataset.id === selectedDatasetId),
+);
+
 export const buildGenerationRoutePath = (context: RouteContext = {}) => {
   const generationBatchId = context.generationBatchId?.trim();
   const view = resolveGenerationWorkspaceView({

@@ -6,6 +6,8 @@ Implementation and local validation are complete on `codex/aion-500-fix`, based 
 
 Policy v5 resets old capacity state to window 8. Migration `013_generation_aion_http_errors.sql` reclassifies only historical `submission_unknown` rows with HTTP 5xx and no provider task ID, leaves genuine uncertainty untouched, and never resubmits terminal items. The task center labels explicit Aion errors separately from no-response uncertainty.
 
+First-rollout browser QA also exposed an existing deep-link race: a fast batch response selected its dataset before the asynchronous dataset list arrived, then the generation workspace cleared that selection and failed to reopen the modal after refresh. The follow-up guards selection clearing until the dataset list is non-empty and has deterministic coverage.
+
 Generation unit/PostgreSQL tests, TypeScript, dataset sync/clone/import/filter, Arena, rank ties, frontend/server builds, migration, and Worker-disabled API smoke pass. Remaining work is final main synchronization, non-force publication, dev CI/CD, and observation of the existing pending queue without creating a paid smoke batch.
 
 ## Current work: generic adaptive video capacity control

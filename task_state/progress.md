@@ -12,6 +12,7 @@
 - HTTP 5xx, real submission uncertainty, and generic availability failures are capacity-neutral. Explicit concurrency/queue/rate-limit signals still control the optimistic waves.
 - Policy v5 resets old capacity state to window 8. Migration `013` idempotently reclassifies only historical HTTP 5xx rows without provider task IDs.
 - The task center distinguishes explicit Aion responses from no-response uncertainty and applies duplicate-billing warnings only to the latter.
+- Browser rollout QA exposed and fixed an existing refresh race: a batch deep link no longer loses its selected dataset while the asynchronous dataset list is still empty.
 - Generation unit and PostgreSQL tests, TypeScript, dataset sync/clone/import/filter tests, Arena, rank ties, frontend/server builds, migration, and Worker-disabled API smoke all pass.
 
 ## 2026-08-10: Generic adaptive video capacity control
