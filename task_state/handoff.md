@@ -8,7 +8,7 @@ Policy v5 resets old capacity state to window 8. Migration `013_generation_aion_
 
 First-rollout browser QA also exposed an existing deep-link race: a fast batch response selected its dataset before the asynchronous dataset list arrived, then the generation workspace cleared that selection and failed to reopen the modal after refresh. The follow-up guards selection clearing until the dataset list is non-empty and has deterministic coverage.
 
-Generation unit/PostgreSQL tests, TypeScript, dataset sync/clone/import/filter, Arena, rank ties, frontend/server builds, migration, and Worker-disabled API smoke pass. Remaining work is final main synchronization, non-force publication, dev CI/CD, and observation of the existing pending queue without creating a paid smoke batch.
+Generation unit/PostgreSQL tests, TypeScript, dataset sync/clone/import/filter, Arena, rank ties, frontend/server builds, migration, and Worker-disabled API smoke pass. Commits `c5c5c3a` and `93fd2fd` are on GitHub main; both Test and Dev CI/CD runs succeeded. Public-dev refresh verification passed with no console warnings or errors. The referenced batch had already drained to 32 terminal failures before deployment, so there was no pending case to submit after the fix and no paid smoke batch was created.
 
 ## Current work: generic adaptive video capacity control
 

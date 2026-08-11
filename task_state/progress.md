@@ -2,9 +2,12 @@
 
 ## 2026-08-11: Aion HTTP 500 classification and queue recovery
 
-### In progress
+### Release
 
-- Publish the reviewed change to dev without force-pushing and observe the existing pending queue.
+- Commits `c5c5c3a` and `93fd2fd` were fast-forward pushed to `world-sim-dev/ManuEval` main without force-pushing.
+- Test runs `31484484808` and `31485570663` succeeded. Dev CI/CD runs `31484484909` and `31485570826` passed tests, image builds, migrations, and Kubernetes rollouts.
+- Public-dev refresh verification reopened batch `gen-730a1acb-50d5-4de9-9c14-a00e963e4c4c` from its deep link with no console warnings or errors. It showed 28 historical HTTP 5xx rows as explicit Aion errors and retained four real HTTP 400 submission rejections; no row used the lost-response text.
+- The referenced batch had already reached 32 terminal failures before deployment, so no existing pending item was available for a post-fix live submission. No retry, generation request, or paid smoke batch was created.
 
 ### Completed locally
 
