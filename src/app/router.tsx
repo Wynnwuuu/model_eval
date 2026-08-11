@@ -8,6 +8,11 @@ import {
   buildGenerationRoutePath,
   parseGenerationRouteContext,
 } from '../features/generation/workspaceNavigation';
+import {
+  buildInsightPath,
+  normalizeInsightScope,
+  parseInsightSearchParams,
+} from '../insightDeepLink';
 
 const buildRoutePath = (route: AppRoute, context: RouteContext = {}) => {
   if (route === 'generation') return buildGenerationRoutePath(context);
@@ -47,7 +52,11 @@ const buildRoutePath = (route: AppRoute, context: RouteContext = {}) => {
     case 'evaluation':
       return context.taskId ? `/tasks/${context.taskId}/evaluate` : '/evaluation';
     case 'insights':
-      if (context.projectId) return withSearch(`/projects/${context.projectId}/insights`);
+      if (context.projectId) return buildInsightPath({
+        projectId: context.projectId,
+        statusFilter: context.materialStatusFilter || 'all',
+        scope: context.insightScope,
+      });
       if (context.taskId || context.materialId) return withSearch(`/tasks/${context.taskId || context.materialId}/insights`);
       return withSearch('/insights');
     case 'history':
@@ -66,6 +75,7 @@ const isStatusFilter = (value: string | null): value is NonNullable<RouteContext
 
 const withSearchContext = (context: RouteContext, searchParams: URLSearchParams): RouteContext => {
   const status = searchParams.get('status');
+  const insightState = parseInsightSearchParams(searchParams);
   const projectId = searchParams.get('projectId') || context.projectId;
   const taskDatasetId = searchParams.get('datasetId') || context.taskDatasetId;
   const generationBatchId = searchParams.get('batch') || context.generationBatchId;
@@ -74,6 +84,7 @@ const withSearchContext = (context: RouteContext, searchParams: URLSearchParams)
   return {
     ...context,
     projectId,
+    insightScope: insightState.scope || context.insightScope,
     taskDatasetId,
     generationBatchId,
     taskModelColumns: taskModelColumns.length ? taskModelColumns : context.taskModelColumns,
@@ -95,7 +106,7 @@ const routeFromPath = (pathname: string, searchParams: URLSearchParams): { route
   const projectTasks = path.match(/^\/projects\/([^/]+)\/tasks$/);
   if (projectTasks) return { route: 'tasks', context: { projectId: projectTasks[1], source: 'dashboard', taskBuilderMode: 'list' } };
   const projectInsights = path.match(/^\/projects\/([^/]+)\/insights$/);
-  if (projectInsights) return { route: 'insights', context: { projectId: projectInsights[1], source: 'dashboard' } };
+  if (projectInsights) return { route: 'insights', context: { projectId: decodeURIComponent(projectInsights[1]), source: 'dashboard' } };
   const projectDetail = path.match(/^\/projects\/([^/]+)$/);
   if (projectDetail) return { route: 'projects', context: { projectId: projectDetail[1], source: 'dashboard' } };
 
@@ -124,7 +135,7 @@ const routeFromPath = (pathname: string, searchParams: URLSearchParams): { route
   const taskResults = path.match(/^\/tasks\/([^/]+)\/results$/);
   if (taskResults) return { route: 'results', context: { taskId: taskResults[1], materialId: taskResults[1], source: 'task' } };
   const taskInsights = path.match(/^\/tasks\/([^/]+)\/insights$/);
-  if (taskInsights) return { route: 'insights', context: { taskId: taskInsights[1], materialId: taskInsights[1], source: 'task' } };
+  if (taskInsights) return { route: 'insights', context: { taskId: taskInsights[1], materialId: taskInsights[1], insightScope: normalizeInsightScope(`material:${taskInsights[1]}`), source: 'task' } };
   const taskDetail = path.match(/^\/tasks\/([^/]+)$/);
   if (taskDetail) return { route: 'tasks', context: { taskId: taskDetail[1], materialId: taskDetail[1], source: 'task', taskBuilderMode: 'list' } };
 

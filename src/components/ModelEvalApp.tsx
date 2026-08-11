@@ -809,9 +809,9 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
                 navigate('tasks', { projectId: project.id, source: 'dashboard', materialStatusFilter: 'active', taskBuilderMode: 'list' });
               }
             }}
-            onGoToAnalysis={(project) => {
+            onGoToAnalysis={(project, insightScope) => {
               setActiveProject(project);
-              navigate('insights', { projectId: project.id, source: 'dashboard' });
+              navigate('insights', { projectId: project.id, insightScope, source: 'dashboard' });
             }}
             onGoToDatasetRepo={() => navigate('datasets')}
             onGoToTemplateRepo={() => navigate('templates')}
@@ -904,6 +904,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
             initialProjectId={routeContext.projectId}
             initialMaterialId={routeContext.materialId || routeContext.taskId}
             initialStatusFilter={routeContext.materialStatusFilter}
+            initialScope={routeContext.insightScope}
           />
         </div>
       );

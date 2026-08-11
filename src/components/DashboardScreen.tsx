@@ -12,7 +12,6 @@ import { createProject, deleteProject, subscribeProjects, updateProject, updateP
 import {
   ProjectResultGroupDigest,
   buildProjectResultGroupDigests,
-  getAnalysisScopeStorageKey,
 } from '../insightPresentation';
 
 interface DashboardScreenProps {
@@ -20,7 +19,7 @@ interface DashboardScreenProps {
   initialProjectId?: string;
   onProjectSelect?: (project: EvaluationProject | null) => void;
   onGoToExecution: (project: EvaluationProject, taskItems?: EvaluationItem[], taskName?: string, modelNames?: { a: string, b: string }, taskId?: string, existingVotes?: any[], paradigm?: EvalParadigm, models?: { id: string; name: string }[], evaluationConfig?: EvaluationConfig) => void;
-  onGoToAnalysis: (project: EvaluationProject) => void;
+  onGoToAnalysis: (project: EvaluationProject, insightScope?: string) => void;
   onGoToDatasetRepo: () => void;
   onGoToTemplateRepo: () => void;
   onGoToTaskBuilder: (project: EvaluationProject, mode?: 'create' | 'list') => void;
@@ -64,6 +63,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
   const [loadingResultDigests, setLoadingResultDigests] = useState(false);
   const [resultDigestError, setResultDigestError] = useState('');
   const [expandedResultGroupId, setExpandedResultGroupId] = useState('');
+  const activeResultDigest = projectResultDigests.find(digest => digest.id === expandedResultGroupId) || projectResultDigests[0];
 
   const selectProject = (project: EvaluationProject | null) => {
     setSelectedProject(project);
@@ -796,15 +796,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
                                 <button 
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    const activeDigest = projectResultDigests.find(digest => digest.id === expandedResultGroupId) || projectResultDigests[0];
-                                    if (activeDigest) {
-                                      try {
-                                        window.localStorage.setItem(getAnalysisScopeStorageKey(selectedProject.id), `group:${activeDigest.id}`);
-                                      } catch {
-                                        // Storage can be unavailable in privacy-restricted browsers; navigation still works.
-                                      }
-                                    }
-                                    onGoToAnalysis(selectedProject);
+                                    onGoToAnalysis(selectedProject, activeResultDigest ? `group:${activeResultDigest.id}` : undefined);
                                   }}
                                   className="btn-primary w-fit"
                                 >

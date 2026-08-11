@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Upload, FileText, BarChart3, Users, AlertCircle, PlusCircle, Download, ArrowRight, Database, Loader2, ExternalLink, Layers, ListFilter } from 'lucide-react';
 import { AggregatedResult, EvalParadigm, EvaluationConfig, EvalTask, EvalTemplate, EvaluationItem, EvaluationProject, ModelOutput, RankingEntry, TaskVoteGroup, VoteRecord, VoteType } from '../types';
 import { ArenaRankPromptItem, calculateArenaRankCaseSummaries, calculateArenaRankModelStats, formatConsensusRanking, formatRanking, getArenaRankModelOutputUrl, getModelOutputsForItem, getRankingTieSummary, isArenaRankVote, normalizeRanking, resolveEvaluationItemPrompt, sortRanking, validateRanking } from '../rankingUtils';
@@ -23,6 +24,7 @@ import {
   getAnalysisScopeStorageKey,
   getComparableTaskSignature,
 } from '../insightPresentation';
+import { buildInsightPath, normalizeInsightScope } from '../insightDeepLink';
 
 interface AnalysisScreenProps {
   onBack: () => void;
@@ -30,6 +32,7 @@ interface AnalysisScreenProps {
   initialProjectId?: string;
   initialMaterialId?: string;
   initialStatusFilter?: EvalTask['status'];
+  initialScope?: string;
 }
 
 const normalizeCsvHeader = (value: string) => value.trim().toLowerCase().replace(/\s+/g, '').replace(/-/g, '_');
@@ -369,8 +372,11 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   onGoToDashboard,
   initialProjectId,
   initialMaterialId,
-  initialStatusFilter
+  initialStatusFilter,
+  initialScope,
 }) => {
+  const location = useLocation();
+  const navigateTo = useNavigate();
   const [aggregatedData, setAggregatedData] = useState<AggregatedResult[]>([]);
   const [totalFiles, setTotalFiles] = useState(0);
   const [uniqueVoters, setUniqueVoters] = useState<Set<string>>(new Set());
@@ -381,8 +387,9 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   const [loadingTasks, setLoadingTasks] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string>('');
   const [selectedProjectId, setSelectedProjectId] = useState<string>(initialProjectId || '');
-  const [selectedMaterialScope, setSelectedMaterialScope] = useState<string>(initialMaterialId ? `material:${initialMaterialId}` : '');
-  const [analysisScopeMode, setAnalysisScopeMode] = useState<AnalysisScopeMode>(initialMaterialId ? 'single-task' : 'comparable-group');
+  const initialRouteScope = normalizeInsightScope(initialScope) || (initialMaterialId ? `material:${initialMaterialId}` : '');
+  const [selectedMaterialScope, setSelectedMaterialScope] = useState<string>(initialRouteScope);
+  const [analysisScopeMode, setAnalysisScopeMode] = useState<AnalysisScopeMode>(initialRouteScope.startsWith('material:') ? 'single-task' : 'comparable-group');
   const [statusFilter, setStatusFilter] = useState<EvalTask['status'] | 'all'>(initialStatusFilter || 'all');
   const [loadedScopeKey, setLoadedScopeKey] = useState('');
   const [loadingResults, setLoadingResults] = useState(false);
@@ -398,6 +405,9 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   const [analysisVoteRows, setAnalysisVoteRows] = useState<AnalysisVoteRow[]>([]);
   const [archivedVoteRows, setArchivedVoteRows] = useState<ArchivedVoteRow[]>([]);
   const [showInsights, setShowInsights] = useState(true);
+  const previousInitialProjectId = useRef(initialProjectId);
+  const previousInitialStatusFilter = useRef(initialStatusFilter);
+  const previousInitialScope = useRef(initialScope);
 
   useEffect(() => {
     setLoadingTasks(true);
@@ -415,6 +425,30 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
 
     return () => unsubscribers.forEach(unsubscribe => unsubscribe());
   }, []);
+
+  useEffect(() => {
+    if (previousInitialProjectId.current === initialProjectId) return;
+    previousInitialProjectId.current = initialProjectId;
+    setSelectedProjectId(initialProjectId || '');
+    setSelectedMaterialScope('');
+    setLoadedScopeKey('');
+  }, [initialProjectId]);
+
+  useEffect(() => {
+    if (previousInitialStatusFilter.current === initialStatusFilter) return;
+    previousInitialStatusFilter.current = initialStatusFilter;
+    setStatusFilter(initialStatusFilter || 'all');
+    setLoadedScopeKey('');
+  }, [initialStatusFilter]);
+
+  useEffect(() => {
+    if (previousInitialScope.current === initialScope) return;
+    previousInitialScope.current = initialScope;
+    const nextScope = normalizeInsightScope(initialScope) || '';
+    setSelectedMaterialScope(nextScope);
+    setAnalysisScopeMode(nextScope.startsWith('material:') ? 'single-task' : 'comparable-group');
+    setLoadedScopeKey('');
+  }, [initialScope]);
 
   const getMaterialEvaluationConfig = (task?: EvalTask): EvaluationConfig => {
     const template = templates.find(item => item.id === task?.templateId);
@@ -498,19 +532,23 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
 
   useEffect(() => {
     if (loadingTasks || selectedProjectId || projectOptions.length === 0) return;
-    const fallbackProjectId = initialProjectId && projectOptions.some(project => project.id === initialProjectId)
-      ? initialProjectId
-      : projectOptions[0].id;
+    const linkedMaterialId = normalizeInsightScope(initialScope)?.replace(/^material:/, '') || initialMaterialId;
+    const linkedTask = linkedMaterialId ? tasks.find(task => task.id === linkedMaterialId) : undefined;
+    const linkedProjectId = linkedTask?.projectId || (linkedTask ? UNASSIGNED_PROJECT_ID : undefined);
+    const fallbackProjectId = [initialProjectId, linkedProjectId]
+      .find(projectId => projectId && projectOptions.some(project => project.id === projectId))
+      || projectOptions[0].id;
     setSelectedProjectId(fallbackProjectId);
-  }, [initialProjectId, loadingTasks, projectOptions, selectedProjectId]);
+  }, [initialMaterialId, initialProjectId, initialScope, loadingTasks, projectOptions, selectedProjectId, tasks]);
 
   useEffect(() => {
     if (!selectedProjectId) return;
+    const urlScope = normalizeInsightScope(initialScope);
     const materialOption = initialMaterialId && projectMaterials.some(task => task.id === initialMaterialId)
       ? `material:${initialMaterialId}`
       : '';
     let storedScope = '';
-    if (!materialOption) {
+    if (!urlScope && !materialOption) {
       try {
         storedScope = window.localStorage.getItem(getAnalysisScopeStorageKey(selectedProjectId)) || '';
       } catch {
@@ -520,7 +558,11 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     const storedIsValid = storedScope.startsWith('material:')
       ? projectMaterials.some(task => task.id === storedScope.replace('material:', ''))
       : storedScope.startsWith('group:') && materialGroups.some(group => `group:${group.key}` === storedScope);
-    const defaultScope = materialOption
+    const requestedScope = urlScope || materialOption;
+    const requestedIsValid = requestedScope?.startsWith('material:')
+      ? projectMaterials.some(task => task.id === requestedScope.replace('material:', ''))
+      : Boolean(requestedScope && materialGroups.some(group => `group:${group.key}` === requestedScope));
+    const defaultScope = (requestedIsValid ? requestedScope : '')
       || (storedIsValid ? storedScope : '')
       || (materialGroups[0] ? `group:${materialGroups[0].key}` : '')
       || (projectMaterials[0] ? `material:${projectMaterials[0].id}` : '');
@@ -537,7 +579,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     } else {
       setAnalysisScopeMode(selectedMaterialScope.startsWith('material:') ? 'single-task' : 'comparable-group');
     }
-  }, [initialMaterialId, materialGroups, projectMaterials, selectedMaterialScope, selectedProjectId]);
+  }, [initialMaterialId, initialScope, materialGroups, projectMaterials, selectedMaterialScope, selectedProjectId]);
 
   useEffect(() => {
     if (!selectedProjectId || !selectedMaterialScope) return;
@@ -547,6 +589,18 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
       // Storage can be unavailable in privacy-restricted browsers.
     }
   }, [selectedMaterialScope, selectedProjectId]);
+
+  useEffect(() => {
+    if (!selectedProjectId) return;
+    const nextPath = buildInsightPath({
+      projectId: selectedProjectId,
+      statusFilter,
+      scope: normalizeInsightScope(selectedMaterialScope),
+    });
+    if (nextPath !== `${location.pathname}${location.search}`) {
+      navigateTo(nextPath, { replace: true });
+    }
+  }, [location.pathname, location.search, navigateTo, selectedMaterialScope, selectedProjectId, statusFilter]);
 
   useEffect(() => {
     if (selectedTaskId && projectMaterials.some(task => task.id === selectedTaskId)) return;
