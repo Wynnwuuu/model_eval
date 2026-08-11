@@ -279,6 +279,7 @@ const archiveResult = async (
     await updateGenerationItem(item.id, {
       status: 'succeeded',
       result: unarchivedGenerationResult(item.result, provider, mediaType),
+      error: {},
       archivedAssetId: null,
       providerStatus: 'succeed',
       finishedAt: Date.now(),
@@ -297,6 +298,7 @@ const archiveResult = async (
   await updateGenerationItem(item.id, {
     status: 'succeeded',
     result: archivedGenerationResult(item.result, provider, archived.stableUrl, mediaType),
+    error: {},
     archivedAssetId: archived.id,
     providerStatus: 'succeed',
     finishedAt: Date.now(),

@@ -488,6 +488,10 @@ try {
   const stableClaim = await claimNextGenerationItem('image', `worker-stable-${suffix}`);
   assert.equal(stableClaim?.jobId, stableJob.id);
   await updateGenerationItem(stableClaim!.id, {
+    status: 'processing',
+    error: { code: 'AION_POLL_RETRY', message: 'stale transient poll failure' },
+  });
+  await updateGenerationItem(stableClaim!.id, {
     status: 'succeeded',
     providerTaskId: 'provider-stable-request',
     providerStatus: 'succeed',
@@ -497,6 +501,7 @@ try {
       durability: 'vidmuse_asset',
       mediaType: 'image',
     },
+    error: {},
     finishedAt: Date.now(),
     nextPollAt: null,
   });
@@ -506,12 +511,14 @@ try {
   const stableBatch = await getGenerationBatch(stableJob.id);
   assert.equal(stableBatch?.items[0].durability, 'vidmuse_asset');
   assert.equal(stableBatch?.items[0].originalResultUrl, stableProviderUrl);
+  assert.deepEqual(stableBatch?.items[0].error, {});
   assert.equal(stableBatch?.controls.durationSource?.mode, 'reference_audio');
   assert.deepEqual(stableBatch?.controls.parameterBindings, {
     aspect_ratio: { source: 'uniform', value: '1:1' },
   });
   const afterStableWriteback = await getDataset(datasetId);
   assert.equal(afterStableWriteback?.items[0].stable_result, stableAssetUrl);
+  assert.equal(afterStableWriteback?.items[0].stable_result_error, '');
   const stableParams = JSON.parse(String(afterStableWriteback?.items[0].stable_result_params_json || '{}'));
   assert.equal(stableParams.durability, 'vidmuse_asset');
   assert.equal(stableParams.originalResultUrl, stableProviderUrl);
