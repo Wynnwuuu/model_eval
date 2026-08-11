@@ -27,6 +27,7 @@ import {
 import {
   initializeAdaptiveGenerationCapacity,
   markAdaptiveGenerationSubmissionAccepted,
+  recordAdaptiveGenerationSubmissionOutcome,
 } from './generationAdaptiveCapacityRepository.ts';
 import { writeGenerationBatchToDataset } from './generationWritebackService.ts';
 
@@ -364,18 +365,24 @@ const handleProviderPayload = async (
   }
 
   if (!taskId) {
+    const submissionError = {
+      code: 'MISSING_PROVIDER_TASK_ID',
+      message: 'Aion returned no task_id; the submission cannot be safely retried.',
+    };
     await updateGenerationItem(item.id, {
       status: 'submission_unknown',
       providerStatus: providerStatus || 'unknown',
-      error: {
-        code: 'MISSING_PROVIDER_TASK_ID',
-        message: 'Aion returned no task_id; the submission cannot be safely retried.',
-        response: payload,
-      },
+      error: { ...submissionError, response: payload },
       finishedAt: Date.now(),
       nextPollAt: null,
       ...successfulPoll,
     });
+    if (!context.polledAt) {
+      await recordAdaptiveGenerationSubmissionOutcome(item.id, {
+        status: 'submission_unknown',
+        error: submissionError,
+      });
+    }
     return;
   }
 
@@ -503,22 +510,9 @@ const submitItem = async (item: ClaimedGenerationItem) => {
   );
   if (!maySubmit) return;
 
+  let payload: Record<string, any>;
   try {
-    const payload = await aionGenerationClient.submit(request.path, request.body);
-    const normalized = normalizeProviderPayload(payload);
-    if (normalized.task_id || providerResult(normalized, { mediaType: item.job.model.outputModality })) {
-      await markAdaptiveGenerationSubmissionAccepted(item.id).catch(error => {
-        console.error('[generation-capacity] accepted probe update deferred', {
-          itemId: item.id,
-          message: error instanceof Error ? error.message : String(error),
-        });
-      });
-    }
-    await handleProviderPayload({
-      ...item,
-      attempt: item.attempt + 1,
-      submissionStartedAt,
-    }, payload);
+    payload = await aionGenerationClient.submit(request.path, request.body);
   } catch (error) {
     const diagnostics = generationSubmissionErrorDiagnostics(error);
     const { definitelyRejected } = diagnostics;
@@ -536,13 +530,12 @@ const submitItem = async (item: ClaimedGenerationItem) => {
       retryAfterMs: diagnostics.retryAfterMs,
       definitelyRejected,
     });
-    await updateGenerationItem(item.id, {
-      status: definitelyRejected ? 'failed' : 'submission_unknown',
-      error: {
-        code: definitelyRejected ? 'AION_SUBMIT_REJECTED' : 'AION_SUBMISSION_UNKNOWN',
-        message: definitelyRejected
-          ? (error instanceof Error ? error.message : String(error))
-          : 'The Aion submission response was lost; automatic retry is disabled to prevent duplicate billing.',
+    const status = definitelyRejected ? 'failed' : 'submission_unknown';
+    const submissionError = {
+      code: definitelyRejected ? 'AION_SUBMIT_REJECTED' : 'AION_SUBMISSION_UNKNOWN',
+      message: definitelyRejected
+        ? (error instanceof Error ? error.message : String(error))
+        : 'The Aion submission response was lost; automatic retry is disabled to prevent duplicate billing.',
         ...(diagnostics.httpStatus ? { httpStatus: diagnostics.httpStatus } : {}),
         ...(diagnostics.errorName ? { errorName: diagnostics.errorName } : {}),
         ...(diagnostics.transportCode ? { transportCode: diagnostics.transportCode } : {}),
@@ -550,9 +543,55 @@ const submitItem = async (item: ClaimedGenerationItem) => {
         ...(diagnostics.errorCode ? { errorCode: diagnostics.errorCode } : {}),
         ...(diagnostics.retryable !== undefined ? { retryable: diagnostics.retryable } : {}),
         ...(diagnostics.retryAfterMs !== undefined ? { retryAfterMs: diagnostics.retryAfterMs } : {}),
-      },
+    };
+    await updateGenerationItem(item.id, {
+      status,
+      error: submissionError,
       finishedAt: Date.now(),
       nextPollAt: null,
+    });
+    await recordAdaptiveGenerationSubmissionOutcome(item.id, {
+      status,
+      error: submissionError,
+    }).catch(capacityError => {
+      console.error('[generation-capacity] rejected submission update deferred', {
+        itemId: item.id,
+        message: capacityError instanceof Error ? capacityError.message : String(capacityError),
+      });
+    });
+    return;
+  }
+
+  const normalized = normalizeProviderPayload(payload);
+  const immediateResult = providerResult(normalized, { mediaType: item.job.model.outputModality });
+  const accepted = Boolean(normalized.task_id || immediateResult);
+  if (normalized.task_id) {
+    await updateGenerationItem(item.id, {
+      status: 'submitted',
+      providerTaskId: String(normalized.task_id),
+      providerEndpointType: normalized.endpoint_type ? String(normalized.endpoint_type) : undefined,
+      providerStatus: String(normalized.task_status || normalized.status || 'submitted'),
+      nextPollAt: nextPollAt(item.attempt + 1, item.job.model.outputModality),
+    });
+    await markAdaptiveGenerationSubmissionAccepted(item.id).catch(error => {
+      console.error('[generation-capacity] accepted submission update deferred', {
+        itemId: item.id,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
+  await handleProviderPayload({
+    ...item,
+    attempt: item.attempt + 1,
+    submissionStartedAt,
+    providerTaskId: normalized.task_id ? String(normalized.task_id) : item.providerTaskId,
+  }, payload);
+  if (accepted && !normalized.task_id) {
+    await markAdaptiveGenerationSubmissionAccepted(item.id).catch(error => {
+      console.error('[generation-capacity] accepted immediate result update deferred', {
+        itemId: item.id,
+        message: error instanceof Error ? error.message : String(error),
+      });
     });
   }
 };
@@ -572,6 +611,12 @@ const pollItem = async (item: ClaimedGenerationItem) => {
   }
 
   const now = Date.now();
+  await markAdaptiveGenerationSubmissionAccepted(item.id).catch(error => {
+    console.error('[generation-capacity] accepted submission reconciliation deferred', {
+      itemId: item.id,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  });
   const timeoutAt = (item.submissionStartedAt || item.startedAt || now)
     + serverConfig.generationTaskTimeoutMs;
   const phase = generationPollPhase({
@@ -696,14 +741,19 @@ const processClaimedItem = async (item: ClaimedGenerationItem, owner: string) =>
   try {
     if (item.status === 'pending') await submitItem(item);
     else if (item.status === 'submitting') {
+      const submissionError = {
+        code: 'INTERRUPTED_SUBMISSION',
+        message: 'The service restarted during submission; the Aion result is unknown and will not be resent automatically.',
+      };
       await updateGenerationItem(item.id, {
         status: 'submission_unknown',
-        error: {
-          code: 'INTERRUPTED_SUBMISSION',
-          message: 'The service restarted during submission; the Aion result is unknown and will not be resent automatically.',
-        },
+        error: submissionError,
         finishedAt: Date.now(),
         nextPollAt: null,
+      });
+      await recordAdaptiveGenerationSubmissionOutcome(item.id, {
+        status: 'submission_unknown',
+        error: submissionError,
       });
     } else if (item.status === 'submitted' || item.status === 'processing' || item.status === 'reconciling') await pollItem(item);
     else if (item.status === 'archiving') await resumeArchive(item);
@@ -790,6 +840,7 @@ export const startGenerationWorker = () => {
     videoAdaptiveEnabled: serverConfig.generationVideoAdaptiveEnabled,
     videoHardLimit: serverConfig.generationVideoAdaptivePolicy.hardLimit,
     videoInitialGlobalLimit: serverConfig.generationVideoAdaptivePolicy.initialGlobalLimit,
+    videoOptimisticWaves: serverConfig.generationVideoAdaptivePolicy.optimisticWaves,
     videoSubmitWorkers: serverConfig.generationVideoAdaptivePolicy.submitWorkers,
     videoPollWorkers: serverConfig.generationVideoAdaptivePolicy.pollWorkers,
     assetMode: generationAssetService.mode(),

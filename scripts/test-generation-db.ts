@@ -25,6 +25,10 @@ import {
 } from '../server/generation/generationExecutionRepository.ts';
 import { listGenerationJobs } from '../server/generation/generationRepository.ts';
 import { normalizeAionModelConfig } from '../server/generation/generationPlanning.ts';
+import {
+  markAdaptiveGenerationSubmissionAccepted,
+  recordAdaptiveGenerationSubmissionOutcome,
+} from '../server/generation/generationAdaptiveCapacityRepository.ts';
 import { writeGenerationBatchToDataset } from '../server/generation/generationWritebackService.ts';
 import { DATASET_ITEM_ID_KEY } from '../src/datasetSync.ts';
 import type { EvalDataset } from '../src/types.ts';
@@ -659,6 +663,10 @@ try {
     ...fairnessDataset,
     id: fairnessDatasetCId,
     name: 'Generation fairness integration test C',
+    items: Array.from({ length: 12 }, (_, index) => ({
+      case_id: `fairness-c-${index + 1}`,
+      prompt: `Fairness test C ${index + 1}.`,
+    })),
     version: 1,
     versionHistory: [],
     createdAt: Date.now(),
@@ -938,7 +946,6 @@ try {
 
 
   serverConfig.generationVideoAdaptiveEnabled = true;
-  const shadowResetStartedAt = Date.now();
   await dbPool.query(
     `
       UPDATE generation_capacity_states
@@ -957,18 +964,18 @@ try {
       WHERE capacity_key = '__video_global__'
     `,
   )).rows[0];
-  assert.equal(shadowQueue.video.adaptiveEnforced, false,
-    'a queue snapshot must restart shadow mode when the persisted policy version is stale');
-  assert.equal(shadowQueue.video.limit, serverConfig.generationVideoConcurrency);
+  assert.equal(shadowQueue.video.adaptiveEnforced, true,
+    'policy version four must take over immediately without a terminal-history shadow period');
+  assert.equal(shadowQueue.video.strategy, 'optimistic_waves');
+  assert.equal(shadowQueue.video.limit, 24);
   assert.equal(resetGlobalState.policy_version, serverConfig.generationVideoAdaptivePolicy.policyVersion);
-  assert.ok(new Date(resetGlobalState.enforce_after).getTime()
-    >= shadowResetStartedAt + serverConfig.generationVideoAdaptivePolicy.shadowMs - 1_000);
+  assert.ok(new Date(resetGlobalState.enforce_after).getTime() <= Date.now());
   const adaptiveConfigId = `adaptive-video-config-${suffix}`;
   const adaptivePreflight = createPreflightRecord(
-    (await getDataset(datasetId))!,
+    fairnessDatasetC,
     `adaptive_capacity_${suffix}`,
     `request-${suffix}-adaptive-capacity`,
-    [0, 1, 2],
+    Array.from({ length: 9 }, (_, index) => index),
   );
   adaptivePreflight.result.model = {
     ...adaptivePreflight.result.model,
@@ -994,63 +1001,26 @@ try {
     `,
     [JSON.stringify({
       currentWindow: 12,
-      verifiedWindow: 12,
-      phase: 'slow_start',
+      acceptedInWave: 0,
+      phase: 'stable',
       cooldownUntil: null,
       circuitOpenUntil: null,
       submitTokens: 2,
       submitTokenUpdatedAt: Date.now(),
     })],
   );
-  const adaptiveFirstAttempts = await Promise.all([
+  const adaptiveFirstClaims = (await Promise.all([
     claimNextGenerationItem('video', `adaptive-submit-a-${suffix}`, 'submit'),
     claimNextGenerationItem('video', `adaptive-submit-b-${suffix}`, 'submit'),
-  ]);
-  const adaptiveFirstClaims = adaptiveFirstAttempts.filter(Boolean);
-  assert.equal(adaptiveFirstClaims.length, 1,
-    'a cold bucket must enforce its initial 20 RPM token even with two submit workers');
+  ])).filter(Boolean);
+  assert.equal(adaptiveFirstClaims.length, 2,
+    'the global burst must allow both submission workers to claim atomically');
   const adaptiveBucketKey = (await dbPool.query(
     'SELECT capacity_bucket_key FROM generation_job_items WHERE id = $1',
     [adaptiveFirstClaims[0]!.id],
   )).rows[0].capacity_bucket_key;
-  await dbPool.query(
-    `
-      UPDATE generation_capacity_states
-      SET state_json = state_json || $2::jsonb,
-          updated_at = now()
-      WHERE capacity_key = $1
-    `,
-    [adaptiveBucketKey, JSON.stringify({ submitTokens: 1, submitTokenUpdatedAt: Date.now() })],
-  );
-  const adaptiveSecondClaim = await claimNextGenerationItem(
-    'video',
-    `adaptive-submit-c-${suffix}`,
-    'submit',
-  );
-  assert.ok(adaptiveSecondClaim, 'a replenished token may fill the second cold-start slot');
-  await dbPool.query(
-    `
-      UPDATE generation_capacity_states
-      SET state_json = state_json || $2::jsonb,
-          updated_at = now()
-      WHERE capacity_key = $1
-    `,
-    [adaptiveBucketKey, JSON.stringify({ submitTokens: 1, submitTokenUpdatedAt: Date.now() })],
-  );
-  assert.equal(
-    await claimNextGenerationItem('video', `adaptive-submit-blocked-${suffix}`, 'submit'),
-    null,
-    'the adaptive database gate must not claim beyond an unknown bucket window of two',
-  );
-  const adaptiveQueue = await getGenerationQueueState(user.organizationId);
-  const adaptiveModelQueue = adaptiveQueue.video.models.find(
-    item => item.modelName === adaptivePreflight.result.model.modelName,
-  );
-  assert.equal(adaptiveQueue.video.adaptiveEnforced, true);
-  assert.equal(adaptiveModelQueue?.buckets?.[0]?.generationType, 'text_to_video');
-  assert.equal(adaptiveModelQueue?.buckets?.[0]?.currentLimit, 2);
-
-  for (const [index, claim] of [...adaptiveFirstClaims, adaptiveSecondClaim!].entries()) {
+  const acceptedClaims = [...adaptiveFirstClaims];
+  for (const [index, claim] of acceptedClaims.entries()) {
     assert.equal(await beginGenerationSubmission(claim.id, 1, Date.now(), Date.now()), true);
     await updateGenerationItem(claim.id, {
       status: 'processing',
@@ -1059,7 +1029,84 @@ try {
       nextPollAt: Date.now() + 60_000,
     });
     await releaseGenerationItemLease(claim.id);
+    await markAdaptiveGenerationSubmissionAccepted(claim.id);
   }
+  for (let index = acceptedClaims.length; index < 8; index += 1) {
+    await dbPool.query(
+      `
+        UPDATE generation_capacity_states
+        SET state_json = state_json || $1::jsonb,
+            updated_at = now()
+        WHERE capacity_key = '__video_global__'
+      `,
+      [JSON.stringify({ submitTokens: 1, submitTokenUpdatedAt: Date.now() })],
+    );
+    const claim = await claimNextGenerationItem('video', `adaptive-submit-${index}-${suffix}`, 'submit');
+    assert.ok(claim, `optimistic first-wave case ${index + 1} should be claimed`);
+    assert.equal(await beginGenerationSubmission(claim!.id, 1, Date.now(), Date.now()), true);
+    await updateGenerationItem(claim!.id, {
+      status: 'processing',
+      providerTaskId: `adaptive-provider-${index}-${suffix}`,
+      providerStatus: 'processing',
+      nextPollAt: Date.now() + 60_000,
+    });
+    await releaseGenerationItemLease(claim!.id);
+    await markAdaptiveGenerationSubmissionAccepted(claim!.id);
+    acceptedClaims.push(claim!);
+  }
+  const firstWaveState = (await dbPool.query(
+    'SELECT state_json FROM generation_capacity_states WHERE capacity_key = $1',
+    [adaptiveBucketKey],
+  )).rows[0].state_json;
+  assert.equal(firstWaveState.currentWindow, 16,
+    'eight accepted task IDs must open the second wave without a terminal video result');
+  assert.equal(firstWaveState.acceptedInWave, 0);
+  assert.equal(new Set(acceptedClaims.map(item => item.providerTaskId).filter(Boolean)).size, 0,
+    'claimed snapshots must not invent provider task IDs before submission begins');
+
+  await dbPool.query(
+    `UPDATE generation_capacity_states
+     SET state_json = state_json || $1::jsonb, updated_at = now()
+     WHERE capacity_key = '__video_global__'`,
+    [JSON.stringify({ submitTokens: 1, submitTokenUpdatedAt: Date.now() })],
+  );
+  const ninthClaim = await claimNextGenerationItem('video', `adaptive-submit-ninth-${suffix}`, 'submit');
+  assert.ok(ninthClaim, 'the ninth case must be admitted before any first-wave video reaches a terminal state');
+  assert.equal(await beginGenerationSubmission(ninthClaim!.id, 1, Date.now(), Date.now()), true);
+  await updateGenerationItem(ninthClaim!.id, {
+    status: 'processing',
+    providerTaskId: `adaptive-provider-8-${suffix}`,
+    providerStatus: 'processing',
+    nextPollAt: Date.now() + 60_000,
+  });
+  await releaseGenerationItemLease(ninthClaim!.id);
+  await markAdaptiveGenerationSubmissionAccepted(ninthClaim!.id);
+  acceptedClaims.push(ninthClaim!);
+  const acceptedAudit = (await dbPool.query(
+    `
+      SELECT
+        count(*)::int AS total,
+        count(DISTINCT provider_task_id)::int AS distinct_task_ids,
+        max(attempt)::int AS max_attempt
+      FROM generation_job_items
+      WHERE id = ANY($1::text[])
+    `,
+    [acceptedClaims.map(item => item.id)],
+  )).rows[0];
+  assert.equal(acceptedAudit.total, 9);
+  assert.equal(acceptedAudit.distinct_task_ids, 9,
+    'each admitted case must retain one distinct Aion task ID');
+  assert.equal(acceptedAudit.max_attempt, 1,
+    'opening the second wave must not resubmit any first-wave case');
+
+  const adaptiveQueue = await getGenerationQueueState(user.organizationId);
+  const adaptiveModelQueue = adaptiveQueue.video.models.find(
+    item => item.modelName === adaptivePreflight.result.model.modelName,
+  );
+  assert.equal(adaptiveQueue.video.adaptiveEnforced, true);
+  assert.equal(adaptiveModelQueue?.buckets?.[0]?.generationType, 'text_to_video');
+  assert.equal(adaptiveModelQueue?.buckets?.[0]?.currentLimit, 16);
+  assert.equal(adaptiveModelQueue?.buckets?.[0]?.acceptedInWave, 1);
 
   const adaptiveModePreflight = createPreflightRecord(
     fairnessDatasetC,
@@ -1089,10 +1136,16 @@ try {
     'submit',
   );
   assert.equal(independentModeClaim?.jobId, adaptiveModeJob.id,
-    'a different generation type must use an independent capacity bucket');
+    'a different generation type may use the same model capacity group when capacity remains');
+  const sharedModeBucketKey = (await dbPool.query(
+    'SELECT capacity_bucket_key FROM generation_job_items WHERE id = $1',
+    [independentModeClaim!.id],
+  )).rows[0].capacity_bucket_key;
+  assert.equal(sharedModeBucketKey, adaptiveBucketKey,
+    'the same model configuration must share one capacity group across generation modes');
   await releaseGenerationItemLease(independentModeClaim!.id);
   await requestGenerationCancellation(adaptiveModeJob.id, user);
-  for (const claim of [...adaptiveFirstClaims, adaptiveSecondClaim!]) {
+  for (const claim of acceptedClaims) {
     await updateGenerationItem(claim.id, {
       status: 'succeeded',
       result: { resultUrl: `https://assets.example.com/${claim.id}.mp4` },
@@ -1100,6 +1153,69 @@ try {
       nextPollAt: null,
     });
   }
+  const availabilityPreflight = createPreflightRecord(
+    fairnessDatasetC,
+    `adaptive_availability_${suffix}`,
+    `request-${suffix}-adaptive-availability`,
+    [0, 1, 2],
+  );
+  availabilityPreflight.result.model = { ...adaptivePreflight.result.model };
+  availabilityPreflight.result.cases = availabilityPreflight.result.cases.map(item => ({
+    ...item,
+    generationType: 'images_to_video',
+    resolvedCase: { ...item.resolvedCase, generationType: 'images_to_video' },
+  }));
+  await saveGenerationPreflight(availabilityPreflight);
+  const availabilityJob = await createGenerationBatchFromPreflight(availabilityPreflight, user);
+  const availabilityClaims = [];
+  for (let index = 0; index < 3; index += 1) {
+    await dbPool.query(
+      `UPDATE generation_capacity_states
+       SET state_json = state_json || $1::jsonb, updated_at = now()
+       WHERE capacity_key = '__video_global__'`,
+      [JSON.stringify({ submitTokens: 1, submitTokenUpdatedAt: Date.now() })],
+    );
+    const claim = await claimNextGenerationItem(
+      'video',
+      `adaptive-availability-${index}-${suffix}`,
+      'submit',
+    );
+    assert.equal(claim?.jobId, availabilityJob.id);
+    assert.equal(await beginGenerationSubmission(claim!.id, 1, Date.now(), Date.now()), true);
+    await releaseGenerationItemLease(claim!.id);
+    availabilityClaims.push(claim!);
+  }
+  for (const claim of availabilityClaims) {
+    const availabilityError = {
+      code: 'AION_SUBMISSION_UNKNOWN',
+      message: 'Aion returned a retryable service failure without a task ID.',
+      httpStatus: 503,
+      retryable: true,
+    };
+    await updateGenerationItem(claim.id, {
+      status: 'submission_unknown',
+      error: availabilityError,
+      finishedAt: Date.now(),
+      nextPollAt: null,
+    });
+    await recordAdaptiveGenerationSubmissionOutcome(claim.id, {
+      status: 'submission_unknown',
+      error: availabilityError,
+    });
+  }
+  const availabilityState = (await dbPool.query(
+    'SELECT state_json FROM generation_capacity_states WHERE capacity_key = $1',
+    [adaptiveBucketKey],
+  )).rows[0].state_json;
+  assert.equal(availabilityState.phase, 'circuit_open',
+    'three concurrent retryable submission failures must open the capacity-group circuit');
+  assert.ok(availabilityState.circuitOpenUntil > Date.now());
+  const globalUnknownState = (await dbPool.query(
+    `SELECT state_json FROM generation_capacity_states WHERE capacity_key = '__video_global__'`,
+  )).rows[0].state_json;
+  assert.ok(globalUnknownState.cooldownUntil > Date.now(),
+    'submission uncertainty must pause all new video submissions');
+  await requestGenerationCancellation(availabilityJob.id, user);
   await requestGenerationCancellation(adaptiveJob.id, user);
   serverConfig.generationVideoAdaptiveEnabled = false;
 

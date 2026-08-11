@@ -80,15 +80,15 @@ import {
   resolveGenerationVideoModelLimit,
 } from '../server/generation/generationConcurrencyPolicy.ts';
 import {
-  admitGenerationCapacityProbe,
+  admitGenerationCapacity,
   applyGenerationCapacityEvidence,
   capacityBucketKey,
   classifyGenerationCapacityEvidence,
   createInitialGenerationCapacityState,
-  generationGlobalCapacityPolicy,
-  markGenerationCapacityProbeAccepted,
+  markGenerationCapacitySubmissionAccepted,
   parseGenerationVideoAdaptivePolicy,
   refreshGenerationCapacityState,
+  type GenerationCapacityState,
 } from '../server/generation/generationAdaptiveCapacity.ts';
 import {
   generationValidationForModel,
@@ -412,23 +412,26 @@ const configuredModelLimits = parseGenerationVideoModelLimits(JSON.stringify({
 }), 8);
 assert.deepEqual(resolveGenerationVideoModelLimit(configuredModelLimits, 'wan/wan3.0-video'), { min: 1, initial: 1, max: 6 });
 assert.deepEqual(resolveGenerationVideoModelLimit(configuredModelLimits, 'future/video-model'), { min: 1, initial: 1, max: 4 });
+assert.deepEqual(
+  resolveGenerationVideoModelLimit(parseGenerationVideoModelLimits(undefined, 8), 'future/video-model'),
+  { min: 8, initial: 8, max: 8 },
+  'disabling optimistic waves must fall back to the global-eight limit without model-name rules',
+);
 assert.throws(() => parseGenerationVideoModelLimits('{broken', 8), /valid JSON/);
 assert.throws(() => parseGenerationVideoModelLimits(JSON.stringify({
   default: { min: 1, initial: 5, max: 4 }, models: {},
 }), 8), /minimum/);
 
 const adaptivePolicy = parseGenerationVideoAdaptivePolicy(undefined);
-assert.equal(adaptivePolicy.policyVersion, 3);
-assert.equal(adaptivePolicy.hardLimit, 48);
-assert.equal(adaptivePolicy.initialGlobalLimit, 12);
-assert.equal(adaptivePolicy.coldStartLimit, 2);
-assert.deepEqual(
-  generationGlobalCapacityPolicy(adaptivePolicy).slowStartTargets,
-  [12, 24, 48],
-  'the platform window should grow from 12 to 24 to the hard limit',
-);
-assert.equal(capacityBucketKey('config/with spaces', 'image_to_video'), 'config%2Fwith%20spaces::image_to_video');
+assert.equal(adaptivePolicy.policyVersion, 4);
+assert.equal(adaptivePolicy.hardLimit, 24);
+assert.equal(adaptivePolicy.initialGlobalLimit, 24);
+assert.equal(adaptivePolicy.coldStartLimit, 8);
+assert.deepEqual(adaptivePolicy.optimisticWaves, [8, 16, 24]);
+assert.equal(capacityBucketKey('config/with spaces'), 'model:config%2Fwith%20spaces');
+assert.equal(capacityBucketKey('config-a', 'shared/provider'), 'group:shared%2Fprovider');
 assert.throws(() => parseGenerationVideoAdaptivePolicy(JSON.stringify({ hardLimit: 0 })), /hardLimit/);
+assert.throws(() => parseGenerationVideoAdaptivePolicy(JSON.stringify({ policyVersion: 3 })), /policyVersion/);
 assert.throws(() => parseGenerationVideoAdaptivePolicy(JSON.stringify({
   hardLimit: 8,
   initialGlobalLimit: 12,
@@ -436,74 +439,109 @@ assert.throws(() => parseGenerationVideoAdaptivePolicy(JSON.stringify({
 
 const capacityNow = Date.UTC(2026, 7, 10, 8, 0, 0);
 let adaptiveState = createInitialGenerationCapacityState(adaptivePolicy, capacityNow);
-assert.equal(adaptiveState.currentWindow, 2, 'unknown capacity buckets must start at two');
-assert.equal(adaptiveState.verifiedWindow, 2);
-adaptiveState = applyGenerationCapacityEvidence(adaptiveState, {
-  kind: 'success', observedAt: capacityNow + 1_000, activeAtSubmit: 2, limitAtSubmit: 2,
-}, adaptivePolicy);
-adaptiveState = applyGenerationCapacityEvidence(adaptiveState, {
-  kind: 'success', observedAt: capacityNow + 2_000, activeAtSubmit: 2, limitAtSubmit: 2,
-}, adaptivePolicy);
-assert.equal(adaptiveState.currentWindow, 4, 'two saturated successes should open the next slow-start target');
-assert.equal(adaptiveState.verifiedWindow, 2, 'a larger target is not verified before probes are accepted');
-let probe = admitGenerationCapacityProbe(adaptiveState, 2);
-assert.equal(probe.admitted, true);
-assert.equal(probe.state.probeInFlight, true);
-assert.equal(admitGenerationCapacityProbe(probe.state, 2).admitted, false,
-  'only one task beyond the verified window may be probed at a time');
-adaptiveState = markGenerationCapacityProbeAccepted(probe.state, capacityNow + 3_000);
-assert.equal(adaptiveState.verifiedWindow, 3);
-assert.equal(adaptiveState.probeInFlight, false);
+assert.equal(adaptiveState.currentWindow, 8, 'unknown capacity groups must optimistically start at eight');
+for (let accepted = 1; accepted <= 7; accepted += 1) {
+  adaptiveState = markGenerationCapacitySubmissionAccepted(
+    adaptiveState,
+    capacityNow + accepted * 100,
+    adaptivePolicy,
+  );
+  assert.equal(adaptiveState.currentWindow, 8);
+  assert.equal(adaptiveState.acceptedInWave, accepted);
+}
+adaptiveState = markGenerationCapacitySubmissionAccepted(adaptiveState, capacityNow + 800, adaptivePolicy);
+assert.equal(adaptiveState.currentWindow, 16, 'eight accepted task IDs must open the second wave immediately');
+assert.equal(adaptiveState.acceptedInWave, 0);
+for (let accepted = 1; accepted <= 8; accepted += 1) {
+  adaptiveState = markGenerationCapacitySubmissionAccepted(
+    adaptiveState,
+    capacityNow + 800 + accepted * 100,
+    adaptivePolicy,
+  );
+}
+assert.equal(adaptiveState.currentWindow, 24, 'another eight accepted task IDs must open the final wave');
+assert.equal(adaptiveState.phase, 'stable');
+assert.equal(admitGenerationCapacity(adaptiveState, 23, capacityNow + 2_000).admitted, true);
+assert.equal(admitGenerationCapacity(adaptiveState, 24, capacityNow + 2_000).admitted, false);
 
 adaptiveState = applyGenerationCapacityEvidence({
   ...adaptiveState,
-  currentWindow: 8,
-  verifiedWindow: 6,
+  currentWindow: 16,
 }, {
   kind: 'concurrency_limit',
   observedAt: capacityNow + 4_000,
-  activeAtSubmit: 5,
-  limitAtSubmit: 8,
+  activeAtSubmit: 16,
+  limitAtSubmit: 16,
   retryAfterMs: 30_000,
 }, adaptivePolicy);
-assert.equal(adaptiveState.currentWindow, 4, 'a confirmed boundary at five in-flight tasks should stop at four');
+assert.equal(adaptiveState.currentWindow, 8, 'an explicit capacity rejection must halve the current window');
 assert.equal(adaptiveState.phase, 'cooling');
+assert.ok((adaptiveState.cooldownUntil || 0) >= capacityNow + 64_000,
+  'an explicit capacity rejection must cool down for at least sixty seconds');
 
-const beforeRateLimit = { ...adaptiveState, currentWindow: 8, verifiedWindow: 8, submitRatePerMinute: 40 };
+const beforeRateLimit = { ...adaptiveState, currentWindow: 16, cooldownUntil: undefined };
 const afterRateLimit = applyGenerationCapacityEvidence(beforeRateLimit, {
-  kind: 'rate_limit', observedAt: capacityNow + 5_000, activeAtSubmit: 8, limitAtSubmit: 8,
+  kind: 'rate_limit', observedAt: capacityNow + 5_000, activeAtSubmit: 16, limitAtSubmit: 16,
 }, adaptivePolicy);
-assert.equal(afterRateLimit.currentWindow, 8, 'RPM failures must not reduce task concurrency');
-assert.ok(afterRateLimit.submitRatePerMinute < 40);
+assert.equal(afterRateLimit.currentWindow, 16, 'RPM failures must not reduce task concurrency');
+assert.equal(afterRateLimit.phase, 'rate_limited');
 
 const firstAmbiguous429 = applyGenerationCapacityEvidence(beforeRateLimit, {
-  kind: 'ambiguous_429', observedAt: capacityNow + 6_000, activeAtSubmit: 8, limitAtSubmit: 8,
+  kind: 'ambiguous_429', observedAt: capacityNow + 6_000, activeAtSubmit: 16, limitAtSubmit: 16,
 }, adaptivePolicy);
-assert.equal(firstAmbiguous429.currentWindow, 8);
+assert.equal(firstAmbiguous429.currentWindow, 16);
 const secondAmbiguous429 = applyGenerationCapacityEvidence(firstAmbiguous429, {
-  kind: 'ambiguous_429', observedAt: capacityNow + 7_000, activeAtSubmit: 8, limitAtSubmit: 8,
+  kind: 'ambiguous_429', observedAt: capacityNow + 7_000, activeAtSubmit: 16, limitAtSubmit: 16,
 }, adaptivePolicy);
-assert.ok(secondAmbiguous429.currentWindow < 8,
+assert.equal(secondAmbiguous429.currentWindow, 8,
   'a repeated ambiguous 429 inside ten minutes should also tighten concurrency');
 
-let timeoutState = createInitialGenerationCapacityState(adaptivePolicy, capacityNow);
-timeoutState = { ...timeoutState, currentWindow: 8, verifiedWindow: 8 };
-timeoutState = applyGenerationCapacityEvidence(timeoutState, {
-  kind: 'timeout', observedAt: capacityNow + 8_000, activeAtSubmit: 8, limitAtSubmit: 8,
+const submissionUnknown = applyGenerationCapacityEvidence(beforeRateLimit, {
+  kind: 'submission_unknown', observedAt: capacityNow + 7_500, activeAtSubmit: 16, limitAtSubmit: 16,
 }, adaptivePolicy);
-assert.equal(timeoutState.currentWindow, 8, 'one timeout is a reliability signal, not a capacity boundary');
-timeoutState = applyGenerationCapacityEvidence(timeoutState, {
-  kind: 'success', observedAt: capacityNow + 9_000, activeAtSubmit: 8, limitAtSubmit: 8,
-}, adaptivePolicy);
-timeoutState = applyGenerationCapacityEvidence(timeoutState, {
-  kind: 'timeout', observedAt: capacityNow + 10_000, activeAtSubmit: 8, limitAtSubmit: 8,
-}, adaptivePolicy);
-assert.equal(timeoutState.currentWindow, 4, 'clustered saturated timeouts at or above 30% should halve capacity');
+assert.equal(submissionUnknown.currentWindow, 8);
+assert.ok((submissionUnknown.cooldownUntil || 0)
+  >= capacityNow + 7_500 + adaptivePolicy.submissionUnknownCooldownMs);
 
-assert.equal(classifyGenerationCapacityEvidence({ status: 'succeeded' }).kind, 'success');
+let unavailableState: GenerationCapacityState = { ...beforeRateLimit, availabilityFailureTimes: [] };
+for (let failure = 1; failure <= 3; failure += 1) {
+  unavailableState = applyGenerationCapacityEvidence(unavailableState, {
+    kind: 'availability', observedAt: capacityNow + 8_000 + failure * 100,
+  }, adaptivePolicy);
+}
+assert.equal(unavailableState.currentWindow, 16,
+  'availability failures open a circuit without pretending to discover a provider concurrency boundary');
+assert.equal(unavailableState.phase, 'circuit_open');
+
+let recoveryState: GenerationCapacityState = { ...submissionUnknown, cooldownUntil: undefined, currentWindow: 4 };
+for (let accepted = 0; accepted < 4; accepted += 1) {
+  recoveryState = markGenerationCapacitySubmissionAccepted(
+    recoveryState,
+    capacityNow + 9_000 + accepted,
+    adaptivePolicy,
+  );
+}
+assert.equal(recoveryState.currentWindow, 8,
+  'a reduced capacity group must recover quickly from fresh accepted submissions');
+
+const beforeTerminal = { ...adaptiveState, currentWindow: 16, cooldownUntil: undefined };
+assert.deepEqual(
+  applyGenerationCapacityEvidence(beforeTerminal, {
+    kind: 'neutral', observedAt: capacityNow + 8_000, activeAtSubmit: 16, limitAtSubmit: 16,
+  }, adaptivePolicy).currentWindow,
+  16,
+  'video terminal outcomes must not participate in concurrency learning',
+);
+assert.equal(classifyGenerationCapacityEvidence({ status: 'succeeded' }).kind, 'neutral');
+assert.equal(classifyGenerationCapacityEvidence({
+  status: 'failed', error: { code: 'GENERATION_TIMEOUT', message: '1200 seconds timeout' },
+}).kind, 'neutral');
 assert.equal(classifyGenerationCapacityEvidence({
   status: 'failed', error: { errorCode: 'rate_limited', httpStatus: 429, errorType: 'rpm' },
 }).kind, 'rate_limit');
+assert.equal(classifyGenerationCapacityEvidence({
+  status: 'failed', error: { errorCode: 'queue_full', httpStatus: 400 },
+}).kind, 'concurrency_limit');
 assert.equal(classifyGenerationCapacityEvidence({
   status: 'failed', error: { errorCode: 'rate_limited', httpStatus: 429 },
 }).kind, 'ambiguous_429');
@@ -515,67 +553,14 @@ assert.equal(classifyGenerationCapacityEvidence({
 }).kind, 'neutral');
 
 const staleState = refreshGenerationCapacityState({
-  ...timeoutState,
+  ...beforeTerminal,
   currentWindow: 16,
-  verifiedWindow: 16,
   lastActivityAt: capacityNow - adaptivePolicy.idleResetMs - 1,
   configFingerprint: 'old',
 }, 'new', capacityNow, adaptivePolicy);
-assert.equal(staleState.currentWindow, 4);
-assert.equal(staleState.verifiedWindow, 4);
+assert.equal(staleState.currentWindow, 8);
+assert.equal(staleState.acceptedInWave, 0);
 assert.equal(staleState.configFingerprint, 'new');
-
-const simulateProviderCapacity = (providerLimit: number) => {
-  let state = createInitialGenerationCapacityState(adaptivePolicy, capacityNow);
-  let observedAt = capacityNow;
-  let peakAccepted = 0;
-  for (let wave = 0; wave < 200; wave += 1) {
-    let active = 0;
-    const acceptedAt: number[] = [];
-    while (active < adaptivePolicy.hardLimit) {
-      const admission = admitGenerationCapacityProbe(state, active, observedAt += 1);
-      state = admission.state;
-      if (!admission.admitted) break;
-      const proposedActive = active + 1;
-      if (proposedActive > providerLimit) {
-        state = applyGenerationCapacityEvidence(state, {
-          kind: 'concurrency_limit',
-          observedAt: observedAt += 1,
-          activeAtSubmit: proposedActive,
-          limitAtSubmit: state.currentWindow,
-        }, adaptivePolicy);
-        break;
-      }
-      if (admission.probing) state = markGenerationCapacityProbeAccepted(state, observedAt += 1);
-      active = proposedActive;
-      peakAccepted = Math.max(peakAccepted, active);
-      acceptedAt.push(active);
-    }
-    for (const activeAtSubmit of acceptedAt) {
-      state = applyGenerationCapacityEvidence(state, {
-        kind: 'success',
-        observedAt: observedAt += 1,
-        activeAtSubmit,
-        limitAtSubmit: state.currentWindow,
-      }, adaptivePolicy);
-    }
-    state = { ...state, cooldownUntil: undefined, circuitOpenUntil: undefined };
-    const target = Math.min(providerLimit, adaptivePolicy.hardLimit);
-    if (state.currentWindow === target && state.verifiedWindow === target) {
-      return { state, peakAccepted, waves: wave + 1 };
-    }
-  }
-  throw new Error(`Adaptive simulation did not converge for provider capacity ${providerLimit}.`);
-};
-
-for (const providerLimit of [1, 5, 20, 100]) {
-  const simulation = simulateProviderCapacity(providerLimit);
-  const expected = Math.min(providerLimit, adaptivePolicy.hardLimit);
-  assert.equal(simulation.state.currentWindow, expected);
-  assert.equal(simulation.state.verifiedWindow, expected);
-  assert.ok(simulation.peakAccepted <= expected,
-    `provider capacity ${providerLimit} must never accept more than ${expected} in-flight tasks`);
-}
 
 const validationOverrides = parseGenerationModelValidationOverrides(JSON.stringify({
   'wan/wan3.0-video': { promptMaxLength: 5000 },

@@ -73,13 +73,13 @@ const formatTime = (value?: number) => value
 
 const modelPolicyLabel = (mode: NonNullable<GenerationQueueLane['models']>[number]['mode']) => ({
   initial: '\u65e0\u8fd1\u671f\u5bb9\u91cf\u6837\u672c\uff0c\u4f7f\u7528\u521d\u59cb\u5e76\u53d1',
-  ramping: '\u6309\u8fde\u7eed\u6210\u529f\u9010\u7ea7\u6062\u590d\u5e76\u53d1',
-  maximum: '\u5df2\u6062\u590d\u5230\u6a21\u578b\u4e0a\u9650',
-  minimum: '\u6700\u8fd1\u5bb9\u91cf\u5931\u8d25\u540e\u56de\u5230\u6700\u5c0f\u5e76\u53d1',
+  ramping: '\u5df2\u63a5\u6536\u4efb\u52a1\u6b63\u5728\u6253\u5f00\u4e0b\u4e00\u6ce2',
+  maximum: '\u5df2\u8fbe\u5230\u6700\u5927\u6ce2\u6b21',
+  minimum: '\u5bb9\u91cf\u53cd\u9988\u540e\u5df2\u9000\u8ba9',
 }[mode]);
 
 const capacityPhaseLabel = (phase: NonNullable<GenerationQueueLane['phase']>) => ({
-  slow_start: '\u6162\u542f\u52a8',
+  slow_start: '\u4e50\u89c2\u6269\u5bb9',
   stable: '\u7a33\u5b9a',
   congestion_avoidance: '\u62e5\u585e\u907f\u514d',
   rate_limited: '\u63d0\u4ea4\u9650\u901f',
@@ -102,7 +102,9 @@ const queueReason = (job: DatasetGenerationJob, queue?: GenerationQueueState) =>
     const lane = job.modelConfig?.outputModality === 'video' ? queue?.video : queue?.image;
     if (job.modelConfig?.outputModality === 'video') {
       const modelName = String(job.modelConfig?.modelName || job.modelConfig?.id || '').toLowerCase();
-      const modelQueue = queue?.video.models?.find(item => item.modelName.toLowerCase() === modelName);
+      const modelQueue = queue?.video.models?.find(item =>
+        item.modelName.toLowerCase() === modelName
+        || item.modelNames?.some(name => name.toLowerCase() === modelName));
       if (modelQueue && modelQueue.active >= modelQueue.effectiveLimit) {
         return `\u7b49\u5f85\u6a21\u578b\u5bb9\u91cf ${modelQueue.active}/${modelQueue.effectiveLimit}`;
       }
@@ -209,7 +211,7 @@ const GenerationTaskCenter: React.FC<GenerationTaskCenterProps> = ({
           <QueueLane icon={<Image size={14} />} label={'\u56fe\u7247\u5bb9\u91cf'} lane={queue?.image} />
           <QueueLane
             icon={<Video size={14} />}
-            label={queue?.video.adaptiveEnforced ? '\u89c6\u9891\u81ea\u9002\u5e94\u5bb9\u91cf' : '\u89c6\u9891\u5bb9\u91cf'}
+            label={queue?.video.strategy === 'optimistic_waves' ? '\u89c6\u9891\u4e50\u89c2\u6ce2\u6b21\u5bb9\u91cf' : '\u89c6\u9891\u5bb9\u91cf'}
             lane={queue?.video}
           />
         </div>
@@ -222,11 +224,14 @@ const GenerationTaskCenter: React.FC<GenerationTaskCenterProps> = ({
               {' \u00b7 '}
               {queue.video.adaptiveEnforced
                 ? '\u5df2\u63a5\u7ba1'
-                : queue.video.adaptiveEnabled ? '\u5f71\u5b50\u6a21\u5f0f' : '\u65e7\u7b56\u7565'}
+                : '\u5e94\u6025\u56de\u9000'}
               {queue.video.phase ? ` \u00b7 ${capacityPhaseLabel(queue.video.phase)}` : ''}
             </span>
             <span>
-              {'\u5efa\u8bae\u7a97\u53e3'} {queue.video.recommendedLimit || queue.video.limit}
+              {queue.video.optimisticWaves?.length
+                ? `${queue.video.optimisticWaves.join(' \u2192 ')} \u00b7 `
+                : ''}
+              {'\u5168\u5c40\u7a97\u53e3'} {queue.video.recommendedLimit || queue.video.limit}
               {' / \u786c\u4e0a\u9650'} {queue.video.hardLimit || queue.video.limit}
               {' \u00b7 \u63d0\u4ea4'} {queue.video.submitWorkers || 0}
               {' / \u8f6e\u8be2'} {queue.video.pollWorkers || 0}
@@ -278,14 +283,16 @@ const GenerationTaskCenter: React.FC<GenerationTaskCenterProps> = ({
                           {bucket.active}/{bucket.currentLimit}
                         </span>
                         <span className="tabular-nums">
-                          {'\u5df2\u9a8c\u8bc1'} {bucket.verifiedLimit}
-                          {' \u00b7 '} {Math.round(bucket.submitRatePerMinute)} RPM
+                          {'\u5f53\u524d'} {bucket.currentLimit}
+                          {bucket.nextLimit ? ` \u2192 ${bucket.nextLimit}` : ''}
                         </span>
                         <span className={bucket.phase === 'circuit_open' || bucket.phase === 'cooling' ? 'text-red-300' : bucket.phase === 'rate_limited' || bucket.phase === 'slow_start' ? 'text-amber-300' : 'text-slate-400'}>
-                          {capacityPhaseLabel(bucket.phase)}
-                          {' \u00b7 '}
-                          {'\u9971\u548c\u6210\u529f'} {bucket.saturatedSuccesses}/{bucket.nextProbeRequires}
-                          {bucket.probeInFlight ? ' \u00b7 \u63a2\u6d4b\u4e2d' : ''}
+                          {bucket.phase === 'slow_start' && bucket.currentLimit <= (modelQueue.initialLimit || 8)
+                            ? '\u4e50\u89c2\u8d77\u6b65'
+                            : capacityPhaseLabel(bucket.phase)}
+                          {bucket.nextLimit
+                            ? ` \u00b7 \u5df2\u63a5\u6536 ${bucket.acceptedInWave || 0}/${bucket.requiredAcceptances || 0}`
+                            : ''}
                           {bucket.lastEvidence ? ` \u00b7 ${bucket.lastEvidence}` : ''}
                         </span>
                       </div>
@@ -300,8 +307,8 @@ const GenerationTaskCenter: React.FC<GenerationTaskCenterProps> = ({
 
 
 
-      <div className="grid gap-3 border-b border-white/10 p-4 md:grid-cols-2 xl:grid-cols-[minmax(180px,1fr)_minmax(150px,0.7fr)_minmax(150px,0.7fr)_minmax(160px,0.7fr)_auto]">
-        <label className="relative">
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-3 border-b border-white/10 p-4 md:grid-cols-2 xl:grid-cols-[minmax(180px,1fr)_minmax(150px,0.7fr)_minmax(150px,0.7fr)_minmax(160px,0.7fr)_auto]">
+        <label className="relative min-w-0">
           <span className="sr-only">{'\u641c\u7d22\u6a21\u578b'}</span>
           <Search size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
           <input
@@ -314,7 +321,7 @@ const GenerationTaskCenter: React.FC<GenerationTaskCenterProps> = ({
         <select
           value={filters.datasetId || ''}
           onChange={event => setFilters(current => ({ ...current, datasetId: event.target.value || undefined, page: 1 }))}
-          className="glass-input h-10 rounded-md px-3 text-sm text-slate-200"
+          className="glass-input h-10 min-w-0 w-full rounded-md px-3 text-sm text-slate-200"
           aria-label={'\u7b5b\u9009\u6570\u636e\u96c6'}
         >
           <option value="">{'\u5168\u90e8\u6570\u636e\u96c6'}</option>
@@ -327,12 +334,12 @@ const GenerationTaskCenter: React.FC<GenerationTaskCenterProps> = ({
             status: event.target.value as GenerationJobStatus | '',
             page: 1,
           }))}
-          className="glass-input h-10 rounded-md px-3 text-sm text-slate-200"
+          className="glass-input h-10 min-w-0 w-full rounded-md px-3 text-sm text-slate-200"
           aria-label={'\u7b5b\u9009\u4efb\u52a1\u72b6\u6001'}
         >
           {STATUS_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
         </select>
-        <label>
+        <label className="min-w-0">
           <span className="sr-only">{'\u7b5b\u9009\u521b\u5efa\u8005'}</span>
           <input
             value={creatorSearch}
@@ -341,7 +348,7 @@ const GenerationTaskCenter: React.FC<GenerationTaskCenterProps> = ({
             className="glass-input h-10 w-full rounded-md px-3 text-sm text-slate-100"
           />
         </label>
-        <div className="flex items-center justify-end gap-2">
+        <div className="flex min-w-0 items-center justify-end gap-2">
           <button type="button" onClick={() => { void load(true); }} disabled={refreshing} className="inline-flex h-10 w-10 items-center justify-center rounded-md border border-white/10 text-slate-300 hover:bg-white/5 disabled:opacity-50" title={'\u5237\u65b0'}>
             <RefreshCw size={16} className={refreshing ? 'animate-spin' : ''} />
           </button>

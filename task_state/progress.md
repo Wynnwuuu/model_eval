@@ -606,3 +606,25 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Commit `e9760eb` was rebased onto the latest `world-sim-dev/ManuEval` main, including adaptive-capacity commits `0c12ce0` and `83e09f5`, then fast-forward pushed without force.
 - Eval Studio Test run `31387716322` and Dev CI/CD run `31387716394` succeeded. The latter passed tests, image build, and the Kubernetes dev rollout.
 - `https://eval-studio.sandaii.cn/` returned HTTP 200 after rollout. The unauthenticated generation-health request returned the expected `AUTH_REQUIRED`, confirming the public auth boundary remains active.
+
+## 2026-08-11: Optimistic-wave video capacity
+
+### In progress
+
+- Replaced policy v3 terminal-history learning, mode-specific cold starts, verified-window probes, and rollout shadowing with policy v4 optimistic waves `8 -> 16 -> 24`.
+- A capacity group now uses an explicit Aion `groupId` when present and otherwise the stable model configuration ID. Generation modes share the same group.
+- Aion task acceptance is recorded after its task ID is durably saved. Polling can idempotently repair a missed acceptance record; policy-v3 tasks cannot warm policy v4.
+- Explicit capacity rejection halves the group, RPM feedback pauses without shrinking, repeated ambiguous 429 feedback halves, submission uncertainty pauses the whole video lane and halves the group, and terminal generation outcomes are capacity-neutral.
+- Dev no longer contains Wan, H3, or Seedance model-name limits. Disabling policy v4 falls back to a uniform global-eight policy.
+- Generation unit tests, TypeScript, and PostgreSQL generation integration pass. The DB test confirms two atomic submission workers, the ninth claim before any terminal result, unique task IDs/one attempt, and shared capacity across video generation modes.
+
+### Remaining
+
+- Rebase and release to GitHub main, verify CI/dev rollout, then execute the approved isolated 12-case Seedance 2.0 Pro smoke.
+
+### Validation
+
+- Passed generation/MCP/Seed tests and PostgreSQL generation integration. The database test exercised the two submit workers, accepted-submission expansion, one-attempt/unique-task-ID invariants, shared capacity across modes, fair scheduling, retries, cancellation, writeback, and stable assets.
+- Passed API smoke, dataset sync/clone/column deletion/import mapping/table projection/filtering, structured evaluation audit, Arena, rank ties, TypeScript, server build, frontend build, and `git diff --check`.
+- Browser-validated the production task center at `1440x900` and `390x844`. The optimistic-wave summary and expanded detail render without page overflow; a pre-existing mobile intrinsic-grid overflow that clipped the new-production button was fixed and rechecked.
+- The browser fixture was local-only, generated no Aion request, and was deleted after verification. Local web/API processes were stopped.

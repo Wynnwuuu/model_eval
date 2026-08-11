@@ -73,7 +73,10 @@ export const parseGenerationVideoModelLimits = (
   if (!Number.isInteger(globalLimit) || globalLimit <= 0) {
     throw new Error('The global video concurrency limit must be a positive integer.');
   }
-  let parsed: unknown = DEFAULT_GENERATION_VIDEO_MODEL_LIMITS;
+  let parsed: unknown = {
+    default: { min: globalLimit, initial: globalLimit, max: globalLimit },
+    models: {},
+  };
   if (raw?.trim()) {
     try {
       parsed = JSON.parse(raw);

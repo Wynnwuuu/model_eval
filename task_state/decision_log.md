@@ -346,3 +346,15 @@ An alternate Prompt column is a versioned per-case review source, not an automat
 The server resolves the selected cell from the locked dataset version and stable item ID. Empty values intentionally remove Prompt and must fail normal validation; client-supplied row values are never trusted. Output, reference/media, case-ID, system/internal, dimension, and rubric columns are not eligible sources.
 
 Bulk replacement consumes all `PROMPT_TOO_LONG` cases in the selected preflight, independent of presentation filters. It supersedes Prompt-only edits and Prompt Plugin decisions while preserving other repairs. Expert final Aion JSON is mutually exclusive and blocks the entire operation. Every application creates a new preflight/hash; old preflights remain immutable and cannot silently become the submitted request.
+
+## 2026-08-11: Video capacity uses optimistic accepted-submission waves
+
+Aion returning a task ID is the capacity signal. Video terminal success, timeout, historical replay, saturation ratios, and one-at-a-time probes do not affect admission. A new or stale capacity group starts at eight, opens sixteen after eight accepted submissions, and opens twenty-four after eight more.
+
+Capacity identity is an explicit Aion group ID when one exists and otherwise the model configuration ID. Generation type is audit/display data, not capacity identity. For an explicit group, the group ID is also the stable configuration identity so alternating grouped configurations cannot repeatedly reset the same capacity state.
+
+The platform window is fixed at twenty-four and submission traffic is globally limited to two requests per second with burst two. Provider in-flight capacity remains separate from two submit workers and six poll workers. Policy v4 takes over immediately; there is no terminal-history replay or shadow period.
+
+An explicit concurrency rejection halves a group and cools it for at least sixty seconds. RPM feedback only pauses submission. A second ambiguous 429 within ten minutes also halves the group. Submission uncertainty never retries the case, halves and pauses the group for five minutes, and pauses all new video submissions for sixty seconds. Three availability failures within two minutes open a two-minute group circuit without claiming a discovered concurrency boundary.
+
+The Aion task ID is persisted before acceptance updates and downstream response handling. This separates provider submission ambiguity from local polling, result handling, and archive failures; a local failure after task-ID persistence resumes by polling the existing task instead of fabricating a submission-unknown state.

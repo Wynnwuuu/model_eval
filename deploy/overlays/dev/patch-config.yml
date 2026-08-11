@@ -65,9 +65,9 @@ spec:
             - name: GENERATION_VIDEO_ADAPTIVE_ENABLED
               value: "true"
             - name: GENERATION_VIDEO_ADAPTIVE_POLICY_JSON
-              value: '{"policyVersion":3,"hardLimit":48,"initialGlobalLimit":12,"coldStartLimit":2,"warmStartLimit":4,"idleResetMs":86400000,"historyWindowMs":604800000,"saturationRatio":0.75,"slowStartTargets":[2,4,8,16,32,48],"maxSuccessesPerWave":8,"globalSubmitRatePerSecond":1,"globalSubmitBurst":2,"bucketInitialRatePerMinute":20,"bucketMaxRatePerMinute":60,"ambiguous429WindowMs":600000,"submissionUnknownCooldownMs":300000,"availabilityFailureWindowMs":120000,"availabilityFailureThreshold":3,"bucketCircuitMs":120000,"timeoutMinCount":2,"timeoutFailureRate":0.3,"timeoutSampleSize":20,"pollMinMs":10000,"pollMaxMs":30000,"submitWorkers":2,"pollWorkers":6,"shadowMs":600000}'
+              value: '{"policyVersion":4,"hardLimit":24,"initialGlobalLimit":24,"coldStartLimit":8,"optimisticWaves":[8,16,24],"idleResetMs":86400000,"globalSubmitRatePerSecond":2,"globalSubmitBurst":2,"capacityCooldownMs":60000,"ambiguous429WindowMs":600000,"submissionUnknownCooldownMs":300000,"globalSubmissionUnknownCooldownMs":60000,"availabilityFailureWindowMs":120000,"availabilityFailureThreshold":3,"bucketCircuitMs":120000,"pollMinMs":10000,"pollMaxMs":30000,"submitWorkers":2,"pollWorkers":6}'
             - name: GENERATION_VIDEO_MODEL_LIMITS_JSON
-              value: '{"default":{"min":1,"initial":1,"max":4},"models":{"wan/wan3.0-video":{"min":1,"initial":1,"max":1},"minimax/hailuo-h3":{"min":2,"initial":4,"max":8},"seedance-2.0-fast":{"min":2,"initial":4,"max":8},"seedance-2.0-pro":{"min":2,"initial":4,"max":8}}}'
+              value: '{"default":{"min":8,"initial":8,"max":8},"models":{}}'
             - name: GENERATION_MODEL_VALIDATION_OVERRIDES_JSON
               value: '{"wan/wan3.0-video":{"promptLength":{"unit":"unicode_code_points","string":{"maxLength":5000},"array":{"scope":"array_joined","maxLength":5000,"separator":"\n","trimItems":true,"omitEmptyItems":true}}}}'
             - name: GENERATION_RECONCILIATION_TIMEOUT_MS

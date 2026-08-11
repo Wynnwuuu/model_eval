@@ -489,6 +489,8 @@ export interface GenerationQueueLane {
   submitRatePerMinute?: number;
   submitWorkers?: number;
   pollWorkers?: number;
+  strategy?: 'optimistic_waves';
+  optimisticWaves?: number[];
 }
 
 export type GenerationCapacityPhase =
@@ -502,13 +504,18 @@ export type GenerationCapacityPhase =
 export interface GenerationCapacityBucketQueueState {
   capacityKey: string;
   modelConfigId: string;
+  modelConfigIds?: string[];
   groupId?: string;
   generationType: string;
+  generationTypes?: string[];
   active: number;
   pending: number;
   organizationActive: number;
   organizationPending: number;
   currentLimit: number;
+  nextLimit?: number;
+  acceptedInWave?: number;
+  requiredAcceptances?: number;
   verifiedLimit: number;
   submitRatePerMinute: number;
   phase: GenerationCapacityPhase;
@@ -523,6 +530,7 @@ export interface GenerationCapacityBucketQueueState {
 
 export interface GenerationModelQueueState {
   modelName: string;
+  modelNames?: string[];
   active: number;
   pending: number;
   organizationActive: number;

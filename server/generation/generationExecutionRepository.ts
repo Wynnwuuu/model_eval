@@ -15,8 +15,6 @@ import {
 import {
   generationCapacityDescriptor,
   getAdaptiveVideoCapacitySnapshot,
-  observeAdaptiveGenerationOutcome,
-  reconcileAdaptiveGenerationOutcomes,
   reserveAdaptiveVideoCapacity,
 } from './generationAdaptiveCapacityRepository.ts';
 
@@ -549,7 +547,6 @@ export const claimNextGenerationItem = async (
   owner: string,
   purpose: GenerationClaimPurpose = 'any',
 ): Promise<ClaimedGenerationItem | null> => {
-  if (modality === 'video') await reconcileAdaptiveGenerationOutcomes();
   const videoPolicies = modality === 'video'
     ? await loadGenerationVideoPolicies()
     : new Map<string, GenerationConcurrencyPolicy>();
@@ -911,14 +908,6 @@ export const updateGenerationItem = async (itemId: string, values: Record<string
     `,
     [itemId, ...params],
   );
-  if (['succeeded', 'completed', 'failed', 'submission_unknown', 'cancelled'].includes(String(nextValues.status || ''))) {
-    await observeAdaptiveGenerationOutcome(itemId).catch(error => {
-      console.error('[generation-capacity] outcome observation deferred', {
-        itemId,
-        message: error instanceof Error ? error.message : String(error),
-      });
-    });
-  }
 };
 
 export const beginGenerationSubmission = async (
@@ -1090,9 +1079,10 @@ export const getGenerationQueueState = async (organizationId?: string) => {
       ),
       hardLimit: adaptiveSnapshot.hardLimit,
       recommendedLimit: adaptiveSnapshot.globalState.currentWindow,
+      strategy: adaptiveSnapshot.strategy,
+      optimisticWaves: adaptiveSnapshot.optimisticWaves,
       adaptiveEnabled: adaptiveSnapshot.enabled,
       adaptiveEnforced: adaptiveSnapshot.enforced,
-      shadowEndsAt: adaptiveSnapshot.shadowEndsAt,
       phase: adaptiveSnapshot.globalState.phase,
       submitRatePerMinute: serverConfig.generationVideoAdaptivePolicy.globalSubmitRatePerSecond * 60,
       submitWorkers: serverConfig.generationVideoAdaptivePolicy.submitWorkers,
@@ -1106,61 +1096,58 @@ export const getGenerationQueueState = async (organizationId?: string) => {
         const phase = phases.has('circuit_open') ? 'circuit_open'
           : phases.has('cooling') ? 'cooling'
             : phases.has('rate_limited') ? 'rate_limited'
-              : phases.has('congestion_avoidance') ? 'congestion_avoidance'
-                : phases.has('slow_start') ? 'slow_start'
-                  : 'stable';
+              : phases.has('slow_start') ? 'slow_start'
+                : 'stable';
         const mode = ['circuit_open', 'cooling', 'rate_limited'].includes(phase)
           ? 'minimum'
           : phase === 'stable' ? 'maximum' : 'ramping';
         return {
           modelName,
+          modelNames: [...new Set(buckets.flatMap(bucket => bucket.modelNames || [bucket.modelName]))],
           active: buckets.reduce((total, bucket) => total + bucket.active, 0),
           pending: buckets.reduce((total, bucket) => total + bucket.pending, 0),
           organizationActive: buckets.reduce((total, bucket) => total + bucket.organizationActive, 0),
           organizationPending: buckets.reduce((total, bucket) => total + bucket.organizationPending, 0),
-          minLimit: serverConfig.generationVideoAdaptivePolicy.coldStartLimit,
+          minLimit: 1,
           initialLimit: serverConfig.generationVideoAdaptivePolicy.coldStartLimit,
           maxLimit: serverConfig.generationVideoAdaptivePolicy.hardLimit,
           effectiveLimit,
-          successStreak: buckets.reduce((total, bucket) => total + bucket.state.saturatedSuccesses, 0),
+          successStreak: buckets.reduce((total, bucket) => total + bucket.state.acceptedInWave, 0),
           lastCapacityFailureAt: Math.max(0, ...buckets.map(bucket => bucket.state.lastEvidenceAt || 0)) || undefined,
           reconciling: buckets.reduce((total, bucket) => total + bucket.reconciling, 0),
-          sampleSize: buckets.reduce((total, bucket) => total + bucket.state.recentSaturatedOutcomes.length, 0),
-          capacityFailures: buckets.reduce(
-            (total, bucket) => total + bucket.state.recentSaturatedOutcomes.filter(value => value === 'timeout').length,
-            0,
-          ),
+          sampleSize: 0,
+          capacityFailures: 0,
           capacityFailureRate: 0,
           mode,
           phase,
           reason: adaptiveSnapshot.enforced
-            ? `Adaptive capacity is enforced across ${buckets.length} generation mode${buckets.length === 1 ? '' : 's'}.`
-            : adaptiveSnapshot.enabled
-              ? 'Shadow mode is computing adaptive capacity while the legacy limit remains enforced.'
-              : 'Adaptive capacity is disabled; the legacy model limit is enforced.',
+            ? 'Optimistic waves expand on accepted Aion task IDs and share capacity across generation modes.'
+            : 'Optimistic waves are disabled; the legacy global-eight limit is enforced.',
           buckets: buckets.map(bucket => ({
             capacityKey: bucket.capacityKey,
             modelConfigId: bucket.modelConfigId,
+            modelConfigIds: bucket.modelConfigIds,
             groupId: bucket.groupId,
             generationType: bucket.generationType,
+            generationTypes: bucket.generationTypes,
             active: bucket.active,
             pending: bucket.pending,
             organizationActive: bucket.organizationActive,
             organizationPending: bucket.organizationPending,
             currentLimit: bucket.state.currentWindow,
-            verifiedLimit: bucket.state.verifiedWindow,
-            submitRatePerMinute: bucket.state.submitRatePerMinute,
+            nextLimit: bucket.nextWindow,
+            acceptedInWave: bucket.state.acceptedInWave,
+            requiredAcceptances: bucket.requiredAcceptances,
+            verifiedLimit: bucket.state.currentWindow,
+            submitRatePerMinute: serverConfig.generationVideoAdaptivePolicy.globalSubmitRatePerSecond * 60,
             phase: bucket.state.phase,
             cooldownUntil: bucket.state.cooldownUntil,
             circuitOpenUntil: bucket.state.circuitOpenUntil,
             lastEvidence: bucket.state.lastEvidence,
             lastEvidenceAt: bucket.state.lastEvidenceAt,
-            nextProbeRequires: Math.max(
-              2,
-              Math.min(bucket.state.currentWindow, serverConfig.generationVideoAdaptivePolicy.maxSuccessesPerWave),
-            ),
-            saturatedSuccesses: bucket.state.saturatedSuccesses,
-            probeInFlight: bucket.state.probeInFlight,
+            nextProbeRequires: bucket.requiredAcceptances,
+            saturatedSuccesses: bucket.state.acceptedInWave,
+            probeInFlight: false,
           })),
         };
       }),

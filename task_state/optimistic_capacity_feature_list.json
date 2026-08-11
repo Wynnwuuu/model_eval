@@ -1,0 +1,40 @@
+{
+  "feature": "optimistic_wave_video_capacity",
+  "requirements": [
+    {
+      "id": "controller",
+      "status": "completed",
+      "description": "Replace terminal-history probing with accepted-submission waves 8 -> 16 -> 24"
+    },
+    {
+      "id": "capacity-groups",
+      "status": "completed",
+      "description": "Share capacity by explicit Aion group ID or model configuration ID across generation modes"
+    },
+    {
+      "id": "feedback",
+      "status": "completed",
+      "description": "Apply explicit capacity, RPM, ambiguous 429, availability, and submission-unknown feedback without auto-resubmission"
+    },
+    {
+      "id": "task-center",
+      "status": "completed",
+      "description": "Expose optimistic wave state and accepted-submission progress while preserving rolling-deploy compatibility fields"
+    },
+    {
+      "id": "regression",
+      "status": "completed",
+      "description": "Run generation, PostgreSQL, API, dataset, Arena, TypeScript, and build validation"
+    },
+    {
+      "id": "release",
+      "status": "in_progress",
+      "description": "Rebase on latest GitHub main, fast-forward main, and verify dev deployment"
+    },
+    {
+      "id": "live-smoke",
+      "status": "pending",
+      "description": "Run an isolated 12-case Seedance 2.0 Pro smoke and verify wave timing, task IDs, writeback, and UI state"
+    }
+  ]
+}
