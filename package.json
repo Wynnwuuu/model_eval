@@ -36,6 +36,7 @@
     "audit:structured-evaluation": "tsx scripts/audit-structured-evaluation.ts",
     "audit:audio-review-clips": "tsx scripts/create-audio-review-clips.ts",
     "test:rank-ties": "tsx scripts/test-rank-ties.ts",
+    "test:insights-summary": "tsx scripts/test-insights-summary.ts",
     "migrate:postgres": "tsx scripts/migrate-to-postgres.ts",
     "build": "vite build",
     "preview": "vite preview",

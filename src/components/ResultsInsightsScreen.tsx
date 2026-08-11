@@ -1,18 +1,12 @@
 import React, { useMemo, useState } from 'react';
 import {
-  Activity,
   AlertTriangle,
   ArrowLeft,
-  BarChart3,
   Brain,
   Download,
   ExternalLink,
   FileJson,
   FileText,
-  Gauge,
-  Target,
-  Trophy,
-  Users
 } from 'lucide-react';
 import { AggregatedResult, EvaluationItem, VoteRecord, VoteType } from '../types';
 import {
@@ -32,11 +26,11 @@ import {
   formatNumber,
   formatPValue,
   formatPercent,
-  getSignificanceLabel,
-  safeDivide
 } from '../analysisInsights';
 import { getDimensionEntries, formatDimensionValues } from '../dimensionUtils';
 import MediaRenderer from './MediaRenderer';
+import InsightTopSummaryPanel from './InsightTopSummaryPanel';
+import { buildAbTopSummary, buildRankTopSummary } from '../insightPresentation';
 
 type InsightItem = Partial<EvaluationItem> & { id: string; originalData?: Record<string, any> };
 
@@ -126,62 +120,11 @@ const buildHtmlSnapshot = (bundle: InsightBundle) => {
 </html>`;
 };
 
-const StatCard: React.FC<{
-  title: string;
-  value: React.ReactNode;
-  subtitle?: React.ReactNode;
-  icon?: React.ReactNode;
-  tone?: 'blue' | 'green' | 'amber' | 'red' | 'purple' | 'slate';
-}> = ({ title, value, subtitle, icon, tone = 'slate' }) => {
-  const toneClass = {
-    blue: 'text-blue-200 bg-blue-500/10 border-blue-400/20',
-    green: 'text-emerald-200 bg-emerald-500/10 border-emerald-400/20',
-    amber: 'text-amber-200 bg-amber-500/10 border-amber-400/20',
-    red: 'text-red-200 bg-red-500/10 border-red-400/20',
-    purple: 'text-purple-200 bg-purple-500/10 border-purple-400/20',
-    slate: 'text-slate-200 bg-white/5 border-white/10'
-  }[tone];
-
-  return (
-    <div className={`rounded-xl border p-4 shadow-sm shadow-black/20 ${toneClass}`}>
-      <div className="flex items-center justify-between gap-3">
-        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">{title}</div>
-        {icon && <div className="text-current opacity-85">{icon}</div>}
-      </div>
-      <div className="mt-3 text-2xl font-bold text-slate-100">{value}</div>
-      {subtitle && <div className="mt-1 text-xs leading-5 text-slate-400">{subtitle}</div>}
-    </div>
-  );
-};
-
 const Meter: React.FC<{ value: number; className?: string }> = ({ value, className = 'bg-amber-400' }) => (
   <div className="h-2 overflow-hidden rounded-full bg-white/10">
     <div className={`h-full ${className}`} style={{ width: `${Math.max(0, Math.min(100, value * 100))}%` }} />
   </div>
 );
-
-const ConclusionPanel: React.FC<{
-  eyebrow: string;
-  title: React.ReactNode;
-  subtitle: React.ReactNode;
-  meta: React.ReactNode;
-  tone?: 'green' | 'amber' | 'slate';
-}> = ({ eyebrow, title, subtitle, meta, tone = 'amber' }) => {
-  const toneClass = tone === 'green'
-    ? 'border-emerald-400/30 bg-emerald-500/10 text-emerald-100'
-    : tone === 'amber'
-      ? 'border-amber-400/30 bg-amber-500/10 text-amber-100'
-      : 'border-white/10 bg-white/5 text-slate-100';
-
-  return (
-    <section className={`rounded-2xl border p-5 shadow-lg shadow-black/20 ${toneClass}`}>
-      <div className="text-xs font-bold uppercase tracking-[0.18em] text-current/70">{eyebrow}</div>
-      <div className="mt-3 text-3xl font-black tracking-tight text-slate-50">{title}</div>
-      <div className="mt-2 max-w-4xl text-sm leading-6 text-current/85">{subtitle}</div>
-      <div className="mt-4 flex flex-wrap gap-2 text-xs text-current/85">{meta}</div>
-    </section>
-  );
-};
 
 const Chip: React.FC<{ children: React.ReactNode; tone?: 'blue' | 'amber' | 'green' | 'slate' }> = ({ children, tone = 'slate' }) => {
   const toneClass = {
@@ -191,74 +134,6 @@ const Chip: React.FC<{ children: React.ReactNode; tone?: 'blue' | 'amber' | 'gre
     slate: 'bg-white/10 text-slate-300 border-white/10'
   }[tone];
   return <span className={`rounded-full border px-2.5 py-1 ${toneClass}`}>{children}</span>;
-};
-
-const getAbConclusionTone = (bundle: AbInsightBundle) => {
-  if (bundle.summary.smallSample || bundle.summary.winnerSide === 'Tie') return 'amber';
-  return bundle.summary.pValue !== null && bundle.summary.pValue < 0.05 ? 'green' : 'amber';
-};
-
-const AbConclusion: React.FC<{ bundle: AbInsightBundle }> = ({ bundle }) => {
-  const winnerIsTie = bundle.summary.winnerSide === 'Tie';
-  const winnerText = winnerIsTie ? '暂未分出明确胜负' : bundle.summary.winnerLabel;
-  const winnerVotes = winnerIsTie ? '-' : `${bundle.summary.winnerVotes} 票`;
-  const nonTieShare = bundle.summary.winnerSide === 'B'
-    ? bundle.summary.nonTieBShare
-    : bundle.summary.nonTieAShare;
-
-  return (
-    <ConclusionPanel
-      eyebrow="A/B 偏好结论"
-      title={winnerText}
-      subtitle={
-        winnerIsTie
-          ? '当前投票分布未形成单一胜出模型，请优先查看平局比例、低共识 case 和维度分层。'
-          : `${bundle.summary.conclusion}。${bundle.summary.winnerLabel} 在非平局投票中的占比为 ${formatPercent(nonTieShare, 1)}，胜出依据为 ${winnerVotes}、p-value ${formatPValue(bundle.summary.pValue)}。`
-      }
-      meta={
-        <>
-          <Chip tone="blue">{bundle.models.a}: {bundle.summary.votes.A} 票</Chip>
-          <Chip tone="blue">{bundle.models.b}: {bundle.summary.votes.B} 票</Chip>
-          <Chip>平局: {bundle.summary.votes.Tie} 票</Chip>
-          <Chip tone={bundle.summary.smallSample ? 'amber' : 'green'}>
-            {bundle.summary.smallSample ? '样本不足' : getSignificanceLabel(bundle.summary.pValue)}
-          </Chip>
-        </>
-      }
-      tone={getAbConclusionTone(bundle)}
-    />
-  );
-};
-
-const RankConclusion: React.FC<{ bundle: Extract<InsightBundle, { mode: 'rank' }> }> = ({ bundle }) => {
-  const champion = bundle.models[0];
-  const leaderLabel = bundle.summary.bestModels.length > 1
-    ? bundle.summary.bestModels.join(' = ')
-    : champion?.modelName;
-  return (
-    <ConclusionPanel
-      eyebrow="Arena-rank 排名结论"
-      title={leaderLabel || '暂无领先模型'}
-      subtitle={
-        champion
-          ? `${bundle.summary.bestModels.length > 1 ? '多个模型当前并列领先' : `${champion.modelName} 当前领先`}，归一化 Borda 为 ${formatPercent(champion.normalizedScore, 1)}，平均 mid-rank ${formatNumber(champion.averageRank, 2)}。成对关系一致率 ${formatPercent(bundle.summary.averageRelationAgreement, 1)}，区分度 ${formatPercent(bundle.summary.averageDistinctionRate, 1)}；需结合并列率与 pairwise 的非平局样本判断结论强度。`
-          : '当前没有足够的有效排序记录生成领先结论。'
-      }
-      meta={
-        <>
-          <Chip tone="amber">排名记录: {bundle.summary.rankingRecords}</Chip>
-          <Chip tone="blue">评委数: {bundle.summary.voterCount}</Chip>
-          <Chip tone={bundle.summary.smallSample ? 'amber' : 'green'}>
-            {bundle.summary.smallSample ? '样本不足' : '样本量可读'}
-          </Chip>
-          <Chip>低共识 case: {bundle.summary.lowConsensusCount}</Chip>
-          <Chip tone={bundle.summary.tieBallotRate > 0 ? 'amber' : 'slate'}>含并列票: {formatPercent(bundle.summary.tieBallotRate, 0)}</Chip>
-          <Chip>全部并列票: {formatPercent(bundle.summary.allTieBallotRate, 0)}</Chip>
-        </>
-      }
-      tone={bundle.summary.smallSample ? 'amber' : 'green'}
-    />
-  );
 };
 
 const AbModelComparison: React.FC<{ bundle: AbInsightBundle }> = ({ bundle }) => {
@@ -817,6 +692,12 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
     }
     return buildAbInsights({ items, votes, aggregatedData, rawVoteRows, modelNames });
   }, [mode, items, votes, aggregatedData, rawVoteRows, modelNames, models]);
+  const topSummary = useMemo(
+    () => bundle.mode === 'ab'
+      ? buildAbTopSummary(bundle, items.length)
+      : buildRankTopSummary(bundle, items.length),
+    [bundle, items.length],
+  );
 
   const filteredCases = filterCases(bundle, filter);
   const dateTag = new Date().toISOString().slice(0, 10);
@@ -869,56 +750,40 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
       {controls}
 
       {skippedCount > 0 && (
-        <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+        <div className="border border-white/10 border-l-2 border-l-amber-400 bg-[#12171d] px-4 py-3 text-sm text-slate-300">
           已跳过 {skippedCount} 条；本页统计和导出仅使用有效评审记录。
         </div>
       )}
 
       {bundle.summary.smallSample && (
-        <div className="flex items-start gap-3 rounded-xl border border-amber-400/25 bg-amber-500/10 p-4 text-sm text-amber-100">
-          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
+        <div className="flex items-start gap-3 border border-white/10 border-l-2 border-l-amber-400 bg-[#12171d] p-4 text-sm text-slate-300">
+          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-400" />
           <div>
-            <div className="font-semibold">样本不足提示</div>
-            <p className="mt-1 text-amber-100/80">当前总体或部分分层少于 5 个 case / 10 条有效评审，置信区间与显著性仅作为方向信号。</p>
+            <div className="font-semibold text-slate-100">样本不足提示</div>
+            <p className="mt-1 text-slate-400">当前总体或部分分层少于 5 个 case / 10 条有效评审，置信区间与显著性仅作为方向信号。</p>
           </div>
         </div>
       )}
 
-      {bundle.mode === 'ab' ? <AbConclusion bundle={bundle} /> : <RankConclusion bundle={bundle} />}
+      <InsightTopSummaryPanel
+        summary={topSummary}
+        eyebrow={bundle.mode === 'ab' ? 'A/B 偏好结论' : 'Arena-rank 排名结论'}
+      />
 
-      {bundle.mode === 'ab' ? (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-5">
-          <StatCard title="胜出模型" value={bundle.summary.winnerLabel} subtitle={`${bundle.summary.winnerVotes} 票 / ${formatPercent(bundle.summary.winnerRate, 1)}`} icon={<Trophy size={18} />} tone={bundle.summary.winnerSide === 'Tie' ? 'amber' : 'green'} />
-          <StatCard title="样本量" value={bundle.summary.itemCount} subtitle={`${bundle.summary.totalVotes} 票 / ${bundle.summary.voterCount} 位评委`} icon={<FileText size={18} />} tone="blue" />
-          <StatCard title="显著性" value={formatPValue(bundle.summary.pValue)} subtitle={getSignificanceLabel(bundle.summary.pValue)} icon={<Activity size={18} />} tone={bundle.summary.pValue !== null && bundle.summary.pValue < 0.05 ? 'green' : 'amber'} />
-          <StatCard title="一致性" value={formatPercent(bundle.summary.averageAgreement, 0)} subtitle={`低共识 case ${bundle.summary.lowConsensusCount} 个 / Alpha ${formatNumber(bundle.summary.krippendorffAlpha, 2)}`} icon={<Users size={18} />} tone="purple" />
-          <StatCard title="平局比例" value={formatPercent(bundle.summary.tieRate, 0)} subtitle={`Margin ${bundle.summary.marginVotes} 票 / ${formatPercent(bundle.summary.marginRate, 0)}`} icon={<Gauge size={18} />} tone="slate" />
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
-          <StatCard title={bundle.summary.bestModels.length > 1 ? '并列领先模型' : '领先模型'} value={bundle.summary.bestModel || '-'} subtitle="按归一化 Borda 排序" icon={<Trophy size={18} />} tone="amber" />
-          <StatCard title="样本量" value={bundle.summary.itemCount} subtitle={`${bundle.summary.rankingRecords} 条排序 / ${bundle.summary.voterCount} 位评委`} icon={<FileText size={18} />} tone="blue" />
-          <StatCard title="关系一致率" value={formatPercent(bundle.summary.averageRelationAgreement, 0)} subtitle={`tau-b ${formatNumber(bundle.summary.averageKendallTau, 2)} / 低共识 ${bundle.summary.lowConsensusCount}`} icon={<Users size={18} />} tone="purple" />
-          <StatCard title="排序区分度" value={formatPercent(bundle.summary.averageDistinctionRate, 0)} subtitle={`低区分 case ${bundle.summary.lowDistinctionCount} 个`} icon={<Target size={18} />} tone={bundle.summary.lowDistinctionCount ? 'amber' : 'green'} />
-          <StatCard title="含并列票" value={formatPercent(bundle.summary.tieBallotRate, 0)} subtitle={`${bundle.summary.tieBallots} 票 / 平均并列组 ${formatNumber(bundle.summary.averageTieGroupSize, 2)}`} icon={<Gauge size={18} />} tone="slate" />
-          <StatCard title="全部并列票" value={formatPercent(bundle.summary.allTieBallotRate, 0)} subtitle={`${bundle.summary.allTieBallots} 票 / 无可检验胜负关系`} icon={<AlertTriangle size={18} />} tone={bundle.summary.allTieBallots ? 'amber' : 'green'} />
-        </div>
-      )}
-
-      <div className="flex flex-wrap gap-2">
-        <button onClick={() => setFilter({ type: 'all' })} className="rounded-lg bg-white/10 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-white/15">全部 case</button>
-        <button onClick={() => setFilter({ type: 'lowConsensus' })} className="rounded-lg bg-orange-500/10 px-3 py-2 text-xs font-medium text-orange-300 hover:bg-orange-500/20">低共识 / 高分歧</button>
+      <div className="flex flex-wrap gap-1 border-b border-white/10 pb-3" role="group" aria-label="Case 结果筛选">
+        <button onClick={() => setFilter({ type: 'all' })} aria-pressed={filter.type === 'all'} className={`border px-3 py-2 text-xs font-semibold transition-colors ${filter.type === 'all' ? 'border-amber-400 bg-amber-400 text-black' : 'border-white/10 bg-[#12171d] text-slate-300 hover:border-white/25'}`}>全部 case</button>
+        <button onClick={() => setFilter({ type: 'lowConsensus' })} aria-pressed={filter.type === 'lowConsensus'} className={`border px-3 py-2 text-xs font-semibold transition-colors ${filter.type === 'lowConsensus' ? 'border-amber-400 bg-amber-400 text-black' : 'border-white/10 bg-[#12171d] text-slate-300 hover:border-white/25'}`}>低共识 / 高分歧</button>
         {bundle.mode === 'rank' && (
           <>
-            <button onClick={() => setFilter({ type: 'lowDistinction' })} className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs font-medium text-amber-200 hover:bg-amber-500/20">低区分</button>
-            <button onClick={() => setFilter({ type: 'hasTie' })} className="rounded-lg bg-white/10 px-3 py-2 text-xs font-medium text-slate-200 hover:bg-white/15">含并列</button>
+            <button onClick={() => setFilter({ type: 'lowDistinction' })} aria-pressed={filter.type === 'lowDistinction'} className={`border px-3 py-2 text-xs font-semibold transition-colors ${filter.type === 'lowDistinction' ? 'border-amber-400 bg-amber-400 text-black' : 'border-white/10 bg-[#12171d] text-slate-300 hover:border-white/25'}`}>低区分</button>
+            <button onClick={() => setFilter({ type: 'hasTie' })} aria-pressed={filter.type === 'hasTie'} className={`border px-3 py-2 text-xs font-semibold transition-colors ${filter.type === 'hasTie' ? 'border-amber-400 bg-amber-400 text-black' : 'border-white/10 bg-[#12171d] text-slate-300 hover:border-white/25'}`}>含并列</button>
           </>
         )}
         {bundle.mode === 'ab' && (
           <>
-            <button onClick={() => setFilter({ type: 'winner', winner: 'A' })} className="rounded-lg bg-blue-500/10 px-3 py-2 text-xs font-medium text-blue-200 hover:bg-blue-500/20">看 {bundle.models.a} 胜</button>
-            <button onClick={() => setFilter({ type: 'winner', winner: 'B' })} className="rounded-lg bg-indigo-500/10 px-3 py-2 text-xs font-medium text-indigo-200 hover:bg-indigo-500/20">看 {bundle.models.b} 胜</button>
-            <button onClick={() => setFilter({ type: 'winner', winner: 'Tie' })} className="rounded-lg bg-white/10 px-3 py-2 text-xs font-medium text-slate-300 hover:bg-white/15">看平局</button>
+            <button onClick={() => setFilter({ type: 'winner', winner: 'A' })} aria-pressed={filter.type === 'winner' && filter.winner === 'A'} className={`border px-3 py-2 text-xs font-semibold transition-colors ${filter.type === 'winner' && filter.winner === 'A' ? 'border-sky-400 bg-sky-400 text-black' : 'border-white/10 bg-[#12171d] text-slate-300 hover:border-sky-400/50'}`}>看 {bundle.models.a} 胜</button>
+            <button onClick={() => setFilter({ type: 'winner', winner: 'B' })} aria-pressed={filter.type === 'winner' && filter.winner === 'B'} className={`border px-3 py-2 text-xs font-semibold transition-colors ${filter.type === 'winner' && filter.winner === 'B' ? 'border-violet-400 bg-violet-400 text-black' : 'border-white/10 bg-[#12171d] text-slate-300 hover:border-violet-400/50'}`}>看 {bundle.models.b} 胜</button>
+            <button onClick={() => setFilter({ type: 'winner', winner: 'Tie' })} aria-pressed={filter.type === 'winner' && filter.winner === 'Tie'} className={`border px-3 py-2 text-xs font-semibold transition-colors ${filter.type === 'winner' && filter.winner === 'Tie' ? 'border-slate-400 bg-slate-300 text-black' : 'border-white/10 bg-[#12171d] text-slate-300 hover:border-white/25'}`}>看平局</button>
           </>
         )}
       </div>

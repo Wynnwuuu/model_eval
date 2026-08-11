@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { AlertTriangle, ArrowLeft, BarChart3, Brain, Download, FileText, Grid3X3, Trophy, Users } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Brain, Download } from 'lucide-react';
 import { EvaluationConfig, EvaluationItem, VoteRecord } from '../types';
 import {
   PairwiseInsightBundle,
@@ -17,6 +17,8 @@ import {
 import { formatNumber, formatPercent } from '../analysisInsights';
 import MediaRenderer from './MediaRenderer';
 import DimensionChips from './DimensionChips';
+import InsightTopSummaryPanel from './InsightTopSummaryPanel';
+import { buildPairwiseTopSummary, buildScoreTopSummary } from '../insightPresentation';
 
 interface ScoreInsightsScreenProps {
   mode: 'score' | 'pairwise';
@@ -44,55 +46,11 @@ const downloadTextFile = (filename: string, content: string, mimeType = 'text/cs
   URL.revokeObjectURL(url);
 };
 
-const StatCard: React.FC<{ title: string; value: React.ReactNode; subtitle?: React.ReactNode; icon?: React.ReactNode; tone?: 'amber' | 'green' | 'blue' | 'purple' | 'slate' }> = ({ title, value, subtitle, icon, tone = 'slate' }) => {
-  const toneClass = {
-    amber: 'border-amber-400/20 bg-amber-500/10 text-amber-200',
-    green: 'border-emerald-400/20 bg-emerald-500/10 text-emerald-200',
-    blue: 'border-blue-400/20 bg-blue-500/10 text-blue-200',
-    purple: 'border-purple-400/20 bg-purple-500/10 text-purple-200',
-    slate: 'border-white/10 bg-white/5 text-slate-200'
-  }[tone];
-  return (
-    <div className={`rounded-xl border p-4 shadow-sm shadow-black/20 ${toneClass}`}>
-      <div className="flex items-center justify-between gap-3">
-        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">{title}</div>
-        {icon && <div className="text-current opacity-85">{icon}</div>}
-      </div>
-      <div className="mt-3 text-2xl font-bold text-slate-100">{value}</div>
-      {subtitle && <div className="mt-1 text-xs leading-5 text-slate-400">{subtitle}</div>}
-    </div>
-  );
-};
-
 const Meter: React.FC<{ value: number; className?: string }> = ({ value, className = 'bg-amber-400' }) => (
   <div className="h-2 overflow-hidden rounded-full bg-white/10">
     <div className={`h-full ${className}`} style={{ width: `${Math.max(0, Math.min(100, value * 100))}%` }} />
   </div>
 );
-
-const ConclusionPanel: React.FC<{
-  eyebrow: string;
-  title: React.ReactNode;
-  subtitle: React.ReactNode;
-  meta: React.ReactNode;
-}> = ({ eyebrow, title, subtitle, meta }) => (
-  <section className="rounded-2xl border border-amber-400/30 bg-amber-500/10 p-5 text-amber-100 shadow-lg shadow-black/20">
-    <div className="text-xs font-bold uppercase tracking-[0.18em] text-amber-100/70">{eyebrow}</div>
-    <div className="mt-3 text-3xl font-black tracking-tight text-slate-50">{title}</div>
-    <div className="mt-2 max-w-4xl text-sm leading-6 text-amber-100/85">{subtitle}</div>
-    <div className="mt-4 flex flex-wrap gap-2 text-xs text-amber-100/85">{meta}</div>
-  </section>
-);
-
-const Chip: React.FC<{ children: React.ReactNode; tone?: 'amber' | 'green' | 'blue' | 'slate' }> = ({ children, tone = 'slate' }) => {
-  const toneClass = {
-    amber: 'border-amber-400/20 bg-amber-500/10 text-amber-200',
-    green: 'border-emerald-400/20 bg-emerald-500/10 text-emerald-200',
-    blue: 'border-blue-400/20 bg-blue-500/10 text-blue-200',
-    slate: 'border-white/10 bg-white/10 text-slate-300'
-  }[tone];
-  return <span className={`rounded-full border px-2.5 py-1 ${toneClass}`}>{children}</span>;
-};
 
 const MiniMedia: React.FC<{ url?: string; type?: EvaluationItem['type']; label: string }> = ({ url, type, label }) => {
   if (!url) return <div className="flex h-28 items-center justify-center border border-white/10 bg-black/30 text-xs text-slate-500">暂无预览</div>;
@@ -105,48 +63,6 @@ const MiniMedia: React.FC<{ url?: string; type?: EvaluationItem['type']; label: 
     </div>
   );
 };
-
-const ScoreConclusion: React.FC<{ bundle: ScoreInsightBundle }> = ({ bundle }) => {
-  const isRubric = bundle.method === 'rubric_score';
-  return (
-    <ConclusionPanel
-      eyebrow={isRubric ? 'Rubric 多维评分结论' : 'MOS / 直接评分结论'}
-      title={bundle.summary.topModelName || '暂无领先模型'}
-      subtitle={`${bundle.summary.topModelName || '当前最高模型'} 的平均分为 ${formatNumber(bundle.summary.topAverageScore, 2)}。评分型结果的重点是均分、稳定性和维度短板；请结合标准差、维度表现和低分 case 判断真实优势。`}
-      meta={
-        <>
-          <Chip tone="amber">评分记录: {bundle.summary.responseCount}</Chip>
-          <Chip tone="blue">评委数: {bundle.summary.voterCount}</Chip>
-          <Chip>平均标准差: {formatNumber(bundle.summary.averageStdDev, 2)}</Chip>
-          <Chip tone={bundle.summary.itemCount < 5 || bundle.summary.responseCount < 10 ? 'amber' : 'green'}>
-            {bundle.summary.itemCount < 5 || bundle.summary.responseCount < 10 ? '样本不足' : '样本量可读'}
-          </Chip>
-        </>
-      }
-    />
-  );
-};
-
-const PairwiseConclusion: React.FC<{ bundle: PairwiseInsightBundle }> = ({ bundle }) => (
-  <ConclusionPanel
-    eyebrow="Arena 竞技场结论"
-    title={bundle.summary.connected ? bundle.summary.topModelName : '对战图尚未连通'}
-    subtitle={bundle.summary.connected
-      ? `${bundle.summary.topModelName} 当前 Arena Score 最高。请结合 95% 置信区间、近似排名范围与原始胜负平判断优势是否稳定。`
-      : '当前模型分处不同对战连通分量，平台不会生成误导性的跨分量总排名；继续贡献对战可补齐比较桥梁。'}
-    meta={
-      <>
-        <Chip tone="amber">有效对战: {bundle.summary.comparisonCount}</Chip>
-        <Chip tone="blue">评委数: {bundle.summary.voterCount}</Chip>
-        <Chip>模型对覆盖: {formatPercent(bundle.summary.pairCoverage, 1)}</Chip>
-        <Chip>有效样本量: {formatNumber(bundle.summary.effectiveSampleSize, 1)}</Chip>
-        <Chip tone={bundle.summary.maturity === 'ready' ? 'green' : 'amber'}>
-          {bundle.summary.maturity === 'ready' ? '数据可读' : bundle.summary.maturity === 'warming' ? '仍在预热' : '数据不足'}
-        </Chip>
-      </>
-    }
-  />
-);
 
 const ScoreLeaderboard: React.FC<{ bundle: ScoreInsightBundle }> = ({ bundle }) => {
   const maxScore = Math.max(...bundle.models.map(model => model.averageScore), 1);
@@ -530,6 +446,14 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
     if (mode !== 'pairwise') return null;
     return buildPairwiseInsights({ items, votes, models });
   }, [items, mode, models, votes]);
+  const scoreTopSummary = useMemo(
+    () => scoreBundle ? buildScoreTopSummary(scoreBundle, items.length) : null,
+    [items.length, scoreBundle],
+  );
+  const pairwiseTopSummary = useMemo(
+    () => pairwiseBundle ? buildPairwiseTopSummary(pairwiseBundle, items.length) : null,
+    [items.length, pairwiseBundle],
+  );
 
   if (mode === 'score' && scoreBundle) {
     return (
@@ -557,26 +481,24 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
         {controls}
 
         {skippedCount > 0 && (
-          <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+          <div className="border border-white/10 border-l-2 border-l-amber-400 bg-[#12171d] px-4 py-3 text-sm text-slate-300">
             已跳过 {skippedCount} 条；本页统计和导出仅使用有效评审记录。
           </div>
         )}
 
         {(scoreBundle.summary.itemCount < 5 || scoreBundle.summary.responseCount < 10) && (
-          <div className="flex items-start gap-3 rounded-xl border border-amber-400/25 bg-amber-500/10 p-4 text-sm text-amber-100">
-            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
+          <div className="flex items-start gap-3 border border-white/10 border-l-2 border-l-amber-400 bg-[#12171d] p-4 text-sm text-slate-300">
+            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-400" />
             <div>样本不足，均分和标准差仅作为方向信号。</div>
           </div>
         )}
 
-        <ScoreConclusion bundle={scoreBundle} />
-
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-          <StatCard title="领先模型" value={scoreBundle.summary.topModelName} subtitle={`${formatNumber(scoreBundle.summary.topAverageScore, 2)} 平均分`} icon={<Trophy size={18} />} tone="amber" />
-          <StatCard title="样本量" value={scoreBundle.summary.itemCount} subtitle={`${scoreBundle.summary.responseCount} 条模型评分`} icon={<FileText size={18} />} tone="blue" />
-          <StatCard title="评委数" value={scoreBundle.summary.voterCount} subtitle="有效评分用户" icon={<Users size={18} />} tone="purple" />
-          <StatCard title="评分分歧" value={formatNumber(scoreBundle.summary.averageStdDev, 2)} subtitle="模型平均标准差" icon={<BarChart3 size={18} />} tone="slate" />
-        </div>
+        {scoreTopSummary && (
+          <InsightTopSummaryPanel
+            summary={scoreTopSummary}
+            eyebrow={scoreBundle.method === 'rubric_score' ? 'Rubric 多维评分结论' : 'MOS / 直接评分结论'}
+          />
+        )}
 
         <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
           <ScoreLeaderboard bundle={scoreBundle} />
@@ -626,26 +548,21 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
         {controls}
 
         {skippedCount > 0 && (
-          <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+          <div className="border border-white/10 border-l-2 border-l-amber-400 bg-[#12171d] px-4 py-3 text-sm text-slate-300">
             已跳过 {skippedCount} 条；本页统计和导出仅使用有效评审记录。
           </div>
         )}
 
         {(pairwiseBundle.summary.comparisonCount < 10 || !pairwiseBundle.summary.connected) && (
-          <div className="flex items-start gap-3 rounded-xl border border-amber-400/25 bg-amber-500/10 p-4 text-sm text-amber-100">
-            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
+          <div className="flex items-start gap-3 border border-white/10 border-l-2 border-l-amber-400 bg-[#12171d] p-4 text-sm text-slate-300">
+            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-400" />
             <div>{pairwiseBundle.summary.connected ? '样本不足，当前区间仍较宽，请结合更多对战记录判断。' : '对战图尚未连通，暂不生成跨分量总排名；请继续补充连接不同模型分量的对战。'}</div>
           </div>
         )}
 
-        <PairwiseConclusion bundle={pairwiseBundle} />
-
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
-          <StatCard title="领先模型" value={pairwiseBundle.summary.topModelName} subtitle={pairwiseBundle.summary.connected ? `${formatNumber(pairwiseBundle.bradleyTerry.models[0]?.rating || 0, 1)} Arena Score` : '等待对战图连通'} icon={<Trophy size={18} />} tone="amber" />
-          <StatCard title="模型对覆盖" value={formatPercent(pairwiseBundle.summary.pairCoverage, 1)} subtitle={`${pairwiseBundle.summary.itemCount} 个实际 case`} icon={<Grid3X3 size={18} />} tone="blue" />
-          <StatCard title="评委数" value={pairwiseBundle.summary.voterCount} subtitle="有效对战投票用户" icon={<Users size={18} />} tone="purple" />
-          <StatCard title="有效样本量" value={formatNumber(pairwiseBundle.summary.effectiveSampleSize, 1)} subtitle={`${pairwiseBundle.summary.comparisonCount} 场原始对战`} icon={<BarChart3 size={18} />} tone="slate" />
-        </div>
+        {pairwiseTopSummary && (
+          <InsightTopSummaryPanel summary={pairwiseTopSummary} eyebrow="Arena 竞技场结论" />
+        )}
 
         <ArenaScoreLeaderboard bundle={pairwiseBundle} />
 

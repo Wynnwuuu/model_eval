@@ -1,14 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { Layers, Plus, Search, Filter, Calendar, Users, BarChart2, ArrowRight, Activity, Target, Link as LinkIcon, LogIn, LogOut, X, Edit2, Database, LayoutTemplate, Play, ChevronRight, FolderOpen, Trash2 } from 'lucide-react';
-import { EvalParadigm, EvaluationConfig, EvaluationProject, EvaluationStep, EvaluationItem, EvalTask } from '../types';
+import { Layers, Plus, Search, Filter, Calendar, Users, BarChart2, ArrowRight, Activity, Target, Link as LinkIcon, LogIn, LogOut, X, Edit2, Database, LayoutTemplate, Play, ChevronDown, ChevronRight, FolderOpen, Loader2, Trash2 } from 'lucide-react';
+import { EvalParadigm, EvaluationConfig, EvaluationProject, EvaluationStep, EvaluationItem, EvalTask, TaskVoteGroup } from '../types';
 import { CreateProjectModal } from './CreateProjectModal';
 import { auth, signInWithGoogle, logout } from '../auth';
 import { EmptyState, PageFrame, PageHeader, StatTile, Toolbar } from './ui';
 import { getEvaluationMethodShortLabel, normalizeEvaluationConfig } from '../evaluationMethods';
-import { deleteTask, loadTaskEvaluation, subscribeTasks } from '../features/tasks/api';
+import { deleteTask, loadTaskEvaluation, loadTaskVoteGroups, subscribeTasks } from '../features/tasks/api';
 import { subscribeDatasets } from '../features/datasets/api';
 import { subscribeTemplates } from '../features/templates/api';
 import { createProject, deleteProject, subscribeProjects, updateProject, updateProjectSteps } from '../features/projects/api';
+import {
+  ProjectResultGroupDigest,
+  buildProjectResultGroupDigests,
+  getAnalysisScopeStorageKey,
+} from '../insightPresentation';
 
 interface DashboardScreenProps {
   initialProject?: EvaluationProject | null;
@@ -20,6 +25,21 @@ interface DashboardScreenProps {
   onGoToTemplateRepo: () => void;
   onGoToTaskBuilder: (project: EvaluationProject, mode?: 'create' | 'list') => void;
 }
+
+const resultSegmentClass: Record<ProjectResultGroupDigest['segments'][number]['color'], string> = {
+  'model-a': 'bg-sky-400',
+  'model-b': 'bg-violet-400',
+  tie: 'bg-slate-500',
+  accent: 'bg-amber-400',
+  success: 'bg-emerald-400',
+  neutral: 'bg-slate-500',
+};
+
+const resultPhaseLabel = (phase: ProjectResultGroupDigest['phase']) => {
+  if (phase === 'completed') return '评测已完成';
+  if (phase === 'in-progress') return '评测进行中，结果可能变化';
+  return '尚未产生有效结果';
+};
 
 export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject, initialProjectId, onProjectSelect, onGoToExecution, onGoToAnalysis, onGoToDatasetRepo, onGoToTemplateRepo, onGoToTaskBuilder }) => {
   const [projects, setProjects] = useState<EvaluationProject[]>([]);
@@ -40,6 +60,10 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
   const [templates, setTemplates] = useState<any[]>([]);
   const [isEditingLink, setIsEditingLink] = useState(false);
   const [tempLink, setTempLink] = useState('');
+  const [projectResultDigests, setProjectResultDigests] = useState<ProjectResultGroupDigest[]>([]);
+  const [loadingResultDigests, setLoadingResultDigests] = useState(false);
+  const [resultDigestError, setResultDigestError] = useState('');
+  const [expandedResultGroupId, setExpandedResultGroupId] = useState('');
 
   const selectProject = (project: EvaluationProject | null) => {
     setSelectedProject(project);
@@ -62,6 +86,48 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
       unsubscribeTemplates();
     };
   }, [selectedProject?.id]);
+
+  useEffect(() => {
+    if (!selectedProject?.id || projectTasks.length === 0) {
+      setProjectResultDigests([]);
+      setLoadingResultDigests(false);
+      setResultDigestError('');
+      return;
+    }
+
+    let active = true;
+    setLoadingResultDigests(true);
+    setResultDigestError('');
+
+    Promise.allSettled(projectTasks.map(async task => ({
+      taskId: task.id,
+      groups: await loadTaskVoteGroups(task.id),
+    }))).then(results => {
+      if (!active) return;
+      const voteGroupsByTask = new Map<string, TaskVoteGroup[]>();
+      let failedCount = 0;
+      results.forEach(result => {
+        if (result.status === 'fulfilled') {
+          voteGroupsByTask.set(result.value.taskId, result.value.groups);
+        } else {
+          failedCount += 1;
+        }
+      });
+      const digests = buildProjectResultGroupDigests({
+        tasks: projectTasks,
+        voteGroupsByTask,
+        templates,
+      });
+      setProjectResultDigests(digests);
+      setExpandedResultGroupId(current => digests.some(digest => digest.id === current) ? current : digests[0]?.id || '');
+      setResultDigestError(failedCount > 0 ? `${failedCount} 份评测物料的结果暂时无法刷新。` : '');
+      setLoadingResultDigests(false);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [projectTasks, selectedProject?.id, templates]);
 
   useEffect(() => {
     if (!user) return;
@@ -587,16 +653,142 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
                         )}
                         {step.id === 3 && (
                           <div className="mt-5 space-y-4">
-                            <div className="glass-panel rounded-xl p-5">
-                              <h4 className="text-sm font-bold text-slate-200 mb-3 flex items-center gap-2">
-                                <BarChart2 size={16} className="text-amber-500" />
-                                评测结果分析
-                              </h4>
-                              <div className="text-sm text-slate-300 mb-4">
-                                {selectedProject.resultSummary || '待产出'}
+                            <div className="glass-panel p-5">
+                              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                                <h4 className="flex items-center gap-2 text-sm font-bold text-slate-100">
+                                  <BarChart2 size={16} className="text-amber-400" />
+                                  评测结果分析
+                                </h4>
+                                {loadingResultDigests && (
+                                  <span className="inline-flex items-center gap-2 text-xs text-slate-400">
+                                    <Loader2 size={13} className="animate-spin" /> 正在刷新结果
+                                  </span>
+                                )}
                               </div>
+
+                              {projectResultDigests.length > 0 ? (
+                                <div className="mb-5 space-y-2.5">
+                                  {projectResultDigests.map(digest => {
+                                    const expanded = digest.id === expandedResultGroupId;
+                                    const segmentTotal = digest.segments.reduce((sum, segment) => sum + segment.value, 0);
+                                    const maxSegment = Math.max(0, ...digest.segments.map(segment => segment.value));
+                                    return (
+                                      <section key={digest.id} className={`border bg-[#0d1014] transition-colors ${expanded ? 'border-amber-400/45' : 'border-white/10'}`}>
+                                        <button
+                                          type="button"
+                                          aria-expanded={expanded}
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            setExpandedResultGroupId(expanded ? '' : digest.id);
+                                          }}
+                                          className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left hover:bg-white/[0.035]"
+                                        >
+                                          <div className="min-w-0">
+                                            <div className="truncate text-sm font-semibold text-slate-100">{digest.label}</div>
+                                            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
+                                              <span>{digest.taskCount} 份可比物料</span>
+                                              <span>{digest.validRecordCount > 0 ? digest.headline : '尚无有效评测结果'}</span>
+                                            </div>
+                                          </div>
+                                          <div className="flex shrink-0 items-center gap-2">
+                                            <span className={digest.phase === 'completed' ? 'text-xs text-emerald-300' : digest.phase === 'in-progress' ? 'text-xs text-amber-300' : 'text-xs text-slate-500'}>
+                                              {digest.phase === 'completed' ? '已完成' : digest.phase === 'in-progress' ? '进行中' : '待结果'}
+                                            </span>
+                                            <ChevronDown size={16} className={`text-slate-400 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+                                          </div>
+                                        </button>
+
+                                        {expanded && (
+                                          <div className="border-t border-white/10 px-4 py-4">
+                                            {digest.validRecordCount > 0 ? (
+                                              <>
+                                                <div className="text-lg font-bold text-white">{digest.headline}</div>
+                                                <div className="mt-1 text-sm text-slate-200">{digest.basis}</div>
+                                                <div className="mt-1 text-xs leading-5 text-slate-400">{digest.supporting}</div>
+
+                                                {digest.visualization === 'stacked' ? (
+                                                  <div className="mt-4">
+                                                    <div className="flex h-2.5 overflow-hidden bg-white/5" aria-label="票数分布">
+                                                      {digest.segments.filter(segment => segment.value > 0).map(segment => (
+                                                        <div
+                                                          key={segment.id}
+                                                          className={resultSegmentClass[segment.color]}
+                                                          style={{ width: `${segmentTotal ? (segment.value / segmentTotal) * 100 : 0}%` }}
+                                                          title={`${segment.label}: ${segment.displayValue}`}
+                                                        />
+                                                      ))}
+                                                    </div>
+                                                    <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-400">
+                                                      {digest.segments.map(segment => (
+                                                        <span key={segment.id} className="inline-flex items-center gap-1.5">
+                                                          <span className={`h-1.5 w-1.5 ${resultSegmentClass[segment.color]}`} />
+                                                          {segment.label} {segment.displayValue}
+                                                        </span>
+                                                      ))}
+                                                    </div>
+                                                  </div>
+                                                ) : digest.segments.length > 0 ? (
+                                                  <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                                                    {digest.segments.map(segment => (
+                                                      <div key={segment.id} className="border border-white/10 bg-black/20 px-3 py-2">
+                                                        <div className="flex items-center justify-between gap-3 text-xs">
+                                                          <span className="truncate text-slate-300">{segment.label}</span>
+                                                          <span className="font-mono text-slate-100">{segment.displayValue}</span>
+                                                        </div>
+                                                        <div className="mt-2 h-1.5 bg-white/5">
+                                                          <div className={resultSegmentClass[segment.color]} style={{ width: `${maxSegment ? (segment.value / maxSegment) * 100 : 0}%`, height: '100%' }} />
+                                                        </div>
+                                                      </div>
+                                                    ))}
+                                                  </div>
+                                                ) : null}
+
+                                                <div className="mt-4 grid grid-cols-3 border border-white/10 bg-black/20 text-center">
+                                                  <div className="px-2 py-3">
+                                                    <div className="font-mono text-base font-bold text-white">{digest.evaluatedItemCount}/{digest.totalItemCount}</div>
+                                                    <div className="mt-1 text-[10px] uppercase text-slate-500">已评 case</div>
+                                                  </div>
+                                                  <div className="border-x border-white/10 px-2 py-3">
+                                                    <div className="font-mono text-base font-bold text-white">{digest.validRecordCount}</div>
+                                                    <div className="mt-1 text-[10px] uppercase text-slate-500">有效记录</div>
+                                                  </div>
+                                                  <div className="px-2 py-3">
+                                                    <div className="font-mono text-base font-bold text-white">{digest.voterCount}</div>
+                                                    <div className="mt-1 text-[10px] uppercase text-slate-500">参与评委</div>
+                                                  </div>
+                                                </div>
+                                              </>
+                                            ) : (
+                                              <div className="py-2 text-sm text-slate-400">
+                                                已创建 {digest.taskCount} 份评测物料，完成第一条有效评测后将在这里显示结果快照。
+                                              </div>
+                                            )}
+
+                                            <div className={`mt-4 border-l-2 px-3 py-2 text-xs ${digest.phase === 'completed' ? 'border-emerald-400 text-emerald-200' : digest.phase === 'in-progress' ? 'border-amber-400 text-amber-200' : 'border-slate-600 text-slate-400'}`}>
+                                              {resultPhaseLabel(digest.phase)}
+                                            </div>
+                                          </div>
+                                        )}
+                                      </section>
+                                    );
+                                  })}
+                                </div>
+                              ) : (
+                                <div className="mb-4 border border-white/10 bg-[#0d1014] px-4 py-5 text-sm text-slate-400">
+                                  {projectTasks.length > 0
+                                    ? '已有评测物料，尚未产生有效评测结果。'
+                                    : '尚未创建评测物料，创建并开始评测后将在这里显示结果快照。'}
+                                </div>
+                              )}
+
+                              {resultDigestError && (
+                                <div className="mb-4 border-l-2 border-amber-400 bg-amber-400/[0.06] px-3 py-2 text-xs text-amber-200">
+                                  {resultDigestError}
+                                </div>
+                              )}
+
                               {selectedProject.progress === 100 && selectedProject.analysis && (
-                                <div className="p-4 glass-panel rounded-xl text-sm leading-relaxed mb-4 text-slate-300">
+                                <div className="mb-4 border border-white/10 bg-black/20 p-4 text-sm leading-relaxed text-slate-300">
                                   {selectedProject.analysis}
                                 </div>
                               )}
@@ -604,11 +796,19 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
                                 <button 
                                   onClick={(e) => {
                                     e.stopPropagation();
+                                    const activeDigest = projectResultDigests.find(digest => digest.id === expandedResultGroupId) || projectResultDigests[0];
+                                    if (activeDigest) {
+                                      try {
+                                        window.localStorage.setItem(getAnalysisScopeStorageKey(selectedProject.id), `group:${activeDigest.id}`);
+                                      } catch {
+                                        // Storage can be unavailable in privacy-restricted browsers; navigation still works.
+                                      }
+                                    }
                                     onGoToAnalysis(selectedProject);
                                   }}
-                                  className="w-fit bg-gradient-accent text-black px-4 py-2 rounded-xl text-sm font-medium transition-all hover:opacity-90 flex items-center gap-2 shadow-lg shadow-amber-500/20"
+                                  className="btn-primary w-fit"
                                 >
-                                  查看详细数据大盘 <ArrowRight size={14} />
+                                  打开完整结果洞察 <ArrowRight size={14} />
                                 </button>
                               )}
                             </div>
