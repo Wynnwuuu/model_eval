@@ -1,5 +1,13 @@
 # Arena And Arena-rank Handoff
 
+## Current work: Aion HTTP 500 classification and queue recovery
+
+Implementation and local validation are complete on `codex/aion-500-fix`, based on GitHub main `9a44def`. Received HTTP errors now become `failed` and retain bounded safe Aion detail; only transport failures without an HTTP response remain `submission_unknown`. Both are capacity-neutral, while explicit 429/concurrency/queue/rate-limit feedback still controls optimistic waves.
+
+Policy v5 resets old capacity state to window 8. Migration `013_generation_aion_http_errors.sql` reclassifies only historical `submission_unknown` rows with HTTP 5xx and no provider task ID, leaves genuine uncertainty untouched, and never resubmits terminal items. The task center labels explicit Aion errors separately from no-response uncertainty.
+
+Generation unit/PostgreSQL tests, TypeScript, dataset sync/clone/import/filter, Arena, rank ties, frontend/server builds, migration, and Worker-disabled API smoke pass. Remaining work is final main synchronization, non-force publication, dev CI/CD, and observation of the existing pending queue without creating a paid smoke batch.
+
 ## Current work: generic adaptive video capacity control
 
 Implementation and local validation are complete on `codex/adaptive-video-capacity`, based on GitHub main `62f857d`. Normal video scheduling uses persistent buckets keyed by Aion model configuration ID plus `generation_type`, starts unknown buckets at two, and learns provider in-flight capacity independently from RPM. The platform window follows 12, 24, 48; bucket slow start follows 2, 4, 8, 16, 32, 48 with one unverified probe at a time. Explicit `groupId` is the only warm-start bridge.

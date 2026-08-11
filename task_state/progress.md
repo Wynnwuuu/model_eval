@@ -1,5 +1,19 @@
 # Arena Implementation Progress
 
+## 2026-08-11: Aion HTTP 500 classification and queue recovery
+
+### In progress
+
+- Publish the reviewed change to dev without force-pushing and observe the existing pending queue.
+
+### Completed locally
+
+- Received Aion HTTP 4xx/5xx responses now become factual failures with bounded safe detail; only no-response transport failures remain `submission_unknown`.
+- HTTP 5xx, real submission uncertainty, and generic availability failures are capacity-neutral. Explicit concurrency/queue/rate-limit signals still control the optimistic waves.
+- Policy v5 resets old capacity state to window 8. Migration `013` idempotently reclassifies only historical HTTP 5xx rows without provider task IDs.
+- The task center distinguishes explicit Aion responses from no-response uncertainty and applies duplicate-billing warnings only to the latter.
+- Generation unit and PostgreSQL tests, TypeScript, dataset sync/clone/import/filter tests, Arena, rank ties, frontend/server builds, migration, and Worker-disabled API smoke all pass.
+
 ## 2026-08-10: Generic adaptive video capacity control
 
 ### Completed

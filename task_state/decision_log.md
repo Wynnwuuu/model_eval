@@ -1,5 +1,11 @@
 # Arena Decision Log
 
+## 2026-08-11: Received HTTP errors are not submission uncertainty
+
+An Aion POST that returns any HTTP response is a completed rejection from ManuEval's perspective. HTTP 4xx and 5xx items therefore become `failed`; only a timeout, reset, or disconnect before any response remains `submission_unknown`. Neither ordinary 5xx nor true submission uncertainty changes model or global capacity, because neither proves a concurrency boundary. Explicit 429, queue-full, concurrency-full, and request-rate signals remain the only capacity feedback.
+
+The repair intentionally does not resubmit terminal items. Existing pending work continues in place, while historical `submission_unknown` rows that recorded HTTP 5xx and no provider task ID are reclassified idempotently with an honest fallback message when the discarded Aion detail cannot be recovered.
+
 ## 2026-08-08: Structured Base snapshots remain immutable audit evidence
 
 The source dataset is imported with exactly the 16 visible Base fields and their original order. Transport-only Feishu Markdown URL wrappers may be unwrapped deterministically, but source values are retained in hidden audit metadata and business columns are never renamed, corrected, or augmented with visible audit fields.

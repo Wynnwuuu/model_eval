@@ -124,25 +124,21 @@ export const classifyGenerationCapacityOutcome = (
 ): 'success' | 'capacity_failure' | null => {
   const status = String(outcome.status || '').toLowerCase();
   if (status === 'succeeded' || status === 'completed') return 'success';
-  if (status === 'submission_unknown') return 'capacity_failure';
+  if (status === 'submission_unknown') return null;
   if (status !== 'failed') return null;
 
   const error = outcome.error || {};
-  const code = String(error.code || '').toUpperCase();
+  const code = String(error.errorCode || error.error_code || error.code || '').toUpperCase();
   const httpStatus = Number(error.httpStatus ?? error.http_status ?? 0);
   const text = capacityErrorText(error);
 
-  if ([
-    'GENERATION_TIMEOUT',
-    'AION_SUBMISSION_UNKNOWN',
-    'INTERRUPTED_SUBMISSION',
-    'MISSING_PROVIDER_TASK_ID',
-  ].includes(code)) {
+  if (['CONCURRENCY_LIMIT', 'QUEUE_FULL', 'CAPACITY_EXCEEDED', 'TOO_MANY_ACTIVE',
+    'RPM_LIMIT', 'RPS_LIMIT', 'QPS_LIMIT', 'REQUEST_RATE_LIMIT', 'RATE_LIMITED'].includes(code)) {
     return 'capacity_failure';
   }
-  if ([429, 502, 503, 504].includes(httpStatus)) return 'capacity_failure';
+  if (httpStatus === 429) return 'capacity_failure';
   if (
-    /(?:timed?\s*out|timeout|1200\s*seconds|too many requests|rate.?limit|overload|capacity|service unavailable|temporarily unavailable|provider busy|server busy)/i.test(text)
+    /(?:too many requests|rate.?limit|concurr|queue[_\s-]*(?:full|limit|capacity)|too many active)/i.test(text)
   ) {
     return 'capacity_failure';
   }

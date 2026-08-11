@@ -796,6 +796,12 @@ export interface DatasetGenerationJobItem {
     httpStatus?: number;
     errorName?: string;
     transportCode?: string;
+    errorType?: string;
+    errorCode?: string;
+    retryable?: boolean;
+    retryAfterMs?: number;
+    responseReceived?: boolean;
+    historicalReclassified?: boolean;
   };
   startedAt?: number;
   submissionStartedAt?: number;

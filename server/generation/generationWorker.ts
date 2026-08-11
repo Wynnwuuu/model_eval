@@ -441,12 +441,29 @@ export type GenerationSubmissionErrorDiagnostics = {
   errorCode?: string;
   retryable?: boolean;
   retryAfterMs?: number;
+  responseReceived: boolean;
   definitelyRejected: boolean;
 };
 
 const safeDiagnosticToken = (value: unknown) => {
   const token = typeof value === 'string' ? value.trim() : '';
   return token && /^[A-Za-z0-9_.-]{1,64}$/.test(token) ? token : undefined;
+};
+
+const safeSubmissionErrorMessage = (error: unknown) => {
+  const raw = error instanceof Error ? error.message : String(error || '');
+  const normalized = raw
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+    .replace(/https?:\/\/[^\s"'<>]+/gi, value => {
+      try {
+        const url = new URL(value);
+        return `${url.origin}${url.pathname}${url.search ? '?[redacted]' : ''}`;
+      } catch {
+        return '[redacted-url]';
+      }
+    })
+    .trim();
+  return normalized.slice(0, 2_000);
 };
 
 export const generationSubmissionErrorDiagnostics = (
@@ -468,6 +485,7 @@ export const generationSubmissionErrorDiagnostics = (
   const retryAfterMs = Number.isFinite(rawRetryAfterMs) && rawRetryAfterMs >= 0
     ? Math.round(rawRetryAfterMs)
     : undefined;
+  const responseReceived = Boolean(httpStatus || (error as any)?.responseReceived === true);
   return {
     ...(httpStatus ? { httpStatus } : {}),
     ...(errorName ? { errorName } : {}),
@@ -476,7 +494,36 @@ export const generationSubmissionErrorDiagnostics = (
     ...(errorCode ? { errorCode } : {}),
     ...(retryable !== undefined ? { retryable } : {}),
     ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
-    definitelyRejected: Boolean(httpStatus && httpStatus >= 400 && httpStatus < 500),
+    responseReceived,
+    definitelyRejected: responseReceived,
+  };
+};
+
+export const generationSubmissionFailure = (error: unknown) => {
+  const diagnostics = generationSubmissionErrorDiagnostics(error);
+  const status = diagnostics.responseReceived ? 'failed' as const : 'submission_unknown' as const;
+  const errorCode = diagnostics.responseReceived
+    ? diagnostics.httpStatus && diagnostics.httpStatus >= 500
+      ? 'AION_HTTP_ERROR'
+      : 'AION_SUBMIT_REJECTED'
+    : 'AION_SUBMISSION_UNKNOWN';
+  const safeMessage = safeSubmissionErrorMessage(error);
+  return {
+    status,
+    error: {
+      code: errorCode,
+      message: diagnostics.responseReceived
+        ? safeMessage || `Aion returned HTTP ${diagnostics.httpStatus || 'error'}.`
+        : 'The Aion submission did not return an HTTP response; automatic retry is disabled to prevent duplicate billing.',
+      ...(diagnostics.httpStatus ? { httpStatus: diagnostics.httpStatus } : {}),
+      ...(diagnostics.errorName ? { errorName: diagnostics.errorName } : {}),
+      ...(diagnostics.transportCode ? { transportCode: diagnostics.transportCode } : {}),
+      ...(diagnostics.errorType ? { errorType: diagnostics.errorType } : {}),
+      ...(diagnostics.errorCode ? { errorCode: diagnostics.errorCode } : {}),
+      ...(diagnostics.retryable !== undefined ? { retryable: diagnostics.retryable } : {}),
+      ...(diagnostics.retryAfterMs !== undefined ? { retryAfterMs: diagnostics.retryAfterMs } : {}),
+      responseReceived: diagnostics.responseReceived,
+    },
   };
 };
 
@@ -517,7 +564,7 @@ const submitItem = async (item: ClaimedGenerationItem) => {
     payload = await aionGenerationClient.submit(request.path, request.body);
   } catch (error) {
     const diagnostics = generationSubmissionErrorDiagnostics(error);
-    const { definitelyRejected } = diagnostics;
+    const failure = generationSubmissionFailure(error);
     console.error('[generation-worker] provider submission failed', {
       modelName: String(item.job.model.modelName || item.job.model.name || 'unknown-model'),
       batchId: item.job.id,
@@ -530,31 +577,18 @@ const submitItem = async (item: ClaimedGenerationItem) => {
       errorCode: diagnostics.errorCode,
       retryable: diagnostics.retryable,
       retryAfterMs: diagnostics.retryAfterMs,
-      definitelyRejected,
+      responseReceived: diagnostics.responseReceived,
+      classification: failure.error.code,
     });
-    const status = definitelyRejected ? 'failed' : 'submission_unknown';
-    const submissionError = {
-      code: definitelyRejected ? 'AION_SUBMIT_REJECTED' : 'AION_SUBMISSION_UNKNOWN',
-      message: definitelyRejected
-        ? (error instanceof Error ? error.message : String(error))
-        : 'The Aion submission response was lost; automatic retry is disabled to prevent duplicate billing.',
-        ...(diagnostics.httpStatus ? { httpStatus: diagnostics.httpStatus } : {}),
-        ...(diagnostics.errorName ? { errorName: diagnostics.errorName } : {}),
-        ...(diagnostics.transportCode ? { transportCode: diagnostics.transportCode } : {}),
-        ...(diagnostics.errorType ? { errorType: diagnostics.errorType } : {}),
-        ...(diagnostics.errorCode ? { errorCode: diagnostics.errorCode } : {}),
-        ...(diagnostics.retryable !== undefined ? { retryable: diagnostics.retryable } : {}),
-        ...(diagnostics.retryAfterMs !== undefined ? { retryAfterMs: diagnostics.retryAfterMs } : {}),
-    };
     await updateGenerationItem(item.id, {
-      status,
-      error: submissionError,
+      status: failure.status,
+      error: failure.error,
       finishedAt: Date.now(),
       nextPollAt: null,
     });
     await recordAdaptiveGenerationSubmissionOutcome(item.id, {
-      status,
-      error: submissionError,
+      status: failure.status,
+      error: failure.error,
     }).catch(capacityError => {
       console.error('[generation-capacity] rejected submission update deferred', {
         itemId: item.id,

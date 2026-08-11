@@ -67,7 +67,7 @@ export type GenerationCapacityOutcome = {
 };
 
 export const DEFAULT_GENERATION_VIDEO_ADAPTIVE_POLICY: GenerationVideoAdaptivePolicy = {
-  policyVersion: 4,
+  policyVersion: 5,
   hardLimit: 24,
   initialGlobalLimit: 24,
   coldStartLimit: 8,
@@ -201,13 +201,12 @@ export const classifyGenerationCapacityEvidence = (
   outcome: GenerationCapacityOutcome,
 ): { kind: GenerationCapacityEvidenceKind; retryAfterMs?: number } => {
   const status = String(outcome.status || '').toLowerCase();
-  if (status === 'submission_unknown') return { kind: 'submission_unknown' };
+  if (status === 'submission_unknown') return { kind: 'neutral' };
   if (status !== 'failed') return { kind: 'neutral' };
   const error = outcome.error || {};
   const code = String(error.errorCode || error.error_code || error.code || '').toLowerCase();
   const type = String(error.errorType || error.error_type || '').toLowerCase();
   const httpStatus = Number(error.httpStatus ?? error.http_status ?? 0);
-  const retryable = error.retryable === true || String(error.retryable).toLowerCase() === 'true';
   const retryAfterMs = Number(error.retryAfterMs ?? error.retry_after_ms ?? 0) || undefined;
   const text = errorText(error);
 
@@ -227,15 +226,6 @@ export const classifyGenerationCapacityEvidence = (
   }
   if (httpStatus === 429 || code === 'rate_limited') {
     return { kind: 'ambiguous_429', retryAfterMs };
-  }
-  if (['provider_unavailable', 'upstream_failure', 'provider_account_unavailable'].includes(code)
-    || httpStatus >= 500
-    || retryable
-    || /(?:econn|network|socket|service unavailable|temporarily unavailable)/i.test(text)) {
-    return { kind: 'availability', retryAfterMs };
-  }
-  if (['aion_submission_unknown', 'interrupted_submission', 'missing_provider_task_id'].includes(code)) {
-    return { kind: 'submission_unknown', retryAfterMs };
   }
   return { kind: 'neutral' };
 };
@@ -335,21 +325,7 @@ export const applyGenerationCapacityEvidence = (
     };
     return repeated ? reduceGenerationCapacity(paused, evidence, policy) : paused;
   }
-  if (evidence.kind === 'availability') {
-    const failures = [...base.availabilityFailureTimes, evidence.observedAt];
-    if (failures.length < policy.availabilityFailureThreshold) {
-      return { ...base, availabilityFailureTimes: failures };
-    }
-    return {
-      ...base,
-      availabilityFailureTimes: failures,
-      phase: 'circuit_open',
-      circuitOpenUntil: evidence.observedAt + Math.max(policy.bucketCircuitMs, evidence.retryAfterMs || 0),
-    };
-  }
-  if (evidence.kind === 'submission_unknown') {
-    return reduceGenerationCapacity(base, evidence, policy, policy.submissionUnknownCooldownMs);
-  }
+  if (evidence.kind === 'availability' || evidence.kind === 'submission_unknown') return base;
   return base;
 };
 

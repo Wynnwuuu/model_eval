@@ -398,35 +398,10 @@ export const recordAdaptiveGenerationSubmissionOutcome = async (
         activeAtSubmit: Number(row.capacity_active_at_submit || 1),
         limitAtSubmit: Number(row.capacity_limit_at_submit || bucket.state.currentWindow),
       }, serverConfig.generationVideoAdaptivePolicy);
-      const availability = classified.kind === 'submission_unknown'
-        ? classifyGenerationCapacityEvidence({ status: 'failed', error: outcome.error })
-        : { kind: 'neutral' as const };
-      if (availability.kind === 'availability') {
-        bucket.state = applyGenerationCapacityEvidence(bucket.state, {
-          ...availability,
-          observedAt: now,
-          activeAtSubmit: Number(row.capacity_active_at_submit || 1),
-          limitAtSubmit: Number(row.capacity_limit_at_submit || bucket.state.currentWindow),
-        }, serverConfig.generationVideoAdaptivePolicy);
-      }
       await saveState(client, bucket, descriptor);
-      if (classified.kind === 'submission_unknown') {
-        const global = await ensureGlobalState(client, now);
-        global.state = {
-          ...global.state,
-          phase: 'cooling',
-          cooldownUntil: now + serverConfig.generationVideoAdaptivePolicy.globalSubmissionUnknownCooldownMs,
-          lastEvidence: 'submission_unknown',
-          lastEvidenceAt: now,
-          lastActivityAt: now,
-        };
-        await saveState(client, global);
-      }
       console.info('[generation-capacity] submission feedback', {
         capacityKey: descriptor.capacityKey,
-        result: availability.kind === 'availability'
-          ? `${classified.kind}+availability`
-          : classified.kind,
+        result: classified.kind,
         window: bucket.state.currentWindow,
         activeAtSubmit: Number(row.capacity_active_at_submit || 1),
       });

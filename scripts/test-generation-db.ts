@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 
 import type { RequestUser } from '../server/auth/context.ts';
 import { closeDatabase, dbPool } from '../server/db/client.ts';
@@ -456,6 +457,49 @@ try {
   assert.equal(unknownBatch?.items[0].attempt, 0);
   assert.equal(unknownBatch?.items[0].status, 'submission_unknown');
   assert.equal(unknownBatch?.writebackStatus, 'completed');
+
+  const historicalHttpPreflight = createPreflightRecord(
+    (await getDataset(datasetId))!,
+    'historical_http_result',
+    `request-${suffix}-historical-http`,
+  );
+  await saveGenerationPreflight(historicalHttpPreflight);
+  const historicalHttpJob = await createGenerationBatchFromPreflight(historicalHttpPreflight, user);
+  const historicalHttpClaim = await claimNextGenerationItem('image', `worker-historical-http-${suffix}`);
+  assert.equal(historicalHttpClaim?.jobId, historicalHttpJob.id);
+  await updateGenerationItem(historicalHttpClaim!.id, {
+    status: 'submission_unknown',
+    error: {
+      code: 'AION_SUBMISSION_UNKNOWN',
+      message: 'The Aion submission response was lost.',
+      httpStatus: 500,
+    },
+    finishedAt: Date.now(),
+    nextPollAt: null,
+  });
+  await releaseGenerationItemLease(historicalHttpClaim!.id);
+  const repairMigration = await readFile(
+    new URL('../server/db/migrations/013_generation_aion_http_errors.sql', import.meta.url),
+    'utf8',
+  );
+  await dbPool.query(repairMigration);
+  const repairedHistoricalItem = (await dbPool.query(
+    'SELECT status, provider_task_id, error_json, capacity_result_class FROM generation_job_items WHERE id = $1',
+    [historicalHttpClaim!.id],
+  )).rows[0];
+  assert.equal(repairedHistoricalItem.status, 'failed');
+  assert.equal(repairedHistoricalItem.provider_task_id, null);
+  assert.equal(repairedHistoricalItem.error_json.code, 'AION_HTTP_ERROR');
+  assert.equal(repairedHistoricalItem.error_json.responseReceived, true);
+  assert.match(repairedHistoricalItem.error_json.message, /original response detail was not retained/);
+  assert.equal(repairedHistoricalItem.capacity_result_class, 'neutral');
+  const unrepairedTrueUnknown = (await dbPool.query(
+    'SELECT status, error_json FROM generation_job_items WHERE id = $1',
+    [unknownClaim!.id],
+  )).rows[0];
+  assert.equal(unrepairedTrueUnknown.status, 'submission_unknown',
+    'historical repair must leave no-response outcomes unchanged');
+  assert.equal(unrepairedTrueUnknown.error_json.code, 'TEST_SUBMISSION_UNKNOWN');
 
   const stableProviderUrl = 'https://provider.example.com/result.png?expires=soon';
   const stableAssetUrl = 'https://vidmuse-dev.sandcdn.com/user/796854911166661/assets/images/result.png';
@@ -1174,8 +1218,8 @@ try {
   }));
   await saveGenerationPreflight(availabilityPreflight);
   const availabilityJob = await createGenerationBatchFromPreflight(availabilityPreflight, user);
-  const availabilityClaims = [];
-  for (let index = 0; index < 3; index += 1) {
+  const neutralFailureClaims = [];
+  for (let index = 0; index < 2; index += 1) {
     await dbPool.query(
       `UPDATE generation_capacity_states
        SET state_json = state_json || $1::jsonb, updated_at = now()
@@ -1190,38 +1234,66 @@ try {
     assert.equal(claim?.jobId, availabilityJob.id);
     assert.equal(await beginGenerationSubmission(claim!.id, 1, Date.now(), Date.now()), true);
     await releaseGenerationItemLease(claim!.id);
-    availabilityClaims.push(claim!);
+    neutralFailureClaims.push(claim!);
   }
-  for (const claim of availabilityClaims) {
-    const availabilityError = {
-      code: 'AION_SUBMISSION_UNKNOWN',
-      message: 'Aion returned a retryable service failure without a task ID.',
-      httpStatus: 503,
+  const stateBeforeNeutralFailures = (await dbPool.query(
+    'SELECT state_json FROM generation_capacity_states WHERE capacity_key = $1',
+    [adaptiveBucketKey],
+  )).rows[0].state_json;
+  for (const [index, claim] of neutralFailureClaims.entries()) {
+    const status = index === 0 ? 'failed' : 'submission_unknown';
+    const neutralError = index === 0 ? {
+      code: 'AION_HTTP_ERROR',
+      message: 'Aion returned an explicit HTTP 500 response.',
+      httpStatus: 500,
       retryable: true,
+      responseReceived: true,
+    } : {
+      code: 'AION_SUBMISSION_UNKNOWN',
+      message: 'The connection reset before an HTTP response was received.',
+      transportCode: 'ECONNRESET',
+      responseReceived: false,
     };
     await updateGenerationItem(claim.id, {
-      status: 'submission_unknown',
-      error: availabilityError,
+      status,
+      error: neutralError,
       finishedAt: Date.now(),
       nextPollAt: null,
     });
     await recordAdaptiveGenerationSubmissionOutcome(claim.id, {
-      status: 'submission_unknown',
-      error: availabilityError,
+      status,
+      error: neutralError,
     });
   }
-  const availabilityState = (await dbPool.query(
+  const stateAfterNeutralFailures = (await dbPool.query(
     'SELECT state_json FROM generation_capacity_states WHERE capacity_key = $1',
     [adaptiveBucketKey],
   )).rows[0].state_json;
-  assert.equal(availabilityState.phase, 'circuit_open',
-    'three concurrent retryable submission failures must open the capacity-group circuit');
-  assert.ok(availabilityState.circuitOpenUntil > Date.now());
+  assert.equal(stateAfterNeutralFailures.currentWindow, stateBeforeNeutralFailures.currentWindow,
+    'received HTTP 500 and no-response outcomes must not reduce the model window');
+  assert.equal(stateAfterNeutralFailures.cooldownUntil, stateBeforeNeutralFailures.cooldownUntil,
+    'received HTTP 500 and no-response outcomes must not cool the model bucket');
+  assert.equal(stateAfterNeutralFailures.circuitOpenUntil, stateBeforeNeutralFailures.circuitOpenUntil,
+    'received HTTP 500 and no-response outcomes must not open a model circuit');
   const globalUnknownState = (await dbPool.query(
     `SELECT state_json FROM generation_capacity_states WHERE capacity_key = '__video_global__'`,
   )).rows[0].state_json;
-  assert.ok(globalUnknownState.cooldownUntil > Date.now(),
-    'submission uncertainty must pause all new video submissions');
+  assert.ok(!globalUnknownState.cooldownUntil || globalUnknownState.cooldownUntil <= Date.now(),
+    'submission uncertainty must not pause unrelated video submissions');
+  await dbPool.query(
+    `UPDATE generation_capacity_states
+     SET state_json = state_json || $1::jsonb, updated_at = now()
+     WHERE capacity_key = '__video_global__'`,
+    [JSON.stringify({ submitTokens: 1, submitTokenUpdatedAt: Date.now() })],
+  );
+  const continuedClaim = await claimNextGenerationItem(
+    'video',
+    `adaptive-neutral-continued-${suffix}`,
+    'submit',
+  );
+  assert.equal(continuedClaim?.jobId, availabilityJob.id,
+    'the next pending case must be admitted immediately after neutral submission failures');
+  await releaseGenerationItemLease(continuedClaim!.id);
   await requestGenerationCancellation(availabilityJob.id, user);
   await requestGenerationCancellation(adaptiveJob.id, user);
   serverConfig.generationVideoAdaptiveEnabled = false;

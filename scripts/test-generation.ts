@@ -22,6 +22,7 @@ import {
 } from '../server/generation/aionGenerationClient.ts';
 import {
   generationPollPhase,
+  generationSubmissionFailure,
   generationSubmissionErrorDiagnostics,
   archivedGenerationResult,
   normalizeProviderPayload,
@@ -385,13 +386,13 @@ assert.equal(computeGenerationConcurrencyPolicy(concurrencyLimit, [successfulOut
 assert.equal(computeGenerationConcurrencyPolicy(concurrencyLimit, Array.from({ length: 3 }, successfulOutcome)).effectiveLimit, 2);
 assert.equal(computeGenerationConcurrencyPolicy(concurrencyLimit, Array.from({ length: 6 }, successfulOutcome)).effectiveLimit, 3);
 assert.equal(computeGenerationConcurrencyPolicy(concurrencyLimit, [
-  capacityFailure('GENERATION_TIMEOUT', 'Generation timed out.'),
+  capacityFailure('QUEUE_FULL', 'Provider queue is full.', 429),
   ...Array.from({ length: 12 }, successfulOutcome),
-]).effectiveLimit, 1, 'the newest capacity failure must immediately reset capacity to the minimum');
+]).effectiveLimit, 1, 'the newest explicit capacity rejection must immediately reset capacity to the minimum');
 assert.equal(computeGenerationConcurrencyPolicy(concurrencyLimit, [
   ...Array.from({ length: 3 }, successfulOutcome),
-  capacityFailure('PROVIDER_FAILED', 'Provider overloaded.'),
-]).effectiveLimit, 2, 'three successes after the latest capacity failure may restore one slot');
+  capacityFailure('QUEUE_FULL', 'Provider queue is full.', 429),
+]).effectiveLimit, 2, 'three successes after the latest explicit capacity rejection may restore one slot');
 
 const deterministicFailures = [
   capacityFailure('AION_SUBMIT_REJECTED', 'Wan3 seed must be an integer between 0 and 2147483647', 400),
@@ -423,7 +424,7 @@ assert.throws(() => parseGenerationVideoModelLimits(JSON.stringify({
 }), 8), /minimum/);
 
 const adaptivePolicy = parseGenerationVideoAdaptivePolicy(undefined);
-assert.equal(adaptivePolicy.policyVersion, 4);
+assert.equal(adaptivePolicy.policyVersion, 5);
 assert.equal(adaptivePolicy.hardLimit, 24);
 assert.equal(adaptivePolicy.initialGlobalLimit, 24);
 assert.equal(adaptivePolicy.coldStartLimit, 8);
@@ -499,9 +500,9 @@ assert.equal(secondAmbiguous429.currentWindow, 8,
 const submissionUnknown = applyGenerationCapacityEvidence(beforeRateLimit, {
   kind: 'submission_unknown', observedAt: capacityNow + 7_500, activeAtSubmit: 16, limitAtSubmit: 16,
 }, adaptivePolicy);
-assert.equal(submissionUnknown.currentWindow, 8);
-assert.ok((submissionUnknown.cooldownUntil || 0)
-  >= capacityNow + 7_500 + adaptivePolicy.submissionUnknownCooldownMs);
+assert.equal(submissionUnknown.currentWindow, 16,
+  'a no-response submission outcome must not be treated as a discovered capacity boundary');
+assert.equal(submissionUnknown.cooldownUntil, undefined);
 
 let unavailableState: GenerationCapacityState = { ...beforeRateLimit, availabilityFailureTimes: [] };
 for (let failure = 1; failure <= 3; failure += 1) {
@@ -510,8 +511,9 @@ for (let failure = 1; failure <= 3; failure += 1) {
   }, adaptivePolicy);
 }
 assert.equal(unavailableState.currentWindow, 16,
-  'availability failures open a circuit without pretending to discover a provider concurrency boundary');
-assert.equal(unavailableState.phase, 'circuit_open');
+  'generic availability failures must not pretend to discover a provider concurrency boundary');
+assert.equal(unavailableState.phase, beforeRateLimit.phase,
+  'generic provider availability failures must not open a capacity circuit');
 
 let recoveryState: GenerationCapacityState = { ...submissionUnknown, cooldownUntil: undefined, currentWindow: 4 };
 for (let accepted = 0; accepted < 4; accepted += 1) {
@@ -547,7 +549,13 @@ assert.equal(classifyGenerationCapacityEvidence({
 }).kind, 'ambiguous_429');
 assert.equal(classifyGenerationCapacityEvidence({
   status: 'failed', error: { errorCode: 'provider_unavailable', httpStatus: 503 },
-}).kind, 'availability');
+}).kind, 'neutral');
+assert.equal(classifyGenerationCapacityEvidence({
+  status: 'submission_unknown', error: { code: 'AION_SUBMISSION_UNKNOWN', transportCode: 'ECONNRESET' },
+}).kind, 'neutral');
+assert.equal(classifyGenerationCapacityEvidence({
+  status: 'submission_unknown', error: { code: 'MISSING_PROVIDER_TASK_ID' },
+}).kind, 'neutral');
 assert.equal(classifyGenerationCapacityEvidence({
   status: 'failed', error: { errorCode: 'validation_error', httpStatus: 400 },
 }).kind, 'neutral');
@@ -629,23 +637,69 @@ assert.equal(generationPollPhase({
   reconciliationDeadlineAt: 2_000,
 }), 'expired');
 
-assert.deepEqual(generationSubmissionErrorDiagnostics(Object.assign(new Error('service unavailable'), {
+const receivedServiceError = Object.assign(new Error('safe upstream failure detail'), {
   status: 503,
-})), {
+  errorCode: 'provider_unavailable',
+  retryable: true,
+});
+assert.deepEqual(generationSubmissionErrorDiagnostics(receivedServiceError), {
   httpStatus: 503,
   errorName: 'Error',
-  definitelyRejected: false,
+  errorCode: 'provider_unavailable',
+  retryable: true,
+  responseReceived: true,
+  definitelyRejected: true,
+});
+assert.deepEqual(generationSubmissionFailure(receivedServiceError), {
+  status: 'failed',
+  error: {
+    code: 'AION_HTTP_ERROR',
+    message: 'safe upstream failure detail',
+    httpStatus: 503,
+    errorName: 'Error',
+    errorCode: 'provider_unavailable',
+    retryable: true,
+    responseReceived: true,
+  },
 });
 assert.equal(generationSubmissionErrorDiagnostics(Object.assign(new Error('bad request'), {
   status: 400,
 })).definitelyRejected, true);
-assert.deepEqual(generationSubmissionErrorDiagnostics(Object.assign(new Error('connection refused'), {
+for (const httpStatus of [400, 500, 502, 503]) {
+  const failure = generationSubmissionFailure(Object.assign(new Error(`HTTP ${httpStatus}`), { status: httpStatus }));
+  assert.equal(failure.status, 'failed');
+  assert.equal(failure.error.code, httpStatus >= 500 ? 'AION_HTTP_ERROR' : 'AION_SUBMIT_REJECTED');
+  assert.equal(failure.error.responseReceived, true);
+}
+const connectionRefused = Object.assign(new Error('connection refused'), {
   cause: { code: 'ECONNREFUSED' },
-})), {
+});
+assert.deepEqual(generationSubmissionErrorDiagnostics(connectionRefused), {
   errorName: 'Error',
   transportCode: 'ECONNREFUSED',
+  responseReceived: false,
   definitelyRejected: false,
 });
+assert.deepEqual(generationSubmissionFailure(connectionRefused), {
+  status: 'submission_unknown',
+  error: {
+    code: 'AION_SUBMISSION_UNKNOWN',
+    message: 'The Aion submission did not return an HTTP response; automatic retry is disabled to prevent duplicate billing.',
+    errorName: 'Error',
+    transportCode: 'ECONNREFUSED',
+    responseReceived: false,
+  },
+});
+const aborted = Object.assign(new Error('This operation was aborted'), { name: 'AbortError' });
+assert.equal(generationSubmissionFailure(aborted).status, 'submission_unknown');
+const connectionReset = Object.assign(new Error('socket closed'), { code: 'ECONNRESET' });
+assert.equal(generationSubmissionFailure(connectionReset).status, 'submission_unknown');
+const redactedFailure = generationSubmissionFailure(Object.assign(
+  new Error(`upstream rejected https://provider.example/result.mp4?secret=hidden ${'x'.repeat(2_100)}`),
+  { status: 500 },
+));
+assert.equal(redactedFailure.error.message.includes('secret=hidden'), false);
+assert.ok(redactedFailure.error.message.length <= 2_000);
 assert.equal(generationSubmissionErrorDiagnostics(Object.assign(new Error('unsafe code'), {
   code: 'https://internal.example/path with spaces',
 })).transportCode, undefined, 'diagnostics must not expose arbitrary error text as a transport code');
@@ -3497,8 +3551,35 @@ await assert.rejects(
       errorCode: 'rate_limited',
       retryable: true,
       retryAfterMs: 7_000,
+      responseReceived: true,
       definitelyRejected: true,
     });
+    return true;
+  },
+);
+
+const receivedHttpErrorClient = new AionGenerationClient(
+  'https://aion.example.com',
+  '987654',
+  async () => new Response(JSON.stringify({
+    code: 'provider_crashed',
+    detail: { message: 'The configured provider rejected this request.' },
+    retryable: true,
+  }), {
+    status: 500,
+    headers: { 'Content-Type': 'application/json' },
+  }),
+  '',
+  'model_api',
+);
+await assert.rejects(
+  () => receivedHttpErrorClient.submit('/model/api/v1/model/generate-video', {}),
+  (error: any) => {
+    assert.equal(error.status, 500);
+    assert.equal(error.errorCode, 'provider_crashed', 'top-level Aion error codes must be retained');
+    assert.equal(error.retryable, true);
+    assert.equal(error.message, 'The configured provider rejected this request.');
+    assert.equal(generationSubmissionFailure(error).status, 'failed');
     return true;
   },
 );

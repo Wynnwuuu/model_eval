@@ -65,7 +65,7 @@ spec:
             - name: GENERATION_VIDEO_ADAPTIVE_ENABLED
               value: "true"
             - name: GENERATION_VIDEO_ADAPTIVE_POLICY_JSON
-              value: '{"policyVersion":4,"hardLimit":24,"initialGlobalLimit":24,"coldStartLimit":8,"optimisticWaves":[8,16,24],"idleResetMs":86400000,"globalSubmitRatePerSecond":2,"globalSubmitBurst":2,"capacityCooldownMs":60000,"ambiguous429WindowMs":600000,"submissionUnknownCooldownMs":300000,"globalSubmissionUnknownCooldownMs":60000,"availabilityFailureWindowMs":120000,"availabilityFailureThreshold":3,"bucketCircuitMs":120000,"pollMinMs":10000,"pollMaxMs":30000,"submitWorkers":2,"pollWorkers":6}'
+              value: '{"policyVersion":5,"hardLimit":24,"initialGlobalLimit":24,"coldStartLimit":8,"optimisticWaves":[8,16,24],"idleResetMs":86400000,"globalSubmitRatePerSecond":2,"globalSubmitBurst":2,"capacityCooldownMs":60000,"ambiguous429WindowMs":600000,"submissionUnknownCooldownMs":300000,"globalSubmissionUnknownCooldownMs":60000,"availabilityFailureWindowMs":120000,"availabilityFailureThreshold":3,"bucketCircuitMs":120000,"pollMinMs":10000,"pollMaxMs":30000,"submitWorkers":2,"pollWorkers":6}'
             - name: GENERATION_VIDEO_MODEL_LIMITS_JSON
               value: '{"default":{"min":8,"initial":8,"max":8},"models":{}}'
             - name: GENERATION_MODEL_VALIDATION_OVERRIDES_JSON

@@ -2070,6 +2070,12 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                         const providerActive = ['submitting', 'submitted', 'processing'].includes(item.status);
                         const startedAt = item.submissionStartedAt || item.startedAt;
                         const released = ['failed', 'submission_unknown', 'cancelled', 'succeeded', 'completed'].includes(item.status);
+                        const receivedAionError = item.status === 'failed'
+                          && (item.error?.responseReceived === true
+                            || item.error?.code === 'AION_HTTP_ERROR'
+                            || item.error?.code === 'AION_SUBMIT_REJECTED');
+                        const noAionResponse = item.status === 'submission_unknown'
+                          && item.error?.responseReceived !== true;
                         return (
                           <div key={item.id} className="grid min-h-[72px] gap-3 border-b border-white/5 px-3 py-3 text-xs last:border-0 md:grid-cols-[28px_170px_120px_minmax(0,1fr)_180px]">
                             <div className="pt-1">
@@ -2100,6 +2106,12 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                               )}
                             </div>
                             <div className="min-w-0 break-words text-slate-400">
+                              {receivedAionError && (
+                                <div className="mb-1 font-medium text-red-300">{'Aion 已明确返回错误'}</div>
+                              )}
+                              {noAionResponse && (
+                                <div className="mb-1 font-medium text-amber-300">{'未收到 Aion 响应，提交结果未知'}</div>
+                              )}
                               <div>{item.error?.message || item.providerStatus || '-'}</div>
                               {item.error?.code && (
                                 <div className="mt-1 font-mono text-[11px] text-slate-500">
