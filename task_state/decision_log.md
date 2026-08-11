@@ -358,3 +358,7 @@ The platform window is fixed at twenty-four and submission traffic is globally l
 An explicit concurrency rejection halves a group and cools it for at least sixty seconds. RPM feedback only pauses submission. A second ambiguous 429 within ten minutes also halves the group. Submission uncertainty never retries the case, halves and pauses the group for five minutes, and pauses all new video submissions for sixty seconds. Three availability failures within two minutes open a two-minute group circuit without claiming a discovered concurrency boundary.
 
 The Aion task ID is persisted before acceptance updates and downstream response handling. This separates provider submission ambiguity from local polling, result handling, and archive failures; a local failure after task-ID persistence resumes by polling the existing task instead of fabricating a submission-unknown state.
+
+Successful result archival clears transient poll and reconciliation errors. Provider failures remain immutable evidence, but a task that later succeeds must not carry a stale transport error into the dataset `_error` column.
+
+The live smoke confirmed that supplier completion time is not a useful admission signal: twelve accepted Seedance tasks were submitted in 6.398 seconds, while the first terminal result arrived more than thirty minutes later and one provider task reached its explicit 3600-second timeout. Terminal timeout remains reliability evidence only and does not reduce the accepted-submission window.

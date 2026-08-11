@@ -28,12 +28,12 @@
     },
     {
       "id": "release",
-      "status": "in_progress",
+      "status": "completed",
       "description": "Rebase on latest GitHub main, fast-forward main, and verify dev deployment"
     },
     {
       "id": "live-smoke",
-      "status": "pending",
+      "status": "completed",
       "description": "Run an isolated 12-case Seedance 2.0 Pro smoke and verify wave timing, task IDs, writeback, and UI state"
     }
   ]

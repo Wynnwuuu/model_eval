@@ -609,7 +609,7 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 
 ## 2026-08-11: Optimistic-wave video capacity
 
-### In progress
+### Completed
 
 - Replaced policy v3 terminal-history learning, mode-specific cold starts, verified-window probes, and rollout shadowing with policy v4 optimistic waves `8 -> 16 -> 24`.
 - A capacity group now uses an explicit Aion `groupId` when present and otherwise the stable model configuration ID. Generation modes share the same group.
@@ -617,10 +617,8 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Explicit capacity rejection halves the group, RPM feedback pauses without shrinking, repeated ambiguous 429 feedback halves, submission uncertainty pauses the whole video lane and halves the group, and terminal generation outcomes are capacity-neutral.
 - Dev no longer contains Wan, H3, or Seedance model-name limits. Disabling policy v4 falls back to a uniform global-eight policy.
 - Generation unit tests, TypeScript, and PostgreSQL generation integration pass. The DB test confirms two atomic submission workers, the ninth claim before any terminal result, unique task IDs/one attempt, and shared capacity across video generation modes.
-
-### Remaining
-
-- Rebase and release to GitHub main, verify CI/dev rollout, then execute the approved isolated 12-case Seedance 2.0 Pro smoke.
+- Cleared stale transient poll/reconciliation errors when a task later succeeds so successful rows cannot write a false `_error` value.
+- Fast-forward released commits `301b931` and `e98f9e0` to `world-sim-dev/ManuEval` main while preserving intervening main commit `a16f063`. Both GitHub test workflows and both dev CI/CD rollouts succeeded.
 
 ### Validation
 
@@ -628,3 +626,7 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Passed API smoke, dataset sync/clone/column deletion/import mapping/table projection/filtering, structured evaluation audit, Arena, rank ties, TypeScript, server build, frontend build, and `git diff --check`.
 - Browser-validated the production task center at `1440x900` and `390x844`. The optimistic-wave summary and expanded detail render without page overflow; a pre-existing mobile intrinsic-grid overflow that clipped the new-production button was fixed and rechecked.
 - The browser fixture was local-only, generated no Aion request, and was deleted after verification. Local web/API processes were stopped.
+- Real Aion dev smoke used live `seedance-2.0-pro-t2v` configuration with 12 valid text-to-video cases at 4 seconds, 720p, 16:9, and audio disabled. All 12 received unique task IDs with one attempt: the first/eighth/ninth/twelfth submissions started at 0.786/4.497/5.253/6.398 seconds after confirmation, and the first terminal result arrived 1,865.486 seconds after the twelfth submission.
+- The smoke proved the first eight accepted task IDs opened the 16-slot wave and cases 9-12 submitted before any terminal result. A controlled Worker restart preserved all 12 task IDs and `attempt=1`.
+- Final smoke outcome was 11 succeeded and one explicit Aion provider timeout after 3600 seconds; no case was automatically retried. Dataset version 2 contains 12 statuses, 12 unique request IDs, 12 parameter JSON values, one accurate error, and 11 stable `vidmuse-dev-video.sandcdn.com` results.
+- A stable result returned HTTP 206, `video/mp4`, `Accept-Ranges: bytes`, and a valid `Content-Range`. The final queue returned strategy `optimistic_waves`, global limit 24, and zero active/pending items. The isolated local API was stopped.
