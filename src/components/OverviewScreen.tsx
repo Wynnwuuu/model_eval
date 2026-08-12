@@ -178,7 +178,7 @@ const OverviewScreen: React.FC<OverviewScreenProps> = ({
   return (
     <PageFrame>
       <PageHeader
-        eyebrow="Eval Studio"
+        eyebrow="Manueval"
         title="运营总览"
         description="查看待处理评测、生产批次与最新结果，快速进入下一步。"
         actions={

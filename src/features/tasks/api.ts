@@ -5,6 +5,7 @@ import { getApiAuthHeaders } from '../apiAuthHeaders';
 import { loadTaskEvaluation, loadTaskVoteGroups } from './loadTaskEvaluation';
 import { loadTaskItems } from './loadTaskItems';
 import { API_BASE_URL, USE_SHARED_DATA_SOURCE } from '../../runtimeConfig';
+import { notifyPageMetadataRefresh } from '../../pageMetadataClient';
 
 export { loadTaskEvaluation, loadTaskItems, loadTaskVoteGroups };
 
@@ -78,6 +79,7 @@ export async function requestTaskJson<T>(path: string, init?: RequestInit): Prom
 
 function notifyTaskReloaders() {
   taskReloaders.forEach(reload => reload());
+  notifyPageMetadataRefresh();
 }
 
 export async function loadTask(taskId: string) {

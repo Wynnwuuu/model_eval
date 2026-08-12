@@ -659,3 +659,18 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - The smoke proved the first eight accepted task IDs opened the 16-slot wave and cases 9-12 submitted before any terminal result. A controlled Worker restart preserved all 12 task IDs and `attempt=1`.
 - Final smoke outcome was 11 succeeded and one explicit Aion provider timeout after 3600 seconds; no case was automatically retried. Dataset version 2 contains 12 statuses, 12 unique request IDs, 12 parameter JSON values, one accurate error, and 11 stable `vidmuse-dev-video.sandcdn.com` results.
 - A stable result returned HTTP 206, `video/mp4`, `Accept-Ranges: bytes`, and a valid `Content-Range`. The final queue returned strategy `optimistic_waves`, global limit 24, and zero active/pending items. The isolated local API was stopped.
+
+## 2026-08-12: Page titles and link previews
+
+### Completed
+
+- Replaced the Google AI Studio scaffold title with Manueval metadata, a favicon, a touch icon, and a 1200x630 original social preview image.
+- Added one shared route-title resolver for projects, datasets, generation batches, tasks, results, insights, Rubrics, login, and list pages.
+- Added server-side HTML metadata injection so link-unfurl crawlers receive resource-specific titles before React runs. Only resource names and page types are exposed; business content remains excluded.
+- Added client-side metadata synchronization for SPA navigation, offline local data, canonical URLs, and resource renames.
+
+### Validation
+
+- Passed page metadata unit and HTTP integration tests, insight deep-link and summary tests, TypeScript, frontend build, server build, and `git diff --check`.
+- Browser-validated homepage, project, dataset, and generation titles plus canonical and Open Graph updates during client-side navigation.
+- Full shared-stack `local:check` and API smoke remain unavailable because Docker Desktop is not running. The offline frontend remains available at `http://localhost:3000/`.

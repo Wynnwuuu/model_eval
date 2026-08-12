@@ -17,6 +17,7 @@
   },
   "include": [
     "server/**/*.ts",
-    "src/types.ts"
+    "src/types.ts",
+    "src/pageMetadata.ts"
   ]
 }

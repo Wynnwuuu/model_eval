@@ -374,3 +374,9 @@ The Aion task ID is persisted before acceptance updates and downstream response 
 Successful result archival clears transient poll and reconciliation errors. Provider failures remain immutable evidence, but a task that later succeeds must not carry a stale transport error into the dataset `_error` column.
 
 The live smoke confirmed that supplier completion time is not a useful admission signal: twelve accepted Seedance tasks were submitted in 6.398 seconds, while the first terminal result arrived more than thirty minutes later and one provider task reached its explicit 3600-second timeout. Terminal timeout remains reliability evidence only and does not reduce the accepted-submission window.
+
+## 2026-08-12: Link previews expose names but not business content
+
+Manueval uses `resource name + page type + Manueval` for browser and link-preview titles. The user explicitly accepted unauthenticated preview crawlers seeing resource names. Server-rendered metadata therefore queries names without a user session, but never includes goals, votes, prompts, members, media, production parameters, or result summaries.
+
+Browser metadata and crawler metadata share one deterministic resolver. Static defaults remain generic, missing resources fall back to their page type, HTML values are escaped, and metadata failures cannot block SPA delivery. Search indexing is disabled with `noindex,nofollow`; this does not replace application authorization.

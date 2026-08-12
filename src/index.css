@@ -177,7 +177,7 @@
   }
 
   .ark-shell::before {
-    content: "EVAL STUDIO";
+    content: "MANUEVAL";
     position: fixed;
     right: 26px;
     bottom: 18px;
@@ -224,7 +224,7 @@
   }
 
   .ark-side-terminal::before {
-    content: "EVAL";
+    content: "MANU";
     position: absolute;
     left: -0.14em;
     bottom: 0.2em;

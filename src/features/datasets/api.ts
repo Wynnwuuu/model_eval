@@ -12,6 +12,7 @@ import {
 } from '../../datasetSync';
 import { getApiAuthHeaders } from '../apiAuthHeaders';
 import { API_BASE_URL, USE_SHARED_DATA_SOURCE } from '../../runtimeConfig';
+import { notifyPageMetadataRefresh } from '../../pageMetadataClient';
 
 const HTTP_REFRESH_INTERVAL_MS = 5000;
 
@@ -51,6 +52,7 @@ async function loadHttpDatasets() {
 
 function notifyDatasetReloaders() {
   datasetReloaders.forEach(reload => reload());
+  notifyPageMetadataRefresh();
 }
 
 const sanitizeDatasetValue = (value: any): any => {

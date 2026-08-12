@@ -3,6 +3,7 @@ import { db } from '../../auth';
 import { DatasetGenerationJob, DatasetGenerationJobItem } from '../../types';
 import { getApiAuthHeaders } from '../apiAuthHeaders';
 import { API_BASE_URL, USE_SHARED_DATA_SOURCE } from '../../runtimeConfig';
+import { notifyPageMetadataRefresh } from '../../pageMetadataClient';
 
 const HTTP_REFRESH_INTERVAL_MS = 5000;
 
@@ -29,6 +30,7 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 
 function notifyReloaders() {
   reloaders.forEach(reload => reload());
+  notifyPageMetadataRefresh();
 }
 
 export function subscribeGenerationJobs(

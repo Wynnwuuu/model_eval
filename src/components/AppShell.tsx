@@ -128,7 +128,7 @@ const SidebarContent: React.FC<{
           <ToastIcon size={20} />
         </div>
         <div className="min-w-0">
-          <div className="text-sm font-black uppercase tracking-tight text-[#050607]">Eval Studio</div>
+          <div className="text-sm font-black uppercase tracking-tight text-[#050607]">MANUEVAL</div>
           <div className="font-mono text-[10px] uppercase tracking-[0.22em] text-black/55">Evaluation OS</div>
         </div>
       </div>
@@ -195,7 +195,7 @@ const AppShell: React.FC<AppShellProps> = ({
   const [mobileOpen, setMobileOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const accountRef = useRef<HTMLDivElement | null>(null);
-  const title = useMemo(() => contextTitle || routeTitles[currentRoute] || 'Eval Studio', [contextTitle, currentRoute]);
+  const title = useMemo(() => contextTitle || routeTitles[currentRoute] || 'Manueval', [contextTitle, currentRoute]);
   const userLabel = user?.displayName || user?.email || 'Local Tester';
   const initial = String(userLabel || 'L').slice(0, 1).toUpperCase();
   const workspaceLabel = usesCloudAuth ? '在线账号' : '本地测试用户';
@@ -217,7 +217,7 @@ const AppShell: React.FC<AppShellProps> = ({
         <div className="ark-operation-topbar px-4 py-3">
           <div className="mx-auto flex max-w-[1800px] items-center justify-between gap-3">
             <button onClick={() => onNavigate('overview')} className="flex items-center gap-2 text-sm font-black uppercase tracking-wide text-white">
-              <ToastIcon size={18} className="text-[var(--accent)]" /> Eval Studio
+              <ToastIcon size={18} className="text-[var(--accent)]" /> MANUEVAL
             </button>
             <div className="font-mono text-xs uppercase tracking-[0.16em] text-[var(--accent-cold)]">{title}</div>
           </div>

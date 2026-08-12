@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="Manueval">
+  <defs>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M48 0H0v48" fill="none" stroke="#20252b" stroke-width="1"/>
+    </pattern>
+    <pattern id="hazard" width="24" height="24" patternUnits="userSpaceOnUse" patternTransform="rotate(35)">
+      <rect width="10" height="24" fill="#ffb21d"/>
+      <rect x="10" width="14" height="24" fill="#111316"/>
+    </pattern>
+    <linearGradient id="panel" x1="0" x2="1">
+      <stop offset="0" stop-color="#15181c"/>
+      <stop offset="1" stop-color="#0b0d0f"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="#050607"/>
+  <rect width="1200" height="630" fill="url(#grid)" opacity="0.8"/>
+  <rect x="0" y="0" width="22" height="630" fill="#ffb21d"/>
+  <rect x="22" y="0" width="6" height="630" fill="#2b3036"/>
+  <path d="M74 68H1090l50 50v390l-54 54H74z" fill="url(#panel)" stroke="#353b42" stroke-width="2"/>
+  <path d="M74 68h1016l50 50H760l-28-28H74z" fill="#f3f3eb"/>
+  <path d="M74 68h390l-32 50H74z" fill="#ffb21d"/>
+  <path d="M89 86h284" stroke="#050607" stroke-width="8"/>
+  <rect x="74" y="522" width="1012" height="40" fill="url(#hazard)" opacity="0.36"/>
+  <rect x="104" y="154" width="8" height="238" fill="#ffb21d"/>
+  <rect x="128" y="154" width="2" height="238" fill="#46515c"/>
+  <text x="168" y="322" fill="#f3f3eb" font-family="Segoe UI, Arial, sans-serif" font-size="112" font-weight="800" letter-spacing="0">Manueval</text>
+  <path d="M172 364h650" stroke="#ffb21d" stroke-width="6"/>
+  <path d="M172 382h384" stroke="#8aa3bf" stroke-width="3"/>
+  <g transform="translate(916 184)">
+    <rect width="142" height="142" fill="#050607" stroke="#4a525b" stroke-width="2"/>
+    <path d="M0 0h18v142H0z" fill="#ffb21d"/>
+    <path d="M37 105V37h16l18 27 18-27h16v68H87V69L71 94 55 69v36z" fill="#f3f3eb"/>
+    <path d="M109 16h22v22z" fill="#ffb21d"/>
+  </g>
+  <path d="M1086 68h54v54z" fill="#ffb21d"/>
+  <path d="M74 508h60l-60 54z" fill="#ffb21d"/>
+</svg>

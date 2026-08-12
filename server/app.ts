@@ -14,10 +14,46 @@ import { mediaProxyRoutes } from './media/mediaProxyRoutes.ts';
 import { projectRoutes } from './projects/projectRoutes.ts';
 import { taskRoutes } from './tasks/taskRoutes.ts';
 import { templateRoutes } from './templates/templateRoutes.ts';
+import {
+  PageMetadataLoaders,
+  renderSpaPage,
+  resolveServerPageMetadata,
+} from './pageMetadata.ts';
 
-export const createApp = () => {
+const firstForwardedValue = (value?: string) => value?.split(',')[0]?.trim();
+
+const getRequestOrigin = (req: express.Request) => {
+  const configuredOrigin = (process.env.PUBLIC_APP_URL || process.env.APP_URL)?.trim();
+  if (configuredOrigin) {
+    try {
+      return new URL(configuredOrigin).origin;
+    } catch {
+      console.warn('Ignoring invalid configured public app URL');
+    }
+  }
+
+  const forwardedProto = firstForwardedValue(req.header('x-forwarded-proto'));
+  const protocol = forwardedProto === 'https' || forwardedProto === 'http'
+    ? forwardedProto
+    : req.protocol === 'https' ? 'https' : 'http';
+  const host = firstForwardedValue(req.header('x-forwarded-host'))
+    || req.header('host')
+    || 'localhost';
+  return `${protocol}://${host}`;
+};
+
+interface CreateAppOptions {
+  staticDistPath?: string;
+  pageMetadataLoaders?: PageMetadataLoaders;
+}
+
+export const createApp = (options: CreateAppOptions = {}) => {
   const app = express();
-  const staticDistPath = path.resolve(process.env.STATIC_DIST_PATH || path.resolve(process.cwd(), 'dist'));
+  const staticDistPath = path.resolve(
+    options.staticDistPath
+      || process.env.STATIC_DIST_PATH
+      || path.resolve(process.cwd(), 'dist'),
+  );
 
   app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', process.env.CORS_ORIGIN || '*');
@@ -50,6 +86,25 @@ export const createApp = () => {
       sendError(res, error, 'Unknown database error');
     }
   });
+
+  app.get('/api/page-metadata', async (req, res) => {
+    try {
+      const requestedPath = typeof req.query.path === 'string' ? req.query.path.trim() : '';
+      if (!requestedPath || !requestedPath.startsWith('/') || requestedPath.length > 2048) {
+        throw badRequest('path must be a relative application URL');
+      }
+      const requestedUrl = new URL(requestedPath, 'https://metadata.manueval.local');
+      const metadata = await resolveServerPageMetadata(
+        requestedUrl.pathname,
+        requestedUrl.searchParams,
+        options.pageMetadataLoaders,
+      );
+      res.set('Cache-Control', 'no-store');
+      res.json({ metadata });
+    } catch (error) {
+      sendError(res, error, 'Failed to resolve page metadata');
+    }
+  });
   app.use('/api/generation-assets', generationPublicAssetRoutes);
 
   app.use('/api/media-proxy', mediaProxyRoutes);
@@ -62,13 +117,43 @@ export const createApp = () => {
   app.use('/api/generation', attachRequestUser, generationRoutes);
 
   if (fs.existsSync(staticDistPath)) {
-    app.use(express.static(staticDistPath));
-    app.get('*', (req, res, next) => {
+    const indexPath = path.join(staticDistPath, 'index.html');
+    const indexTemplate = fs.existsSync(indexPath) ? fs.readFileSync(indexPath, 'utf8') : '';
+    app.use(express.static(staticDistPath, { index: false }));
+    app.get('*', async (req, res, next) => {
       if (req.path.startsWith('/api/')) {
         next();
         return;
       }
-      res.sendFile(path.join(staticDistPath, 'index.html'));
+      if (!indexTemplate) {
+        next();
+        return;
+      }
+
+      try {
+        const origin = getRequestOrigin(req);
+        const requestedUrl = new URL(req.originalUrl, origin);
+        const metadata = await resolveServerPageMetadata(
+          requestedUrl.pathname,
+          requestedUrl.searchParams,
+          options.pageMetadataLoaders,
+        );
+        const html = renderSpaPage({
+          html: indexTemplate,
+          metadata,
+          canonicalUrl: requestedUrl.toString(),
+          origin,
+        });
+        res.set({
+          'Cache-Control': 'private, no-cache, max-age=0, must-revalidate',
+          'Content-Type': 'text/html; charset=utf-8',
+          Vary: 'Host, X-Forwarded-Host, X-Forwarded-Proto',
+        });
+        res.send(html);
+      } catch (error) {
+        console.warn('Failed to render dynamic page metadata', error);
+        res.sendFile(indexPath);
+      }
     });
   }
 
