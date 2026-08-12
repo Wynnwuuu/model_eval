@@ -374,9 +374,20 @@ The Aion task ID is persisted before acceptance updates and downstream response 
 Successful result archival clears transient poll and reconciliation errors. Provider failures remain immutable evidence, but a task that later succeeds must not carry a stale transport error into the dataset `_error` column.
 
 The live smoke confirmed that supplier completion time is not a useful admission signal: twelve accepted Seedance tasks were submitted in 6.398 seconds, while the first terminal result arrived more than thirty minutes later and one provider task reached its explicit 3600-second timeout. Terminal timeout remains reliability evidence only and does not reduce the accepted-submission window.
-
 ## 2026-08-12: Link previews expose names but not business content
 
 Manueval uses `resource name + page type + Manueval` for browser and link-preview titles. The user explicitly accepted unauthenticated preview crawlers seeing resource names. Server-rendered metadata therefore queries names without a user session, but never includes goals, votes, prompts, members, media, production parameters, or result summaries.
 
 Browser metadata and crawler metadata share one deterministic resolver. Static defaults remain generic, missing resources fall back to their page type, HTML values are escaped, and metadata failures cannot block SPA delivery. Search indexing is disabled with `noindex,nofollow`; this does not replace application authorization.
+
+## 2026-08-12: Preflight repair decisions
+
+Preflight diagnostics are a server-owned repair contract, not English strings for the frontend to parse. The server will expose source evidence, model constraints, and only deterministic repair actions supported by the current request snapshot.
+
+Bulk repairs target the same issue code and field, default to all eligible matching cases, and may be narrowed explicitly. They never copy media URLs or final Aion JSON between cases. Expert-request cases and rows without stable IDs remain excluded from ordinary repair actions.
+
+Every applied repair creates a new preflight immediately. Case exclusion changes only the current `selectedDatasetItemIds`; the dataset is immutable and excluded cases can be restored.
+
+Replacement controls never infer a pending value from the first allowed option. Raw source value, normalized effective value, model constraints, and the unselected replacement control are separate states.
+
+Repair application uses optimistic concurrency on the Aion configuration fingerprint. A changed fingerprint is a contract change, so the old repair decision is rejected instead of being silently reinterpreted against the new model configuration.

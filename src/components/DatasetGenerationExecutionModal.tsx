@@ -44,6 +44,7 @@ import GenerationCaseSelector from './GenerationCaseSelector';
 import DatasetGenerationContentMappingEditor from './DatasetGenerationContentMappingEditor';
 import MediaRenderer from './MediaRenderer';
 import GenerationCaseReviewDialog from './GenerationCaseReviewDialog';
+import GenerationIssueRepairWorkspace from './GenerationIssueRepairWorkspace';
 import {
   GenerationBatch,
   GenerationRuntimeHealth,
@@ -94,6 +95,11 @@ import {
   resolveDefaultGenerationCaseStatus,
   type GenerationCaseStatusFilter,
 } from '../features/generation/preflightPresentation';
+import {
+  excludeGenerationCaseIds,
+  generationParameterReplacementColumns,
+  restoreGenerationCaseIds,
+} from '../features/generation/bulkRepair';
 import {
   generationCaseScopeIsCurrent,
   resolveGenerationCaseScopeRows,
@@ -269,6 +275,8 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const [uploadProgress, setUploadProgress] = useState('');
   const [preflight, setPreflight] = useState<GenerationPreflightResult | null>(null);
   const [caseReviews, setCaseReviews] = useState<Record<string, GenerationCaseReview>>({});
+  const [excludedByRepairIds, setExcludedByRepairIds] = useState<string[]>([]);
+  const [excludedCaseReviews, setExcludedCaseReviews] = useState<Record<string, GenerationCaseReview>>({});
   const [pendingReviewIds, setPendingReviewIds] = useState<string[]>([]);
   const [caseStatusFilter, setCaseStatusFilter] = useState<GenerationCaseStatusFilter>('needs_attention');
   const [caseIssueKey, setCaseIssueKey] = useState('');
@@ -373,6 +381,14 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   ]);
   const caseIssueOptions = useMemo(() => buildGenerationIssueOptions(preflight?.cases || []), [preflight]);
   const selectedCaseIssue = caseIssueOptions.find(option => option.key === caseIssueKey);
+  const selectedIssueSourceColumn = useMemo(() => {
+    if (!selectedCaseIssue || !preflight) return undefined;
+    const collection = selectedCaseIssue.severity === 'error' ? 'errors' : 'warnings';
+    return preflight.cases
+      .flatMap(item => item[collection])
+      .find(issue => issue.code === selectedCaseIssue.code && String(issue.field || '') === selectedCaseIssue.field)
+      ?.evidence?.sourceColumn;
+  }, [preflight, selectedCaseIssue]);
   const primaryPromptColumn = inputMapping.contentMappingVersion === 2
     ? inputMapping.contentMapping?.prompt.column
     : inputMapping.promptColumn || inputMapping.canonicalFieldMappings?.prompt;
@@ -383,6 +399,13 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     outputColumns,
     referenceColumns: dataset.columnMappings?.referenceColumns || [],
   }), [dataset.columnMappings?.referenceColumns, dataset.inputSchema, headers, outputColumns, primaryPromptColumn]);
+  const parameterReplacementColumns = useMemo(() => generationParameterReplacementColumns({
+    headers,
+    inputSchema: dataset.inputSchema || [],
+    currentColumn: selectedIssueSourceColumn,
+    outputColumns,
+    referenceColumns: dataset.columnMappings?.referenceColumns || [],
+  }), [dataset.columnMappings?.referenceColumns, dataset.inputSchema, headers, outputColumns, selectedIssueSourceColumn]);
   const filteredPreflightCases = useMemo(() => filterGenerationPreflightCases(preflight?.cases || [], {
     status: caseStatusFilter,
     issueKey: caseIssueKey,
@@ -415,6 +438,15 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const reviewDialogDatasetItemId = String(reviewDialogItem?.resolvedCase.datasetItemId || '');
   const reviewDialogRow = datasetRowsById.get(reviewDialogDatasetItemId);
   const reviewDialogPromptColumnOptions = promptReplacementColumns.map(column => ({
+    column,
+    value: reviewDialogRow?.[column],
+  }));
+  const reviewDialogParameterColumnOptions = generationParameterReplacementColumns({
+    headers,
+    inputSchema: dataset.inputSchema || [],
+    outputColumns,
+    referenceColumns: dataset.columnMappings?.referenceColumns || [],
+  }).map(column => ({
     column,
     value: reviewDialogRow?.[column],
   }));
@@ -497,6 +529,8 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     setInputMapping(presetMapping);
     setPreflight(null);
     setCaseReviews({});
+    setExcludedByRepairIds([]);
+    setExcludedCaseReviews({});
     setPendingReviewIds([]);
     setBulkPromptColumn('');
     setReviewsDirty(false);
@@ -515,6 +549,8 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   useEffect(() => {
     if (initialBatchId) return;
     setSelectedDatasetItemIds(eligibleDatasetItemIds);
+    setExcludedByRepairIds([]);
+    setExcludedCaseReviews({});
     setPreflight(null);
     setConfirmed(false);
   }, [
@@ -818,6 +854,8 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     );
     setCaseScopeMode(mode);
     setSelectedDatasetItemIds(nextEligibility.eligibleDatasetItemIds);
+    setExcludedByRepairIds([]);
+    setExcludedCaseReviews({});
     invalidatePreflight();
   };
 
@@ -877,6 +915,9 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
 
   const applyBulkPromptColumnOverride = async () => {
     if (!preflight || !bulkPromptColumn || bulkPromptPlan.expertConflictIds.length || bulkPromptPlan.missingStableIdCount) return;
+    const previousReviews = caseReviews;
+    const previousPendingReviewIds = pendingReviewIds;
+    const previousReviewsDirty = reviewsDirty;
     const nextReviews = bulkPromptPlan.reviews;
     setCaseReviews(nextReviews);
     setPendingReviewIds(current => Array.from(new Set([
@@ -887,8 +928,14 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     setConfirmed(false);
     try {
       await runPreflight(nextReviews, true);
-    } catch {
-      // runPreflight keeps the pending reviews and exposes the server error in the modal.
+    } catch (reason) {
+      const typed = reason as Error & { status?: number };
+      if (typed.status === 409) {
+        setCaseReviews(previousReviews);
+        setPendingReviewIds(previousPendingReviewIds);
+        setReviewsDirty(previousReviewsDirty);
+      }
+      // The modal exposes the server error and the stale preflight remains discarded.
     }
   };
 
@@ -903,6 +950,8 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
 
   const updateCaseSelection = (ids: string[]) => {
     setSelectedDatasetItemIds(ids);
+    setExcludedByRepairIds([]);
+    setExcludedCaseReviews({});
     invalidatePreflight();
   };
 
@@ -917,7 +966,10 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     invalidatePreflight();
   };
 
-  const buildRequest = (reviews: Record<string, GenerationCaseReview> = caseReviews): GenerationPreflightRequest => {
+  const buildRequest = (
+    reviews: Record<string, GenerationCaseReview> = caseReviews,
+    selectedIds: string[] = selectedDatasetItemIds,
+  ): GenerationPreflightRequest => {
     if (!selectedModel) throw new Error('Select a model before preflight.');
     const requestDefaultControls = durationControl && durationMode === 'uniform'
       ? { duration: defaultControls.duration }
@@ -945,9 +997,10 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
       datasetVersion: dataset.version || 1,
       datasetName: dataset.name,
       modelName: selectedModel.modelName || selectedModel.id,
+      ...(preflight?.configFingerprint ? { expectedConfigFingerprint: preflight.configFingerprint } : {}),
       targetColumn: targetColumn.trim(),
       targetMode,
-      selectedDatasetItemIds,
+      selectedDatasetItemIds: selectedIds,
       inputMapping: {
         ...inputMapping,
         referenceVideoColumns: inputMapping.referenceVideoColumns || [],
@@ -968,12 +1021,14 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const runPreflight = async (
     reviews: Record<string, GenerationCaseReview> = caseReviews,
     throwOnError = false,
+    selectedIds: string[] = selectedDatasetItemIds,
   ) => {
     setError('');
     setBusy(true);
     setConfirmed(false);
+    setPreflight(null);
     try {
-      const next = await createExecutionPreflight(buildRequest(reviews));
+      const next = await createExecutionPreflight(buildRequest(reviews, selectedIds));
       setPreflight(next);
       setPendingReviewIds([]);
       setBulkPromptColumn('');
@@ -986,6 +1041,86 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
       return undefined;
     } finally {
       setBusy(false);
+    }
+  };
+
+  const applyStructuredBulkRepair = async (
+    nextReviews: Record<string, GenerationCaseReview>,
+    appliedIds: string[],
+  ) => {
+    const previousReviews = caseReviews;
+    const previousPendingReviewIds = pendingReviewIds;
+    const previousReviewsDirty = reviewsDirty;
+    setCaseReviews(nextReviews);
+    setPendingReviewIds(current => Array.from(new Set([...current, ...appliedIds])));
+    setReviewsDirty(true);
+    setConfirmed(false);
+    try {
+      await runPreflight(nextReviews, true);
+    } catch (reason) {
+      const typed = reason as Error & { status?: number };
+      if (typed.status === 409) {
+        setCaseReviews(previousReviews);
+        setPendingReviewIds(previousPendingReviewIds);
+        setReviewsDirty(previousReviewsDirty);
+      }
+      throw reason;
+    }
+  };
+
+  const excludeCasesFromGeneration = async (datasetItemIds: string[]) => {
+    const previousSelectedIds = selectedDatasetItemIds;
+    const previousExcludedIds = excludedByRepairIds;
+    const previousExcludedReviews = excludedCaseReviews;
+    const previousReviews = caseReviews;
+    const previousPendingReviewIds = pendingReviewIds;
+    const nextSelectedIds = excludeGenerationCaseIds(selectedDatasetItemIds, datasetItemIds);
+    if (!nextSelectedIds.length) throw new Error('至少保留一个 case 才能重新预检。');
+    const excluded = new Set(datasetItemIds);
+    const nextReviews = { ...caseReviews };
+    const capturedReviews: Record<string, GenerationCaseReview> = {};
+    datasetItemIds.forEach(id => {
+      if (nextReviews[id]) capturedReviews[id] = nextReviews[id];
+      delete nextReviews[id];
+    });
+    setSelectedDatasetItemIds(nextSelectedIds);
+    setExcludedByRepairIds(current => Array.from(new Set([...current, ...datasetItemIds])));
+    setExcludedCaseReviews(current => ({ ...current, ...capturedReviews }));
+    setCaseReviews(nextReviews);
+    setPendingReviewIds(current => current.filter(id => !excluded.has(id)));
+    setConfirmed(false);
+    try {
+      await runPreflight(nextReviews, true, nextSelectedIds);
+    } catch (reason) {
+      const typed = reason as Error & { status?: number };
+      if (typed.status === 409) {
+        setSelectedDatasetItemIds(previousSelectedIds);
+        setExcludedByRepairIds(previousExcludedIds);
+        setExcludedCaseReviews(previousExcludedReviews);
+        setCaseReviews(previousReviews);
+        setPendingReviewIds(previousPendingReviewIds);
+      }
+      throw reason;
+    }
+  };
+
+  const restoreExcludedCases = async () => {
+    if (!excludedByRepairIds.length) return;
+    const nextSelectedIds = restoreGenerationCaseIds(
+      selectedDatasetItemIds,
+      excludedByRepairIds,
+      eligibleDatasetItemIds,
+    );
+    const restoredReviews = { ...caseReviews, ...excludedCaseReviews };
+    setSelectedDatasetItemIds(nextSelectedIds);
+    setCaseReviews(restoredReviews);
+    setExcludedByRepairIds([]);
+    setExcludedCaseReviews({});
+    setConfirmed(false);
+    try {
+      await runPreflight(restoredReviews, true, nextSelectedIds);
+    } catch {
+      // The restored selection remains visible even when the fresh contract rejects it.
     }
   };
 
@@ -1764,6 +1899,23 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                 <div className="py-16 text-center text-sm text-slate-400">{'\u8bf7\u8fd4\u56de\u4e0a\u4e00\u6b65\u9009\u62e9 case\uff0c\u7136\u540e\u6267\u884c\u9884\u68c0\u3002'}</div>
               )}
 
+              {excludedByRepairIds.length > 0 && !batch && (
+                <div className="flex flex-wrap items-center justify-between gap-3 border border-sky-400/25 bg-sky-500/[0.07] px-4 py-3 text-sm text-sky-100">
+                  <div>
+                    本次生成已排除 {excludedByRepairIds.length} 个 case。原评测集没有变化，恢复后会立即重新预检。
+                  </div>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => { void restoreExcludedCases(); }}
+                    className="inline-flex items-center gap-2 border border-sky-300/30 px-3 py-1.5 text-xs disabled:opacity-40"
+                  >
+                    {busy ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                    恢复并重新预检
+                  </button>
+                </div>
+              )}
+
               {preflight && (
                 <>
                   <section>
@@ -1860,6 +2012,21 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                         </span>
                       </label>
                     </div>
+
+                    {selectedCaseIssue && (
+                      <GenerationIssueRepairWorkspace
+                        key={`${preflight.id}:${selectedCaseIssue.key}`}
+                        issue={selectedCaseIssue}
+                        cases={preflight.cases}
+                        reviews={caseReviews}
+                        rowsById={datasetRowsById}
+                        parameterColumns={parameterReplacementColumns}
+                        busy={busy}
+                        onApply={applyStructuredBulkRepair}
+                        onExclude={excludeCasesFromGeneration}
+                        onReturnToSettings={() => setStep(2)}
+                      />
+                    )}
 
                     {selectedCaseIssue?.code === 'PROMPT_TOO_LONG' && bulkPromptPlan.targetIds.length > 0 && (
                       <div className="mt-3 border border-sky-400/30 bg-sky-500/10 p-4">
@@ -1974,6 +2141,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                       outsideCurrentFilter={reviewDialogIndex < 0}
                       review={caseReviews[String(reviewDialogItem.resolvedCase.datasetItemId || '')]}
                       promptColumnOptions={reviewDialogPromptColumnOptions}
+                      parameterColumnOptions={reviewDialogParameterColumnOptions}
                       onClose={() => setReviewDialogItemId('')}
                       onPrevious={reviewDialogIndex > 0 ? () => setReviewDialogItemId(generationReviewDialogKey(filteredPreflightCases[reviewDialogIndex - 1])) : undefined}
                       onNext={reviewDialogIndex < filteredPreflightCases.length - 1 ? () => setReviewDialogItemId(generationReviewDialogKey(filteredPreflightCases[reviewDialogIndex + 1])) : undefined}

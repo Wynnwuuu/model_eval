@@ -586,6 +586,10 @@ export interface GenerationControlDefinition {
   options?: string[];
   defaultValue?: string | number | boolean;
   unit?: string;
+  optionSource?: 'aion_parameter_schema' | 'aion_options';
+  minimum?: number;
+  maximum?: number;
+  required?: boolean;
 }
 
 export type GenerationParameterValueType = 'string' | 'number' | 'boolean' | 'json';
@@ -610,8 +614,9 @@ export interface GenerationInvalidParameterDefinition {
 }
 
 export interface GenerationParameterAuditEntry {
-  source: 'uniform' | 'column' | 'unused' | 'case_override';
+  source: 'uniform' | 'column' | 'unused' | 'case_override' | 'case_column_override';
   column?: string;
+  rawValue?: unknown;
   value?: unknown;
   verified: boolean;
   destination: 'control' | 'extra_params' | 'omitted' | 'blocked';
@@ -833,11 +838,54 @@ export interface GenerationPromptLengthAudit {
   itemIndex?: number;
 }
 
+export type GenerationPreflightRuleSource =
+  | 'aion_input_schema'
+  | 'aion_parameter_schema'
+  | 'aion_options'
+  | 'mcp_revision_1813'
+  | 'manueval_validation';
+
+export interface GenerationPreflightIssueEvidence {
+  rawValue?: unknown;
+  normalizedValue?: unknown;
+  source?: GenerationParameterAuditEntry['source'] | 'mapping' | 'model_config';
+  sourceColumn?: string;
+  allowedValues?: Array<string | number | boolean>;
+  minimum?: number;
+  maximum?: number;
+  valueType?: GenerationParameterValueType | 'url' | 'array' | 'object';
+  ruleSource?: GenerationPreflightRuleSource;
+  modelConfigFingerprint?: string;
+  itemCount?: number;
+}
+
+export type GenerationPreflightRepairAction =
+  | {
+      kind: 'set_parameter';
+      field: string;
+      allowedValues?: Array<string | number | boolean>;
+      minimum?: number;
+      maximum?: number;
+      valueType?: GenerationParameterValueType;
+    }
+  | { kind: 'use_parameter_column'; field: string; valueType?: GenerationParameterValueType }
+  | { kind: 'omit_parameter'; field: string }
+  | { kind: 'keep_keyframes'; omitFields: Array<'elements' | 'audios'> }
+  | { kind: 'keep_references'; omitFields: ['image_urls'] }
+  | { kind: 'trim_content'; field: 'image_urls' | 'images' | 'elements' | 'audios'; maximum: number }
+  | {
+      kind: 'remove_content_item';
+      field: 'image_urls' | 'images' | 'elements' | 'audios';
+      index: number;
+    };
+
 export interface GenerationPreflightIssue {
   code: string;
   message: string;
   field?: string;
   promptLength?: GenerationPromptLengthAudit;
+  evidence?: GenerationPreflightIssueEvidence;
+  repairActions?: GenerationPreflightRepairAction[];
 }
 
 export interface GenerationContractProposal {
@@ -873,11 +921,17 @@ export interface GenerationPromptColumnOverrideV1 {
   column: string;
 }
 
+export interface GenerationParameterColumnOverrideV1 {
+  version: 1;
+  column: string;
+}
+
 export interface GenerationCaseReview {
   acceptedFindingIds?: string[];
   rejectedFindingIds?: string[];
   promptOverride?: unknown;
   promptColumnOverride?: GenerationPromptColumnOverrideV1;
+  parameterColumnOverrides?: Record<string, GenerationParameterColumnOverrideV1>;
   inputOverride?: GenerationCaseInputOverrideV1;
   finalAionRequest?: Record<string, unknown>;
   force?: {

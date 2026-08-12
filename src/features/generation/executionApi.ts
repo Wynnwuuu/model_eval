@@ -22,6 +22,7 @@ export interface GenerationPreflightRequest {
   datasetVersion: number;
   datasetName?: string;
   modelName: string;
+  expectedConfigFingerprint?: string;
   targetColumn: string;
   targetMode: GenerationTargetMode;
   inputMapping: GenerationInputMapping;

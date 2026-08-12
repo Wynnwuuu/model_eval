@@ -659,7 +659,6 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - The smoke proved the first eight accepted task IDs opened the 16-slot wave and cases 9-12 submitted before any terminal result. A controlled Worker restart preserved all 12 task IDs and `attempt=1`.
 - Final smoke outcome was 11 succeeded and one explicit Aion provider timeout after 3600 seconds; no case was automatically retried. Dataset version 2 contains 12 statuses, 12 unique request IDs, 12 parameter JSON values, one accurate error, and 11 stable `vidmuse-dev-video.sandcdn.com` results.
 - A stable result returned HTTP 206, `video/mp4`, `Accept-Ranges: bytes`, and a valid `Content-Range`. The final queue returned strategy `optimistic_waves`, global limit 24, and zero active/pending items. The isolated local API was stopped.
-
 ## 2026-08-12: Page titles and link previews
 
 ### Completed
@@ -674,3 +673,20 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Passed page metadata unit and HTTP integration tests, insight deep-link and summary tests, TypeScript, frontend build, server build, and `git diff --check`.
 - Browser-validated homepage, project, dataset, and generation titles plus canonical and Open Graph updates during client-side navigation.
 - Full shared-stack `local:check` and API smoke remain unavailable because Docker Desktop is not running. The offline frontend remains available at `http://localhost:3000/`.
+
+## 2026-08-12: Human-friendly generation preflight
+
+### Completed
+
+- Started from `github/main@b0fc918` in an isolated worktree.
+- Confirmed the reported `720p`/`1440p` defect is a browser select rendering mismatch: the controlled value is absent from its options, so the first supported option is displayed even though the server validated the original `720p` value.
+- Defined regression gates before implementation for structured issue evidence, truthful replacement controls, parameter-column overrides, deterministic bulk media repairs, expert-review isolation, and current-selection-only exclusion.
+- No generation POST or paid request is part of this work.
+- Added server-owned issue evidence for raw and normalized values, source columns, enums/ranges, rule sources, config fingerprints, and deterministic repair actions.
+- Grouped preflight issues by severity, error code, and field. Added a repair workspace with explicit case selection, before/after preview, fixed-value and alternate-column parameter repairs, semantic media repairs, and current-generation-only exclusion/restoration.
+- Fixed the select mismatch: an unsupported current value is shown as evidence, while the replacement select remains unselected until the user chooses an allowed value.
+- Added locked-version parameter-column overrides keyed by stable dataset item ID. Empty or invalid cells fail the affected case and never fall back to a batch value.
+- Repair re-preflight now sends the prior configuration fingerprint. A changed Aion contract rejects the repair application and discards the stale preflight.
+- Browser-validated a zero-cost `720p` / sole `1440p` candidate fixture on desktop and `390x844` mobile. The candidate remained unselected, raw/effective values stayed `720p`, tables scrolled without overlap, and the fixture/artifacts were removed.
+- Passed generation/MCP/Seed, PostgreSQL generation integration, all dataset suites, structured evaluation audit, Arena, rank ties, insight summary/links, API smoke, TypeScript, frontend build, server build, and `git diff --check`.
+- The first DB/API attempts failed only because local PostgreSQL/Express were stopped. The existing test container and temporary API were started, tests passed, and both were stopped afterward. No paid generation or source-dataset mutation occurred.

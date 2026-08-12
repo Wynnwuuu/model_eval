@@ -46,6 +46,7 @@ import {
   buildMcpToolInput,
   deriveGenerationSeed,
   estimateGenerationCost,
+  enrichGenerationPreflightIssue,
   fingerprintConfig,
   generationSeedIssue,
   generationRequestProjectionDiff,
@@ -78,6 +79,7 @@ export type GenerationPreflightRequest = {
   datasetVersion: number;
   datasetName?: string;
   modelName: string;
+  expectedConfigFingerprint?: string;
   targetColumn: string;
   targetMode?: GenerationTargetMode;
   inputMapping: Partial<GenerationInputMapping>;
@@ -190,6 +192,15 @@ const datasetHasColumn = (dataset: { items?: Array<Record<string, unknown>> }, c
 const reservedPromptOverrideColumn = (column: string) =>
   column === '_originalData' || column.startsWith('__');
 
+const disallowedReviewColumnRole = (role: unknown) => [
+  'output',
+  'system',
+  'media',
+  'reference',
+  'case_id',
+  'rubric',
+].includes(String(role || ''));
+
 export const validateGenerationPromptColumnOverrides = (
   request: GenerationPreflightRequest,
   dataset: {
@@ -217,15 +228,9 @@ export const validateGenerationPromptColumnOverrides = (
     const field = dataset.inputSchema?.find(candidate => candidate.key === column);
     const configuredOutputColumn = dataset.columnMappings?.outputColumns?.includes(column);
     const configuredReferenceColumn = dataset.columnMappings?.referenceColumns?.includes(column);
-    const disallowedRole = field && [
-      'output',
-      'system',
-      'media',
-      'reference',
-      'case_id',
-      'dimension',
-      'rubric',
-    ].includes(String(field.role || ''));
+    const disallowedRole = field && (
+      disallowedReviewColumnRole(field.role) || String(field.role || '') === 'dimension'
+    );
     const disallowedType = field && field.type !== 'text';
     if (reservedPromptOverrideColumn(column)
       || column === request.targetColumn
@@ -245,6 +250,57 @@ export const validateGenerationPromptColumnOverrides = (
     if ([...(review.acceptedFindingIds || []), ...(review.rejectedFindingIds || [])]
       .some(id => id.startsWith('plugin-prompt-'))) {
       throw badRequest(`Case ${datasetItemId} cannot combine a Prompt column override with a Plugin Prompt decision.`);
+    }
+  }
+};
+
+export const validateGenerationParameterColumnOverrides = (
+  request: GenerationPreflightRequest,
+  model: NormalizedGenerationModel,
+  dataset: {
+    items?: Array<Record<string, unknown>>;
+    inputSchema?: Array<{
+      key: string;
+      type?: string;
+      role?: string;
+    }>;
+    columnMappings?: {
+      outputColumns?: string[];
+      referenceColumns?: string[];
+    };
+  },
+  selectedRows: GenerationSelectionRow[],
+) => {
+  const selectedIds = new Set(selectedRows.map(item => item.datasetItemId));
+  const controls = new Set(model.controls.map(control => control.key));
+  for (const [datasetItemId, review] of Object.entries(request.caseReviews || {})) {
+    const overrides = review.parameterColumnOverrides;
+    if (!overrides || !selectedIds.has(datasetItemId)) continue;
+    if (review.finalAionRequest) {
+      throw badRequest(`Case ${datasetItemId} cannot combine parameter column overrides with final Aion JSON.`);
+    }
+    for (const [field, override] of Object.entries(overrides)) {
+      if (!controls.has(field)) {
+        throw badRequest(`Case ${datasetItemId} cannot read undeclared model parameter ${field} from a dataset column.`);
+      }
+      if (!override || override.version !== 1 || typeof override.column !== 'string' || !override.column.trim()) {
+        throw badRequest(`Case ${datasetItemId} has an invalid column override for parameter ${field}.`);
+      }
+      if (review.inputOverride?.parameters?.[field]) {
+        throw badRequest(`Case ${datasetItemId} has more than one override source for parameter ${field}.`);
+      }
+      const column = override.column;
+      const schemaField = dataset.inputSchema?.find(candidate => candidate.key === column);
+      const configuredOutputColumn = dataset.columnMappings?.outputColumns?.includes(column);
+      const configuredReferenceColumn = dataset.columnMappings?.referenceColumns?.includes(column);
+      if (reservedPromptOverrideColumn(column)
+        || column === request.targetColumn
+        || configuredOutputColumn
+        || configuredReferenceColumn
+        || disallowedReviewColumnRole(schemaField?.role)
+        || !datasetHasColumn(dataset, column)) {
+        throw badRequest(`Parameter replacement column ${column} must be a visible non-output business column in this dataset version.`);
+      }
     }
   }
 };
@@ -617,7 +673,11 @@ export const buildGenerationCasesForPreflight = (
     const caseId = getDatasetRowCaseId(row, rowIndex);
     const caseReview = request.caseReviews?.[datasetItemId];
     const caseInputOverride = caseReview?.inputOverride;
-    const caseOverrideParameterKeys = new Set(Object.keys(caseInputOverride?.parameters || {}));
+    const parameterColumnOverrides = caseReview?.parameterColumnOverrides || {};
+    const caseOverrideParameterKeys = new Set([
+      ...Object.keys(caseInputOverride?.parameters || {}),
+      ...Object.keys(parameterColumnOverrides),
+    ]);
     const input = request.inputMapping || {};
     const mappingMode = input.mappingMode || 'assisted';
     const contentMapping = input.contentMappingVersion === 2 && input.contentMapping?.version === 2
@@ -666,6 +726,7 @@ export const buildGenerationCasesForPreflight = (
           parameterAudit[key] = {
             source: 'case_override',
             column,
+            rawValue,
             value: rawValue,
             verified: controlDefinitions.has(key),
             destination: 'omitted',
@@ -683,6 +744,7 @@ export const buildGenerationCasesForPreflight = (
           parameterAudit[key] = {
             source: 'unused',
             column,
+            rawValue,
             value: rawValue,
             verified: false,
             destination: 'omitted',
@@ -696,6 +758,7 @@ export const buildGenerationCasesForPreflight = (
           parameterAudit[key] = {
             source: 'column',
             column,
+            rawValue,
             value: rawValue,
             verified: false,
             destination: 'blocked',
@@ -724,6 +787,13 @@ export const buildGenerationCasesForPreflight = (
         if (binding.source === 'column') {
           rawValue = row[binding.column];
           if (!hasMappedValue(rawValue)) {
+            parameterAudit[key] = {
+              source: 'column',
+              column: binding.column,
+              rawValue,
+              verified: Boolean(definition),
+              destination: 'blocked',
+            };
             parameterIssues.push({
               code: 'MISSING_PARAMETER_COLUMN_VALUE',
               field: key,
@@ -737,6 +807,13 @@ export const buildGenerationCasesForPreflight = (
         const valueType = parameterValueType(definition, isAdvanced ? binding.valueType : undefined);
         const coerced = coerceBoundParameter(rawValue, valueType);
         if ('message' in coerced) {
+          parameterAudit[key] = {
+            source: binding.source,
+            ...(binding.source === 'column' ? { column: binding.column } : {}),
+            rawValue,
+            verified: Boolean(definition),
+            destination: 'blocked',
+          };
           parameterIssues.push({
             code: 'INVALID_PARAMETER_VALUE',
             field: key,
@@ -757,6 +834,7 @@ export const buildGenerationCasesForPreflight = (
         parameterAudit[key] = {
           source: binding.source,
           ...(binding.source === 'column' ? { column: binding.column } : {}),
+          rawValue,
           value: coerced.value,
           verified: !isAdvanced,
           destination: isAdvanced ? 'extra_params' : 'control',
@@ -787,6 +865,61 @@ export const buildGenerationCasesForPreflight = (
       } else {
         controls.duration = value;
       }
+    }
+    const parameterColumnOverrideAudit: Record<string, {
+      version: 1;
+      column: string;
+      rawValue?: unknown;
+    }> = {};
+    for (const [key, override] of Object.entries(parameterColumnOverrides)) {
+      const definition = controlDefinitions.get(key);
+      if (!definition) continue;
+      const rawValue = row[override.column];
+      parameterColumnOverrideAudit[key] = {
+        version: 1,
+        column: override.column,
+        ...(rawValue !== undefined ? { rawValue: JSON.parse(JSON.stringify(rawValue)) } : {}),
+      };
+      if (!hasMappedValue(rawValue)) {
+        parameterAudit[key] = {
+          source: 'case_column_override',
+          column: override.column,
+          rawValue,
+          verified: true,
+          destination: 'blocked',
+        };
+        parameterIssues.push({
+          code: 'MISSING_PARAMETER_COLUMN_VALUE',
+          field: key,
+          message: `The ${override.column} column is empty for parameter ${key} in case ${caseId}.`,
+        });
+        continue;
+      }
+      const coerced = coerceBoundParameter(rawValue, parameterValueType(definition));
+      if ('message' in coerced) {
+        parameterAudit[key] = {
+          source: 'case_column_override',
+          column: override.column,
+          rawValue,
+          verified: true,
+          destination: 'blocked',
+        };
+        parameterIssues.push({
+          code: 'INVALID_PARAMETER_VALUE',
+          field: key,
+          message: `${key}: ${coerced.message}`,
+        });
+        continue;
+      }
+      controls[key] = coerced.value;
+      parameterAudit[key] = {
+        source: 'case_column_override',
+        column: override.column,
+        rawValue,
+        value: coerced.value,
+        verified: true,
+        destination: 'control',
+      };
     }
     for (const definition of model.controls) {
       if (controls[definition.key] !== undefined
@@ -1010,6 +1143,7 @@ export const buildGenerationCasesForPreflight = (
           else controls[key] = rawCanonicalInput[key];
           parameterAudit[key] = {
             source: 'case_override',
+            ...(operation.action === 'set' ? { rawValue: operation.value } : {}),
             ...(operation.action === 'set' ? { value: controls[key] } : {}),
             verified: destination === 'control',
             destination: operation.action === 'omit' ? 'omitted' : 'control',
@@ -1018,6 +1152,7 @@ export const buildGenerationCasesForPreflight = (
           const extraParams = rawCanonicalInput.extra_params as Record<string, unknown> | undefined;
           parameterAudit[key] = {
             source: 'case_override',
+            ...(operation.action === 'set' ? { rawValue: operation.value } : {}),
             ...(operation.action === 'set' ? { value: extraParams?.[key] } : {}),
             verified: false,
             destination: operation.action === 'omit' ? 'omitted' : 'extra_params',
@@ -1089,7 +1224,10 @@ export const buildGenerationCasesForPreflight = (
     if (caseOverrideParameterKeys.has('duration')) {
       if (controls.duration !== undefined && controls.duration !== '') {
         durationResolution = {
-          source: 'case_override',
+          source: parameterColumnOverrides.duration ? 'case_column_override' : 'case_override',
+          ...(parameterColumnOverrides.duration
+            ? { column: parameterColumnOverrides.duration.column }
+            : {}),
           resolvedDuration: Number(controls.duration),
         };
       }
@@ -1195,6 +1333,9 @@ export const buildGenerationCasesForPreflight = (
         contractSource: compiled.contractSource,
         review: caseReview,
         ...(promptColumnOverrideAudit ? { promptColumnOverride: promptColumnOverrideAudit } : {}),
+        ...(Object.keys(parameterColumnOverrideAudit).length
+          ? { parameterColumnOverrides: parameterColumnOverrideAudit }
+          : {}),
         ...(caseInputOverrideAudit ? { caseInputOverride: caseInputOverrideAudit } : {}),
       },
       ...(durationResolution ? { durationResolution } : {}),
@@ -1275,6 +1416,17 @@ const deduplicatePreflightIssues = <T extends { code: string; field?: string; me
     && candidate.field === issue.field
     && candidate.message === issue.message) === index);
 
+export const validateExpectedGenerationConfigFingerprint = (
+  expectedFingerprint: string | undefined,
+  currentFingerprint: string,
+) => {
+  if (!expectedFingerprint || expectedFingerprint === currentFingerprint) return;
+  throw conflict('The live model configuration changed; review the current contract before applying repairs.', {
+    previousFingerprint: expectedFingerprint,
+    currentFingerprint,
+  });
+};
+
 export const createGenerationPreflight = async (
   request: GenerationPreflightRequest,
   user: RequestUser,
@@ -1293,6 +1445,7 @@ export const createGenerationPreflight = async (
   if (!dataset) throw notFound('Dataset version');
   const model = await aionGenerationClient.getModel(request.modelName);
   if (!model) throw notFound('Enabled Aion model');
+  validateExpectedGenerationConfigFingerprint(request.expectedConfigFingerprint, model.configFingerprint);
   const seedPolicyVersion = request.retryOfJobId && request.seedPolicyVersion === undefined
     ? undefined
     : 2;
@@ -1363,6 +1516,7 @@ export const createGenerationPreflight = async (
     selectedDatasetItemIds: selection.normalizedIds,
   };
   validateGenerationPromptColumnOverrides(request, dataset, selection.rows);
+  validateGenerationParameterColumnOverrides(request, model, dataset, selection.rows);
 
   const requestedAssetIds = Array.from(new Set((request.assetBindings || []).map(asset => String(asset.id))));
   const verifiedAssets = await getGenerationAssetsForPreflight(requestedAssetIds, request.datasetId, user);
@@ -1503,8 +1657,18 @@ export const createGenerationPreflight = async (
         message: `The case has no stable dataset item ID: ${auditedResolvedCase.caseId}.`,
       });
     }
-    const finalErrors = deduplicatePreflightIssues(errors);
-    const finalWarnings = deduplicatePreflightIssues(warnings);
+    const finalErrors = deduplicatePreflightIssues(errors.map(issue => enrichGenerationPreflightIssue(
+      issue,
+      model,
+      auditedResolvedCase,
+      finalGenerationType,
+    )));
+    const finalWarnings = deduplicatePreflightIssues(warnings.map(issue => enrichGenerationPreflightIssue(
+      issue,
+      model,
+      auditedResolvedCase,
+      finalGenerationType,
+    )));
     return {
       ...result,
       generationType: finalGenerationType,

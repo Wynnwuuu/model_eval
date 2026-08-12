@@ -1,0 +1,30 @@
+{
+  "feature": "human_friendly_generation_preflight",
+  "requirements": [
+    {
+      "id": "structured-issue-evidence",
+      "status": "completed",
+      "description": "Return source values, normalized values, model constraints, rule sources, and safe repair actions"
+    },
+    {
+      "id": "truthful-case-editor",
+      "status": "completed",
+      "description": "Never display a supported replacement option as the unsupported current value"
+    },
+    {
+      "id": "bulk-repair-workspace",
+      "status": "completed",
+      "description": "Group by issue and field, preview selected cases, apply deterministic repairs, and immediately re-preflight"
+    },
+    {
+      "id": "exclude-and-restore",
+      "status": "completed",
+      "description": "Exclude cases from only the current generation selection and support restoration"
+    },
+    {
+      "id": "regression-and-browser-validation",
+      "status": "completed",
+      "description": "Run generation, database, dataset, Arena, API, TypeScript, build, and responsive browser checks"
+    }
+  ]
+}

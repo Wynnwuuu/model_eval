@@ -29,6 +29,7 @@ export interface GenerationIssuePresentation extends GenerationIssueCopy {
 export interface GenerationIssueOption {
   key: string;
   code: string;
+  field: string;
   severity: GenerationIssueSeverity;
   count: number;
   label: string;
@@ -150,8 +151,32 @@ const ISSUE_COPY: Record<string, GenerationIssueCopy> = {
   MISSING_STABLE_ITEM_ID: issueCopy('Case 缺少稳定 ID', '平台无法保证生成结果回填到正确行。', '重新导入或修复评测集稳定 ID。'),
 };
 
-export const getGenerationIssueKey = (severity: GenerationIssueSeverity, code: string) =>
-  `${severity}:${code}`;
+export const getGenerationIssueKey = (
+  severity: GenerationIssueSeverity,
+  code: string,
+  field = '',
+) => `${severity}:${code}:${encodeURIComponent(field)}`;
+
+export const getGenerationFieldLabel = (field = '') => {
+  const root = inputFieldRoot(field);
+  const labels: Record<string, string> = {
+    prompt: 'Prompt',
+    duration: '时长',
+    aspect_ratio: '画面比例',
+    resolution: '分辨率',
+    generate_audio: '生成声音',
+    negative_prompt: '负向 Prompt',
+    watermark: '水印',
+    seed: 'Seed',
+    image_urls: '关键帧',
+    images: '图片输入',
+    elements: '参考元素',
+    audios: '参考音频',
+    generation_type: '生成方式',
+  };
+  const label = labels[root] || root || '通用请求';
+  return field && field !== root ? `${label}（${field}）` : label;
+};
 
 export const getGenerationCaseId = (item: GenerationPreflightCase) =>
   String(item.resolvedCase.caseId || item.resolvedCase.datasetItemId || `row-${item.resolvedCase.rowIndex ?? '?'}`);
@@ -361,7 +386,8 @@ export const buildGenerationIssueOptions = (cases: GenerationPreflightCase[]): G
   cases.forEach(item => {
     const seen = new Set<string>();
     issuesWithSeverity(item).forEach(({ issue, severity }) => {
-      const key = getGenerationIssueKey(severity, issue.code);
+      const field = String(issue.field || '');
+      const key = getGenerationIssueKey(severity, issue.code, field);
       if (seen.has(key)) return;
       seen.add(key);
       const current = groups.get(key);
@@ -369,9 +395,10 @@ export const buildGenerationIssueOptions = (cases: GenerationPreflightCase[]): G
       groups.set(key, {
         key,
         code: issue.code,
+        field,
         severity,
         count: (current?.count || 0) + 1,
-        label: presentation.title,
+        label: `${presentation.title} · ${getGenerationFieldLabel(field)}`,
       });
     });
   });
@@ -414,7 +441,7 @@ export const filterGenerationPreflightCases = (
   return cases.filter(item => {
     if (!matchesStatus(item, filters.status, cases)) return false;
     if (filters.issueKey && !issuesWithSeverity(item).some(({ issue, severity }) =>
-      getGenerationIssueKey(severity, issue.code) === filters.issueKey)) return false;
+      getGenerationIssueKey(severity, issue.code, String(issue.field || '')) === filters.issueKey)) return false;
     if (normalizedSearch && !getGenerationCaseId(item).toLocaleLowerCase().includes(normalizedSearch)) return false;
     return true;
   });
@@ -426,7 +453,11 @@ export const getPrimaryGenerationIssue = (
 ): GenerationIssuePresentation | undefined => {
   const issues = issuesWithSeverity(item);
   const selected = selectedIssueKey
-    ? issues.find(({ issue, severity }) => getGenerationIssueKey(severity, issue.code) === selectedIssueKey)
+    ? issues.find(({ issue, severity }) => getGenerationIssueKey(
+        severity,
+        issue.code,
+        String(issue.field || ''),
+      ) === selectedIssueKey)
     : undefined;
   const primary = selected || issues.find(candidate => candidate.severity === 'error') || issues[0];
   return primary ? getGenerationIssuePresentation(primary.issue, primary.severity) : undefined;

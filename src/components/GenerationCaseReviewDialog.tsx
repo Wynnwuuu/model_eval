@@ -31,9 +31,11 @@ import {
 } from '../features/generation/preflightReview';
 import {
   buildGenerationRepairGroups,
+  getGenerationFieldLabel,
   getGenerationCaseId,
   type GenerationRepairGroup,
 } from '../features/generation/preflightPresentation';
+import { generationParameterEditorValue } from '../features/generation/bulkRepair';
 
 type ReviewDialogTab = 'repair' | 'preview';
 type ReviewMode = 'guided' | 'expert';
@@ -47,6 +49,7 @@ interface GenerationCaseReviewDialogProps {
   outsideCurrentFilter?: boolean;
   review?: GenerationCaseReview;
   promptColumnOptions: Array<{ column: string; value: unknown }>;
+  parameterColumnOptions: Array<{ column: string; value: unknown }>;
   onClose: () => void;
   onPrevious?: () => void;
   onNext?: () => void;
@@ -87,6 +90,9 @@ const compactReview = (review: GenerationCaseReview): GenerationCaseReview => {
   if (!next.rejectedFindingIds?.length) delete next.rejectedFindingIds;
   if (next.promptOverride === undefined) delete next.promptOverride;
   if (!next.promptColumnOverride?.column) delete next.promptColumnOverride;
+  if (next.parameterColumnOverrides && !Object.keys(next.parameterColumnOverrides).length) {
+    delete next.parameterColumnOverrides;
+  }
   if (!next.force) delete next.force;
   if (!next.finalAionRequest) delete next.finalAionRequest;
   return next;
@@ -282,6 +288,7 @@ const GenerationCaseReviewDialog: React.FC<GenerationCaseReviewDialogProps> = ({
   outsideCurrentFilter = false,
   review,
   promptColumnOptions,
+  parameterColumnOptions,
   onClose,
   onPrevious,
   onNext,
@@ -328,6 +335,10 @@ const GenerationCaseReviewDialog: React.FC<GenerationCaseReviewDialogProps> = ({
   const promptColumnValues = useMemo(
     () => new Map(promptColumnOptions.map(option => [option.column, option.value])),
     [promptColumnOptions],
+  );
+  const parameterColumnValues = useMemo(
+    () => new Map(parameterColumnOptions.map(option => [option.column, option.value])),
+    [parameterColumnOptions],
   );
 
   const guardLeave = (action: () => void) => {
@@ -385,6 +396,20 @@ const GenerationCaseReviewDialog: React.FC<GenerationCaseReviewDialogProps> = ({
       const parameters = { ...(next.inputOverride?.parameters || {}) };
       parameters[field] = omit ? { action: 'omit' } : { action: 'set', value };
       next.inputOverride = { version: 1, content: next.inputOverride?.content, parameters };
+      if (next.parameterColumnOverrides) delete next.parameterColumnOverrides[field];
+      return compactReview(next);
+    });
+  };
+
+  const setParameterColumnOperation = (field: string, column: string) => {
+    setDraftReview(current => {
+      const next = clearForce(cloneReview(current));
+      const parameters = { ...(next.inputOverride?.parameters || {}) };
+      delete parameters[field];
+      next.inputOverride = { version: 1, content: next.inputOverride?.content, parameters };
+      next.parameterColumnOverrides = { ...(next.parameterColumnOverrides || {}) };
+      if (column) next.parameterColumnOverrides[field] = { version: 1, column };
+      else delete next.parameterColumnOverrides[field];
       return compactReview(next);
     });
   };
@@ -395,6 +420,7 @@ const GenerationCaseReviewDialog: React.FC<GenerationCaseReviewDialogProps> = ({
       const parameters = { ...(next.inputOverride?.parameters || {}) };
       delete parameters[field];
       next.inputOverride = { version: 1, content: next.inputOverride?.content, parameters };
+      if (next.parameterColumnOverrides) delete next.parameterColumnOverrides[field];
       return compactReview(next);
     });
   };
@@ -493,6 +519,7 @@ const GenerationCaseReviewDialog: React.FC<GenerationCaseReviewDialogProps> = ({
       delete next.inputOverride;
       delete next.promptOverride;
       delete next.promptColumnOverride;
+      delete next.parameterColumnOverrides;
       delete next.acceptedFindingIds;
       delete next.rejectedFindingIds;
       next.finalAionRequest = parsed;
@@ -541,44 +568,102 @@ const GenerationCaseReviewDialog: React.FC<GenerationCaseReviewDialogProps> = ({
     const control = model.controls.find(candidate => candidate.key === field);
     const auditEntry = item.resolvedCase.parameterAudit?.[field];
     const operation = draftReview.inputOverride?.parameters?.[field];
+    const columnOverride = draftReview.parameterColumnOverrides?.[field];
+    const issue = [...item.errors, ...item.warnings].find(candidate => (
+      (candidate.field || '').match(/^([A-Za-z_][A-Za-z0-9_]*)/)?.[1] === field
+    ));
+    const evidence = issue?.evidence;
+    const canOmit = [...item.errors, ...item.warnings].some(candidate => (
+      (candidate.field || '').match(/^([A-Za-z_][A-Za-z0-9_]*)/)?.[1] === field
+      && (candidate.repairActions || []).some(action => action.kind === 'omit_parameter' && action.field === field)
+    ));
     const currentValue = operation?.action === 'set'
       ? operation.value
       : operation?.action === 'omit'
         ? undefined
-        : item.resolvedCase.controls?.[field] ?? auditEntry?.value;
+        : columnOverride
+          ? parameterColumnValues.get(columnOverride.column)
+          : item.resolvedCase.controls?.[field] ?? auditEntry?.value;
+    const rawValue = evidence?.rawValue ?? auditEntry?.rawValue ?? auditEntry?.value;
+    const normalizedValue = evidence?.normalizedValue ?? auditEntry?.value;
+    const currentSource = columnOverride
+      ? `备用列 ${columnOverride.column}`
+      : operation?.action === 'set'
+        ? '当前 case 固定值'
+        : operation?.action === 'omit'
+          ? '当前 case 不发送'
+          : auditEntry?.source === 'column'
+            ? `数据集列 ${auditEntry.column || evidence?.sourceColumn || ''}`
+            : auditEntry?.source || evidence?.source || '批次设置';
     if (!control) {
       return (
-        <div className="border-t border-white/10 pt-3">
+        <div className="space-y-3 border-t border-white/10 pt-3">
           <div className="text-sm text-slate-200">当前模型没有声明参数 <code className="text-sky-200">{field}</code>。</div>
-          <div className="mt-1 text-xs text-slate-500">评测集原值：{JSON.stringify(auditEntry?.value ?? null)}</div>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <button type="button" onClick={() => setParameterOperation(field, undefined, true)} className={`border px-3 py-2 text-xs ${operation?.action === 'omit' ? 'border-emerald-400 bg-emerald-500/10 text-emerald-200' : 'border-white/10 text-slate-300'}`}>当前 case 不发送此参数</button>
-            {operation && <button type="button" onClick={() => clearParameterOperation(field)} className="border border-white/10 px-3 py-2 text-xs text-slate-300">恢复批次设置</button>}
+          <div className="grid gap-2 border-y border-white/10 py-3 text-xs sm:grid-cols-2">
+            <div><div className="text-slate-500">数据集原始值</div><code className="mt-1 block break-all text-red-200">{JSON.stringify(rawValue ?? null)}</code></div>
+            <div><div className="text-slate-500">当前来源</div><div className="mt-1 text-slate-200">{currentSource}</div></div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {canOmit && <button type="button" onClick={() => setParameterOperation(field, undefined, true)} className={`border px-3 py-2 text-xs ${operation?.action === 'omit' ? 'border-emerald-400 bg-emerald-500/10 text-emerald-200' : 'border-white/10 text-slate-300'}`}>当前 case 不发送此参数</button>}
+            {(operation || columnOverride) && <button type="button" onClick={() => clearParameterOperation(field)} className="border border-white/10 px-3 py-2 text-xs text-slate-300">恢复批次设置</button>}
           </div>
         </div>
       );
     }
-    const setValue = (value: unknown) => setParameterOperation(field, value);
+    const applyValue = (value: unknown) => setParameterOperation(field, value);
+    const editorValue = generationParameterEditorValue(currentValue, control.options || [], operation);
     return (
       <div className="space-y-3 border-t border-white/10 pt-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div><div className="text-sm font-medium text-slate-100">{control.label}</div><div className="mt-1 text-xs text-slate-500">参数：{field}；当前来源：{auditEntry?.source || '批次设置'}</div></div>
+          <div>
+            <div className="text-sm font-medium text-slate-100">{control.label || getGenerationFieldLabel(field)}</div>
+            <div className="mt-1 text-xs text-slate-500">参数 {field}；当前来源：{currentSource}</div>
+          </div>
           <button type="button" onClick={() => clearParameterOperation(field)} className="border border-white/10 px-3 py-1.5 text-xs text-slate-300">恢复批次设置</button>
         </div>
+        <div className="grid gap-2 border-y border-white/10 py-3 text-xs sm:grid-cols-3">
+          <div><div className="text-slate-500">数据集原始值</div><code className="mt-1 block break-all text-red-200">{JSON.stringify(rawValue ?? null)}</code></div>
+          <div><div className="text-slate-500">当前生效值</div><code className="mt-1 block break-all text-slate-200">{JSON.stringify(normalizedValue ?? null)}</code></div>
+          <div>
+            <div className="text-slate-500">模型允许值</div>
+            <div className="mt-1 text-emerald-200">{control.options?.length ? control.options.join('、') : `${control.minimum ?? '-∞'} 至 ${control.maximum ?? '+∞'}`}</div>
+            <div className="mt-1 text-[10px] text-slate-600">{control.optionSource === 'aion_parameter_schema' ? 'Aion parameter schema' : control.optionSource === 'aion_options' ? 'Aion options' : '未声明来源'}</div>
+          </div>
+        </div>
         {control.type === 'toggle' ? (
-          <label className="flex items-center gap-3 text-sm text-slate-200"><input type="checkbox" checked={Boolean(currentValue)} onChange={event => setValue(event.target.checked)} /> <span>{Boolean(currentValue) ? '启用' : '关闭'}</span></label>
+          <label className="block text-xs text-slate-400">
+            <span className="mb-1.5 block">为当前 case 选择替换值</span>
+            <select value={operation?.action === 'set' ? String(operation.value) : ''} onChange={event => event.target.value ? applyValue(event.target.value === 'true') : clearParameterOperation(field)} className="w-full border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-100">
+              <option value="">选择开或关</option>
+              <option value="true">开</option>
+              <option value="false">关</option>
+            </select>
+          </label>
         ) : control.type === 'select' ? (
-          <select value={String(currentValue ?? '')} onChange={event => setValue(event.target.value)} className="w-full border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-100">{(control.options || []).map(option => <option key={option} value={option}>{option}</option>)}</select>
+          <label className="block text-xs text-slate-400">
+            <span className="mb-1.5 block">为当前 case 选择替换值</span>
+            <select value={editorValue} onChange={event => event.target.value ? applyValue(event.target.value) : clearParameterOperation(field)} className="w-full border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-100">
+              <option value="">选择模型支持值</option>
+              {(control.options || []).map(option => <option key={option} value={option}>{option}</option>)}
+            </select>
+          </label>
         ) : control.type === 'number' ? (
-          <input type="number" step="any" value={currentValue == null ? '' : Number(currentValue)} onChange={event => setValue(event.target.value === '' ? '' : Number(event.target.value))} className="w-full border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-100" />
+          <input type="number" min={control.minimum} max={control.maximum} step="any" value={operation?.action === 'set' ? Number(operation.value) : ''} placeholder="输入待应用值" onChange={event => event.target.value === '' ? clearParameterOperation(field) : applyValue(Number(event.target.value))} className="w-full border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-100" />
         ) : control.type === 'json' ? (
-          <textarea rows={5} value={typeof currentValue === 'string' ? currentValue : JSON.stringify(currentValue ?? {}, null, 2)} onChange={event => {
-            try { setValue(JSON.parse(event.target.value)); } catch { setValue(event.target.value); }
+          <textarea rows={5} value={operation?.action === 'set' ? (typeof operation.value === 'string' ? operation.value : JSON.stringify(operation.value ?? {}, null, 2)) : ''} placeholder="输入待应用 JSON" onChange={event => {
+            try { applyValue(JSON.parse(event.target.value)); } catch { applyValue(event.target.value); }
           }} className="w-full border border-white/10 bg-slate-950 p-3 font-mono text-xs text-slate-100" />
         ) : (
-          <input value={String(currentValue ?? '')} onChange={event => setValue(event.target.value)} className="w-full border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-100" />
+          <input value={operation?.action === 'set' ? String(operation.value ?? '') : ''} placeholder="输入待应用值" onChange={event => event.target.value === '' ? clearParameterOperation(field) : applyValue(event.target.value)} className="w-full border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-100" />
         )}
-        <button type="button" onClick={() => setParameterOperation(field, undefined, true)} className="border border-white/10 px-3 py-2 text-xs text-slate-300">当前 case 不使用</button>
+        <label className="block text-xs text-slate-400">
+          <span className="mb-1.5 block">或从数据集另一列读取</span>
+          <select value={columnOverride?.column || ''} onChange={event => setParameterColumnOperation(field, event.target.value)} className="w-full border border-white/10 bg-slate-950 px-3 py-2 text-sm text-slate-100">
+            <option value="">不使用备用列</option>
+            {parameterColumnOptions.map(option => <option key={option.column} value={option.column}>{option.column}：{String(option.value ?? '空值')}</option>)}
+          </select>
+        </label>
+        {canOmit && <button type="button" onClick={() => setParameterOperation(field, undefined, true)} className={`border px-3 py-2 text-xs ${operation?.action === 'omit' ? 'border-emerald-400 bg-emerald-500/10 text-emerald-200' : 'border-white/10 text-slate-300'}`}>当前 case 不发送此参数</button>}
       </div>
     );
   };

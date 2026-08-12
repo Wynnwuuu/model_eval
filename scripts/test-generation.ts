@@ -35,7 +35,9 @@ import {
   validateGenerationRequestOverride,
   validateGenerationContentMappingConfiguration,
   validateGenerationParameterBindings,
+  validateGenerationParameterColumnOverrides,
   validateGenerationPromptColumnOverrides,
+  validateExpectedGenerationConfigFingerprint,
   validateGenerationSeedConfiguration,
   validateDurationSourceConfiguration,
 } from '../server/generation/generationPreflightService.ts';
@@ -75,6 +77,14 @@ import {
   generationPendingForceCodes,
   generationForceRequiresFinalJson,
 } from '../src/features/generation/preflightReview.ts';
+import {
+  applyBulkGenerationRepair,
+  buildGenerationBulkRepairWorkspace,
+  generationParameterEditorValue,
+  generationParameterReplacementColumns,
+  excludeGenerationCaseIds,
+  restoreGenerationCaseIds,
+} from '../src/features/generation/bulkRepair.ts';
 import {
   computeGenerationConcurrencyPolicy,
   parseGenerationVideoModelLimits,
@@ -287,8 +297,9 @@ assert.equal(resolveDefaultGenerationCaseStatus(presentationCases), 'needs_atten
 assert.deepEqual(
   buildGenerationIssueOptions(presentationCases).map(option => [option.key, option.count]),
   [
-    ['error:INPUT_COUNT_OUT_OF_RANGE', 1],
-    ['warning:MEDIA_TYPE_UNVERIFIED', 2],
+    ['error:INPUT_COUNT_OUT_OF_RANGE:elements', 1],
+    ['warning:MEDIA_TYPE_UNVERIFIED:audios%5B0%5D', 1],
+    ['warning:MEDIA_TYPE_UNVERIFIED:elements%5B0%5D', 1],
   ],
   'issue counts must be deduplicated by case rather than repeated diagnostics',
 );
@@ -304,14 +315,14 @@ assert.deepEqual(
 assert.deepEqual(
   filterGenerationPreflightCases(presentationCases, {
     status: 'warning',
-    issueKey: 'warning:MEDIA_TYPE_UNVERIFIED',
+    issueKey: 'warning:MEDIA_TYPE_UNVERIFIED:audios%5B0%5D',
     search: 'warning',
   }).map(item => item.resolvedCase.caseId),
   ['case-warning'],
   'status, issue and case search filters must all constrain the visible cases',
 );
 assert.equal(
-  getPrimaryGenerationIssue(presentationCases[0], 'warning:MEDIA_TYPE_UNVERIFIED')?.issue.code,
+  getPrimaryGenerationIssue(presentationCases[0], 'warning:MEDIA_TYPE_UNVERIFIED:elements%5B0%5D')?.issue.code,
   'MEDIA_TYPE_UNVERIFIED',
   'the selected issue type must become the row primary issue',
 );
@@ -319,11 +330,11 @@ assert.equal(getPrimaryGenerationIssue(presentationCases[0])?.issue.code, 'INPUT
 assert.deepEqual(
   filterGenerationPreflightCases(presentationCases, {
     status: 'warning',
-    issueKey: 'warning:MEDIA_TYPE_UNVERIFIED',
+    issueKey: 'warning:MEDIA_TYPE_UNVERIFIED:elements%5B0%5D',
     search: '',
   }).map(item => item.resolvedCase.caseId),
-  ['case-invalid', 'case-warning'],
-  'warning status must include invalid cases that also contain the selected warning',
+  ['case-invalid'],
+  'warning status must preserve the selected warning field rather than merge unrelated media channels',
 );
 const unsupportedPresetPresentation = getGenerationIssuePresentation({
   code: 'UNSUPPORTED_PRESET_PARAMETER',
@@ -821,6 +832,189 @@ assert.deepEqual(bulkReview['case-a'].force?.ruleCodes, ['UNSUPPORTED_PRESET_PAR
 assert.equal(bulkReview['case-a'].finalAionRequest, undefined);
 assert.equal(bulkReview['case-b'], undefined);
 
+const structuredRepairCases = [
+  {
+    valid: false,
+    generationType: 'text_to_video',
+    errors: [{
+      code: 'UNSUPPORTED_CONTROL_VALUE',
+      field: 'resolution',
+      message: 'Resolution does not support value 720p.',
+      evidence: {
+        rawValue: '720p',
+        normalizedValue: '720p',
+        source: 'column',
+        sourceColumn: 'resolution',
+        allowedValues: ['1440p'],
+        valueType: 'string',
+        ruleSource: 'aion_options',
+        modelConfigFingerprint: 'config-a',
+      },
+      repairActions: [
+        { kind: 'set_parameter', field: 'resolution', allowedValues: ['1440p'], valueType: 'string' },
+        { kind: 'use_parameter_column', field: 'resolution', valueType: 'string' },
+        { kind: 'omit_parameter', field: 'resolution' },
+      ],
+    }],
+    warnings: [],
+    resolvedCase: {
+      caseId: 'resolution-a',
+      datasetItemId: 'resolution-a',
+      compilerAudit: { compiledInput: { prompt: 'A', resolution: '720p' } },
+    },
+  },
+  {
+    valid: false,
+    generationType: 'text_to_video',
+    errors: [{
+      code: 'UNSUPPORTED_CONTROL_VALUE',
+      field: 'resolution',
+      message: 'Resolution does not support value 1080p.',
+      evidence: {
+        rawValue: '1080p',
+        normalizedValue: '1080p',
+        source: 'column',
+        sourceColumn: 'resolution',
+        allowedValues: ['1440p'],
+        valueType: 'string',
+        ruleSource: 'aion_options',
+        modelConfigFingerprint: 'config-a',
+      },
+      repairActions: [
+        { kind: 'set_parameter', field: 'resolution', allowedValues: ['1440p'], valueType: 'string' },
+        { kind: 'use_parameter_column', field: 'resolution', valueType: 'string' },
+      ],
+    }],
+    warnings: [],
+    resolvedCase: {
+      caseId: 'resolution-b',
+      datasetItemId: 'resolution-b',
+      compilerAudit: { compiledInput: { prompt: 'B', resolution: '1080p' } },
+    },
+  },
+  {
+    valid: false,
+    generationType: 'text_to_video',
+    errors: [{
+      code: 'UNSUPPORTED_CONTROL_VALUE',
+      field: 'resolution',
+      message: 'Resolution does not support value 720p.',
+      evidence: {
+        rawValue: '720p',
+        normalizedValue: '720p',
+        source: 'column',
+        sourceColumn: 'resolution',
+        allowedValues: ['1440p'],
+        valueType: 'string',
+        ruleSource: 'aion_options',
+        modelConfigFingerprint: 'config-a',
+      },
+      repairActions: [{ kind: 'set_parameter', field: 'resolution', allowedValues: ['1440p'], valueType: 'string' }],
+    }],
+    warnings: [],
+    resolvedCase: { caseId: 'resolution-expert', datasetItemId: 'resolution-expert' },
+  },
+] as any;
+const structuredRepairWorkspace = buildGenerationBulkRepairWorkspace({
+  cases: structuredRepairCases,
+  reviews: { 'resolution-expert': { finalAionRequest: { prompt: 'owned by expert' } } },
+  severity: 'error',
+  code: 'UNSUPPORTED_CONTROL_VALUE',
+  field: 'resolution',
+});
+assert.deepEqual(structuredRepairWorkspace.eligibleIds, ['resolution-a', 'resolution-b']);
+assert.deepEqual(structuredRepairWorkspace.expertConflictIds, ['resolution-expert']);
+assert.deepEqual(structuredRepairWorkspace.valueDistribution, [
+  { value: '720p', count: 2 },
+  { value: '1080p', count: 1 },
+]);
+assert.equal(
+  generationParameterEditorValue('720p', ['1440p'], undefined),
+  '',
+  'an unsupported source value must not make the select display its first replacement option',
+);
+assert.equal(generationParameterEditorValue('1440p', ['1440p'], undefined), '1440p');
+assert.equal(generationParameterEditorValue('720p', ['1440p'], { action: 'set', value: '1440p' }), '1440p');
+
+const fixedResolutionRepair = applyBulkGenerationRepair({
+  workspace: structuredRepairWorkspace,
+  cases: structuredRepairCases,
+  reviews: {
+    'resolution-a': {
+      inputOverride: { version: 1, content: { elements: { action: 'omit' } } },
+      parameterColumnOverrides: { resolution: { version: 1, column: 'resolution_backup' } },
+    },
+    'resolution-expert': { finalAionRequest: { prompt: 'owned by expert' } },
+  },
+  selectedIds: ['resolution-a', 'resolution-b'],
+  action: { kind: 'set_parameter', field: 'resolution', value: '1440p' },
+});
+assert.deepEqual(fixedResolutionRepair.appliedIds, ['resolution-a', 'resolution-b']);
+assert.deepEqual(fixedResolutionRepair.reviews['resolution-a'].inputOverride?.parameters?.resolution, {
+  action: 'set', value: '1440p',
+});
+assert.deepEqual(fixedResolutionRepair.reviews['resolution-a'].inputOverride?.content?.elements, { action: 'omit' });
+assert.equal(fixedResolutionRepair.reviews['resolution-a'].parameterColumnOverrides?.resolution, undefined);
+assert.deepEqual(fixedResolutionRepair.reviews['resolution-expert'].finalAionRequest, { prompt: 'owned by expert' });
+
+const columnResolutionRepair = applyBulkGenerationRepair({
+  workspace: structuredRepairWorkspace,
+  cases: structuredRepairCases,
+  reviews: fixedResolutionRepair.reviews,
+  selectedIds: ['resolution-a'],
+  action: { kind: 'use_parameter_column', field: 'resolution', column: 'resolution_backup' },
+});
+assert.deepEqual(columnResolutionRepair.reviews['resolution-a'].parameterColumnOverrides?.resolution, {
+  version: 1, column: 'resolution_backup',
+});
+assert.equal(columnResolutionRepair.reviews['resolution-a'].inputOverride?.parameters?.resolution, undefined);
+
+const mixedInputCases = [{
+  valid: false,
+  generationType: 'reference_to_video',
+  errors: [{
+    code: 'MCP_INPUT_MODE_CONFLICT',
+    field: 'image_urls',
+    message: 'mixed',
+    repairActions: [
+      { kind: 'keep_keyframes', omitFields: ['elements', 'audios'] },
+      { kind: 'keep_references', omitFields: ['image_urls'] },
+    ],
+  }],
+  warnings: [],
+  resolvedCase: {
+    caseId: 'mixed-a',
+    datasetItemId: 'mixed-a',
+    compilerAudit: {
+      compiledInput: {
+        image_urls: ['https://example.com/first-a.png'],
+        elements: [{ frontal_image_url: 'https://example.com/reference-a.png' }],
+        audios: [{ url: 'https://example.com/audio-a.wav' }],
+      },
+    },
+  },
+}] as any;
+const mixedWorkspace = buildGenerationBulkRepairWorkspace({
+  cases: mixedInputCases,
+  reviews: {},
+  severity: 'error',
+  code: 'MCP_INPUT_MODE_CONFLICT',
+  field: 'image_urls',
+});
+const keepKeyframesRepair = applyBulkGenerationRepair({
+  workspace: mixedWorkspace,
+  cases: mixedInputCases,
+  reviews: {},
+  selectedIds: ['mixed-a'],
+  action: { kind: 'keep_keyframes', omitFields: ['elements', 'audios'] },
+});
+assert.deepEqual(keepKeyframesRepair.reviews['mixed-a'].inputOverride?.content?.elements, { action: 'omit' });
+assert.deepEqual(keepKeyframesRepair.reviews['mixed-a'].inputOverride?.content?.audios, { action: 'omit' });
+assert.equal(keepKeyframesRepair.reviews['mixed-a'].inputOverride?.content?.image_urls, undefined);
+
+assert.deepEqual(excludeGenerationCaseIds(['a', 'b', 'c'], ['b', 'missing']), ['a', 'c']);
+assert.deepEqual(restoreGenerationCaseIds(['a', 'c'], ['b'], ['a', 'b', 'c']), ['a', 'b', 'c']);
+
 const bulkPromptCases = [
   {
     valid: false,
@@ -928,6 +1122,21 @@ assert.deepEqual(generationPromptReplacementColumns({
   outputColumns: ['result'],
   referenceColumns: ['legacy_media'],
 }), ['prompt_zh', 'notes']);
+assert.deepEqual(generationParameterReplacementColumns({
+  headers: ['case_id', 'resolution', 'resolution_override', 'duration_backup', 'image', 'elements', 'result', '__hidden'],
+  inputSchema: [
+    { key: 'case_id', label: 'Case ID', type: 'text', role: 'case_id' },
+    { key: 'resolution', label: 'Resolution', type: 'text', role: 'input' },
+    { key: 'resolution_override', label: 'Resolution override', type: 'text', role: 'metadata' },
+    { key: 'duration_backup', label: 'Duration backup', type: 'text', role: 'dimension' },
+    { key: 'image', label: 'Image', type: 'image_url', role: 'media' },
+    { key: 'elements', label: 'Elements', type: 'text', role: 'reference' },
+    { key: 'result', label: 'Result', type: 'video_url', role: 'output' },
+  ],
+  currentColumn: 'resolution',
+  outputColumns: ['result'],
+  referenceColumns: ['elements'],
+}), ['resolution_override', 'duration_backup']);
 assert.equal(generationForceRequiresFinalJson(['UNSUPPORTED_PRESET_PARAMETER']), true);
 assert.equal(generationForceRequiresFinalJson(['MEDIA_TYPE_MISMATCH']), false);
 assert.deepEqual(generationForceBypassableCodes({
@@ -2266,6 +2475,13 @@ const promptColumnRequest = {
     { promptColumnOverride: { version: 1 as const, column: 'prompt_zh' } },
   ])),
 };
+assert.doesNotThrow(() => validateExpectedGenerationConfigFingerprint(undefined, 'config-new'));
+assert.doesNotThrow(() => validateExpectedGenerationConfigFingerprint('config-same', 'config-same'));
+assert.throws(
+  () => validateExpectedGenerationConfigFingerprint('config-old', 'config-new'),
+  /live model configuration changed/i,
+);
+
 assert.doesNotThrow(() => validateGenerationPromptColumnOverrides(
   promptColumnRequest,
   promptColumnDataset,
@@ -2575,6 +2791,88 @@ const parameterCases = buildGenerationCasesForPreflight(
   wanParameterModel,
   parameterSelection,
 );
+const parameterColumnDataset = {
+  id: 'dataset-parameter-column-overrides',
+  inputSchema: [
+    { key: 'prompt', label: 'Prompt', type: 'text', role: 'input' },
+    { key: 'resolution_backup', label: 'Resolution backup', type: 'text', role: 'input' },
+  ],
+  items: [{
+    [DATASET_ITEM_ID_KEY]: 'parameter-column-a',
+    case_id: 'parameter-column-a',
+    prompt: 'A paper boat crossing a quiet lake.',
+    resolution_backup: '720p',
+  }],
+} as any;
+const parameterColumnRequest = {
+  datasetId: parameterColumnDataset.id,
+  datasetVersion: 1,
+  modelName: videoModel.modelName,
+  targetColumn: 'result',
+  inputMapping: {
+    mappingMode: 'mcp',
+    canonicalFieldMappings: { prompt: 'prompt' },
+    referenceImageColumns: [],
+    referenceAudioColumns: [],
+    referenceVideoColumns: [],
+    extraInputColumns: [],
+  },
+  defaultControls: { duration: 5 },
+  perCaseControlColumns: {},
+  durationSource: { mode: 'uniform' },
+  seedMode: 'unused',
+  seedPolicyVersion: 2,
+  parameterBindings: {
+    resolution: { source: 'uniform', value: '1080p' },
+  },
+  caseReviews: {
+    'parameter-column-a': {
+      parameterColumnOverrides: {
+        resolution: { version: 1, column: 'resolution_backup' },
+      },
+    },
+  },
+} as any;
+const parameterColumnSelection = [{
+  row: parameterColumnDataset.items[0],
+  rowIndex: 0,
+  datasetItemId: 'parameter-column-a',
+}];
+assert.doesNotThrow(() => validateGenerationParameterColumnOverrides(
+  parameterColumnRequest,
+  videoModel,
+  parameterColumnDataset,
+  parameterColumnSelection,
+));
+const parameterColumnCase = buildGenerationCasesForPreflight(
+  parameterColumnDataset,
+  parameterColumnRequest,
+  videoModel,
+  parameterColumnSelection,
+)[0];
+assert.equal(parameterColumnCase.resolvedCase.controls.resolution, '720p');
+assert.deepEqual(parameterColumnCase.resolvedCase.parameterAudit?.resolution, {
+  source: 'case_column_override',
+  column: 'resolution_backup',
+  rawValue: '720p',
+  value: '720p',
+  verified: true,
+  destination: 'control',
+});
+assert.deepEqual(parameterColumnCase.resolvedCase.compilerAudit?.parameterColumnOverrides, {
+  resolution: { version: 1, column: 'resolution_backup', rawValue: '720p' },
+});
+assert.throws(() => validateGenerationParameterColumnOverrides({
+  ...parameterColumnRequest,
+  caseReviews: {
+    'parameter-column-a': {
+      parameterColumnOverrides: {
+        resolution: { version: 1, column: 'resolution_backup' },
+      },
+      finalAionRequest: { prompt: 'expert' },
+    },
+  },
+}, videoModel, parameterColumnDataset, parameterColumnSelection), /final Aion JSON/i);
 const unusedSeedCase = buildGenerationCasesForPreflight(
   parameterDataset,
   {
@@ -3194,6 +3492,63 @@ const invalidDuration = preflightGenerationCase(videoModel, {
 });
 assert.equal(invalidDuration.valid, false);
 assert.ok(invalidDuration.errors.some(item => item.code === 'UNSUPPORTED_CONTROL_VALUE'));
+
+const singleResolutionModel = normalizeAionModelConfig({
+  ...rawVideoModel,
+  name: 'provider/single-resolution',
+  options: {
+    supported_params: ['prompt', 'generation_type', 'resolution'],
+    resolution_options: ['1440p'],
+    input_schema: {
+      supported_inputs: ['prompt'],
+      required_inputs: { text_to_video: ['prompt'] },
+      required_one_of_inputs: {},
+    },
+  },
+  input_schema: {
+    supported_inputs: ['prompt'],
+    required_inputs: { text_to_video: ['prompt'] },
+    required_one_of_inputs: {},
+  },
+});
+assert.equal(singleResolutionModel.controls.find(control => control.key === 'resolution')?.optionSource, 'aion_options');
+const unsupportedResolution = preflightGenerationCase(singleResolutionModel, {
+  caseId: 'unsupported-resolution',
+  datasetItemId: 'unsupported-resolution',
+  rowIndex: 0,
+  prompt: 'A camera pans across a city.',
+  imageUrls: [],
+  audioUrls: [],
+  controls: { resolution: '720p' },
+  parameterAudit: {
+    resolution: {
+      source: 'column',
+      column: 'resolution',
+      rawValue: '720p',
+      value: '720p',
+      verified: true,
+      destination: 'control',
+    },
+  },
+});
+const unsupportedResolutionIssue = unsupportedResolution.errors.find(issue => (
+  issue.code === 'UNSUPPORTED_CONTROL_VALUE' && issue.field === 'resolution'
+));
+assert.deepEqual(unsupportedResolutionIssue?.evidence, {
+  rawValue: '720p',
+  normalizedValue: '720p',
+  source: 'column',
+  sourceColumn: 'resolution',
+  allowedValues: ['1440p'],
+  valueType: 'string',
+  ruleSource: 'aion_options',
+  modelConfigFingerprint: singleResolutionModel.configFingerprint,
+});
+assert.deepEqual(unsupportedResolutionIssue?.repairActions, [
+  { kind: 'set_parameter', field: 'resolution', allowedValues: ['1440p'], valueType: 'string' },
+  { kind: 'use_parameter_column', field: 'resolution', valueType: 'string' },
+  { kind: 'omit_parameter', field: 'resolution' },
+]);
 
 const imageCase = preflightGenerationCase(videoModel, {
   caseId: 'case-3',

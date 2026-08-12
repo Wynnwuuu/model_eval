@@ -18,6 +18,8 @@ import type {
   GenerationInvalidParameterDefinition,
   GenerationParameterAuditEntry,
   GenerationCaseInputOverrideV1,
+  GenerationPreflightIssue,
+  GenerationPreflightRepairAction,
   GenerationPromptLengthAudit,
   GenerationSeedMode,
 } from '../../src/types.ts';
@@ -37,6 +39,10 @@ export type GenerationControl = {
   options?: string[];
   defaultValue?: string | number | boolean;
   unit?: string;
+  optionSource?: 'aion_parameter_schema' | 'aion_options';
+  minimum?: number;
+  maximum?: number;
+  required?: boolean;
 };
 
 export type NormalizedGenerationModel = {
@@ -99,6 +105,11 @@ export type GenerationCase = {
       column: string;
       rawValue?: unknown;
     };
+    parameterColumnOverrides?: Record<string, {
+      version: 1;
+      column: string;
+      rawValue?: unknown;
+    }>;
     caseInputOverride?: {
       version: 1;
       override: GenerationCaseInputOverrideV1;
@@ -123,7 +134,7 @@ export type GenerationCase = {
   };
   parameterAudit?: Record<string, GenerationParameterAuditEntry>;
   durationResolution?: {
-    source: 'uniform' | 'column' | 'reference_audio' | 'case_override';
+    source: 'uniform' | 'column' | 'reference_audio' | 'case_override' | 'case_column_override';
     column?: string;
     audioUrl?: string;
     detectedSeconds?: number;
@@ -137,12 +148,7 @@ export type GenerationCase = {
   generationType?: string;
 };
 
-export type PreflightIssue = {
-  code: string;
-  message: string;
-  field?: string;
-  promptLength?: GenerationPromptLengthAudit;
-};
+export type PreflightIssue = GenerationPreflightIssue;
 
 export type PreflightCaseResult = {
   valid: boolean;
@@ -404,12 +410,15 @@ const supportedParams = (options: Record<string, any>) => {
 export const generationOptionsSupportSeed = (options: Record<string, any> | undefined) =>
   Boolean(options && Array.isArray(options.supported_params) && options.supported_params.includes('seed'));
 
-const parameterSchemaProperties = (options: Record<string, any>): Record<string, any> => {
+const parameterSchema = (options: Record<string, any>): Record<string, any> => {
   for (const candidate of [options.parameter_schema, options.params_schema, options.parameters_schema]) {
-    if (candidate?.properties && typeof candidate.properties === 'object') return candidate.properties;
+    if (candidate?.properties && typeof candidate.properties === 'object') return candidate;
   }
   return {};
 };
+
+const parameterSchemaProperties = (options: Record<string, any>): Record<string, any> =>
+  parameterSchema(options).properties || {};
 
 const STANDARD_INPUT_PARAMS = new Set([
   'prompt',
@@ -442,7 +451,8 @@ const normalizeInputSchema = (raw: Record<string, any>, options: Record<string, 
 };
 
 const controlFor = (key: string, options: Record<string, any>): GenerationControl => {
-  const schema = parameterSchemaProperties(options)[key] || {};
+  const schemaRoot = parameterSchema(options);
+  const schema = schemaRoot.properties?.[key] || {};
   const inferredType: GenerationControl['type'] = Array.isArray(schema.enum)
     ? 'select'
     : schema.type === 'number' || schema.type === 'integer'
@@ -468,15 +478,27 @@ const controlFor = (key: string, options: Record<string, any>): GenerationContro
   const optionValues = Array.isArray(schema.enum) ? schema.enum : configuredOptions;
   const configuredDefault = DEFAULT_KEYS[key] ? firstDefined(options, DEFAULT_KEYS[key]) : base.defaultValue;
   const defaultValue = schema.default ?? configuredDefault;
+  const minimum = Number(schema.minimum ?? schema.min);
+  const maximum = Number(schema.maximum ?? schema.max);
   return {
     key,
     ...base,
     label: String(schema.title || base.label),
     ...(optionValues.length
-      ? { type: 'select' as const, options: optionValues.map(String), defaultValue: defaultValue ?? optionValues[0] }
+      ? {
+          type: 'select' as const,
+          options: optionValues.map(String),
+          defaultValue: defaultValue ?? optionValues[0],
+          optionSource: Array.isArray(schema.enum)
+            ? 'aion_parameter_schema' as const
+            : 'aion_options' as const,
+        }
       : defaultValue !== undefined
         ? { defaultValue }
         : {}),
+    ...(Number.isFinite(minimum) ? { minimum } : {}),
+    ...(Number.isFinite(maximum) ? { maximum } : {}),
+    ...(Array.isArray(schemaRoot.required) ? { required: schemaRoot.required.includes(key) } : {}),
   };
 };
 
@@ -685,6 +707,228 @@ const suppliedInputs = (
   ...audioInputsFor(model, item),
   generation_type: generationType,
 });
+
+const controlValueType = (control: GenerationControl) => {
+  if (control.type === 'number') return 'number' as const;
+  if (control.type === 'toggle') return 'boolean' as const;
+  if (control.type === 'json') return 'json' as const;
+  return 'string' as const;
+};
+
+const parameterCanBeOmitted = (
+  model: NormalizedGenerationModel,
+  control: GenerationControl,
+  generationType: string,
+) => {
+  if (control.required) return false;
+  const required = model.inputSchema?.required_inputs;
+  const requiredOneOf = model.inputSchema?.required_one_of_inputs;
+  for (const mode of modeCandidates(generationType)) {
+    if (Array.isArray(required?.[mode]) && required[mode].map(String).includes(control.key)) return false;
+    if (Array.isArray(requiredOneOf?.[mode]) && requiredOneOf[mode].some((group: unknown) => (
+      Array.isArray(group) && group.length === 1 && String(group[0]) === control.key
+    ))) return false;
+  }
+  return true;
+};
+
+const canonicalContentItem = (field = '') => {
+  const match = field.match(/^(image_urls|images|elements|audios|imageUrls|audioUrls)\[(\d+)\]/);
+  if (!match) return undefined;
+  const aliases: Record<string, 'image_urls' | 'images' | 'elements' | 'audios'> = {
+    image_urls: 'image_urls',
+    images: 'images',
+    elements: 'elements',
+    audios: 'audios',
+    imageUrls: 'image_urls',
+    audioUrls: 'audios',
+  };
+  return { field: aliases[match[1]], index: Number(match[2]) };
+};
+
+const countRangeFor = (model: NormalizedGenerationModel, field: string) => {
+  const optionKey = ({
+    image_urls: 'image_urls_count_range',
+    images: 'images_count_range',
+    elements: 'elements_count_range',
+    audios: 'audios_count_range',
+  } as Record<string, string>)[field];
+  const configured = optionKey ? valueArray(model.options[optionKey]).map(Number) : [];
+  let minimum = configured.length >= 2 && configured.every(Number.isFinite) ? configured[0] : undefined;
+  let maximum = configured.length >= 2 && configured.every(Number.isFinite) ? configured[1] : undefined;
+  if (field === 'image_urls' && model.outputModality === 'video') {
+    minimum = minimum === undefined ? 0 : minimum;
+    maximum = maximum === undefined ? 2 : Math.min(2, maximum);
+  }
+  return { minimum, maximum };
+};
+
+export const enrichGenerationPreflightIssue = (
+  issue: PreflightIssue,
+  model: NormalizedGenerationModel,
+  item: GenerationCase,
+  generationType = item.generationType || resolveGenerationType(model, item),
+): PreflightIssue => {
+  const field = String(issue.field || '');
+  const root = field.match(/^([A-Za-z_][A-Za-z0-9_]*)/)?.[1] || field;
+  const control = model.controls.find(candidate => candidate.key === root);
+  const audit = item.parameterAudit?.[root];
+  const actions: GenerationPreflightRepairAction[] = [];
+
+  if (control && [
+    'UNSUPPORTED_CONTROL_VALUE',
+    'CONTROL_OUT_OF_RANGE',
+    'INVALID_CONTROL_VALUE',
+    'INVALID_PARAMETER_VALUE',
+    'MISSING_PARAMETER_COLUMN_VALUE',
+    'MISSING_DURATION_COLUMN_VALUE',
+  ].includes(issue.code)) {
+    const valueType = controlValueType(control);
+    actions.push({
+      kind: 'set_parameter',
+      field: root,
+      ...(control.options?.length ? { allowedValues: control.options } : {}),
+      ...(control.minimum !== undefined ? { minimum: control.minimum } : {}),
+      ...(control.maximum !== undefined ? { maximum: control.maximum } : {}),
+      valueType,
+    });
+    actions.push({ kind: 'use_parameter_column', field: root, valueType });
+    if (parameterCanBeOmitted(model, control, generationType)) {
+      actions.push({ kind: 'omit_parameter', field: root });
+    }
+    return {
+      ...issue,
+      evidence: {
+        ...(issue.evidence || {}),
+        ...(audit?.rawValue !== undefined ? { rawValue: audit.rawValue } : {}),
+        ...(audit?.rawValue === undefined && audit?.value !== undefined ? { rawValue: audit.value } : {}),
+        ...(audit?.rawValue === undefined && audit?.value === undefined && item.controls[root] !== undefined
+          ? { rawValue: item.controls[root] }
+          : {}),
+        ...(item.controls[root] !== undefined ? { normalizedValue: item.controls[root] } : {}),
+        ...(audit?.source ? { source: audit.source } : {}),
+        ...(audit?.column ? { sourceColumn: audit.column } : {}),
+        ...(control.options?.length ? { allowedValues: control.options } : {}),
+        ...(control.minimum !== undefined ? { minimum: control.minimum } : {}),
+        ...(control.maximum !== undefined ? { maximum: control.maximum } : {}),
+        valueType,
+        ruleSource: control.optionSource
+          || (control.minimum !== undefined || control.maximum !== undefined
+            ? 'aion_parameter_schema'
+            : 'manueval_validation'),
+        modelConfigFingerprint: model.configFingerprint,
+      },
+      repairActions: actions,
+    };
+  }
+
+  if (issue.code === 'UNSUPPORTED_PRESET_PARAMETER' && audit) {
+    return {
+      ...issue,
+      evidence: {
+        ...(audit.rawValue !== undefined ? { rawValue: audit.rawValue } : {}),
+        ...(audit.value !== undefined ? { normalizedValue: audit.value } : {}),
+        source: audit.source,
+        ...(audit.column ? { sourceColumn: audit.column } : {}),
+        ruleSource: 'aion_options',
+        modelConfigFingerprint: model.configFingerprint,
+      },
+      repairActions: [{ kind: 'omit_parameter', field: root }],
+    };
+  }
+
+  const inputs = suppliedInputs(model, item, generationType) as Record<string, unknown>;
+  if (['MCP_INPUT_MODE_CONFLICT', 'MODEL_INPUT_CONFLICT', 'CONFLICTING_VIDEO_AND_KEYFRAMES'].includes(issue.code)) {
+    const omitForKeyframes = [
+      ...(inputs.elements !== undefined ? ['elements' as const] : []),
+      ...(inputs.audios !== undefined || inputs.audio_url !== undefined ? ['audios' as const] : []),
+    ];
+    if (omitForKeyframes.length) actions.push({ kind: 'keep_keyframes', omitFields: omitForKeyframes });
+    if (inputs.image_urls !== undefined) actions.push({ kind: 'keep_references', omitFields: ['image_urls'] });
+    return {
+      ...issue,
+      evidence: {
+        rawValue: {
+          image_urls: inputs.image_urls,
+          elements: inputs.elements,
+          audios: inputs.audios ?? inputs.audio_url,
+        },
+        source: 'mapping',
+        ruleSource: issue.code === 'MCP_INPUT_MODE_CONFLICT'
+          ? 'mcp_revision_1813'
+          : 'aion_input_schema',
+        modelConfigFingerprint: model.configFingerprint,
+      },
+      ...(actions.length ? { repairActions: actions } : {}),
+    };
+  }
+
+  if (issue.code === 'INPUT_COUNT_OUT_OF_RANGE' || issue.code === 'MCP_KEYFRAME_COUNT_EXCEEDED') {
+    const contentField = root === 'imageUrls' ? 'image_urls' : root;
+    if (['image_urls', 'images', 'elements', 'audios'].includes(contentField)) {
+      const value = inputs[contentField];
+      const count = Array.isArray(value) ? value.length : value === undefined ? 0 : 1;
+      const range = countRangeFor(model, contentField);
+      if (range.maximum !== undefined && count > range.maximum) {
+        actions.push({
+          kind: 'trim_content',
+          field: contentField as 'image_urls' | 'images' | 'elements' | 'audios',
+          maximum: range.maximum,
+        });
+      }
+      return {
+        ...issue,
+        evidence: {
+          rawValue: value,
+          normalizedValue: value,
+          source: 'mapping',
+          ...(range.minimum !== undefined ? { minimum: range.minimum } : {}),
+          ...(range.maximum !== undefined ? { maximum: range.maximum } : {}),
+          valueType: 'array',
+          ruleSource: issue.code === 'MCP_KEYFRAME_COUNT_EXCEEDED'
+            ? 'mcp_revision_1813'
+            : 'aion_options',
+          modelConfigFingerprint: model.configFingerprint,
+          itemCount: count,
+        },
+        ...(actions.length ? { repairActions: actions } : {}),
+      };
+    }
+  }
+
+  if (['INVALID_ASSET_URL', 'MISSING_ASSET', 'MEDIA_TYPE_MISMATCH', 'NON_PUBLIC_ASSET_URL'].includes(issue.code)) {
+    const itemReference = canonicalContentItem(field);
+    if (itemReference) {
+      const value = inputs[itemReference.field];
+      const itemValue = Array.isArray(value) ? value[itemReference.index] : undefined;
+      return {
+        ...issue,
+        evidence: {
+          rawValue: itemValue,
+          normalizedValue: itemValue,
+          source: 'mapping',
+          valueType: 'url',
+          ruleSource: 'manueval_validation',
+          modelConfigFingerprint: model.configFingerprint,
+        },
+        repairActions: [{
+          kind: 'remove_content_item',
+          field: itemReference.field,
+          index: itemReference.index,
+        }],
+      };
+    }
+  }
+
+  return issue.evidence?.modelConfigFingerprint
+    ? issue
+    : {
+        ...issue,
+        ...(issue.evidence ? {
+          evidence: { ...issue.evidence, modelConfigFingerprint: model.configFingerprint },
+        } : {}),
+      };
+};
 
 export const preflightGenerationCase = (
   model: NormalizedGenerationModel,
@@ -926,7 +1170,25 @@ export const preflightGenerationCase = (
     }
   }
 
-  return { valid: errors.length === 0, generationType, errors, warnings, resolvedCase };
+  const enrichedErrors = errors.map(issue => enrichGenerationPreflightIssue(
+    issue,
+    model,
+    resolvedCase,
+    generationType,
+  ));
+  const enrichedWarnings = warnings.map(issue => enrichGenerationPreflightIssue(
+    issue,
+    model,
+    resolvedCase,
+    generationType,
+  ));
+  return {
+    valid: enrichedErrors.length === 0,
+    generationType,
+    errors: enrichedErrors,
+    warnings: enrichedWarnings,
+    resolvedCase,
+  };
 };
 
 const compactObject = (value: Record<string, any>) =>
