@@ -706,3 +706,10 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Browser QA passed at desktop and `390x844`: preview/apply produced one added, one updated, one deleted case and one stale result; result expansion and ascending case sorting behaved correctly with no console errors.
 - Passed versioned sync unit/PostgreSQL tests, all dataset suites, generation/MCP/Seed and generation DB tests, structured evaluation audit, Arena/ranking/insights/page metadata, API smoke, TypeScript, server build, frontend build, and `git diff --check`. No paid generation was submitted.
 - A real Feishu Base read was attempted locally and correctly failed with `FEISHU_NOT_CONFIGURED` because local `.env` has no Feishu app credentials. The dev deployment workflow already injects those secrets; live Base permission remains a post-deploy acceptance check.
+
+### Release
+
+- Fast-forward pushed commit `381652b` to `world-sim-dev/ManuEval` `main` without force-pushing or touching the original worktree's untracked reports/assets.
+- Eval Studio Test run `31589206087` passed. Dev CI/CD run `31589206352` passed tests, migration `014`, image build, and Kubernetes rollout.
+- Public dev `/datasets` and `/api/health` returned HTTP 200, and the Feishu login endpoint confirmed deployed app credentials are configured.
+- A live Feishu Base preview still requires an authenticated user session; app `bitable:app:readonly` scope and target-Base collaborator access remain the only external acceptance condition.

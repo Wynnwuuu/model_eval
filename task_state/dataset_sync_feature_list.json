@@ -33,7 +33,7 @@
     },
     {
       "id": "release",
-      "status": "in_progress",
+      "status": "completed",
       "description": "Rebase onto current main, fast-forward push, and verify CI plus dev deployment"
     }
   ]
