@@ -690,3 +690,19 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Browser-validated a zero-cost `720p` / sole `1440p` candidate fixture on desktop and `390x844` mobile. The candidate remained unselected, raw/effective values stayed `720p`, tables scrolled without overlap, and the fixture/artifacts were removed.
 - Passed generation/MCP/Seed, PostgreSQL generation integration, all dataset suites, structured evaluation audit, Arena, rank ties, insight summary/links, API smoke, TypeScript, frontend build, server build, and `git diff --check`.
 - The first DB/API attempts failed only because local PostgreSQL/Express were stopped. The existing test container and temporary API were started, tests passed, and both were stopped afterward. No paid generation or source-dataset mutation occurred.
+
+## 2026-08-12: Versioned dataset synchronization
+
+### Completed locally
+
+- Started from `github/main@76677e3` in an isolated worktree.
+- Preserved the original worktree and its untracked reports/assets.
+- Locked the approved behavior for composite identity, Feishu Base/manual snapshots, output merge policies, stale-result auditing, generation concurrency, column visibility, and view-only sorting.
+- Validation gate: add deterministic unit and PostgreSQL integration coverage before implementation, then run all dataset/generation suites, API smoke, TypeScript, server/frontend builds, and desktop/mobile browser checks. No paid generation is permitted.
+- Added exact `case_id + variant_label` synchronization with stable item identities, historical result restoration, source-authoritative row/schema ordering, explicit output merge policies, and stale-result auditing.
+- Added full-table Feishu Base previews plus CSV/TSV/JSON/paste imports. Source headers are preserved exactly; a non-exact or missing `case_id` header blocks application instead of risking a delete-all update.
+- Added active-generation blockers and a transactional dataset-version lock so synchronization and batch creation cannot race against stale source versions.
+- Added result-column visibility controls, default-hidden output/system columns, and stable typed single-column sorting that never changes generation order.
+- Browser QA passed at desktop and `390x844`: preview/apply produced one added, one updated, one deleted case and one stale result; result expansion and ascending case sorting behaved correctly with no console errors.
+- Passed versioned sync unit/PostgreSQL tests, all dataset suites, generation/MCP/Seed and generation DB tests, structured evaluation audit, Arena/ranking/insights/page metadata, API smoke, TypeScript, server build, frontend build, and `git diff --check`. No paid generation was submitted.
+- A real Feishu Base read was attempted locally and correctly failed with `FEISHU_NOT_CONFIGURED` because local `.env` has no Feishu app credentials. The dev deployment workflow already injects those secrets; live Base permission remains a post-deploy acceptance check.

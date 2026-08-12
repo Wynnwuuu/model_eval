@@ -1,7 +1,13 @@
 import { DATASET_ITEM_ID_KEY } from '../../src/datasetSync.ts';
+import {
+  DATASET_RESULT_META_KEY,
+  collectGenerationDependencyColumns,
+  datasetGenerationInputFingerprint,
+  type DatasetResultFreshnessMap,
+} from '../../src/datasetVersionedSync.ts';
 import type { DatasetSchemaField, EvalDataset } from '../../src/types.ts';
 import type { RequestUser } from '../auth/context.ts';
-import { getDataset, saveDataset } from '../datasets/datasetRepository.ts';
+import { getDataset, getDatasetVersion, saveDataset } from '../datasets/datasetRepository.ts';
 import {
   claimGenerationWriteback,
   finishGenerationWriteback,
@@ -100,6 +106,17 @@ export const writeGenerationBatchToDataset = async (jobId: string) => {
     }
 
     const nextItems = current.items.map(row => ({ ...row }));
+    const sourceDataset = batch.sourceDatasetVersion
+      ? await getDatasetVersion(batch.datasetId, batch.sourceDatasetVersion)
+      : current;
+    const sourceRowsByStableId = new Map(
+      (sourceDataset?.items || []).map(row => [String(row[DATASET_ITEM_ID_KEY] || ''), row]),
+    );
+    const candidateColumns = current.inputSchema.map(field => field.key);
+    const dependencyColumns = collectGenerationDependencyColumns(
+      [batch.inputMapping, batch.controls],
+      candidateColumns,
+    );
     for (const item of batch.items) {
       const currentRow = rowsByStableId.get(String(item.datasetItemId || ''));
       if (!currentRow) continue;
@@ -121,6 +138,24 @@ export const writeGenerationBatchToDataset = async (jobId: string) => {
         originalResultUrl: item.originalResultUrl,
         durability: item.durability,
       });
+      if (item.status === 'succeeded' && row[batch.targetColumn]) {
+        const sourceRow = sourceRowsByStableId.get(String(item.datasetItemId || '')) || row;
+        const resultMeta: DatasetResultFreshnessMap = row[DATASET_RESULT_META_KEY]
+          && typeof row[DATASET_RESULT_META_KEY] === 'object'
+          ? { ...row[DATASET_RESULT_META_KEY] }
+          : {};
+        const sourceFingerprint = datasetGenerationInputFingerprint(sourceRow, dependencyColumns);
+        const currentFingerprint = datasetGenerationInputFingerprint(row, dependencyColumns);
+        resultMeta[batch.targetColumn] = {
+          source: 'generation',
+          stale: sourceFingerprint !== currentFingerprint,
+          inputFingerprint: sourceFingerprint,
+          dependencyColumns,
+          generatedAt: Date.now(),
+          ...(sourceFingerprint !== currentFingerprint ? { staleSinceVersion: current.version || 1 } : {}),
+        };
+        row[DATASET_RESULT_META_KEY] = resultMeta;
+      }
     }
 
     const outputField: DatasetSchemaField = {

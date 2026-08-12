@@ -75,7 +75,7 @@ const createVoteItemSnapshot = (item: EvaluationItem): VoteItemSnapshot => ({
   sourceDatasetVersion: item.sourceDatasetVersion,
 });
 
-const hashString = (value: string) => {
+export const hashDatasetIdentity = (value: string) => {
   let hash = 2166136261;
   for (let index = 0; index < value.length; index += 1) {
     hash ^= value.charCodeAt(index);
@@ -83,6 +83,12 @@ const hashString = (value: string) => {
   }
   return (hash >>> 0).toString(36);
 };
+
+export const createDatasetItemStableId = (
+  datasetId: string,
+  caseId: string,
+  variantLabel = '',
+) => `${datasetId}:item:${hashDatasetIdentity(JSON.stringify([caseId.trim(), variantLabel.trim()]))}`;
 
 export const getDatasetRowCaseId = (row: Record<string, any>, fallbackIndex = 0) => {
   const key = CASE_ID_KEYS.find(candidate => String(row[candidate] ?? '').trim());
@@ -106,16 +112,19 @@ export const ensureStableDatasetItemIds = (
     occurrenceByIdentity.set(identity, occurrence + 1);
     return {
       ...row,
-      [DATASET_ITEM_ID_KEY]: `${datasetId}:item:${hashString(`${identity}|${occurrence}`)}`,
+      [DATASET_ITEM_ID_KEY]: `${datasetId}:item:${hashDatasetIdentity(`${identity}|${occurrence}`)}`,
     };
   });
 };
 
-export const stripDatasetInternalFields = (row: Record<string, any>) => {
+export const stripDatasetStorageOnlyFields = (row: Record<string, any>) => {
   const next = { ...row };
   delete next[DATASET_ITEM_ID_KEY];
   return next;
 };
+
+export const stripDatasetInternalFields = (row: Record<string, any>) =>
+  Object.fromEntries(Object.entries(row).filter(([key]) => !key.startsWith('__')));
 
 export const inferTaskDatasetBinding = (
   task: EvalTask,
@@ -304,7 +313,7 @@ const buildSourceItem = (
 };
 
 const makeTaskItemId = (taskId: string, stableItemId: string, suffix = '') =>
-  `${taskId}:source:${hashString(stableItemId)}${suffix ? `:${suffix}` : ''}`;
+  `${taskId}:source:${hashDatasetIdentity(stableItemId)}${suffix ? `:${suffix}` : ''}`;
 
 export const createTaskItemsForDatasetRow = (
   task: EvalTask,
@@ -320,7 +329,7 @@ export const createTaskItemsForDatasetRow = (
       id: makeTaskItemId(task.id, stableItemId, pair.pairId),
       ...buildSourceItem(task, binding, row, nextVersion, pair),
       itemOrder: startingOrder + index,
-      isSwapped: config.blind !== false ? hashString(`${task.id}|${stableItemId}|${pair.pairId}`).charCodeAt(0) % 2 === 0 : false,
+      isSwapped: config.blind !== false ? hashDatasetIdentity(`${task.id}|${stableItemId}|${pair.pairId}`).charCodeAt(0) % 2 === 0 : false,
     }));
   }
 
@@ -329,7 +338,7 @@ export const createTaskItemsForDatasetRow = (
     ...buildSourceItem(task, binding, row, nextVersion),
     itemOrder: startingOrder,
     isSwapped: config?.method === 'ab_preference' && config.blind !== false
-      ? hashString(`${task.id}|${stableItemId}`).charCodeAt(0) % 2 === 0
+      ? hashDatasetIdentity(`${task.id}|${stableItemId}`).charCodeAt(0) % 2 === 0
       : false,
   }];
 };

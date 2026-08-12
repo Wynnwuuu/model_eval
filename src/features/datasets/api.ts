@@ -1,6 +1,6 @@
 import { collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, orderBy, query, setDoc } from '../../datastore';
 import { auth, db } from '../../auth';
-import { DatasetSyncSummary, DatasetVersionSnapshot, EvalDataset, EvalTask, EvaluationItem, VoteRecord } from '../../types';
+import { DatasetSyncOutputPolicy, DatasetSyncPreview, DatasetSyncSummary, DatasetVersionSnapshot, EvalDataset, EvalTask, EvaluationItem, VoteRecord } from '../../types';
 import { buildDatasetClone } from '../../datasetClone';
 import {
   detectDatasetColumnRenames,
@@ -94,6 +94,7 @@ const toVersionSnapshot = (dataset: EvalDataset): DatasetVersionSnapshot => ({
   standardFields: dataset.standardFields,
   syncSummary: dataset.syncSummary,
   copiedFrom: dataset.copiedFrom,
+  syncSource: dataset.syncSource,
   updatedAt: dataset.updatedAt || Date.now(),
 });
 
@@ -125,6 +126,7 @@ const datasetFromSnapshot = (dataset: EvalDataset, snapshot: DatasetVersionSnaps
   standardFields: snapshot.standardFields,
   syncSummary: snapshot.syncSummary,
   copiedFrom: snapshot.copiedFrom ?? dataset.copiedFrom,
+  syncSource: snapshot.syncSource ?? dataset.syncSource,
   version: snapshot.version,
   updatedAt: snapshot.updatedAt || dataset.updatedAt,
 });
@@ -401,6 +403,45 @@ export async function saveDataset(
   const datasetWithSnapshot = attachLocalVersionSnapshot({ ...normalizedDataset, syncSummary }, existing);
   await setDoc(ref, sanitizeDatasetValue(datasetWithSnapshot));
   return datasetWithSnapshot;
+}
+
+export type DatasetSyncSourceInput =
+  | { kind: 'feishu_base'; url: string }
+  | { kind: 'manual'; headers: string[]; rows: Record<string, unknown>[]; label?: string };
+
+export async function createDatasetSyncPreview(
+  dataset: EvalDataset,
+  source: DatasetSyncSourceInput,
+) {
+  if (!USE_SHARED_DATA_SOURCE) throw new Error('评测集同步仅在 ManuEval dev 服务模式下可用。');
+  const response = await requestJson<{ preview: DatasetSyncPreview }>(`/api/datasets/${dataset.id}/sync-previews`, {
+    method: 'POST',
+    body: JSON.stringify({ expectedVersion: dataset.version || 1, source: sanitizeDatasetValue(source) }),
+  });
+  return response.preview;
+}
+
+export async function updateDatasetSyncPreview(
+  previewId: string,
+  patch: {
+    outputPolicies?: Record<string, DatasetSyncOutputPolicy>;
+    newColumnRoles?: Record<string, 'source' | 'output'>;
+  },
+) {
+  const response = await requestJson<{ preview: DatasetSyncPreview }>(`/api/datasets/sync-previews/${previewId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+  return response.preview;
+}
+
+export async function applyDatasetSyncPreview(previewId: string, confirmSourceOverwrite: boolean) {
+  const response = await requestJson<{ dataset: EvalDataset }>(`/api/datasets/sync-previews/${previewId}/apply`, {
+    method: 'POST',
+    body: JSON.stringify({ confirmSourceOverwrite }),
+  });
+  notifyDatasetReloaders();
+  return response.dataset;
 }
 
 export async function loadDatasetVersion(datasetId: string, version: number) {

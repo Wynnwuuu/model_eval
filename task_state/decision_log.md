@@ -388,6 +388,20 @@ Bulk repairs target the same issue code and field, default to all eligible match
 
 Every applied repair creates a new preflight immediately. Case exclusion changes only the current `selectedDatasetItemIds`; the dataset is immutable and excluded cases can be restored.
 
+## 2026-08-12: Dataset synchronization is identity-based and versioned
+
+Structured dataset maintenance uses the exact composite business key `case_id + variant_label`; `case_id` is required and `variant_label` may be blank, but the pair must be unique in every source snapshot. Source column names and ordering are authoritative. Generation outputs and internal audit columns that are absent from a new source snapshot are retained and merged by stable dataset item ID.
+
+A synchronization is a two-step preview/apply operation. Feishu Base previews read the entire table without applying the linked view filter, then re-read and compare the source snapshot hash at apply time. CSV, TSV, JSON, and pasted data use the immutable preview snapshot. Applying always creates one dataset version and never mutates historical task, vote, or generation snapshots.
+
+Existing cases retain `__datasetItemId`; re-added cases recover the most recent historical ID and platform results; genuinely new identities receive a deterministic ID derived only from the composite identity. Deleting a case removes it from the current version while historical versions and evaluation evidence remain intact.
+
+For each output column, synchronization explicitly chooses preserve-platform, fill-platform-blanks, or source-overwrite-including-blanks. Preserve is the default and overwrite requires a second confirmation. Retained results are marked stale only when generation-relevant source inputs changed. Metadata-only edits do not mark outputs stale, and a successful generation writeback records a fresh input fingerprint.
+
+Dataset synchronization and generation submission take the dataset-row lock first. A stale preflight cannot create a batch after the dataset version changes. Active generation blocks only destructive changes to its selected cases, generation inputs, or target result column; metadata-only edits and unrelated new cases remain allowed.
+
+Column visibility and sorting are presentation state. Output and technical columns default hidden; operators can show individual outputs or all outputs. One-column typed sorting is stable with blanks last and never changes source order, stored order, or generation execution order.
+
 Replacement controls never infer a pending value from the first allowed option. Raw source value, normalized effective value, model constraints, and the unselected replacement control are separate states.
 
 Repair application uses optimistic concurrency on the Aion configuration fingerprint. A changed fingerprint is a contract change, so the old repair decision is rejected instead of being silently reinterpreted against the new model configuration.

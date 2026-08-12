@@ -399,6 +399,69 @@ export interface DatasetCopySource {
   copiedAt: number;
 }
 
+export type DatasetSyncSourceKind = 'feishu_base' | 'manual';
+
+export interface DatasetSyncSourceBinding {
+  version: 1;
+  kind: DatasetSyncSourceKind;
+  sourceUrl?: string;
+  sourceLabel?: string;
+  tableId?: string;
+  columnOrder: string[];
+  snapshotHash: string;
+  lastSyncedAt: number;
+}
+
+export type DatasetSyncOutputPolicy =
+  | 'preserve_platform'
+  | 'fill_platform_blanks'
+  | 'source_overwrite';
+
+export interface DatasetSyncFieldChange {
+  field: string;
+  before: unknown;
+  after: unknown;
+  kind: 'input' | 'output' | 'metadata' | 'added' | 'removed';
+}
+
+export interface DatasetSyncCaseChange {
+  identity: string;
+  caseId: string;
+  variantLabel: string;
+  stableItemId: string;
+  action: 'added' | 'updated' | 'deleted' | 'restored' | 'unchanged';
+  fieldChanges: DatasetSyncFieldChange[];
+  staleOutputColumns: string[];
+}
+
+export interface DatasetSyncPreviewSummary {
+  added: number;
+  updated: number;
+  deleted: number;
+  restored: number;
+  unchanged: number;
+  staleResults: number;
+  sourceResultOverwrites: number;
+}
+
+export interface DatasetSyncPreview {
+  id: string;
+  datasetId: string;
+  expectedVersion: number;
+  source: DatasetSyncSourceBinding;
+  sourceHeaders: string[];
+  outputColumns: string[];
+  outputPolicies: Record<string, DatasetSyncOutputPolicy>;
+  newColumnRoles: Record<string, 'source' | 'output'>;
+  summary: DatasetSyncPreviewSummary;
+  cases: DatasetSyncCaseChange[];
+  blockers: Array<{ jobId: string; caseIds: string[]; reasons: string[] }>;
+  validationIssues: Array<{ code: string; message: string; rowIndexes?: number[] }>;
+  requiresOverwriteConfirmation: boolean;
+  createdAt: number;
+  expiresAt: number;
+}
+
 export interface ArenaSamplingConfig {
   suggestedBattlesPerReviewer: number;
   warmupBattlesPerModel: number;
@@ -423,6 +486,7 @@ export interface DatasetVersionSnapshot {
   standardFields?: DatasetStandardFieldDefinition[];
   syncSummary?: DatasetSyncSummary;
   copiedFrom?: DatasetCopySource;
+  syncSource?: DatasetSyncSourceBinding;
   updatedAt: number;
 }
 
@@ -445,6 +509,7 @@ export interface EvalDataset {
   validationSummary?: DatasetValidationSummary;
   syncSummary?: DatasetSyncSummary;
   copiedFrom?: DatasetCopySource;
+  syncSource?: DatasetSyncSourceBinding;
   creatorUid?: string;
   creatorName?: string;
   createdAt: number;

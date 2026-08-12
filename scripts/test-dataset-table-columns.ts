@@ -85,9 +85,15 @@ assert.ok(defaultVisible.some(column => column.key === referenceVideoColumns[2])
 assert.ok(defaultVisible.some(column => column.key === referenceAudioColumn), 'reference audio must be visible');
 assert.ok(defaultVisible.some(column => column.key === OBSERVATION_FOCUS), 'ordinary metadata must be visible');
 assert.ok(!defaultVisible.some(column => column.key === PARAMS_JSON), 'system fields must be hidden by default');
+assert.ok(!defaultVisible.some(column => column.key === 'MiniMax-H3'), 'output fields must be collapsed by default');
+assert.ok(!defaultVisible.some(column => column.key === 'Seedance 2.0 Pro'), 'every output field must be collapsed by default');
 
 const systemVisible = getVisibleDatasetTableColumns(columns, { [PARAMS_JSON]: true });
 assert.ok(systemVisible.some(column => column.key === PARAMS_JSON), 'visibility overrides must reveal system fields');
+
+const outputVisible = getVisibleDatasetTableColumns(columns, { 'MiniMax-H3': true });
+assert.ok(outputVisible.some(column => column.key === 'MiniMax-H3'), 'visibility overrides must reveal one output without expanding all outputs');
+assert.ok(!outputVisible.some(column => column.key === 'Seedance 2.0 Pro'));
 
 const legacyDataset: EvalDataset = {
   id: 'legacy-dataset',

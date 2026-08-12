@@ -65,6 +65,7 @@ const main = async () => {
   const ids = {
     project: `project-${RUN_ID}`,
     dataset: `dataset-${RUN_ID}`,
+    datasetSync: `dataset-sync-${RUN_ID}`,
     template: `template-${RUN_ID}`,
     task: `task-${RUN_ID}`,
     benchmarkTask: `benchmark-task-${RUN_ID}`,
@@ -80,6 +81,7 @@ const main = async () => {
       sendJson(`/api/tasks/${ids.task}`, 'DELETE'),
       sendJson(`/api/tasks/${ids.benchmarkTask}`, 'DELETE'),
       sendJson(`/api/datasets/${ids.dataset}`, 'DELETE'),
+      sendJson(`/api/datasets/${ids.datasetSync}`, 'DELETE'),
       sendJson(`/api/templates/${ids.template}`, 'DELETE'),
       sendJson(`/api/projects/${ids.project}`, 'DELETE'),
     ]);
@@ -516,6 +518,75 @@ const main = async () => {
     });
     const benchmarkVotes = await request<{ userVotes: Array<{ user: string; votes: any[] }> }>(`/api/tasks/${ids.benchmarkTask}/votes`);
     assert(benchmarkVotes.userVotes[0]?.votes[0]?.method === 'benchmark_preview', 'benchmark preview votes were not persisted');
+
+    await sendJson(`/api/datasets/${ids.datasetSync}`, 'PUT', {
+      dataset: {
+        id: ids.datasetSync,
+        name: `Sync Dataset ${RUN_ID}`,
+        description: 'verify versioned sync api',
+        tags: [],
+        inputSchema: [
+          { key: 'case_id', label: 'case_id', type: 'text', role: 'case_id' },
+          { key: 'variant_label', label: 'variant_label', type: 'text', role: 'metadata' },
+          { key: 'prompt', label: 'prompt', type: 'text', role: 'input' },
+          { key: 'sync_result', label: 'sync_result', type: 'video_url', role: 'output', previewType: 'video' },
+        ],
+        items: [{ case_id: 'sync-1', variant_label: '', prompt: 'before', sync_result: 'https://example.com/sync.mp4' }],
+        columnMappings: {
+          caseId: 'case_id',
+          inputColumns: ['prompt'],
+          outputColumns: ['sync_result'],
+          dimensionColumns: [],
+          referenceColumns: [],
+          standard: { case_id: 'case_id', prompt: 'prompt' },
+        },
+        version: 1,
+        versionHistory: [{ version: 1, changedAt: Date.now(), changedBy: 'smoke', changeSummary: 'create', itemCountBefore: 0, itemCountAfter: 1 }],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+    });
+    const reservedSyncColumn = await expectJsonFailure(`/api/datasets/${ids.datasetSync}/sync-previews`, 400, {
+      method: 'POST',
+      body: JSON.stringify({
+        expectedVersion: 1,
+        source: {
+          kind: 'manual',
+          headers: ['case_id', '__generationResultMeta'],
+          rows: [{ case_id: 'sync-1', __generationResultMeta: {} }],
+        },
+      }),
+    });
+    assert(reservedSyncColumn.error?.code === 'BAD_REQUEST', 'sync source accepted a reserved internal column');
+    const missingIdentityPreview = await sendJson<{ preview: any }>(`/api/datasets/${ids.datasetSync}/sync-previews`, 'POST', {
+      expectedVersion: 1,
+      source: {
+        kind: 'manual',
+        headers: [' case_id ', 'prompt'],
+        rows: [],
+      },
+    });
+    assert(
+      missingIdentityPreview.preview.validationIssues[0]?.code === 'MISSING_CASE_ID_COLUMN',
+      'sync source silently normalized a non-exact case_id header',
+    );
+    const syncPreview = await sendJson<{ preview: any }>(`/api/datasets/${ids.datasetSync}/sync-previews`, 'POST', {
+      expectedVersion: 1,
+      source: {
+        kind: 'manual',
+        headers: ['case_id', 'variant_label', 'prompt', 'sync_result'],
+        rows: [
+          { case_id: 'sync-1', variant_label: '', prompt: 'after', sync_result: '' },
+          { case_id: 'sync-2', variant_label: '', prompt: 'new', sync_result: '' },
+        ],
+      },
+    });
+    assert(syncPreview.preview.summary.updated === 1, 'sync preview did not detect the updated case');
+    assert(syncPreview.preview.summary.added === 1, 'sync preview did not detect the added case');
+    const synchronized = await sendJson<{ dataset: any }>(`/api/datasets/sync-previews/${syncPreview.preview.id}/apply`, 'POST', {});
+    assert(synchronized.dataset.version === 2, 'sync apply did not create one new version');
+    assert(synchronized.dataset.items[0].sync_result === 'https://example.com/sync.mp4', 'sync apply did not preserve the platform result');
+    assert(synchronized.dataset.items[0].__generationResultMeta.sync_result.stale === true, 'sync apply did not mark the retained result stale');
 
     await sendJson(`/api/generation/jobs/${ids.job}`, 'PUT', {
       job: {

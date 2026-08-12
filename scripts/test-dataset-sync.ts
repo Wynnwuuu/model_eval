@@ -7,6 +7,8 @@ import {
   inferTaskDatasetBinding,
   planDatasetTaskSync,
   remapTaskDatasetBinding,
+  stripDatasetInternalFields,
+  stripDatasetStorageOnlyFields,
   synchronizeVoteSnapshot,
 } from '../src/datasetSync';
 import type { EvalTask, EvaluationItem, VoteRecord } from '../src/types';
@@ -28,6 +30,17 @@ const originalRows = ensureStableDatasetItemIds('dataset-1', [
     model_b: 'https://example.com/b-2.mp4',
   },
 ]);
+
+const internalRow = {
+  case_id: 'case-internal',
+  [DATASET_ITEM_ID_KEY]: 'stable-internal',
+  __generationResultMeta: { model_a: { stale: true } },
+};
+assert.deepEqual(stripDatasetInternalFields(internalRow), { case_id: 'case-internal' });
+assert.deepEqual(stripDatasetStorageOnlyFields(internalRow), {
+  case_id: 'case-internal',
+  __generationResultMeta: { model_a: { stale: true } },
+});
 
 const renamedCaseRows = ensureStableDatasetItemIds('dataset-1', [
   { ...originalRows[0], 用例ID: 'case-1-renamed' },

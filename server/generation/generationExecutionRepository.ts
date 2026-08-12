@@ -224,6 +224,34 @@ export const createGenerationBatchFromPreflight = async (
   const client = await dbPool.connect();
   try {
     await client.query('BEGIN');
+    const datasetLock = await client.query<{ current_version: number }>(
+      `
+        SELECT current_version
+        FROM datasets
+        WHERE id = $1 AND organization_id = $2 AND deleted_at IS NULL
+        FOR UPDATE
+      `,
+      [preflight.datasetId, user.organizationId],
+    );
+    if (!datasetLock.rows[0]) {
+      throw conflict(preflight.payload.retryOfJobId
+        ? 'One or more retry source cases are unavailable.'
+        : 'The source dataset is unavailable. Please preflight again.');
+    }
+    if (datasetLock.rows[0].current_version !== preflight.datasetVersion) {
+      throw conflict('The dataset changed after preflight. Please preflight again.', {
+        expectedVersion: preflight.datasetVersion,
+        currentVersion: datasetLock.rows[0].current_version,
+      });
+    }
+    const lockedExisting = await client.query(
+      'SELECT id FROM generation_jobs WHERE request_hash = $1 LIMIT 1',
+      [preflight.requestHash],
+    );
+    if (lockedExisting.rows[0]) {
+      await client.query('ROLLBACK');
+      return { id: lockedExisting.rows[0].id, reused: true };
+    }
     const jobId = `gen-${randomUUID()}`;
     const allCases = Array.isArray(preflight.result.cases) ? preflight.result.cases : [];
     const cases = allCases.filter((item: any) => item.valid);

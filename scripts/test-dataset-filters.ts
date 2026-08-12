@@ -6,6 +6,7 @@ import {
   datasetFilterValue,
   indexDatasetRows,
   partitionDatasetFilterValueOptions,
+  sortIndexedDatasetRows,
   type DatasetColumnFilterMap,
 } from '../src/datasetRowFilters.ts';
 import {
@@ -61,6 +62,16 @@ assert.equal(
   datasetFilterValue({ a: 1, b: 2 }).key,
   'object key order must not create duplicate filter values',
 );
+
+const sortedNumbers = sortIndexedDatasetRows(indexed, { columnKey: 'typed', direction: 'asc' });
+assert.deepEqual(
+  sortedNumbers.map(item => item.sourceIndex),
+  [4, 0, 1, 2, 3],
+  'typed sorting must be stable and must not coerce number, string, and boolean values into one type',
+);
+assert.deepEqual(indexed.map(item => item.sourceIndex), [0, 1, 2, 3, 4], 'sorting must never mutate source order');
+const sortedBlankLast = sortIndexedDatasetRows(indexed, { columnKey: 'note', direction: 'desc' });
+assert.deepEqual(sortedBlankLast.map(item => item.sourceIndex), [1, 3, 0, 2, 4], 'blank values must remain last in both directions');
 assert.notEqual(
   datasetFilterValue(['a', 'b']).key,
   datasetFilterValue(['b', 'a']).key,

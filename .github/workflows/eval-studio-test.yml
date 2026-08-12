@@ -65,6 +65,10 @@ jobs:
 
       - run: npm run test:dataset-filters
 
+      - run: npm run test:dataset-table-columns
+
+      - run: npm run test:dataset-sync
+
       - run: npm run build
 
       - run: npm run server:build
@@ -72,6 +76,8 @@ jobs:
       - run: npm run db:migrate
 
       - run: npm run test:generation:db
+
+      - run: npm run test:dataset-sync:db
 
       - name: Start API
         run: |

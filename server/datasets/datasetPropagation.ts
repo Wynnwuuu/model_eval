@@ -107,28 +107,26 @@ const synchronizeVotesForItem = async (
 };
 
 const synchronizeTaskProgress = async (client: PoolClient, taskId: string) => {
-  const [itemCountResult, progressResult, taskResult] = await Promise.all([
-    client.query<{ count: number }>(
-      'SELECT COUNT(*)::int AS count FROM eval_task_items WHERE task_id = $1 AND archived_at IS NULL',
-      [taskId]
-    ),
-    client.query<{ user_id: string; count: number }>(
-      `
-        SELECT vote.user_id, COUNT(*)::int AS count
-        FROM evaluation_votes vote
-        JOIN eval_task_items item ON item.id = vote.task_item_id
-        WHERE vote.task_id = $1
-          AND vote.archived_at IS NULL
-          AND item.archived_at IS NULL
-        GROUP BY vote.user_id
-      `,
-      [taskId]
-    ),
-    client.query<{ progress_json: Record<string, number> | null }>(
-      'SELECT progress_json FROM eval_tasks WHERE id = $1',
-      [taskId]
-    ),
-  ]);
+  const itemCountResult = await client.query<{ count: number }>(
+    'SELECT COUNT(*)::int AS count FROM eval_task_items WHERE task_id = $1 AND archived_at IS NULL',
+    [taskId]
+  );
+  const progressResult = await client.query<{ user_id: string; count: number }>(
+    `
+      SELECT vote.user_id, COUNT(*)::int AS count
+      FROM evaluation_votes vote
+      JOIN eval_task_items item ON item.id = vote.task_item_id
+      WHERE vote.task_id = $1
+        AND vote.archived_at IS NULL
+        AND item.archived_at IS NULL
+      GROUP BY vote.user_id
+    `,
+    [taskId]
+  );
+  const taskResult = await client.query<{ progress_json: Record<string, number> | null }>(
+    'SELECT progress_json FROM eval_tasks WHERE id = $1',
+    [taskId]
+  );
   const totalItems = Number(itemCountResult.rows[0]?.count || 0);
   const progress: Record<string, number> = {};
   Object.keys(taskResult.rows[0]?.progress_json || {}).forEach(userId => {
@@ -166,32 +164,30 @@ export const propagateDatasetVersion = async (
   summary.tasks = taskResult.rows.length;
   summary.projects = new Set(taskResult.rows.map(row => row.project_id).filter(Boolean)).size;
   const taskIds = taskResult.rows.map(row => row.id);
-  const [modelResult, itemResult, currentDatasetItemResult] = await Promise.all([
-    client.query<ModelRow>(
-      'SELECT * FROM eval_task_models WHERE task_id = ANY($1) ORDER BY task_id, model_order',
-      [taskIds]
-    ),
-    client.query<TaskItemRow>(
-      `
-        SELECT *
-        FROM eval_task_items
-        WHERE task_id = ANY($1)
-          AND archived_at IS NULL
-        ORDER BY task_id, row_index, id
-      `,
-      [taskIds]
-    ),
-    client.query<{ id: string; stable_item_id: string }>(
-      `
-        SELECT item.id, item.stable_item_id
-        FROM dataset_items item
-        JOIN dataset_versions version ON version.id = item.version_id
-        WHERE item.dataset_id = $1
-          AND version.version = $2
-      `,
-      [nextDataset.id, nextDataset.version || 1]
-    ),
-  ]);
+  const modelResult = await client.query<ModelRow>(
+    'SELECT * FROM eval_task_models WHERE task_id = ANY($1) ORDER BY task_id, model_order',
+    [taskIds]
+  );
+  const itemResult = await client.query<TaskItemRow>(
+    `
+      SELECT *
+      FROM eval_task_items
+      WHERE task_id = ANY($1)
+        AND archived_at IS NULL
+      ORDER BY task_id, row_index, id
+    `,
+    [taskIds]
+  );
+  const currentDatasetItemResult = await client.query<{ id: string; stable_item_id: string }>(
+    `
+      SELECT item.id, item.stable_item_id
+      FROM dataset_items item
+      JOIN dataset_versions version ON version.id = item.version_id
+      WHERE item.dataset_id = $1
+        AND version.version = $2
+    `,
+    [nextDataset.id, nextDataset.version || 1]
+  );
   const datasetItemIdByStableId = new Map(currentDatasetItemResult.rows.map(row => [row.stable_item_id, row.id]));
   const columnRenameMap = detectDatasetColumnRenames(
     previousDataset.items || [],

@@ -13,8 +13,54 @@ import {
 } from './datasetRepository.ts';
 import { badRequest, notFound, sendError } from '../http/errors.ts';
 import { requireBodyObject, requireNonEmptyString, validateDatasetPayload } from '../http/validation.ts';
+import {
+  applyDatasetSyncPreview,
+  createDatasetSyncPreview,
+  updateDatasetSyncPreview,
+} from './datasetSyncService.ts';
 
 export const datasetRoutes = Router();
+
+datasetRoutes.post('/:datasetId/sync-previews', async (req, res) => {
+  try {
+    const expectedVersion = Number(req.body?.expectedVersion);
+    if (!Number.isInteger(expectedVersion) || !req.body?.source || typeof req.body.source !== 'object') {
+      throw badRequest('expectedVersion and source are required');
+    }
+    const preview = await createDatasetSyncPreview(
+      req.params.datasetId,
+      expectedVersion,
+      req.body.source,
+      req.user,
+    );
+    res.status(201).json({ preview });
+  } catch (error) {
+    sendError(res, error, 'Failed to create dataset sync preview');
+  }
+});
+
+datasetRoutes.patch('/sync-previews/:previewId', async (req, res) => {
+  try {
+    const preview = await updateDatasetSyncPreview(req.params.previewId, {
+      outputPolicies: req.body?.outputPolicies,
+      newColumnRoles: req.body?.newColumnRoles,
+    }, req.user);
+    res.json({ preview });
+  } catch (error) {
+    sendError(res, error, 'Failed to update dataset sync preview');
+  }
+});
+
+datasetRoutes.post('/sync-previews/:previewId/apply', async (req, res) => {
+  try {
+    const dataset = await applyDatasetSyncPreview(req.params.previewId, {
+      confirmSourceOverwrite: req.body?.confirmSourceOverwrite === true,
+    }, req.user);
+    res.json({ dataset, syncSummary: dataset.syncSummary });
+  } catch (error) {
+    sendError(res, error, 'Failed to apply dataset sync preview');
+  }
+});
 
 datasetRoutes.get('/', async (_req, res) => {
   try {

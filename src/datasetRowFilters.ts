@@ -2,6 +2,11 @@ import { getDatasetItemStableId } from './datasetSync';
 
 export type DatasetColumnFilterMap = Record<string, string[]>;
 
+export interface DatasetSortSpec {
+  columnKey: string;
+  direction: 'asc' | 'desc';
+}
+
 export interface IndexedDatasetRow {
   row: Record<string, any>;
   sourceIndex: number;
@@ -84,6 +89,31 @@ export const applyDatasetColumnFilters = (
   filters: DatasetColumnFilterMap,
   ignoredColumn?: string,
 ) => rows.filter(item => datasetRowMatchesColumnFilters(item, filters, ignoredColumn));
+
+const compareTypedDatasetValues = (left: unknown, right: unknown) => {
+  const leftValue = datasetFilterValue(left);
+  const rightValue = datasetFilterValue(right);
+  const kindOrder = ['number', 'string', 'boolean', 'json'];
+  const kindDifference = kindOrder.indexOf(leftValue.kind) - kindOrder.indexOf(rightValue.kind);
+  if (kindDifference) return kindDifference;
+  if (leftValue.kind === 'number') return Number(left) - Number(right);
+  if (leftValue.kind === 'boolean') return Number(Boolean(left)) - Number(Boolean(right));
+  return leftValue.label.localeCompare(rightValue.label, 'zh-CN', { numeric: true, sensitivity: 'variant' });
+};
+
+export const sortIndexedDatasetRows = (
+  rows: IndexedDatasetRow[],
+  sort?: DatasetSortSpec,
+) => {
+  if (!sort) return [...rows];
+  return rows.map((item, stableIndex) => ({ item, stableIndex })).sort((left, right) => {
+    const leftBlank = datasetFilterValue(left.item.row[sort.columnKey]).blank;
+    const rightBlank = datasetFilterValue(right.item.row[sort.columnKey]).blank;
+    if (leftBlank !== rightBlank) return leftBlank ? 1 : -1;
+    const compared = compareTypedDatasetValues(left.item.row[sort.columnKey], right.item.row[sort.columnKey]);
+    return (sort.direction === 'asc' ? compared : -compared) || left.stableIndex - right.stableIndex;
+  }).map(({ item }) => item);
+};
 
 export const buildDatasetFilterValueOptions = (
   rows: IndexedDatasetRow[],

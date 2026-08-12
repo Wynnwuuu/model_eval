@@ -8,7 +8,7 @@ import {
   ensureStableDatasetItemIds,
   getDatasetItemStableId,
   getDatasetRowCaseId,
-  stripDatasetInternalFields,
+  stripDatasetStorageOnlyFields,
 } from '../../src/datasetSync.ts';
 import type { RequestUser } from '../auth/context.ts';
 import { dbPool } from '../db/client.ts';
@@ -125,6 +125,7 @@ const mapDataset = (
       ? currentVersion.sync_summary_json
       : undefined,
     copiedFrom: manifest.copiedFrom,
+    syncSource: manifest.syncSource,
     createdAt: toTimestamp(row.created_at),
     updatedAt: targetVersionNumber && currentVersion ? toTimestamp(currentVersion.created_at) : toTimestamp(row.updated_at),
   };
@@ -172,6 +173,21 @@ const loadDatasetRows = async (datasetId?: string) => {
     versions: versionResult.rows,
     items: itemResult.rows,
   };
+};
+
+export const listDatasetHistoricalRows = async (datasetId: string): Promise<Record<string, any>[]> => {
+  const result = await dbPool.query<DatasetItemRow & { dataset_version: number }>(
+    `
+      SELECT item.dataset_id, item.version_id, item.row_index, item.payload_json,
+             item.dimension_values_json, item.stable_item_id, version.version AS dataset_version
+      FROM dataset_items item
+      JOIN dataset_versions version ON version.id = item.version_id
+      WHERE item.dataset_id = $1
+      ORDER BY version.version DESC, item.row_index ASC
+    `,
+    [datasetId],
+  );
+  return result.rows.map(item => ({ ...item.payload_json, [DATASET_ITEM_ID_KEY]: item.stable_item_id }));
 };
 
 export const listDatasets = async (): Promise<EvalDataset[]> => {
@@ -251,6 +267,7 @@ const persistVersionSnapshot = async (client: PoolClient, dataset: EvalDataset, 
         standardFields: dataset.standardFields || [],
         datasetCard: dataset.datasetCard ?? null,
         copiedFrom: dataset.copiedFrom,
+        syncSource: dataset.syncSource,
       }),
       JSON.stringify(dataset.syncSummary || {}),
       latestHistory?.changeSummary || '',
@@ -295,7 +312,7 @@ const persistVersionSnapshot = async (client: PoolClient, dataset: EvalDataset, 
         getDatasetRowCaseId(item, index),
         index,
         getDatasetItemStableId(item),
-        JSON.stringify(stripDatasetInternalFields(item)),
+        JSON.stringify(stripDatasetStorageOnlyFields(item)),
         JSON.stringify({}),
       ]
     );
@@ -305,7 +322,12 @@ const persistVersionSnapshot = async (client: PoolClient, dataset: EvalDataset, 
 export const saveDataset = async (
   dataset: EvalDataset,
   changedByUserId?: string | null,
-  options: { expectedVersion?: number; forcePropagation?: boolean; deferPropagation?: boolean } = {}
+  options: {
+    expectedVersion?: number;
+    forcePropagation?: boolean;
+    deferPropagation?: boolean;
+    beforePersist?: (client: PoolClient) => Promise<void>;
+  } = {}
 ): Promise<EvalDataset> => {
   const now = Date.now();
   const datasetId = dataset.id || `ds-${randomUUID()}`;
@@ -332,6 +354,7 @@ export const saveDataset = async (
         currentVersion: persistedVersion,
       });
     }
+    if (options.beforePersist) await options.beforePersist(client);
     await client.query(
       `
         INSERT INTO datasets (

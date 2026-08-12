@@ -21,6 +21,7 @@ import {
   Music,
   Pencil,
   Plus,
+  RefreshCw,
   RotateCcw,
   Save,
   Search,
@@ -39,6 +40,7 @@ import { ConfirmModal } from './ConfirmModal';
 import MediaRenderer from './MediaRenderer';
 import DatasetGenerationExecutionModal from './DatasetGenerationExecutionModal';
 import DatasetColumnFilterMenu from './DatasetColumnFilterMenu';
+import DatasetSyncModal from './DatasetSyncModal';
 import { normalizeUrl } from '../utils';
 import GenerationTaskCenter from './GenerationTaskCenter';
 import {
@@ -69,7 +71,9 @@ import {
   datasetFilterLabels,
   hasDatasetColumnFilters,
   indexDatasetRows,
+  sortIndexedDatasetRows,
   type DatasetColumnFilterMap,
+  type DatasetSortSpec,
 } from '../datasetRowFilters';
 import { subscribeTasks } from '../features/tasks/api';
 import { getExecutionBatch } from '../features/generation/executionApi';
@@ -594,7 +598,7 @@ const downloadCsv = (filename: string, rows: Record<string, any>[] | string[]) =
     ? (rows as string[]).join(',') + '\n'
     : Papa.unparse((rows as Record<string, any>[]).map(row => {
       const { _originalData, [DATASET_ITEM_ID_KEY]: _stableItemId, ...rest } = row;
-      return rest;
+      return Object.fromEntries(Object.entries(rest).filter(([key]) => !key.startsWith('__')));
     }));
   const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
   const blob = new Blob([bom, csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -768,6 +772,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   const [tagFilter, setTagFilter] = useState('');
   const [dimensionFilter, setDimensionFilter] = useState('');
   const [columnFilters, setColumnFilters] = useState<DatasetColumnFilterMap>({});
+  const [columnSort, setColumnSort] = useState<DatasetSortSpec | undefined>();
   const [generationModalOpen, setGenerationModalOpen] = useState(false);
   const [selectedGenerationBatchId, setSelectedGenerationBatchId] = useState<string | undefined>();
   const [generationScopeSnapshot, setGenerationScopeSnapshot] = useState<GenerationCaseScopeSnapshot | undefined>();
@@ -855,6 +860,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   const [syncNotice, setSyncNotice] = useState('');
 
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [syncModalOpen, setSyncModalOpen] = useState(false);
   const [wizardMode, setWizardMode] = useState<WizardMode>('create');
   const [wizardStep, setWizardStep] = useState<WizardStep>(1);
   const [wizardTarget, setWizardTarget] = useState<EvalDataset | null>(null);
@@ -1023,7 +1029,11 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     () => applyDatasetColumnFilters(indexedSelectedRows, columnFilters),
     [columnFilters, indexedSelectedRows],
   );
-  const selectedRowVisible = filteredSelectedRows.some(item => item.sourceIndex === selectedRowIndex);
+  const displayedSelectedRows = useMemo(
+    () => sortIndexedDatasetRows(filteredSelectedRows, columnSort),
+    [columnSort, filteredSelectedRows],
+  );
+  const selectedRowVisible = displayedSelectedRows.some(item => item.sourceIndex === selectedRowIndex);
   const selectedRow = selectedRowVisible ? selectedRows[selectedRowIndex] : undefined;
   const outputColumns = selectedMappings.outputColumns;
   const tableColumns = useMemo(() => buildDatasetTableColumns(tableDataset), [tableDataset]);
@@ -1085,6 +1095,14 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   const showAllTableColumns = () => saveColumnVisibilityOverrides(Object.fromEntries(
     tableColumns.filter(column => !column.lockedVisible).map(column => [column.key, true])
   ));
+  const showAllOutputColumns = () => saveColumnVisibilityOverrides({
+    ...columnVisibilityOverrides,
+    ...Object.fromEntries(tableColumns.filter(column => column.role === 'output').map(column => [column.key, true])),
+  });
+  const hideAllOutputColumns = () => saveColumnVisibilityOverrides({
+    ...columnVisibilityOverrides,
+    ...Object.fromEntries(tableColumns.filter(column => column.role === 'output').map(column => [column.key, false])),
+  });
   const currentColumnKeys = useMemo(() => getDatasetActiveColumnKeys(selectedDataset), [selectedDataset]);
   const linkedTasks = useMemo(
     () => tasks.filter(task => task.datasetId === selectedDataset?.id),
@@ -1174,14 +1192,15 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
 
   useEffect(() => {
     setColumnFilters({});
+    setColumnSort(undefined);
   }, [isViewingHistoricalVersion, selectedDatasetId, tableDataset?.version]);
 
   useEffect(() => {
-    if (!filteredSelectedRows.length) return;
-    if (!filteredSelectedRows.some(item => item.sourceIndex === selectedRowIndex)) {
-      setSelectedRowIndex(filteredSelectedRows[0].sourceIndex);
+    if (!displayedSelectedRows.length) return;
+    if (!displayedSelectedRows.some(item => item.sourceIndex === selectedRowIndex)) {
+      setSelectedRowIndex(displayedSelectedRows[0].sourceIndex);
     }
-  }, [filteredSelectedRows, selectedRowIndex]);
+  }, [displayedSelectedRows, selectedRowIndex]);
 
   const formatEditDraft = (value: unknown, editor: DatasetValueEditor) => {
     if (editor === 'json') return JSON.stringify(value ?? null, null, 2);
@@ -2214,6 +2233,8 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                 rows={indexedSelectedRows}
                 filters={columnFilters}
                 onChange={updateColumnFilter}
+                sort={columnSort}
+                onSortChange={setColumnSort}
               />
             )}
             {!isViewingHistoricalVersion && !isGenerationMode && (
@@ -2915,8 +2936,8 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
             <button onClick={openNewGeneration} disabled={!selectedDataset || isViewingHistoricalVersion} className="flex items-center gap-2 border border-amber-500/20 bg-amber-500/10 px-4 py-2.5 text-sm font-medium text-amber-300 hover:bg-amber-500/20 disabled:opacity-40">
               <Wand2 size={18} /> 批量生产产物
             </button>
-            <button onClick={() => selectedDataset && openWizard('append', selectedDataset)} disabled={!selectedDataset || isViewingHistoricalVersion} className="flex items-center gap-2 border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-slate-300 hover:bg-white/10 disabled:opacity-40">
-              <Upload size={18} /> 追加内容
+            <button onClick={() => setSyncModalOpen(true)} disabled={!selectedDataset || isViewingHistoricalVersion} className="flex items-center gap-2 border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-slate-300 hover:bg-white/10 disabled:opacity-40">
+              <RefreshCw size={18} /> 同步更新
             </button>
             <button onClick={openColumnRenameEditor} disabled={!selectedDataset || isViewingHistoricalVersion} className="flex items-center gap-2 border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-slate-300 hover:bg-white/10 disabled:opacity-40">
               <Settings size={18} /> {'\u7ba1\u7406\u5217'}
@@ -3169,8 +3190,8 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                       <button onClick={openColumnRenameEditor} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-white/5 glass-panel-hover text-slate-300 text-sm flex items-center gap-2 border border-white/10 disabled:opacity-40">
                         <Settings size={16} /> {'\u7ba1\u7406\u5217'}
                       </button>
-                      <button onClick={() => openWizard('append', selectedDataset)} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-sm flex items-center gap-2 border border-amber-500/20 disabled:opacity-40">
-                        <Upload size={16} /> 追加
+                      <button onClick={() => setSyncModalOpen(true)} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-sm flex items-center gap-2 border border-amber-500/20 disabled:opacity-40">
+                        <RefreshCw size={16} /> 同步更新
                       </button>
                       <button onClick={() => setDatasetToDelete(selectedDataset.id)} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-300 text-sm flex items-center gap-2 border border-red-500/20 disabled:opacity-40">
                         <Trash2 size={16} /> 删除
@@ -3221,6 +3242,8 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                     <div className="mt-3 flex items-center justify-between gap-3 border-b border-white/10 pb-3">
                       <span className="text-xs text-slate-500">{'\u5df2\u663e\u793a'} {visibleTableColumns.length} / {tableColumns.length} {'\u5217'}</span>
                       <div className="flex shrink-0 gap-3">
+                        {outputColumns.length > 0 && <button type="button" onClick={showAllOutputColumns} className="text-xs text-amber-300 hover:text-amber-200">展开全部结果</button>}
+                        {outputColumns.length > 0 && <button type="button" onClick={hideAllOutputColumns} className="text-xs text-slate-400 hover:text-slate-200">折叠全部结果</button>}
                         <button type="button" onClick={showAllTableColumns} className="text-xs text-amber-300 hover:text-amber-200">{'\u663e\u793a\u5168\u90e8'}</button>
                         <button type="button" onClick={resetColumnVisibility} className="text-xs text-slate-400 hover:text-slate-200">{'\u6062\u590d\u9ed8\u8ba4'}</button>
                       </div>
@@ -3288,6 +3311,12 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                     清除全部筛选
                   </button>
                 )}
+                {columnSort && (
+                  <span className="inline-flex items-center gap-1.5 border border-blue-400/25 bg-blue-500/10 px-2 py-1 text-xs text-blue-100">
+                    排序：{tableColumns.find(column => column.key === columnSort.columnKey)?.label || columnSort.columnKey} {columnSort.direction === 'asc' ? '升序' : '降序'}
+                    <button type="button" onClick={() => setColumnSort(undefined)} aria-label="清除排序" className="inline-flex h-5 w-5 items-center justify-center text-blue-200/70 hover:text-white"><X size={12} /></button>
+                  </span>
+                )}
               </div>
               <div className="max-h-[calc(100vh-250px)] min-h-[360px] overflow-auto" data-testid="dataset-schema-table">
                 <table className="w-full min-w-max border-collapse text-left">
@@ -3303,12 +3332,15 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/10">
-                    {filteredSelectedRows.map(({ row, sourceIndex: index, stableItemId }) => {
+                    {displayedSelectedRows.map(({ row, sourceIndex: index, stableItemId }) => {
                       const rowSelected = index === selectedRowIndex;
                       return (
                         <tr key={stableItemId || `${getDatasetDisplayValue(row, idKeys) || index}-${index}`} onClick={() => setSelectedRowIndex(index)} className={`cursor-pointer ${rowSelected ? 'bg-amber-500/10' : 'hover:bg-white/[0.04]'}`}>
                           {visibleTableColumns.map(column => {
                             const value = row[column.key];
+                            const resultFreshness = column.role === 'output'
+                              ? row.__generationResultMeta?.[column.key]
+                              : undefined;
                             const caseIdValue = column.lockedVisible
                               ? serializeCellValue(value) || getDatasetDisplayValue(row, idKeys) || `case-${index + 1}`
                               : '';
@@ -3327,7 +3359,14 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                                     </span>
                                   ) : <span className="text-xs text-slate-500">{'\u7a7a'}</span>
                                 ) : (
-                                  <MediaCell value={value} previewType={column.previewType} previewSize={previewSize} />
+                                  <div>
+                                    <MediaCell value={value} previewType={column.previewType} previewSize={previewSize} />
+                                    {resultFreshness?.stale && (
+                                      <div className="mt-2 inline-flex border border-amber-400/30 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-200" title="生成输入在该结果产出后发生变化">
+                                        输入更新后未重新生成
+                                      </div>
+                                    )}
+                                  </div>
                                 )}
                               </td>
                             );
@@ -3360,7 +3399,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                       ? '没有符合当前筛选条件的 case。请修改或清除筛选。'
                       : isGenerationMode
                         ? '这个评测集还没有可预览的 case。'
-                        : '这个评测集还没有 case。点击“追加内容”上传或粘贴表格。'}
+                        : '这个评测集还没有 case。点击“同步更新”上传、粘贴或读取飞书 Base。'}
                   </div>
                 )}
               </div>
@@ -3549,6 +3588,19 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
       {!isGenerationMode && renderWizard()}
       {!isGenerationMode && renderColumnRenameModal()}
       {!isGenerationMode && renderColumnDeleteModal()}
+      {!isGenerationMode && syncModalOpen && selectedDataset && !isViewingHistoricalVersion && (
+        <DatasetSyncModal
+          dataset={selectedDataset}
+          onClose={() => setSyncModalOpen(false)}
+          onApplied={saved => {
+            setDatasets(current => current.map(item => item.id === saved.id ? saved : item));
+            setSelectedDatasetId(saved.id);
+            setViewingVersionDataset(null);
+            setSyncModalOpen(false);
+            setSyncNotice(`已同步到 v${saved.version || 1}，历史版本和过往评测证据已保留。`);
+          }}
+        />
+      )}
       </div>
       {generationModalOpen && selectedDataset && !isViewingHistoricalVersion && (
         <DatasetGenerationExecutionModal

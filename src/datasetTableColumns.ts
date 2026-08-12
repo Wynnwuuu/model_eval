@@ -36,7 +36,7 @@ export const buildDatasetTableColumns = (dataset?: EvalDataset): DatasetTableCol
       label: field?.label || key,
       role,
       previewType,
-      defaultVisible: lockedVisible || role !== 'system',
+      defaultVisible: lockedVisible || (role !== 'system' && role !== 'output'),
       lockedVisible,
     };
   });

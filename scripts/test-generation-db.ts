@@ -435,7 +435,7 @@ try {
   assert.equal(retryResolvedParent?.items[0].resolutionStatus, 'resolved');
 
   const unknownPreflight = createPreflightRecord(
-    afterRecoveredWriteback!,
+    (await getDataset(datasetId))!,
     'unknown_result',
     `request-${suffix}-unknown`,
   );

@@ -13,11 +13,43 @@ const AUTH_URL = 'https://open.feishu.cn/open-apis/authen/v1/authorize';
 const ACCESS_TOKEN_URL = 'https://open.feishu.cn/open-apis/authen/v1/oidc/access_token';
 const USER_INFO_URL = 'https://open.feishu.cn/open-apis/authen/v1/user_info';
 const APP_ACCESS_TOKEN_URL = 'https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal';
+const TENANT_ACCESS_TOKEN_URL = 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal';
+
+let tenantTokenCache: { token: string; expiresAt: number } | undefined;
+
+const ensureFeishuAppCredentials = () => {
+  if (!serverConfig.feishuAppId || !serverConfig.feishuAppSecret) {
+    throw new ApiError(500, 'FEISHU_NOT_CONFIGURED', 'Feishu application credentials are not configured');
+  }
+};
 
 const ensureFeishuConfig = () => {
+  ensureFeishuAppCredentials();
   if (!serverConfig.feishuAppId || !serverConfig.feishuAppSecret || !serverConfig.feishuRedirectUri) {
     throw new ApiError(500, 'FEISHU_NOT_CONFIGURED', 'Feishu OAuth is not configured');
   }
+};
+
+export const getFeishuTenantAccessToken = async () => {
+  ensureFeishuAppCredentials();
+  if (tenantTokenCache && tenantTokenCache.expiresAt > Date.now() + 60_000) return tenantTokenCache.token;
+  const response = await fetch(TENANT_ACCESS_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      app_id: serverConfig.feishuAppId,
+      app_secret: serverConfig.feishuAppSecret,
+    }),
+  });
+  const data = await readFeishuJson<{ tenant_access_token: string; expire?: number }>(response, 'Get Feishu tenant access token');
+  if (!data.tenant_access_token) {
+    throw new ApiError(502, 'FEISHU_TOKEN_INVALID', 'Feishu did not return a tenant access token');
+  }
+  tenantTokenCache = {
+    token: data.tenant_access_token,
+    expiresAt: Date.now() + Math.max(300, Number(data.expire) || 7200) * 1000,
+  };
+  return tenantTokenCache.token;
 };
 
 const readFeishuJson = async <T>(response: Response, operation: string): Promise<T> => {

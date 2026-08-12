@@ -1,11 +1,12 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Filter, Search, X } from 'lucide-react';
+import { ArrowDownAZ, ArrowUpAZ, Filter, Search, X } from 'lucide-react';
 
 import {
   buildDatasetFilterValueOptions,
   partitionDatasetFilterValueOptions,
   type DatasetColumnFilterMap,
+  type DatasetSortSpec,
   type IndexedDatasetRow,
 } from '../datasetRowFilters';
 import type { DatasetTableColumnDescriptor } from '../datasetTableColumns';
@@ -15,6 +16,8 @@ interface DatasetColumnFilterMenuProps {
   rows: IndexedDatasetRow[];
   filters: DatasetColumnFilterMap;
   onChange: (columnKey: string, selectedKeys?: string[]) => void;
+  sort?: DatasetSortSpec;
+  onSortChange?: (sort?: DatasetSortSpec) => void;
 }
 
 interface PopoverPosition {
@@ -60,6 +63,8 @@ const DatasetColumnFilterMenu: React.FC<DatasetColumnFilterMenuProps> = ({
   rows,
   filters,
   onChange,
+  sort,
+  onSortChange,
 }) => {
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const popoverRef = useRef<HTMLElement | null>(null);
@@ -70,6 +75,7 @@ const DatasetColumnFilterMenu: React.FC<DatasetColumnFilterMenuProps> = ({
   const [position, setPosition] = useState<PopoverPosition>({ left: 8, top: 8, maxHeight: 420 });
   const selectedKeys = filters[column.key] || [];
   const active = selectedKeys.length > 0;
+  const sortDirection = sort?.columnKey === column.key ? sort.direction : undefined;
   const options = useMemo(
     () => buildDatasetFilterValueOptions(rows, column.key, filters),
     [column.key, filters, rows],
@@ -189,7 +195,7 @@ const DatasetColumnFilterMenu: React.FC<DatasetColumnFilterMenuProps> = ({
         title={`${active ? '修改' : '筛选'} ${column.label}`}
         aria-label={`${active ? '修改筛选' : '筛选'} ${column.label}`}
         aria-expanded={open}
-        className={`relative inline-flex h-7 w-7 shrink-0 items-center justify-center border transition-colors ${active
+        className={`relative inline-flex h-7 w-7 shrink-0 items-center justify-center border transition-colors ${active || sortDirection
           ? 'border-amber-400/50 bg-amber-500/15 text-amber-200'
           : 'border-transparent text-slate-500 hover:border-white/10 hover:bg-white/5 hover:text-slate-200'}`}
       >
@@ -223,6 +229,13 @@ const DatasetColumnFilterMenu: React.FC<DatasetColumnFilterMenuProps> = ({
           </header>
 
           <div className="border-b border-white/10 p-3">
+            {onSortChange && (
+              <div className="mb-3 grid grid-cols-3 border border-white/10 p-1">
+                <button type="button" onClick={() => onSortChange({ columnKey: column.key, direction: 'asc' })} className={`flex items-center justify-center gap-1 px-2 py-2 text-xs ${sortDirection === 'asc' ? 'bg-amber-400 text-black' : 'text-slate-300 hover:bg-white/5'}`}><ArrowUpAZ size={14} /> 升序</button>
+                <button type="button" onClick={() => onSortChange({ columnKey: column.key, direction: 'desc' })} className={`flex items-center justify-center gap-1 px-2 py-2 text-xs ${sortDirection === 'desc' ? 'bg-amber-400 text-black' : 'text-slate-300 hover:bg-white/5'}`}><ArrowDownAZ size={14} /> 降序</button>
+                <button type="button" onClick={() => onSortChange(undefined)} disabled={!sortDirection} className="px-2 py-2 text-xs text-slate-400 hover:bg-white/5 hover:text-slate-100 disabled:opacity-40">清除排序</button>
+              </div>
+            )}
             <label className="relative block">
               <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
               <input

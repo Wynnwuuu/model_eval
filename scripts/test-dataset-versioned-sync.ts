@@ -1,0 +1,203 @@
+import assert from 'node:assert/strict';
+
+import {
+  DATASET_RESULT_META_KEY,
+  buildDatasetVersionedSyncPlan,
+  datasetSyncIdentity,
+  validateDatasetSyncSource,
+} from '../src/datasetVersionedSync.ts';
+import { createDatasetItemStableId, DATASET_ITEM_ID_KEY } from '../src/datasetSync.ts';
+import { parseDatasetSyncManualSource } from '../src/datasetSyncSourceParser.ts';
+import type { EvalDataset } from '../src/types.ts';
+
+const current: EvalDataset = {
+  id: 'dataset-sync-v2',
+  name: 'Structured evaluation',
+  description: '',
+  tags: [],
+  version: 4,
+  createdAt: 1,
+  updatedAt: 1,
+  inputSchema: [
+    { key: 'case_id', label: 'case_id', type: 'text', role: 'case_id' },
+    { key: 'variant_label', label: 'variant_label', type: 'text', role: 'metadata' },
+    { key: 'prompt', label: 'prompt', type: 'text', role: 'input' },
+    { key: 'category', label: 'category', type: 'text', role: 'metadata' },
+    { key: 'model_result', label: 'model_result', type: 'video_url', role: 'output', previewType: 'video' },
+    { key: 'model_result_notes', label: 'model_result_notes', type: 'text', role: 'metadata' },
+  ],
+  columnMappings: {
+    caseId: 'case_id',
+    inputColumns: ['prompt'],
+    outputColumns: ['model_result'],
+    dimensionColumns: [],
+    referenceColumns: [],
+    standard: { case_id: 'case_id', prompt: 'prompt' },
+  },
+  items: [
+    {
+      case_id: 'case-1',
+      variant_label: '',
+      prompt: 'old prompt',
+      category: 'identity',
+      model_result: 'https://cdn.example.com/case-1.mp4',
+      model_result_status: 'succeeded',
+      model_result_notes: 'source-owned note',
+      [DATASET_ITEM_ID_KEY]: 'stable-case-1',
+      __futureAuditField: { source: 'platform' },
+      [DATASET_RESULT_META_KEY]: {
+        model_result: {
+          source: 'generation',
+          stale: false,
+          dependencyColumns: ['prompt'],
+        },
+      },
+    },
+    {
+      case_id: 'case-delete',
+      variant_label: 'baseline',
+      prompt: 'delete me',
+      model_result: 'https://cdn.example.com/delete.mp4',
+      [DATASET_ITEM_ID_KEY]: 'stable-delete',
+    },
+  ],
+};
+
+const historicalRows = [
+  {
+    case_id: 'case-restored',
+    variant_label: 'reference',
+    prompt: 'historical prompt',
+    model_result: 'https://cdn.example.com/restored.mp4',
+    model_result_status: 'succeeded',
+    [DATASET_ITEM_ID_KEY]: 'stable-restored',
+  },
+];
+
+assert.equal(datasetSyncIdentity({ case_id: ' x ', variant_label: ' y ' }), '["x","y"]');
+assert.notEqual(
+  createDatasetItemStableId('dataset-1', 'a|b', 'c'),
+  createDatasetItemStableId('dataset-1', 'a', 'b|c'),
+  'identity parts containing separators must remain distinct',
+);
+const missingIdentityColumnPlan = buildDatasetVersionedSyncPlan({
+  dataset: current,
+  sourceHeaders: ['prompt'],
+  sourceRows: [],
+  historicalRows: [],
+  outputColumns: ['model_result'],
+  outputPolicies: { model_result: 'preserve_platform' },
+});
+assert.equal(missingIdentityColumnPlan.valid, false);
+assert.equal(missingIdentityColumnPlan.issues[0]?.code, 'MISSING_CASE_ID_COLUMN');
+assert.deepEqual(validateDatasetSyncSource([
+  { case_id: 'same', variant_label: '', prompt: 'one' },
+  { case_id: 'same', variant_label: '', prompt: 'two' },
+]), {
+  valid: false,
+  issues: [{ code: 'DUPLICATE_CASE_IDENTITY', rowIndexes: [0, 1], identity: 'same / (blank)' }],
+});
+
+const pastedTsv = parseDatasetSyncManualSource(
+  'case_id\tvariant_label\tprompt\ncase-comma\t\tA subject moves, then stops',
+  'clipboard',
+);
+assert.deepEqual(pastedTsv.headers, ['case_id', 'variant_label', 'prompt']);
+assert.equal(pastedTsv.rows[0].prompt, 'A subject moves, then stops', 'commas inside pasted TSV values must not split columns');
+
+const duplicateCurrentPlan = buildDatasetVersionedSyncPlan({
+  dataset: {
+    ...current,
+    items: [current.items[0], { ...current.items[0], [DATASET_ITEM_ID_KEY]: 'duplicate-stable-id' }],
+  },
+  sourceHeaders: ['case_id', 'variant_label', 'prompt'],
+  sourceRows: [{ case_id: 'case-1', variant_label: '', prompt: 'updated' }],
+  historicalRows: [],
+  outputColumns: ['model_result'],
+  outputPolicies: { model_result: 'preserve_platform' },
+});
+assert.equal(duplicateCurrentPlan.valid, false);
+assert.equal(duplicateCurrentPlan.issues[0]?.code, 'DUPLICATE_CURRENT_CASE_IDENTITY');
+
+const sourceRows = [
+  { case_id: 'case-restored', variant_label: 'reference', prompt: 'historical prompt', category: 'restored', model_result: '' },
+  { case_id: 'case-1', variant_label: '', prompt: 'new prompt', category: 'identity', model_result: 'https://source.example.com/case-1.mp4' },
+  { case_id: 'case-new', variant_label: '', prompt: 'new case', category: 'new', model_result: 'https://source.example.com/new.mp4' },
+];
+
+const preservePlan = buildDatasetVersionedSyncPlan({
+  dataset: current,
+  sourceHeaders: ['case_id', 'variant_label', 'prompt', 'category', 'model_result'],
+  sourceRows,
+  historicalRows,
+  outputColumns: ['model_result'],
+  outputPolicies: { model_result: 'preserve_platform' },
+});
+
+assert.equal(preservePlan.valid, true);
+assert.deepEqual(preservePlan.summary, {
+  added: 1,
+  updated: 1,
+  deleted: 1,
+  restored: 1,
+  unchanged: 0,
+  staleResults: 1,
+  sourceResultOverwrites: 0,
+});
+assert.deepEqual(preservePlan.rows.map(row => row.case_id), ['case-restored', 'case-1', 'case-new'], 'source order is authoritative');
+assert.equal(preservePlan.rows[0][DATASET_ITEM_ID_KEY], 'stable-restored', 're-added identity must restore historical stable ID');
+assert.equal(preservePlan.rows[0].model_result, 'https://cdn.example.com/restored.mp4', 'restored platform result must survive');
+assert.equal(preservePlan.rows[1][DATASET_ITEM_ID_KEY], 'stable-case-1', 'current identity must retain stable ID');
+assert.equal(preservePlan.rows[1].model_result, 'https://cdn.example.com/case-1.mp4', 'default policy must retain platform result');
+assert.equal(preservePlan.rows[1].model_result_notes, undefined, 'source-owned columns that only share an output prefix must not be retained');
+assert.equal(preservePlan.schema.some(field => field.key === 'model_result_notes'), false);
+assert.deepEqual(preservePlan.rows[1].__futureAuditField, { source: 'platform' }, 'platform internal fields must survive sync');
+assert.equal(preservePlan.rows[1][DATASET_RESULT_META_KEY].model_result.stale, true, 'generation-input edits must mark retained results stale');
+assert.equal(preservePlan.rows[2].model_result, 'https://source.example.com/new.mp4', 'new cases may import a supplied result');
+assert.equal(preservePlan.rows[2][DATASET_RESULT_META_KEY].model_result.stale, false);
+
+const nullValuePlan = buildDatasetVersionedSyncPlan({
+  dataset: current,
+  sourceHeaders: ['case_id', 'variant_label', 'prompt', 'nullable_metadata'],
+  sourceRows: [{ case_id: 'case-1', variant_label: '', prompt: 'old prompt', nullable_metadata: null }],
+  historicalRows: [],
+  outputColumns: ['model_result'],
+  outputPolicies: { model_result: 'preserve_platform' },
+});
+assert.equal(nullValuePlan.rows[0].nullable_metadata, null, 'explicit JSON null values must remain distinct from missing cells');
+
+const metadataOnlyPlan = buildDatasetVersionedSyncPlan({
+  dataset: current,
+  sourceHeaders: ['case_id', 'variant_label', 'prompt', 'category', 'model_result'],
+  sourceRows: [{ case_id: 'case-1', variant_label: '', prompt: 'old prompt', category: 'changed metadata', model_result: '' }],
+  historicalRows,
+  outputColumns: ['model_result'],
+  outputPolicies: { model_result: 'preserve_platform' },
+});
+assert.equal(metadataOnlyPlan.rows[0][DATASET_RESULT_META_KEY].model_result.stale, false, 'metadata-only edits must not mark output stale');
+
+const fillPlan = buildDatasetVersionedSyncPlan({
+  dataset: {
+    ...current,
+    items: [{ ...current.items[0], model_result: '' }],
+  },
+  sourceHeaders: ['case_id', 'variant_label', 'prompt', 'model_result'],
+  sourceRows: [{ case_id: 'case-1', variant_label: '', prompt: 'old prompt', model_result: 'https://source.example.com/fill.mp4' }],
+  historicalRows: [],
+  outputColumns: ['model_result'],
+  outputPolicies: { model_result: 'fill_platform_blanks' },
+});
+assert.equal(fillPlan.rows[0].model_result, 'https://source.example.com/fill.mp4');
+
+const overwritePlan = buildDatasetVersionedSyncPlan({
+  dataset: current,
+  sourceHeaders: ['case_id', 'variant_label', 'prompt', 'model_result'],
+  sourceRows: [{ case_id: 'case-1', variant_label: '', prompt: 'old prompt', model_result: '' }],
+  historicalRows: [],
+  outputColumns: ['model_result'],
+  outputPolicies: { model_result: 'source_overwrite' },
+});
+assert.equal(overwritePlan.rows[0].model_result, '', 'source overwrite must include blank cells');
+assert.equal(overwritePlan.summary.sourceResultOverwrites, 1);
+
+console.log('Versioned dataset synchronization tests passed.');
