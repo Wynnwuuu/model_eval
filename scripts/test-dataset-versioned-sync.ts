@@ -177,6 +177,59 @@ assert.equal(
   'historical lookup metadata must not leak into synchronized rows',
 );
 
+const legacyRestoredResultPlan = buildDatasetVersionedSyncPlan({
+  dataset: {
+    ...current,
+    version: 2,
+    inputSchema: [
+      { key: 'case_id', label: 'case_id', sourceKey: 'case_id', canonicalKey: 'case_id', type: 'text', role: 'case_id' },
+      { key: 'variant_label', label: 'variant_label', sourceKey: 'variant_label', canonicalKey: 'variant_label', type: 'text', role: 'metadata' },
+      { key: 'prompt', label: 'prompt', sourceKey: 'prompt', canonicalKey: 'prompt', type: 'text', role: 'input' },
+      { key: 'duration', label: 'duration', sourceKey: 'duration', canonicalKey: 'duration', type: 'text', role: 'input' },
+      { key: 'model_result', label: 'model_result', type: 'video_url', role: 'output', previewType: 'video' },
+    ],
+    columnMappings: {
+      caseId: 'case_id',
+      inputColumns: ['prompt', 'duration'],
+      outputColumns: ['model_result'],
+      dimensionColumns: [],
+      referenceColumns: [],
+      standard: { case_id: 'case_id', prompt: 'prompt', duration: 'duration' },
+    },
+    items: [],
+  },
+  sourceHeaders: ['case_id', 'variant_label', 'prompt', 'duration'],
+  sourceRows: [{ case_id: 'legacy-restored-result', variant_label: '', prompt: 'same prompt', duration: '5' }],
+  historicalRows: [{
+    '用例ID': 'legacy-restored-result',
+    '完整Prompt': 'same prompt',
+    duration: '5',
+    _originalData: {
+      case_id: 'legacy-restored-result',
+      variant_label: '',
+      prompt: 'same prompt',
+      duration: '5',
+      model_result: 'https://cdn.example.com/legacy-restored.mp4',
+    },
+    model_result: 'https://cdn.example.com/legacy-restored.mp4',
+    [DATASET_HISTORICAL_CASE_ID_KEY]: 'legacy-restored-result',
+    [DATASET_ITEM_ID_KEY]: 'stable-legacy-restored-result',
+  }],
+  outputColumns: ['model_result'],
+  outputPolicies: { model_result: 'preserve_platform' },
+});
+assert.equal(legacyRestoredResultPlan.summary.restored, 1);
+assert.equal(
+  legacyRestoredResultPlan.rows[0][DATASET_RESULT_META_KEY].model_result.stale,
+  false,
+  'restoring an unchanged case must not mark its result stale only because mapped column names became source headers',
+);
+assert.equal(
+  legacyRestoredResultPlan.cases[0].fieldChanges.some(change => change.field === '_originalData'),
+  false,
+  'source audit payloads must not appear as user-facing field changes',
+);
+
 const sourceRows = [
   { case_id: 'case-restored', variant_label: 'reference', prompt: 'historical prompt', category: 'restored', model_result: '' },
   { case_id: 'case-1', variant_label: '', prompt: 'new prompt', category: 'identity', model_result: 'https://source.example.com/case-1.mp4' },

@@ -163,6 +163,40 @@ export const datasetGenerationInputFingerprint = (
   columns: string[],
 ) => fingerprint(Object.fromEntries(columns.map(column => [column, row[column]])));
 
+const datasetGenerationInputValue = (
+  dataset: EvalDataset,
+  row: Record<string, unknown>,
+  column: string,
+) => {
+  const field = dataset.inputSchema.find(item => item.key === column);
+  const canonicalKeys = Object.entries(dataset.columnMappings?.standard || {})
+    .filter(([, mappedColumn]) => mappedColumn === column)
+    .map(([canonicalKey]) => canonicalKey);
+  const candidates = [...new Set([
+    column,
+    field?.sourceKey,
+    field?.canonicalKey,
+    ...canonicalKeys,
+  ].filter((candidate): candidate is string => Boolean(candidate)))];
+  const original = row._originalData && typeof row._originalData === 'object' && !Array.isArray(row._originalData)
+    ? row._originalData as Record<string, unknown>
+    : undefined;
+  for (const candidate of candidates) {
+    if (Object.prototype.hasOwnProperty.call(row, candidate)) return row[candidate];
+    if (original && Object.prototype.hasOwnProperty.call(original, candidate)) return original[candidate];
+  }
+  return undefined;
+};
+
+const resolvedDatasetGenerationInputFingerprint = (
+  dataset: EvalDataset,
+  row: Record<string, unknown>,
+  columns: string[],
+) => fingerprint(Object.fromEntries(columns.map(column => [
+  column,
+  datasetGenerationInputValue(dataset, row, column),
+])));
+
 export const collectGenerationDependencyColumns = (
   values: unknown[],
   candidateColumns: string[],
@@ -337,19 +371,21 @@ export const buildDatasetVersionedSyncPlan = (input: {
           || policy === 'source_overwrite'
           || (policy === 'fill_platform_blanks' && isBlank(platformValue) && !isBlank(sourceValue));
         const dependenciesChanged = Boolean(historicalRow) && dependencyColumns.some(column =>
-          stableSerialize(historicalRow[column]) !== stableSerialize(nextRow[column])
+          stableSerialize(datasetGenerationInputValue(input.dataset, historicalRow, column))
+            !== stableSerialize(datasetGenerationInputValue(input.dataset, nextRow, column))
         );
         resultMeta[outputColumn] = sourceWon
           ? {
             source: 'source',
             stale: false,
             dependencyColumns,
-            inputFingerprint: datasetGenerationInputFingerprint(nextRow, dependencyColumns),
+            inputFingerprint: resolvedDatasetGenerationInputFingerprint(input.dataset, nextRow, dependencyColumns),
           }
           : {
             ...(priorMeta || { source: currentRow ? 'generation' : 'restored' }),
             dependencyColumns,
-            inputFingerprint: priorMeta?.inputFingerprint || datasetGenerationInputFingerprint(historicalRow || nextRow, dependencyColumns),
+            inputFingerprint: priorMeta?.inputFingerprint
+              || resolvedDatasetGenerationInputFingerprint(input.dataset, historicalRow || nextRow, dependencyColumns),
             stale: Boolean(priorMeta?.stale || dependenciesChanged),
             ...(dependenciesChanged ? { staleSinceVersion: (input.dataset.version || 0) + 1 } : {}),
           };
@@ -376,7 +412,7 @@ export const buildDatasetVersionedSyncPlan = (input: {
     const comparisonFields = new Set([
       ...input.sourceHeaders,
       ...outputColumns,
-      ...Object.keys(historicalRow || {}).filter(key => !key.startsWith('__')),
+      ...Object.keys(historicalRow || {}).filter(key => key !== '_originalData' && !key.startsWith('__')),
     ]);
     const fieldChanges = historicalRow
       ? [...comparisonFields].flatMap(field => stableSerialize(historicalRow[field]) === stableSerialize(nextRow[field])
