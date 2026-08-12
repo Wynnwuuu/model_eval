@@ -407,3 +407,9 @@ Existing datasets may store an imported `case_id` under a mapped display column 
 Replacement controls never infer a pending value from the first allowed option. Raw source value, normalized effective value, model constraints, and the unselected replacement control are separate states.
 
 Repair application uses optimistic concurrency on the Aion configuration fingerprint. A changed fingerprint is a contract change, so the old repair decision is rejected instead of being silently reinterpreted against the new model configuration.
+
+## 2026-08-12: Resizable layout is a local presentation preference
+
+Navigation width, dataset repository pane widths, and per-dataset business-column widths are browser-local presentation state. They do not belong to dataset versions, collaboration records, task snapshots, or server APIs. Dataset copies therefore receive independent default widths even though their business content is cloned.
+
+Pointer drags update CSS geometry through `requestAnimationFrame` and commit React state only at the end of the gesture. Dataset columns use a fixed-layout table plus `colgroup`, keeping the header, every cell, and media preview aligned without re-rendering large case tables on every pointer move. Hidden columns retain their preferences; rename and delete operations explicitly migrate or remove the matching local keys.

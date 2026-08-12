@@ -15,6 +15,23 @@ import {
   X
 } from 'lucide-react';
 import { AppRoute, NavItem } from '../types';
+import {
+  APP_SIDEBAR_WIDTH,
+  clampWidth,
+  parseAppShellLayoutPreference,
+} from '../layoutSizing';
+
+const APP_SHELL_LAYOUT_STORAGE_KEY = 'manueval_app_shell_layout_v1';
+
+const readStoredSidebarWidth = () => {
+  try {
+    return parseAppShellLayoutPreference(
+      window.localStorage.getItem(APP_SHELL_LAYOUT_STORAGE_KEY),
+    ).sidebarWidth;
+  } catch {
+    return APP_SIDEBAR_WIDTH.defaultValue;
+  }
+};
 
 interface AppShellProps {
   currentRoute: AppRoute;
@@ -194,7 +211,16 @@ const AppShell: React.FC<AppShellProps> = ({
 }) => {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(readStoredSidebarWidth);
+  const [resizingSidebar, setResizingSidebar] = useState(false);
   const accountRef = useRef<HTMLDivElement | null>(null);
+  const shellRef = useRef<HTMLDivElement | null>(null);
+  const sidebarResizeRef = useRef<{
+    startX: number;
+    startWidth: number;
+    lastWidth: number;
+    animationFrame?: number;
+  } | null>(null);
   const title = useMemo(() => contextTitle || routeTitles[currentRoute] || 'Manueval', [contextTitle, currentRoute]);
   const userLabel = user?.displayName || user?.email || 'Local Tester';
   const initial = String(userLabel || 'L').slice(0, 1).toUpperCase();
@@ -210,6 +236,71 @@ const AppShell: React.FC<AppShellProps> = ({
     document.addEventListener('mousedown', handlePointerDown);
     return () => document.removeEventListener('mousedown', handlePointerDown);
   }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(APP_SHELL_LAYOUT_STORAGE_KEY, JSON.stringify({ sidebarWidth }));
+    } catch {
+      // Layout preferences must never block the application shell.
+    }
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    if (!resizingSidebar) return undefined;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const state = sidebarResizeRef.current;
+      if (!state) return;
+      state.lastWidth = clampWidth(
+        state.startWidth + event.clientX - state.startX,
+        APP_SIDEBAR_WIDTH,
+      );
+      if (state.animationFrame) cancelAnimationFrame(state.animationFrame);
+      state.animationFrame = requestAnimationFrame(() => {
+        shellRef.current?.style.setProperty('--app-sidebar-width', `${state.lastWidth}px`);
+      });
+    };
+
+    const handlePointerUp = () => {
+      const state = sidebarResizeRef.current;
+      if (state?.animationFrame) cancelAnimationFrame(state.animationFrame);
+      if (state) setSidebarWidth(state.lastWidth);
+      sidebarResizeRef.current = null;
+      setResizingSidebar(false);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+      const state = sidebarResizeRef.current;
+      if (state?.animationFrame) cancelAnimationFrame(state.animationFrame);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+    };
+  }, [resizingSidebar]);
+
+  const beginSidebarResize = (event: React.PointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    sidebarResizeRef.current = {
+      startX: event.clientX,
+      startWidth: sidebarWidth,
+      lastWidth: sidebarWidth,
+    };
+    setResizingSidebar(true);
+  };
+
+  const adjustSidebarWidth = (delta: number) => {
+    setSidebarWidth(current => clampWidth(current + delta, APP_SIDEBAR_WIDTH));
+  };
 
   if (focusMode) {
     return (
@@ -228,9 +319,31 @@ const AppShell: React.FC<AppShellProps> = ({
   }
 
   return (
-    <div className="ark-shell min-h-screen text-[var(--text-primary)]">
-      <aside className="ark-side-terminal fixed inset-y-0 left-0 z-40 hidden w-64 lg:block">
+    <div
+      ref={shellRef}
+      className={`ark-shell min-h-screen text-[var(--text-primary)] ${resizingSidebar ? 'is-resizing-sidebar' : ''}`}
+      style={{ '--app-sidebar-width': `${sidebarWidth}px` } as React.CSSProperties}
+    >
+      <aside className="ark-side-terminal ark-side-terminal-desktop fixed inset-y-0 left-0 z-40 hidden lg:block">
         <SidebarContent currentRoute={currentRoute} onNavigate={onNavigate} />
+        <button
+          type="button"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整主导航宽度"
+          aria-valuemin={APP_SIDEBAR_WIDTH.min}
+          aria-valuemax={APP_SIDEBAR_WIDTH.max}
+          aria-valuenow={Math.round(sidebarWidth)}
+          title="拖动调整主导航宽度"
+          onPointerDown={beginSidebarResize}
+          onKeyDown={event => {
+            if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+              event.preventDefault();
+              adjustSidebarWidth(event.key === 'ArrowLeft' ? -8 : 8);
+            }
+          }}
+          className={`ark-column-splitter ark-sidebar-resizer ${resizingSidebar ? 'is-resizing' : ''}`}
+        />
       </aside>
 
       {mobileOpen && (
@@ -250,7 +363,7 @@ const AppShell: React.FC<AppShellProps> = ({
         </div>
       )}
 
-      <div className="lg:pl-64">
+      <div className="ark-shell-content">
         <header className="ark-topbar">
           <div className="flex h-16 items-center justify-between gap-3 px-4 sm:px-6 lg:px-8">
             <div className="flex min-w-0 items-center gap-3">

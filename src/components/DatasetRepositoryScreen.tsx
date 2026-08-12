@@ -13,7 +13,6 @@ import {
   FileText,
   FileVideo,
   Filter,
-  GripVertical,
   History,
   Image as ImageIcon,
   Info,
@@ -112,6 +111,20 @@ import {
   normalizeDatasetRows,
   validateDatasetItems
 } from '../datasetManifest';
+import {
+  DATASET_COLUMN_WIDTH,
+  DATASET_LEFT_PANE_WIDTH,
+  DATASET_RIGHT_PANE_WIDTH,
+  DatasetColumnWidthStore,
+  DatasetRepositoryLayoutPreference,
+  clampDatasetColumnWidth,
+  parseDatasetColumnWidthStore,
+  parseDatasetRepositoryLayoutPreference,
+  removeDatasetColumnWidth,
+  renameDatasetColumnWidths,
+  resizeDatasetRepositoryPane,
+  setDatasetColumnWidth,
+} from '../layoutSizing';
 
 interface DatasetRepositoryScreenProps {
   onBack: () => void;
@@ -258,6 +271,7 @@ const PREVIEW_SIZE_OPTIONS: Array<{ key: DatasetPreviewSize; label: string; desc
 const PREVIEW_SIZE_STORAGE_KEY = 'eval_studio_dataset_preview_size';
 const DATASET_LAYOUT_STORAGE_KEY = 'eval_studio_dataset_repository_layout';
 const DATASET_COLUMN_VISIBILITY_STORAGE_KEY = 'manueval_dataset_table_columns_v1';
+const DATASET_COLUMN_WIDTH_STORAGE_KEY = 'manueval_dataset_column_widths_v1';
 
 type DatasetColumnVisibilityStore = Record<string, DatasetColumnVisibilityOverrides>;
 
@@ -289,8 +303,6 @@ const TABLE_COLUMN_GROUPS: Array<{ role: DatasetFieldRole; label: string }> = [
   { role: 'system', label: '\u7cfb\u7edf\u5ba1\u8ba1\u5217' },
 ];
 
-const DEFAULT_LAYOUT_WIDTHS = { left: 280, right: 360 };
-
 const readStoredPreviewSize = (): DatasetPreviewSize => {
   try {
     const value = window.localStorage.getItem(PREVIEW_SIZE_STORAGE_KEY) as DatasetPreviewSize | null;
@@ -300,15 +312,23 @@ const readStoredPreviewSize = (): DatasetPreviewSize => {
   }
 };
 
-const readStoredLayoutWidths = () => {
+const readStoredLayoutWidths = (): DatasetRepositoryLayoutPreference => {
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(DATASET_LAYOUT_STORAGE_KEY) || '{}');
-    return {
-      left: Number.isFinite(parsed.left) ? parsed.left : DEFAULT_LAYOUT_WIDTHS.left,
-      right: Number.isFinite(parsed.right) ? parsed.right : DEFAULT_LAYOUT_WIDTHS.right
-    };
+    return parseDatasetRepositoryLayoutPreference(
+      window.localStorage.getItem(DATASET_LAYOUT_STORAGE_KEY),
+    );
   } catch {
-    return DEFAULT_LAYOUT_WIDTHS;
+    return parseDatasetRepositoryLayoutPreference(null);
+  }
+};
+
+const readStoredColumnWidths = (): DatasetColumnWidthStore => {
+  try {
+    return parseDatasetColumnWidthStore(
+      window.localStorage.getItem(DATASET_COLUMN_WIDTH_STORAGE_KEY),
+    );
+  } catch {
+    return {};
   }
 };
 
@@ -614,20 +634,20 @@ const downloadCsv = (filename: string, rows: Record<string, any>[] | string[]) =
 
 const mediaSizeClasses: Record<DatasetPreviewSize, { media: string; audio: string; link: string; text: string }> = {
   small: {
-    media: 'w-36 h-24',
-    audio: 'w-40',
+    media: 'w-full max-w-36 h-24',
+    audio: 'w-full max-w-40',
     link: 'max-w-[220px]',
     text: 'max-w-[260px] line-clamp-3',
   },
   medium: {
-    media: 'w-64 h-40',
-    audio: 'w-64',
+    media: 'w-full max-w-64 h-40',
+    audio: 'w-full max-w-64',
     link: 'max-w-[320px]',
     text: 'max-w-[360px] line-clamp-4',
   },
   large: {
-    media: 'w-[420px] h-[260px]',
-    audio: 'w-[420px]',
+    media: 'w-full max-w-[420px] h-[260px]',
+    audio: 'w-full max-w-[420px]',
     link: 'max-w-[460px]',
     text: 'max-w-[520px] line-clamp-6',
   },
@@ -733,15 +753,15 @@ const MediaCell = ({
   return <span className={`text-xs text-slate-300 ${sizeClass.text} whitespace-pre-wrap`}>{serializedValue}</span>;
 };
 
-const tableColumnWidthClass = (column: DatasetTableColumnDescriptor, previewSize: DatasetPreviewSize) => {
-  if (column.lockedVisible) return 'min-w-[150px]';
+const defaultTableColumnWidth = (column: DatasetTableColumnDescriptor, previewSize: DatasetPreviewSize) => {
+  if (column.lockedVisible) return 150;
   if (column.previewType === 'image' || column.previewType === 'video') {
-    if (previewSize === 'large') return 'min-w-[440px]';
-    if (previewSize === 'medium') return 'min-w-[280px]';
-    return 'min-w-[180px]';
+    if (previewSize === 'large') return 440;
+    if (previewSize === 'medium') return 280;
+    return 180;
   }
-  if (column.previewType === 'audio') return previewSize === 'large' ? 'min-w-[440px]' : 'min-w-[260px]';
-  return column.role === 'input' || column.role === 'rubric' ? 'min-w-[280px]' : 'min-w-[180px]';
+  if (column.previewType === 'audio') return previewSize === 'large' ? 440 : 260;
+  return column.role === 'input' || column.role === 'rubric' ? 280 : 180;
 };
 
 const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
@@ -757,6 +777,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   const [fallbackGenerationView, setFallbackGenerationView] = useState<GenerationWorkspaceView>('tasks');
   const generationWorkspaceView = generationView || fallbackGenerationView;
   const batchQueryId = mode === 'generation' ? initialGenerationBatchId : undefined;
+  const isGenerationMode = mode === 'generation';
   const [datasets, setDatasets] = useState<EvalDataset[]>([]);
   const [tasks, setTasks] = useState<EvalTask[]>([]);
   const [datasetToDelete, setDatasetToDelete] = useState<string | null>(null);
@@ -837,11 +858,29 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   const [columnDeleteSource, setColumnDeleteSource] = useState<'header' | 'manager'>('manager');
   const [previewSize, setPreviewSize] = useState<DatasetPreviewSize>(readStoredPreviewSize);
   const [columnVisibilityByDataset, setColumnVisibilityByDataset] = useState<DatasetColumnVisibilityStore>(readStoredColumnVisibility);
+  const [columnWidthsByDataset, setColumnWidthsByDataset] = useState<DatasetColumnWidthStore>(readStoredColumnWidths);
   const [columnManagerOpen, setColumnManagerOpen] = useState(false);
   const [layoutWidths, setLayoutWidths] = useState(readStoredLayoutWidths);
   const [resizingPane, setResizingPane] = useState<'left' | 'right' | null>(null);
-  const resizeStateRef = useRef<{ pane: 'left' | 'right'; startX: number; startLeft: number; startRight: number } | null>(null);
+  const [resizingColumn, setResizingColumn] = useState<string | null>(null);
+  const resizeStateRef = useRef<{
+    pane: 'left' | 'right';
+    startX: number;
+    startWidths: DatasetRepositoryLayoutPreference;
+    lastWidths: DatasetRepositoryLayoutPreference;
+    animationFrame?: number;
+  } | null>(null);
+  const columnResizeStateRef = useRef<{
+    datasetId: string;
+    columnKey: string;
+    startX: number;
+    startWidth: number;
+    lastWidth: number;
+    startTableWidth: number;
+    animationFrame?: number;
+  } | null>(null);
   const repositoryLayoutRef = useRef<HTMLDivElement>(null);
+  const datasetTableRef = useRef<HTMLTableElement>(null);
   const [rowToDelete, setRowToDelete] = useState<number | null>(null);
   const [isDeletingRow, setIsDeletingRow] = useState(false);
   const [inlineRenameColumn, setInlineRenameColumn] = useState<string | null>(null);
@@ -912,28 +951,44 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   }, [layoutWidths]);
 
   useEffect(() => {
+    try {
+      window.localStorage.setItem(DATASET_COLUMN_WIDTH_STORAGE_KEY, JSON.stringify(columnWidthsByDataset));
+    } catch {
+      // Column widths are local view preferences; storage failures are non-blocking.
+    }
+  }, [columnWidthsByDataset]);
+
+  useEffect(() => {
     if (!resizingPane) return undefined;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
     const handlePointerMove = (event: PointerEvent) => {
       const state = resizeStateRef.current;
       if (!state) return;
       const containerWidth = repositoryLayoutRef.current?.getBoundingClientRect().width || 1280;
-      const minCenterWidth = 520;
-      const maxSideTotal = Math.max(0, containerWidth - minCenterWidth);
       const delta = event.clientX - state.startX;
-      setLayoutWidths(current => {
-        let nextLeft = current.left;
-        let nextRight = current.right;
-        if (state.pane === 'left') {
-          nextLeft = Math.max(220, Math.min(440, state.startLeft + delta));
-          if (nextLeft + nextRight > maxSideTotal) nextLeft = Math.max(220, maxSideTotal - nextRight);
-        } else {
-          nextRight = Math.max(320, Math.min(680, state.startRight - delta));
-          if (nextLeft + nextRight > maxSideTotal) nextRight = Math.max(320, maxSideTotal - nextLeft);
-        }
-        return { left: nextLeft, right: nextRight };
+      state.lastWidths = resizeDatasetRepositoryPane({
+        pane: state.pane,
+        targetWidth: state.pane === 'left'
+          ? state.startWidths.leftWidth + delta
+          : state.startWidths.rightWidth - delta,
+        current: state.startWidths,
+        containerWidth,
+        generationMode: isGenerationMode,
+      });
+      if (state.animationFrame) cancelAnimationFrame(state.animationFrame);
+      state.animationFrame = requestAnimationFrame(() => {
+        repositoryLayoutRef.current?.style.setProperty('--dataset-left', `${state.lastWidths.leftWidth}px`);
+        repositoryLayoutRef.current?.style.setProperty('--dataset-right', `${state.lastWidths.rightWidth}px`);
       });
     };
     const handlePointerUp = () => {
+      const state = resizeStateRef.current;
+      if (state?.animationFrame) cancelAnimationFrame(state.animationFrame);
+      if (state) setLayoutWidths(state.lastWidths);
       resizeStateRef.current = null;
       setResizingPane(null);
     };
@@ -944,8 +999,69 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener('pointercancel', handlePointerUp);
+      const state = resizeStateRef.current;
+      if (state?.animationFrame) cancelAnimationFrame(state.animationFrame);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
     };
-  }, [resizingPane]);
+  }, [isGenerationMode, resizingPane]);
+
+  useEffect(() => {
+    if (!resizingColumn) return undefined;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const state = columnResizeStateRef.current;
+      if (!state) return;
+      state.lastWidth = clampDatasetColumnWidth(
+        state.startWidth + event.clientX - state.startX,
+        state.startWidth,
+      );
+      if (state.animationFrame) cancelAnimationFrame(state.animationFrame);
+      state.animationFrame = requestAnimationFrame(() => {
+        const table = datasetTableRef.current;
+        if (!table) return;
+        const column = table.querySelector<HTMLTableColElement>(
+          `col[data-column-key="${CSS.escape(state.columnKey)}"]`,
+        );
+        if (column) column.style.width = `${state.lastWidth}px`;
+        const nextTableWidth = state.startTableWidth + state.lastWidth - state.startWidth;
+        table.style.width = `${nextTableWidth}px`;
+        table.style.minWidth = `${nextTableWidth}px`;
+      });
+    };
+
+    const handlePointerUp = () => {
+      const state = columnResizeStateRef.current;
+      if (state?.animationFrame) cancelAnimationFrame(state.animationFrame);
+      if (state) {
+        setColumnWidthsByDataset(current => setDatasetColumnWidth(
+          current,
+          state.datasetId,
+          state.columnKey,
+          state.lastWidth,
+        ));
+      }
+      columnResizeStateRef.current = null;
+      setResizingColumn(null);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+      const state = columnResizeStateRef.current;
+      if (state?.animationFrame) cancelAnimationFrame(state.animationFrame);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+    };
+  }, [resizingColumn]);
 
   const normalizedDatasets = useMemo(() => datasets.map(normalizeDatasetForDisplay), [datasets]);
 
@@ -1054,6 +1170,26 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     () => getVisibleDatasetTableColumns(tableColumns, columnVisibilityOverrides),
     [columnVisibilityOverrides, tableColumns]
   );
+  const selectedColumnWidths = selectedDataset
+    ? columnWidthsByDataset[selectedDataset.id] || {}
+    : {};
+  const resolvedVisibleColumnWidths = useMemo(() => Object.fromEntries(
+    visibleTableColumns.map(column => [
+      column.key,
+      clampDatasetColumnWidth(
+        selectedColumnWidths[column.key],
+        defaultTableColumnWidth(column, previewSize),
+      ),
+    ]),
+  ), [previewSize, selectedColumnWidths, visibleTableColumns]);
+  const fixedTableColumnWidth = 72 + (isGenerationMode ? 0 : 88);
+  const resolvedTableWidth = useMemo(
+    () => visibleTableColumns.reduce(
+      (total, column) => total + resolvedVisibleColumnWidths[column.key],
+      fixedTableColumnWidth,
+    ),
+    [fixedTableColumnWidth, resolvedVisibleColumnWidths, visibleTableColumns],
+  );
   const tableColumnGroups = useMemo(() => TABLE_COLUMN_GROUPS
     .map(group => ({
       ...group,
@@ -1061,6 +1197,36 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     }))
     .filter(group => group.columns.length > 0), [tableColumns]);
   const hiddenTableColumnCount = tableColumns.length - visibleTableColumns.length;
+
+  const adjustTableColumnWidth = (columnKey: string, delta: number) => {
+    if (!selectedDataset) return;
+    const currentWidth = resolvedVisibleColumnWidths[columnKey] || 180;
+    setColumnWidthsByDataset(current => setDatasetColumnWidth(
+      current,
+      selectedDataset.id,
+      columnKey,
+      currentWidth + delta,
+    ));
+  };
+
+  const beginTableColumnResize = (
+    columnKey: string,
+    event: React.PointerEvent<HTMLButtonElement>,
+  ) => {
+    if (!selectedDataset) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const startWidth = resolvedVisibleColumnWidths[columnKey] || 180;
+    columnResizeStateRef.current = {
+      datasetId: selectedDataset.id,
+      columnKey,
+      startX: event.clientX,
+      startWidth,
+      lastWidth: startWidth,
+      startTableWidth: resolvedTableWidth,
+    };
+    setResizingColumn(columnKey);
+  };
 
   const updateColumnFilter = (columnKey: string, selectedKeys?: string[]) => {
     setColumnFilters(current => {
@@ -1177,7 +1343,6 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   }, [selectedDataset?.id]);
 
 
-  const isGenerationMode = mode === 'generation';
   const runningGenerationJobs = generationJobs.filter(job => job.status === 'running' || job.status === 'queued' || job.status === 'partial');
   const latestGenerationJob = generationJobs[0];
 
@@ -1330,22 +1495,25 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
 
   const beginPaneResize = (pane: 'left' | 'right', event: React.PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
+    event.stopPropagation();
     resizeStateRef.current = {
       pane,
       startX: event.clientX,
-      startLeft: layoutWidths.left,
-      startRight: layoutWidths.right,
+      startWidths: layoutWidths,
+      lastWidths: layoutWidths,
     };
     setResizingPane(pane);
   };
 
   const adjustPaneWidth = (pane: 'left' | 'right', delta: number) => {
-    setLayoutWidths(current => {
-      if (pane === 'left') {
-        return { ...current, left: Math.max(220, Math.min(440, current.left + delta)) };
-      }
-      return { ...current, right: Math.max(320, Math.min(680, current.right + delta)) };
-    });
+    const containerWidth = repositoryLayoutRef.current?.getBoundingClientRect().width || 1280;
+    setLayoutWidths(current => resizeDatasetRepositoryPane({
+      pane,
+      targetWidth: pane === 'left' ? current.leftWidth + delta : current.rightWidth + delta,
+      current,
+      containerWidth,
+      generationMode: isGenerationMode,
+    }));
   };
 
   const openColumnRenameEditor = () => {
@@ -1448,6 +1616,11 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
       setDatasets(previous => previous.map(dataset => dataset.id === savedDataset.id ? savedDataset : dataset));
       setSelectedDatasetId(savedDataset.id);
       setViewingVersionDataset(null);
+      setColumnWidthsByDataset(current => removeDatasetColumnWidth(
+        current,
+        selectedDataset.id,
+        columnToDelete,
+      ));
       setColumnRenameDrafts(Object.fromEntries(
         getDatasetActiveColumnKeys(savedDataset).map(column => [column, column])
       ));
@@ -1543,6 +1716,11 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
       setSelectedDatasetId(savedDataset.id);
       setSelectedRowIndex(0);
       setViewingVersionDataset(null);
+      setColumnWidthsByDataset(current => renameDatasetColumnWidths(
+        current,
+        selectedDataset.id,
+        renameEntries,
+      ));
       options.onSuccess();
     } catch (error: any) {
       console.error('Error renaming dataset columns:', error);
@@ -2181,6 +2359,12 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     if (!datasetToDelete) return;
     try {
       await deleteDataset(datasetToDelete);
+      setColumnWidthsByDataset(current => {
+        if (!current[datasetToDelete]) return current;
+        const next = { ...current };
+        delete next[datasetToDelete];
+        return next;
+      });
       setDatasetToDelete(null);
       if (selectedDatasetId === datasetToDelete) {
         setSelectedDatasetId('');
@@ -2196,7 +2380,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     const isEditing = inlineRenameColumn === column;
     const descriptor = tableColumns.find(item => item.key === column);
     return (
-      <th key={column} data-column-key={column} className={className}>
+      <th key={column} data-column-key={column} className={`relative ${className}`}>
         {isEditing ? (
           <div className="min-w-[180px] space-y-1">
             <input
@@ -2252,6 +2436,32 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
               </button>
             )}
           </div>
+        )}
+        {descriptor && (
+          <button
+            type="button"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label={`调整 ${displayLabel} 列宽`}
+            aria-valuemin={DATASET_COLUMN_WIDTH.min}
+            aria-valuemax={DATASET_COLUMN_WIDTH.max}
+            aria-valuenow={resolvedVisibleColumnWidths[column] || defaultTableColumnWidth(descriptor, previewSize)}
+            title={`拖动调整 ${displayLabel} 列宽`}
+            onPointerDown={event => beginTableColumnResize(column, event)}
+            onDoubleClick={event => {
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+            onKeyDown={event => {
+              if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                event.preventDefault();
+                event.stopPropagation();
+                const step = event.shiftKey ? 32 : 8;
+                adjustTableColumnWidth(column, event.key === 'ArrowLeft' ? -step : step);
+              }
+            }}
+            className={`dataset-table-column-resizer ${resizingColumn === column ? 'is-resizing' : ''}`}
+          />
         )}
       </th>
     );
@@ -3023,30 +3233,53 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
 
       <div
         ref={repositoryLayoutRef}
-        className={`grid grid-cols-1 gap-4 ${isGenerationMode ? 'xl:grid-cols-[minmax(260px,var(--dataset-left))_minmax(0,1fr)]' : 'xl:grid-cols-[var(--dataset-left)_minmax(0,1fr)_var(--dataset-right)]'}`}
+        className={`dataset-repository-layout relative grid grid-cols-1 gap-4 ${resizingPane ? 'is-resizing-pane' : ''} ${isGenerationMode ? 'xl:grid-cols-[var(--dataset-left)_minmax(0,1fr)]' : '2xl:grid-cols-[var(--dataset-left)_minmax(0,1fr)_var(--dataset-right)]'}`}
         style={{
-          '--dataset-left': `${layoutWidths.left}px`,
-          '--dataset-right': `${layoutWidths.right}px`,
+          '--dataset-left': `${layoutWidths.leftWidth}px`,
+          '--dataset-right': `${layoutWidths.rightWidth}px`,
         } as React.CSSProperties}
       >
-        <aside className="glass-panel rounded-2xl border border-white/10 p-4 h-fit xl:sticky xl:top-4 relative">
+        <button
+          type="button"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整左侧筛选栏宽度"
+          aria-valuemin={DATASET_LEFT_PANE_WIDTH.min}
+          aria-valuemax={DATASET_LEFT_PANE_WIDTH.max}
+          aria-valuenow={Math.round(layoutWidths.leftWidth)}
+          title="拖动调整左侧筛选栏宽度"
+          onPointerDown={event => beginPaneResize('left', event)}
+          onKeyDown={event => {
+            if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+              event.preventDefault();
+              adjustPaneWidth('left', event.key === 'ArrowLeft' ? -8 : 8);
+            }
+          }}
+          style={{ left: 'calc(var(--dataset-left) + 2px)', right: 'auto' }}
+          className={`ark-column-splitter ark-pane-splitter ark-pane-splitter-right hidden ${isGenerationMode ? 'xl:block' : '2xl:block'} ${resizingPane === 'left' ? 'is-resizing' : ''}`}
+        />
+        {!isGenerationMode && (
           <button
             type="button"
             role="separator"
             aria-orientation="vertical"
-            aria-label="调整左侧筛选栏宽度"
-            aria-valuemin={220}
-            aria-valuemax={440}
-            aria-valuenow={Math.round(layoutWidths.left)}
-            onPointerDown={event => beginPaneResize('left', event)}
+            aria-label="调整右侧详情栏宽度"
+            aria-valuemin={DATASET_RIGHT_PANE_WIDTH.min}
+            aria-valuemax={DATASET_RIGHT_PANE_WIDTH.max}
+            aria-valuenow={Math.round(layoutWidths.rightWidth)}
+            title="拖动调整右侧详情栏宽度"
+            onPointerDown={event => beginPaneResize('right', event)}
             onKeyDown={event => {
-              if (event.key === 'ArrowLeft') adjustPaneWidth('left', -16);
-              if (event.key === 'ArrowRight') adjustPaneWidth('left', 16);
+              if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+                event.preventDefault();
+                adjustPaneWidth('right', event.key === 'ArrowLeft' ? 8 : -8);
+              }
             }}
-            className={`hidden xl:flex absolute -right-3 top-6 bottom-6 z-20 w-5 cursor-col-resize items-center justify-center rounded-full border border-white/10 bg-black/60 text-slate-500 hover:text-amber-300 hover:border-amber-400/40 ${resizingPane === 'left' ? 'text-amber-300 border-amber-400/50' : ''}`}
-          >
-            <GripVertical size={14} />
-          </button>
+            style={{ right: 'calc(var(--dataset-right) + 2px)', left: 'auto' }}
+            className={`ark-column-splitter ark-pane-splitter ark-pane-splitter-left hidden 2xl:block ${resizingPane === 'right' ? 'is-resizing' : ''}`}
+          />
+        )}
+        <aside className="glass-panel rounded-2xl border border-white/10 p-4 h-fit xl:sticky xl:top-4 relative">
           <div className="relative mb-4">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="w-full pl-9 pr-3 py-2.5 glass-input rounded-xl text-sm text-slate-200" placeholder="搜索评测集/标签" />
@@ -3319,16 +3552,31 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                 )}
               </div>
               <div className="max-h-[calc(100vh-250px)] min-h-[360px] overflow-auto" data-testid="dataset-schema-table">
-                <table className="w-full min-w-max border-collapse text-left">
+                <table
+                  ref={datasetTableRef}
+                  className={`table-fixed border-collapse text-left ${resizingColumn ? 'is-resizing-column' : ''}`}
+                  style={{ width: `${resolvedTableWidth}px`, minWidth: `${resolvedTableWidth}px` }}
+                >
+                  <colgroup>
+                    {visibleTableColumns.map(column => (
+                      <col
+                        key={column.key}
+                        data-column-key={column.key}
+                        style={{ width: `${resolvedVisibleColumnWidths[column.key]}px` }}
+                      />
+                    ))}
+                    <col style={{ width: '72px' }} />
+                    {!isGenerationMode && <col style={{ width: '88px' }} />}
+                  </colgroup>
                   <thead className="sticky top-0 z-20 bg-slate-950 text-xs uppercase tracking-wide text-slate-400">
                     <tr>
                       {visibleTableColumns.map(column => renderEditableHeader(
                         column.key,
-                        `${tableColumnWidthClass(column, previewSize)} px-4 py-3 ${column.lockedVisible ? 'sticky left-0 z-30 bg-slate-950' : 'bg-slate-950'}`,
+                        `px-4 py-3 ${column.lockedVisible ? 'sticky left-0 z-30 bg-slate-950' : 'bg-slate-950'}`,
                         column.label
                       ))}
-                      <th className="min-w-[72px] bg-slate-950 px-4 py-3">{'\u6821\u9a8c'}</th>
-                      {!isGenerationMode && <th className="min-w-[88px] bg-slate-950 px-4 py-3">{'\u64cd\u4f5c'}</th>}
+                      <th className="w-[72px] bg-slate-950 px-4 py-3">{'\u6821\u9a8c'}</th>
+                      {!isGenerationMode && <th className="w-[88px] bg-slate-950 px-4 py-3">{'\u64cd\u4f5c'}</th>}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/10">
@@ -3348,7 +3596,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                               <td
                                 key={column.key}
                                 data-column-key={column.key}
-                                className={`px-4 py-3 align-top ${column.lockedVisible ? 'sticky left-0 z-10 bg-slate-950/95 font-mono text-sm text-slate-200' : ''}`}
+                                className={`overflow-hidden px-4 py-3 align-top ${column.lockedVisible ? 'sticky left-0 z-10 bg-slate-950/95 font-mono text-sm text-slate-200' : ''}`}
                                 onDoubleClick={isGenerationMode ? undefined : () => openCaseEditor(index, column.key)}
                                 title={isViewingHistoricalVersion || isGenerationMode ? '\u53ea\u8bfb\u9884\u89c8' : `\u53cc\u51fb\u7f16\u8f91 ${column.label}`}
                               >
@@ -3413,23 +3661,6 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
         </main>
 
         {!isGenerationMode && <aside className="glass-panel rounded-2xl border border-white/10 p-5 h-fit xl:sticky xl:top-4 min-w-0 relative">
-          <button
-            type="button"
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="调整右侧详情栏宽度"
-            aria-valuemin={320}
-            aria-valuemax={680}
-            aria-valuenow={Math.round(layoutWidths.right)}
-            onPointerDown={event => beginPaneResize('right', event)}
-            onKeyDown={event => {
-              if (event.key === 'ArrowLeft') adjustPaneWidth('right', 16);
-              if (event.key === 'ArrowRight') adjustPaneWidth('right', -16);
-            }}
-            className={`hidden xl:flex absolute -left-3 top-6 bottom-6 z-20 w-5 cursor-col-resize items-center justify-center rounded-full border border-white/10 bg-black/60 text-slate-500 hover:text-amber-300 hover:border-amber-400/40 ${resizingPane === 'right' ? 'text-amber-300 border-amber-400/50' : ''}`}
-          >
-            <GripVertical size={14} />
-          </button>
           {selectedDataset ? (
             <div className="space-y-6">
               <section>

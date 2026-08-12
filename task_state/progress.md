@@ -713,3 +713,17 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Eval Studio Test run `31589206087` passed. Dev CI/CD run `31589206352` passed tests, migration `014`, image build, and Kubernetes rollout.
 - Public dev `/datasets` and `/api/health` returned HTTP 200, and the Feishu login endpoint confirmed deployed app credentials are configured.
 - A live Feishu Base preview still requires an authenticated user session; app `bitable:app:readonly` scope and target-Base collaborator access remain the only external acceptance condition.
+
+## 2026-08-12: Resizable application and dataset workspace
+
+### Completed
+
+- Added a persistent 208-400px desktop navigation resize rail. The navigation, top bar, and page content move together; mobile navigation and evaluation focus mode keep their existing behavior.
+- Replaced the dataset repository's small pane grips with full-height 12px splitters. The repository left filter pane supports 220-480px and the right inspector supports 300-720px while retaining a usable center workspace where the viewport permits it.
+- Added Excel-style resizing for every dataset business column with synchronized `colgroup` sizing, horizontal table scrolling, 96-960px bounds, keyboard arrow adjustments, and direct CSS/`requestAnimationFrame` feedback during pointer drags.
+- Stored app-shell and repository pane widths as local UI preferences, and dataset column widths by dataset ID. Column rename/delete and dataset deletion migrate or remove only the related local preferences; dataset copies start with their own defaults.
+
+### Validation
+
+- Passed `test:layout-sizing`, `test:dataset-table-columns`, `test:dataset-filters`, `test:dataset-column-deletion`, TypeScript, frontend build, and server build.
+- Browser-validated navigation/content synchronization, full-height pane hit areas, table header/cell alignment, keyboard resizing, refresh persistence, and shared widths in the production workspace. A temporary local dataset was removed after the checks, and browser console logs were empty.
