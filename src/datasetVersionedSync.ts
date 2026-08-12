@@ -1,4 +1,5 @@
 import {
+  DATASET_HISTORICAL_CASE_ID_KEY,
   DATASET_ITEM_ID_KEY,
   createDatasetItemStableId,
   getDatasetItemStableId,
@@ -45,6 +46,25 @@ const cleanIdentityPart = (value: unknown) => String(value ?? '').trim();
 export const datasetSyncIdentity = (row: Record<string, unknown>) =>
   JSON.stringify([cleanIdentityPart(row.case_id), cleanIdentityPart(row.variant_label)]);
 
+const datasetRowSyncIdentity = (dataset: EvalDataset, row: Record<string, unknown>) => {
+  const caseIdColumns = [...new Set([
+    'case_id',
+    dataset.columnMappings?.caseId,
+    dataset.columnMappings?.standard?.case_id,
+    ...dataset.inputSchema
+      .filter(field => field.role === 'case_id' || field.canonicalKey === 'case_id')
+      .map(field => field.key),
+  ].filter((column): column is string => Boolean(column)))];
+  const caseId = caseIdColumns
+    .map(column => cleanIdentityPart(row[column]))
+    .find(Boolean)
+    || cleanIdentityPart(row[DATASET_HISTORICAL_CASE_ID_KEY]);
+  const variantColumn = dataset.inputSchema.find(field =>
+    field.key === 'variant_label' || field.canonicalKey === 'variant_label'
+  )?.key || 'variant_label';
+  return JSON.stringify([caseId, cleanIdentityPart(row[variantColumn])]);
+};
+
 const parseDatasetSyncIdentity = (identity: string): [string, string] => {
   const parsed = JSON.parse(identity);
   return [String(parsed[0] || ''), String(parsed[1] || '')];
@@ -85,10 +105,10 @@ export const validateDatasetSyncSource = (rows: Record<string, unknown>[]) => {
   return { valid: issues.length === 0, issues };
 };
 
-const validateCurrentDatasetIdentities = (rows: Record<string, unknown>[]) => {
+const validateCurrentDatasetIdentities = (dataset: EvalDataset) => {
   const rowIndexesByIdentity = new Map<string, number[]>();
-  rows.forEach((row, index) => {
-    const identity = datasetSyncIdentity(row);
+  dataset.items.forEach((row, index) => {
+    const identity = datasetRowSyncIdentity(dataset, row);
     const indexes = rowIndexesByIdentity.get(identity) || [];
     indexes.push(index);
     rowIndexesByIdentity.set(identity, indexes);
@@ -253,14 +273,14 @@ export const buildDatasetVersionedSyncPlan = (input: {
       identity: 'case_id',
     }] : []),
     ...sourceValidation.issues,
-    ...validateCurrentDatasetIdentities(input.dataset.items),
+    ...validateCurrentDatasetIdentities(input.dataset),
   ];
   const outputColumns = [...new Set(input.outputColumns)];
   const outputSet = new Set(outputColumns);
-  const currentByIdentity = new Map(input.dataset.items.map(row => [datasetSyncIdentity(row), row]));
+  const currentByIdentity = new Map(input.dataset.items.map(row => [datasetRowSyncIdentity(input.dataset, row), row]));
   const historicalByIdentity = new Map<string, Record<string, any>>();
   input.historicalRows.forEach(row => {
-    const identity = datasetSyncIdentity(row);
+    const identity = datasetRowSyncIdentity(input.dataset, row);
     if (!historicalByIdentity.has(identity)) historicalByIdentity.set(identity, row);
   });
   const dependencyFallback = getDatasetGenerationInputColumns(input.dataset);
@@ -343,6 +363,7 @@ export const buildDatasetVersionedSyncPlan = (input: {
           column.startsWith('__')
           && column !== DATASET_ITEM_ID_KEY
           && column !== DATASET_RESULT_META_KEY
+          && column !== DATASET_HISTORICAL_CASE_ID_KEY
           && !Object.prototype.hasOwnProperty.call(nextRow, column)
         ) {
           nextRow[column] = historicalRow[column];
@@ -372,7 +393,7 @@ export const buildDatasetVersionedSyncPlan = (input: {
 
   const sourceIdentities = new Set(input.sourceRows.map(datasetSyncIdentity));
   input.dataset.items.forEach(row => {
-    const identity = datasetSyncIdentity(row);
+    const identity = datasetRowSyncIdentity(input.dataset, row);
     if (sourceIdentities.has(identity)) return;
     const [caseId, variantLabel = ''] = parseDatasetSyncIdentity(identity);
     cases.push({

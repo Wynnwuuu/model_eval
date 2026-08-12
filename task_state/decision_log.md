@@ -402,6 +402,8 @@ Dataset synchronization and generation submission take the dataset-row lock firs
 
 Column visibility and sorting are presentation state. Output and technical columns default hidden; operators can show individual outputs or all outputs. One-column typed sorting is stable with blanks last and never changes source order, stored order, or generation execution order.
 
+Existing datasets may store an imported `case_id` under a mapped display column such as `用例ID`. Current identity therefore resolves through saved column mappings, while historical restoration falls back to the persisted dataset-item `case_key`; new source snapshots still require an exact `case_id` header.
+
 Replacement controls never infer a pending value from the first allowed option. Raw source value, normalized effective value, model constraints, and the unselected replacement control are separate states.
 
 Repair application uses optimistic concurrency on the Aion configuration fingerprint. A changed fingerprint is a contract change, so the old repair decision is rejected instead of being silently reinterpreted against the new model configuration.

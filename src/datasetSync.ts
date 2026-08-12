@@ -1,6 +1,7 @@
 import type { DatasetColumnMappings, DatasetTaskBinding, EvalTask, EvaluationItem, VoteItemSnapshot, VoteRecord } from './types.ts';
 
 export const DATASET_ITEM_ID_KEY = '__datasetItemId';
+export const DATASET_HISTORICAL_CASE_ID_KEY = '__datasetHistoricalCaseId';
 
 const CASE_ID_KEYS = ['用例ID', 'case_id', 'caseId', 'Case_ID', 'ItemID', 'item_id', 'id'];
 

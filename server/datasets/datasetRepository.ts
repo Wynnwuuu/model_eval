@@ -4,6 +4,7 @@ import type { PoolClient } from 'pg';
 import type { EvalDataset } from '../../src/types.ts';
 import { buildDatasetClone } from '../../src/datasetClone.ts';
 import {
+  DATASET_HISTORICAL_CASE_ID_KEY,
   DATASET_ITEM_ID_KEY,
   ensureStableDatasetItemIds,
   getDatasetItemStableId,
@@ -53,6 +54,7 @@ type DatasetItemRow = {
   payload_json: Record<string, any>;
   dimension_values_json: Record<string, any> | null;
   stable_item_id: string;
+  case_key?: string | null;
 };
 
 const toTimestamp = (date: Date | string | number | null | undefined) => {
@@ -179,7 +181,8 @@ export const listDatasetHistoricalRows = async (datasetId: string): Promise<Reco
   const result = await dbPool.query<DatasetItemRow & { dataset_version: number }>(
     `
       SELECT item.dataset_id, item.version_id, item.row_index, item.payload_json,
-             item.dimension_values_json, item.stable_item_id, version.version AS dataset_version
+             item.dimension_values_json, item.stable_item_id, item.case_key,
+             version.version AS dataset_version
       FROM dataset_items item
       JOIN dataset_versions version ON version.id = item.version_id
       WHERE item.dataset_id = $1
@@ -187,7 +190,11 @@ export const listDatasetHistoricalRows = async (datasetId: string): Promise<Reco
     `,
     [datasetId],
   );
-  return result.rows.map(item => ({ ...item.payload_json, [DATASET_ITEM_ID_KEY]: item.stable_item_id }));
+  return result.rows.map(item => ({
+    ...item.payload_json,
+    [DATASET_ITEM_ID_KEY]: item.stable_item_id,
+    [DATASET_HISTORICAL_CASE_ID_KEY]: item.case_key || '',
+  }));
 };
 
 export const listDatasets = async (): Promise<EvalDataset[]> => {

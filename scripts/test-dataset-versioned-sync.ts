@@ -6,7 +6,11 @@ import {
   datasetSyncIdentity,
   validateDatasetSyncSource,
 } from '../src/datasetVersionedSync.ts';
-import { createDatasetItemStableId, DATASET_ITEM_ID_KEY } from '../src/datasetSync.ts';
+import {
+  createDatasetItemStableId,
+  DATASET_HISTORICAL_CASE_ID_KEY,
+  DATASET_ITEM_ID_KEY,
+} from '../src/datasetSync.ts';
 import { parseDatasetSyncManualSource } from '../src/datasetSyncSourceParser.ts';
 import type { EvalDataset } from '../src/types.ts';
 
@@ -118,6 +122,60 @@ const duplicateCurrentPlan = buildDatasetVersionedSyncPlan({
 });
 assert.equal(duplicateCurrentPlan.valid, false);
 assert.equal(duplicateCurrentPlan.issues[0]?.code, 'DUPLICATE_CURRENT_CASE_IDENTITY');
+
+const legacyMappedDataset: EvalDataset = {
+  ...current,
+  inputSchema: [
+    { key: '用例ID', label: '用例ID', canonicalKey: 'case_id', type: 'text', role: 'case_id' },
+    ...current.inputSchema.filter(field => field.key !== 'case_id'),
+  ],
+  columnMappings: {
+    ...current.columnMappings,
+    caseId: '用例ID',
+    standard: { ...current.columnMappings?.standard, case_id: '用例ID' },
+  },
+  items: [
+    { 用例ID: 'legacy-1', variant_label: '', prompt: 'old one', [DATASET_ITEM_ID_KEY]: 'stable-legacy-1' },
+    { 用例ID: 'legacy-2', variant_label: '', prompt: 'old two', [DATASET_ITEM_ID_KEY]: 'stable-legacy-2' },
+  ],
+};
+const legacyMappedPlan = buildDatasetVersionedSyncPlan({
+  dataset: legacyMappedDataset,
+  sourceHeaders: ['case_id', 'variant_label', 'prompt'],
+  sourceRows: [
+    { case_id: 'legacy-1', variant_label: '', prompt: 'new one' },
+    { case_id: 'legacy-2', variant_label: '', prompt: 'old two' },
+    { case_id: 'legacy-restored', variant_label: '', prompt: 'restored' },
+  ],
+  historicalRows: [{
+    prompt: 'old restored',
+    variant_label: '',
+    [DATASET_HISTORICAL_CASE_ID_KEY]: 'legacy-restored',
+    [DATASET_ITEM_ID_KEY]: 'stable-legacy-restored',
+  }],
+  outputColumns: [],
+  outputPolicies: {},
+});
+assert.equal(legacyMappedPlan.valid, true, 'mapped legacy case-ID columns must not collapse to blank identities');
+assert.deepEqual(legacyMappedPlan.summary, {
+  added: 0,
+  updated: 2,
+  deleted: 0,
+  restored: 1,
+  unchanged: 0,
+  staleResults: 0,
+  sourceResultOverwrites: 0,
+});
+assert.deepEqual(
+  legacyMappedPlan.rows.map(row => row[DATASET_ITEM_ID_KEY]),
+  ['stable-legacy-1', 'stable-legacy-2', 'stable-legacy-restored'],
+  'current and historical stable IDs must survive migration to the exact case_id source column',
+);
+assert.equal(
+  Object.prototype.hasOwnProperty.call(legacyMappedPlan.rows[2], DATASET_HISTORICAL_CASE_ID_KEY),
+  false,
+  'historical lookup metadata must not leak into synchronized rows',
+);
 
 const sourceRows = [
   { case_id: 'case-restored', variant_label: 'reference', prompt: 'historical prompt', category: 'restored', model_result: '' },
