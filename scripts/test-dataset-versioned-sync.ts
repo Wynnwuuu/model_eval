@@ -300,6 +300,27 @@ const fillPlan = buildDatasetVersionedSyncPlan({
 });
 assert.equal(fillPlan.rows[0].model_result, 'https://source.example.com/fill.mp4');
 
+const blankFillPlan = buildDatasetVersionedSyncPlan({
+  dataset: {
+    ...current,
+    items: [{
+      case_id: 'case-1',
+      variant_label: '',
+      prompt: 'old prompt',
+      category: 'identity',
+      model_result: undefined,
+      [DATASET_ITEM_ID_KEY]: 'stable-case-1',
+    }],
+  },
+  sourceHeaders: ['case_id', 'variant_label', 'prompt', 'category', 'model_result'],
+  sourceRows: [{ case_id: 'case-1', variant_label: '', prompt: 'old prompt', category: 'identity', model_result: '' }],
+  historicalRows: [],
+  outputColumns: ['model_result'],
+  outputPolicies: { model_result: 'fill_platform_blanks' },
+});
+assert.equal(blankFillPlan.summary.updated, 0, 'missing and blank output cells must not create false case updates');
+assert.equal(blankFillPlan.summary.unchanged, 1);
+
 const overwritePlan = buildDatasetVersionedSyncPlan({
   dataset: current,
   sourceHeaders: ['case_id', 'variant_label', 'prompt', 'model_result'],

@@ -415,7 +415,11 @@ export const buildDatasetVersionedSyncPlan = (input: {
       ...Object.keys(historicalRow || {}).filter(key => key !== '_originalData' && !key.startsWith('__')),
     ]);
     const fieldChanges = historicalRow
-      ? [...comparisonFields].flatMap(field => stableSerialize(historicalRow[field]) === stableSerialize(nextRow[field])
+      ? [...comparisonFields].flatMap(field => (
+        outputSet.has(field) && isBlank(historicalRow[field]) && isBlank(nextRow[field])
+          ? true
+          : stableSerialize(historicalRow[field]) === stableSerialize(nextRow[field])
+      )
         ? []
         : [{ field, before: historicalRow[field], after: nextRow[field], kind: fieldKind(input.dataset, field, outputSet) }])
       : [];
