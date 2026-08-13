@@ -293,15 +293,20 @@ const writeStoredColumnVisibility = (store: DatasetColumnVisibilityStore) => {
   }
 };
 
-const TABLE_COLUMN_GROUPS: Array<{ role: DatasetFieldRole; label: string }> = [
-  { role: 'input', label: '\u8f93\u5165\u5217' },
-  { role: 'media', label: '\u5a92\u4f53\u8f93\u5165\u5217' },
-  { role: 'output', label: '\u6a21\u578b\u7ed3\u679c\u5217' },
-  { role: 'dimension', label: '\u8bc4\u6d4b\u7ef4\u5ea6\u5217' },
-  { role: 'reference', label: '\u53c2\u8003\u7d20\u6750\u5217' },
-  { role: 'rubric', label: 'Rubric \u5217' },
-  { role: 'metadata', label: '\u5143\u6570\u636e\u5217' },
-  { role: 'system', label: '\u7cfb\u7edf\u5ba1\u8ba1\u5217' },
+const TABLE_COLUMN_GROUPS: Array<{
+  key: string;
+  label: string;
+  matches: (column: DatasetTableColumnDescriptor) => boolean;
+}> = [
+  { key: 'input', label: '\u8f93\u5165\u5217', matches: column => column.displayCategory === 'business' && column.role === 'input' },
+  { key: 'media', label: '\u5a92\u4f53\u8f93\u5165\u5217', matches: column => column.displayCategory === 'business' && column.role === 'media' },
+  { key: 'output', label: '\u6a21\u578b\u7ed3\u679c\u5217', matches: column => column.displayCategory === 'output' },
+  { key: 'dimension', label: '\u8bc4\u6d4b\u7ef4\u5ea6\u5217', matches: column => column.displayCategory === 'business' && column.role === 'dimension' },
+  { key: 'reference', label: '\u53c2\u8003\u7d20\u6750\u5217', matches: column => column.displayCategory === 'business' && column.role === 'reference' },
+  { key: 'rubric', label: 'Rubric \u5217', matches: column => column.displayCategory === 'business' && column.role === 'rubric' },
+  { key: 'metadata', label: '\u5143\u6570\u636e\u5217', matches: column => column.displayCategory === 'business' && column.role === 'metadata' },
+  { key: 'generation_companion', label: '\u751f\u6210\u8bb0\u5f55\u5217', matches: column => column.displayCategory === 'generation_companion' },
+  { key: 'system', label: '\u7cfb\u7edf\u5ba1\u8ba1\u5217', matches: column => column.displayCategory === 'system' },
 ];
 
 const readStoredPreviewSize = (): DatasetPreviewSize => {
@@ -1201,7 +1206,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   const tableColumnGroups = useMemo(() => TABLE_COLUMN_GROUPS
     .map(group => ({
       ...group,
-      columns: tableColumns.filter(column => !column.lockedVisible && column.role === group.role),
+      columns: tableColumns.filter(column => !column.lockedVisible && group.matches(column)),
     }))
     .filter(group => group.columns.length > 0), [tableColumns]);
   const hiddenTableColumnCount = tableColumns.length - visibleTableColumns.length;
@@ -1271,11 +1276,11 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   ));
   const showAllOutputColumns = () => saveColumnVisibilityOverrides({
     ...columnVisibilityOverrides,
-    ...Object.fromEntries(tableColumns.filter(column => column.role === 'output').map(column => [column.key, true])),
+    ...Object.fromEntries(tableColumns.filter(column => column.displayCategory === 'output').map(column => [column.key, true])),
   });
   const hideAllOutputColumns = () => saveColumnVisibilityOverrides({
     ...columnVisibilityOverrides,
-    ...Object.fromEntries(tableColumns.filter(column => column.role === 'output').map(column => [column.key, false])),
+    ...Object.fromEntries(tableColumns.filter(column => column.displayCategory === 'output').map(column => [column.key, false])),
   });
   const currentColumnKeys = useMemo(() => getDatasetActiveColumnKeys(selectedDataset), [selectedDataset]);
   const linkedTasks = useMemo(
@@ -3469,7 +3474,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                     <div className="flex items-start justify-between gap-3 border-b border-white/10 pb-3">
                       <div>
                         <div className="text-sm font-semibold text-slate-100">{'\u5217\u663e\u793a'}</div>
-                        <div className="mt-1 text-[11px] text-slate-500">{'\u7528\u4f8b ID \u59cb\u7ec8\u53ef\u89c1\uff1b\u7cfb\u7edf\u5ba1\u8ba1\u5217\u9ed8\u8ba4\u9690\u85cf'}</div>
+                        <div className="mt-1 text-[11px] text-slate-500">{'\u7528\u4f8b ID \u59cb\u7ec8\u53ef\u89c1\uff1b\u6a21\u578b\u7ed3\u679c\u9ed8\u8ba4\u663e\u793a\uff0c\u751f\u6210\u8bb0\u5f55\u548c\u7cfb\u7edf\u5ba1\u8ba1\u5217\u9ed8\u8ba4\u9690\u85cf'}</div>
                       </div>
                       <button
                         type="button"
@@ -3491,7 +3496,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                     </div>
                     <div className="mt-3 space-y-4">
                       {tableColumnGroups.map(group => (
-                        <section key={group.role}>
+                        <section key={group.key}>
                           <div className="mb-2 flex items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                             <span>{group.label}</span>
                             <span>{group.columns.filter(column => isDatasetTableColumnVisible(column, columnVisibilityOverrides)).length}/{group.columns.length}</span>

@@ -15,6 +15,15 @@ const REFERENCE_VIDEO = '\u53c2\u8003\u89c6\u9891';
 const REFERENCE_AUDIO = '\u53c2\u8003\u97f3\u9891';
 const OBSERVATION_FOCUS = '\u89c2\u5bdf\u91cd\u70b9';
 const PARAMS_JSON = `MiniMax-H3_\u53c2\u6570JSON`;
+const GENERATED_OUTPUT = 'MiniMax-H3';
+const MAPPED_OUTPUT = 'Seedance 2.0 Pro';
+const GENERATION_COMPANION_COLUMNS = [
+  `${GENERATED_OUTPUT}_status`,
+  `${GENERATED_OUTPUT}_seed`,
+  `${GENERATED_OUTPUT}_request_id`,
+  `${GENERATED_OUTPUT}_error`,
+  `${GENERATED_OUTPUT}_params_json`,
+];
 
 const referenceImageColumns = Array.from({ length: 6 }, (_, index) => `${REFERENCE_IMAGE}_${index + 1}_URL`);
 const referenceVideoColumns = Array.from({ length: 3 }, (_, index) => `${REFERENCE_VIDEO}_${index + 1}_URL`);
@@ -24,8 +33,15 @@ const schema: DatasetSchemaField[] = [
   { key: CASE_ID, label: CASE_ID, type: 'text', role: 'case_id', sourceKey: 'Case_ID' },
   { key: FULL_PROMPT, label: FULL_PROMPT, type: 'text', role: 'input', sourceKey: 'Prompt' },
   { key: EXTRA_INPUT, label: EXTRA_INPUT, type: 'text', role: 'input', sourceKey: 'Extra_Input' },
-  { key: 'MiniMax-H3', label: 'MiniMax-H3', type: 'video_url', role: 'output', previewType: 'video' },
-  { key: 'Seedance 2.0 Pro', label: 'Seedance 2.0 Pro', type: 'video_url', role: 'output', previewType: 'video' },
+  { key: GENERATED_OUTPUT, label: GENERATED_OUTPUT, type: 'video_url', role: 'output', previewType: 'video' },
+  { key: MAPPED_OUTPUT, label: MAPPED_OUTPUT, type: 'video_url', role: 'metadata', previewType: 'video' },
+  ...GENERATION_COMPANION_COLUMNS.map((key): DatasetSchemaField => ({
+    key,
+    label: key,
+    type: 'text',
+    role: key.endsWith('_params_json') ? 'system' : 'metadata',
+    previewType: 'text',
+  })),
   { key: DIMENSION, label: DIMENSION, type: 'text', role: 'dimension' },
   ...referenceImageColumns.map((key): DatasetSchemaField => ({
     key,
@@ -43,6 +59,8 @@ const schema: DatasetSchemaField[] = [
   })),
   { key: referenceAudioColumn, label: referenceAudioColumn, type: 'audio_url', role: 'reference', previewType: 'audio' },
   { key: OBSERVATION_FOCUS, label: OBSERVATION_FOCUS, type: 'text', role: 'metadata' },
+  { key: 'status', label: 'status', type: 'text', role: 'metadata', previewType: 'text' },
+  { key: `${GENERATED_OUTPUT}_status_note`, label: `${GENERATED_OUTPUT}_status_note`, type: 'text', role: 'metadata', previewType: 'text' },
   { key: PARAMS_JSON, label: PARAMS_JSON, type: 'text', role: 'system', previewType: 'none' },
 ];
 
@@ -62,7 +80,7 @@ const dataset: EvalDataset = {
   columnMappings: {
     caseId: CASE_ID,
     inputColumns: [FULL_PROMPT, EXTRA_INPUT],
-    outputColumns: ['MiniMax-H3', 'Seedance 2.0 Pro'],
+    outputColumns: [GENERATED_OUTPUT, MAPPED_OUTPUT],
     dimensionColumns: [DIMENSION],
     referenceColumns: [...referenceImageColumns, ...referenceVideoColumns, referenceAudioColumn],
     standard: { case_id: CASE_ID, full_prompt: FULL_PROMPT },
@@ -77,6 +95,14 @@ assert.ok(!columns.some(column => column.key.startsWith('__')), 'internal column
 assert.equal(columns.filter(column => column.role === 'reference').length, 10, 'all reference media columns must be projected');
 assert.equal(columns.find(column => column.key === PARAMS_JSON)?.defaultVisible, false, 'system fields default to hidden');
 assert.equal(columns.find(column => column.key === CASE_ID)?.lockedVisible, true, 'case ID must remain visible');
+assert.equal(columns.find(column => column.key === GENERATED_OUTPUT)?.displayCategory, 'output');
+assert.equal(columns.find(column => column.key === MAPPED_OUTPUT)?.role, 'output', 'output mappings must override a stale schema role');
+assert.equal(columns.find(column => column.key === MAPPED_OUTPUT)?.displayCategory, 'output');
+for (const key of GENERATION_COMPANION_COLUMNS) {
+  assert.equal(columns.find(column => column.key === key)?.displayCategory, 'generation_companion', `${key} must be grouped as a generation record`);
+}
+assert.equal(columns.find(column => column.key === 'status')?.displayCategory, 'business', 'ordinary status metadata must not be hidden');
+assert.equal(columns.find(column => column.key === `${GENERATED_OUTPUT}_status_note`)?.displayCategory, 'business', 'similar suffixes must not be misclassified');
 
 const defaultVisible = getVisibleDatasetTableColumns(columns);
 assert.ok(defaultVisible.some(column => column.key === EXTRA_INPUT), 'additional inputs must be visible');
@@ -84,16 +110,25 @@ assert.ok(defaultVisible.some(column => column.key === referenceImageColumns[5])
 assert.ok(defaultVisible.some(column => column.key === referenceVideoColumns[2]), 'later reference videos must be visible');
 assert.ok(defaultVisible.some(column => column.key === referenceAudioColumn), 'reference audio must be visible');
 assert.ok(defaultVisible.some(column => column.key === OBSERVATION_FOCUS), 'ordinary metadata must be visible');
+assert.ok(defaultVisible.some(column => column.key === 'status'), 'ordinary status metadata must remain visible');
+assert.ok(defaultVisible.some(column => column.key === `${GENERATED_OUTPUT}_status_note`), 'non-exact companion suffixes must remain visible');
 assert.ok(!defaultVisible.some(column => column.key === PARAMS_JSON), 'system fields must be hidden by default');
-assert.ok(!defaultVisible.some(column => column.key === 'MiniMax-H3'), 'output fields must be collapsed by default');
-assert.ok(!defaultVisible.some(column => column.key === 'Seedance 2.0 Pro'), 'every output field must be collapsed by default');
+assert.ok(defaultVisible.some(column => column.key === GENERATED_OUTPUT), 'schema output fields must be visible by default');
+assert.ok(defaultVisible.some(column => column.key === MAPPED_OUTPUT), 'mapped output fields must be visible by default');
+for (const key of GENERATION_COMPANION_COLUMNS) {
+  assert.ok(!defaultVisible.some(column => column.key === key), `${key} must be hidden by default`);
+}
 
 const systemVisible = getVisibleDatasetTableColumns(columns, { [PARAMS_JSON]: true });
 assert.ok(systemVisible.some(column => column.key === PARAMS_JSON), 'visibility overrides must reveal system fields');
 
-const outputVisible = getVisibleDatasetTableColumns(columns, { 'MiniMax-H3': true });
-assert.ok(outputVisible.some(column => column.key === 'MiniMax-H3'), 'visibility overrides must reveal one output without expanding all outputs');
-assert.ok(!outputVisible.some(column => column.key === 'Seedance 2.0 Pro'));
+const outputHidden = getVisibleDatasetTableColumns(columns, { [GENERATED_OUTPUT]: false });
+assert.ok(!outputHidden.some(column => column.key === GENERATED_OUTPUT), 'an explicit user override must still hide an output');
+assert.ok(outputHidden.some(column => column.key === MAPPED_OUTPUT), 'hiding one output must not hide other default-visible outputs');
+
+const companionVisible = getVisibleDatasetTableColumns(columns, { [GENERATION_COMPANION_COLUMNS[0]]: true });
+assert.ok(companionVisible.some(column => column.key === GENERATION_COMPANION_COLUMNS[0]), 'an explicit user override must reveal a generation record');
+assert.ok(!companionVisible.some(column => column.key === GENERATION_COMPANION_COLUMNS[1]), 'revealing one generation record must not reveal all records');
 
 const legacyDataset: EvalDataset = {
   id: 'legacy-dataset',

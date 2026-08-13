@@ -1,12 +1,20 @@
 import { getDatasetActiveColumnKeys, getDatasetColumnRole } from './datasetColumnDeletion';
 import { inferPreviewType } from './datasetManifest';
+import { findGenerationOutputCompanion } from './datasetOutputColumns';
 import type { DatasetFieldRole, DatasetPreviewType, EvalDataset } from './types';
+
+export type DatasetTableColumnDisplayCategory =
+  | 'business'
+  | 'output'
+  | 'generation_companion'
+  | 'system';
 
 export interface DatasetTableColumnDescriptor {
   key: string;
   label: string;
   role: DatasetFieldRole;
   previewType: DatasetPreviewType;
+  displayCategory: DatasetTableColumnDisplayCategory;
   defaultVisible: boolean;
   lockedVisible: boolean;
 }
@@ -24,19 +32,36 @@ export const buildDatasetTableColumns = (dataset?: EvalDataset): DatasetTableCol
     ...(dataset.inputSchema || []).map(field => field.key),
     ...getDatasetActiveColumnKeys(dataset),
   ].filter(Boolean)));
+  const mappedOutputKeys = new Set(dataset.columnMappings?.outputColumns || []);
+  const rolesByKey = new Map(orderedKeys.map(key => {
+    const schemaRole = schemaByKey.get(key)?.role;
+    const role = mappedOutputKeys.has(key) || schemaRole === 'output'
+      ? 'output'
+      : schemaRole || getDatasetColumnRole(dataset, key) || 'metadata';
+    return [key, role] as const;
+  }));
+  const outputKeys = orderedKeys.filter(key => rolesByKey.get(key) === 'output');
 
   const columns = orderedKeys.map(key => {
     const field = schemaByKey.get(key);
-    const role = field?.role || getDatasetColumnRole(dataset, key) || 'metadata';
+    const role = rolesByKey.get(key) || 'metadata';
     const previewType = field?.previewType || inferPreviewType(key, sampleColumnValues(dataset, key));
     const lockedVisible = role === 'case_id';
+    const displayCategory: DatasetTableColumnDisplayCategory = role === 'output'
+      ? 'output'
+      : findGenerationOutputCompanion(key, outputKeys)
+        ? 'generation_companion'
+        : role === 'system'
+          ? 'system'
+          : 'business';
 
     return {
       key,
       label: field?.label || key,
       role,
       previewType,
-      defaultVisible: lockedVisible || (role !== 'system' && role !== 'output'),
+      displayCategory,
+      defaultVisible: displayCategory === 'business' || displayCategory === 'output',
       lockedVisible,
     };
   });

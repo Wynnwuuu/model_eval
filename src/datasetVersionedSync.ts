@@ -4,6 +4,7 @@ import {
   createDatasetItemStableId,
   getDatasetItemStableId,
 } from './datasetSync.ts';
+import { isGenerationOutputCompanionColumn } from './datasetOutputColumns.ts';
 import type {
   DatasetSchemaField,
   DatasetSyncCaseChange,
@@ -264,13 +265,8 @@ const sourceField = (header: string, dataset: EvalDataset, outputColumns: Set<st
   };
 };
 
-const OUTPUT_COMPANION_SUFFIXES = ['_status', '_seed', '_request_id', '_error', '_params_json'];
-
-const isOutputCompanionColumn = (column: string, outputColumn: string) =>
-  OUTPUT_COMPANION_SUFFIXES.some(suffix => column === `${outputColumn}${suffix}`);
-
 const outputCompanionColumns = (row: Record<string, unknown>, outputColumn: string) =>
-  Object.keys(row).filter(key => isOutputCompanionColumn(key, outputColumn) || key === DATASET_RESULT_META_KEY);
+  Object.keys(row).filter(key => isGenerationOutputCompanionColumn(key, outputColumn) || key === DATASET_RESULT_META_KEY);
 
 const mergeResultValue = (
   policy: DatasetSyncOutputPolicy,
@@ -459,7 +455,7 @@ export const buildDatasetVersionedSyncPlan = (input: {
     !sourceHeaderSet.has(field.key) && (
       outputSet.has(field.key)
       || field.role === 'system'
-      || outputColumns.some(output => isOutputCompanionColumn(field.key, output))
+      || outputColumns.some(output => isGenerationOutputCompanionColumn(field.key, output))
     )
   );
   return {
