@@ -25,6 +25,11 @@ import {
   getComparableTaskSignature,
 } from '../insightPresentation';
 import { buildInsightPath, normalizeInsightScope } from '../insightDeepLink';
+import {
+  getTaskVoteGroupReviewerKey,
+  getVoteReviewerKey,
+  withTaskVoteGroupReviewer,
+} from '../taskResults';
 
 interface AnalysisScreenProps {
   onBack: () => void;
@@ -47,6 +52,7 @@ interface AnalysisVoteRow {
   vote: VoteType;
   timestamp: number;
   user: string;
+  reviewerKey?: string;
   auditVote?: VoteRecord;
 }
 
@@ -69,6 +75,7 @@ interface ImportedMaterialResult {
   methodVotes: VoteRecord[];
   archivedVoteRows: ArchivedVoteRow[];
   voters: Set<string>;
+  reviewerKeys: Set<string>;
 }
 
 interface ArchivedVoteRow {
@@ -380,6 +387,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   const [aggregatedData, setAggregatedData] = useState<AggregatedResult[]>([]);
   const [totalFiles, setTotalFiles] = useState(0);
   const [uniqueVoters, setUniqueVoters] = useState<Set<string>>(new Set());
+  const [uniqueReviewerCount, setUniqueReviewerCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [tasks, setTasks] = useState<EvalTask[]>([]);
   const [templates, setTemplates] = useState<EvalTemplate[]>([]);
@@ -654,7 +662,20 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         });
       });
     }
-    const archivedVoteRows: ArchivedVoteRow[] = voteGroups.flatMap(group =>
+    const reviewerAwareVoteGroups = voteGroups.map(group => {
+      const reviewerKey = getTaskVoteGroupReviewerKey(group);
+      const displayName = group.displayName || group.user || group.email || 'Anonymous';
+      return {
+        ...group,
+        votes: withTaskVoteGroupReviewer(group),
+        archivedVotes: (group.archivedVotes || []).map(vote => ({
+          ...vote,
+          user: vote.user || displayName,
+          reviewerKey: vote.reviewerKey || reviewerKey,
+        })),
+      };
+    });
+    const archivedVoteRows: ArchivedVoteRow[] = reviewerAwareVoteGroups.flatMap(group =>
       (group.archivedVotes || []).map(vote => ({
         taskId: selectedTask.id,
         taskName: selectedTask.name,
@@ -666,13 +687,15 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     if (selectedParadigm === 'Arena-rank') {
       const importedRankVotes: VoteRecord[] = [];
       const voters = new Set<string>();
+      const reviewerKeys = new Set<string>();
 
-      voteGroups.forEach(({ user, votes: userVotes }) => {
+      reviewerAwareVoteGroups.forEach(({ votes: userVotes }) => {
 
         userVotes.forEach((v: VoteRecord) => {
           if (!v.itemId || !isArenaRankVote(v)) return;
-          importedRankVotes.push({ ...v, user: v.user || user });
-          voters.add(user);
+          importedRankVotes.push(v);
+          voters.add(v.user || 'Anonymous');
+          reviewerKeys.add(getVoteReviewerKey(v));
         });
       });
 
@@ -689,22 +712,25 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         rankItems: importedAnalysisItems as ArenaRankPromptItem[],
         methodVotes: [],
         archivedVoteRows,
-        voters
+        voters,
+        reviewerKeys
       };
     }
 
     if (isScoreMethod(selectedEvaluationConfig) || isPairwiseMethod(selectedEvaluationConfig)) {
       const importedMethodVotes: VoteRecord[] = [];
       const voters = new Set<string>();
+      const reviewerKeys = new Set<string>();
 
-      voteGroups.forEach(({ user, votes: userVotes }) => {
+      reviewerAwareVoteGroups.forEach(({ votes: userVotes }) => {
 
         userVotes.forEach((v: VoteRecord) => {
           if (!v.itemId) return;
           if (isScoreMethod(selectedEvaluationConfig) && !v.rubricResponses) return;
           if (isPairwiseMethod(selectedEvaluationConfig) && !v.pairContext) return;
-          importedMethodVotes.push({ ...v, method: v.method || selectedEvaluationConfig.method, user: v.user || user });
-          voters.add(user);
+          importedMethodVotes.push({ ...v, method: v.method || selectedEvaluationConfig.method });
+          voters.add(v.user || 'Anonymous');
+          reviewerKeys.add(getVoteReviewerKey(v));
         });
       });
 
@@ -721,7 +747,8 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         rankItems: [],
         methodVotes: importedMethodVotes,
         archivedVoteRows,
-        voters
+        voters,
+        reviewerKeys
       };
     }
 
@@ -729,8 +756,9 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     const importedVoteRows: AnalysisVoteRow[] = [];
     const itemById = new Map(importedAnalysisItems.map(item => [item.id, item]));
     const voters = new Set<string>();
+    const reviewerKeys = new Set<string>();
 
-    voteGroups.forEach(({ user, votes: userVotes }) => {
+    reviewerAwareVoteGroups.forEach(({ votes: userVotes }) => {
 
       userVotes.forEach((v: any) => {
         const itemId = v.itemId;
@@ -738,7 +766,10 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
 
         if (!itemId || !winner) return;
 
-        voters.add(user);
+        const reviewerKey = getVoteReviewerKey(v);
+        const reviewerName = v.user || 'Anonymous';
+        voters.add(reviewerName);
+        reviewerKeys.add(reviewerKey);
         const sourceItem = itemById.get(itemId);
 
         if (!newAggregated[itemId]) {
@@ -747,7 +778,8 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
             prompt: sourceItem ? resolveEvaluationItemPrompt(sourceItem) : '',
             dimensionValues: getDimensionValuesForItem(sourceItem as any, selectedTask.dimensionColumns || []),
             votes: { A: 0, B: 0, Tie: 0 },
-            voters: []
+            voters: [],
+            reviewerKeys: [],
           };
         } else if (!newAggregated[itemId].prompt && sourceItem) {
           newAggregated[itemId].prompt = resolveEvaluationItemPrompt(sourceItem);
@@ -758,12 +790,14 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         else if (winner === 'B') newAggregated[itemId].votes.B++;
         else if (winner === 'Tie') newAggregated[itemId].votes.Tie++;
 
-        newAggregated[itemId].voters.push(user);
+        newAggregated[itemId].voters.push(reviewerName);
+        newAggregated[itemId].reviewerKeys?.push(reviewerKey);
         importedVoteRows.push({
           itemId,
           vote: winner,
           timestamp: Number(v.timestamp) || Date.now(),
-          user: v.user || user,
+          user: reviewerName,
+          reviewerKey,
           auditVote: v
         });
       });
@@ -782,7 +816,8 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
       rankItems: [],
       methodVotes: [],
       archivedVoteRows,
-      voters
+      voters,
+      reviewerKeys
     };
   };
 
@@ -822,7 +857,9 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     const selectedParadigm = results[0].paradigm;
     const selectedConfig = results[0].evaluationConfig;
     const voters = new Set<string>();
+    const reviewerKeys = new Set<string>();
     results.forEach(result => result.voters.forEach(voter => voters.add(voter)));
+    results.forEach(result => result.reviewerKeys.forEach(key => reviewerKeys.add(key)));
 
     if (isScoreMethod(selectedConfig) || isPairwiseMethod(selectedConfig)) {
       const itemsById = new Map<string, EvaluationItem>();
@@ -841,6 +878,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         setAnalysisModels(results[0].modelNames);
         setAnalysisEvaluationConfig(selectedConfig);
         setUniqueVoters(voters);
+        setUniqueReviewerCount(reviewerKeys.size || voters.size);
         setAnalysisMode(selectedParadigm);
       }
       return;
@@ -878,6 +916,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         setAnalysisEvaluationConfig(selectedConfig);
         setAnalysisModels(DEFAULT_ANALYSIS_MODELS);
         setUniqueVoters(voters);
+        setUniqueReviewerCount(reviewerKeys.size || voters.size);
         setAnalysisMode('Arena-rank');
       }
       return;
@@ -895,7 +934,8 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
           aggregatedById.set(item.itemId, {
             ...item,
             votes: { ...item.votes },
-            voters: [...item.voters]
+            voters: [...item.voters],
+            reviewerKeys: [...(item.reviewerKeys || [])],
           });
           return;
         }
@@ -904,6 +944,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         existing.votes.B += item.votes.B;
         existing.votes.Tie += item.votes.Tie;
         existing.voters = Array.from(new Set([...existing.voters, ...item.voters]));
+        existing.reviewerKeys = Array.from(new Set([...(existing.reviewerKeys || []), ...(item.reviewerKeys || [])]));
         existing.prompt = existing.prompt || item.prompt;
         existing.dimensionValues = existing.dimensionValues || item.dimensionValues;
       });
@@ -923,6 +964,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
       setAnalysisVoteRows(voteRows);
       setMethodVotes([]);
       setUniqueVoters(voters);
+      setUniqueReviewerCount(reviewerKeys.size || voters.size);
       setAnalysisMode(selectedParadigm);
     }
   };
@@ -1240,6 +1282,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
               setAnalysisVoteRows([]);
               setAnalysisModels(DEFAULT_ANALYSIS_MODELS);
               setUniqueVoters(voters);
+              setUniqueReviewerCount(voters.size);
               setAnalysisMode('Arena-rank');
               setMethodVotes([]);
             } else if (pairwiseRowsFound > 0) {
@@ -1260,6 +1303,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
               setRankVotes([]);
               setRankItems([]);
               setUniqueVoters(voters);
+              setUniqueReviewerCount(voters.size);
               setAnalysisMode('Pairwise');
             } else if (validRowsFound === 0) {
               setError("未能从上传的文件中识别出有效的投票结果。请确保 CSV 文件包含 'Item ID' 和 'Winner' 列。");
@@ -1273,6 +1317,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
               setAnalysisVoteRows(newAnalysisVoteRows);
               setMethodVotes([]);
               setUniqueVoters(voters);
+              setUniqueReviewerCount(voters.size);
               setAnalysisMode('Arena');
             }
           }
@@ -1620,7 +1665,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
           item.votes.Tie,
           itemTotal,
           nonTieVotes,
-          new Set(item.voters).size,
+          new Set(item.reviewerKeys?.length ? item.reviewerKeys : item.voters).size,
           Array.from(new Set(item.voters)).join(' | '),
           formatRatio(item.votes.A, itemTotal),
           formatRatio(item.votes.B, itemTotal),
@@ -2042,7 +2087,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
               <div className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-1">参与者</div>
               <div className="flex items-center gap-2 text-2xl font-bold text-slate-100">
                 <Users className="text-purple-500" />
-                {uniqueVoters.size}
+                {uniqueReviewerCount}
               </div>
               <div className="text-xs text-slate-400 truncate mt-1">{Array.from(uniqueVoters).join(', ')}</div>
             </div>
@@ -2233,7 +2278,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
               <div className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-1">参与者</div>
               <div className="flex items-center gap-2 text-2xl font-bold text-slate-100">
                 <Users className="text-purple-500" />
-                {uniqueVoters.size}
+                {uniqueReviewerCount}
               </div>
               <div className="text-xs text-slate-400 truncate mt-1">
                 {Array.from(uniqueVoters).join(', ')}

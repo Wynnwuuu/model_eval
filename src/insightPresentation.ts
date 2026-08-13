@@ -22,6 +22,7 @@ import type {
   TaskVoteGroup,
   VoteRecord,
 } from './types';
+import { withTaskVoteGroupReviewer } from './taskResults';
 
 export type AnalysisScopeMode = 'comparable-group' | 'single-task';
 export type InsightTone = 'neutral' | 'accent' | 'success' | 'warning';
@@ -381,10 +382,9 @@ export const buildPairwiseTopSummary = (bundle: PairwiseInsightBundle, totalItem
   };
 };
 
-const prefixVote = (taskId: string, group: TaskVoteGroup, vote: VoteRecord): VoteRecord => ({
+const prefixVote = (taskId: string, vote: VoteRecord): VoteRecord => ({
   ...vote,
   itemId: `${taskId}::${vote.itemId}`,
-  user: vote.user || group.displayName || group.user,
   pairContext: vote.pairContext ? {
     ...vote.pairContext,
     originalItemId: `${taskId}::${vote.pairContext.originalItemId || vote.itemId}`,
@@ -426,7 +426,7 @@ export const buildProjectResultGroupDigests = ({
     ];
     const votes = groupTasks.flatMap(task =>
       (voteGroupsByTask.get(task.id) || []).flatMap(group =>
-        (group.votes || []).map(vote => prefixVote(task.id, group, vote)),
+        withTaskVoteGroupReviewer(group).map(vote => prefixVote(task.id, vote)),
       ),
     );
     const totalItemCount = groupTasks.reduce((sum, task) => sum + (task.totalItems || 0), 0);

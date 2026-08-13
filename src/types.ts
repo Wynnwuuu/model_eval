@@ -212,6 +212,7 @@ export interface VoteRecord {
   reason?: string;
   timestamp: number;
   user?: string; // Who voted
+  reviewerKey?: string; // Frontend-derived stable reviewer identity; never persisted intentionally
 }
 
 export interface TaskVoteGroup {
@@ -295,6 +296,7 @@ export interface AggregatedResult {
     Tie: number;
   };
   voters: string[]; // List of people who voted on this
+  reviewerKeys?: string[]; // Frontend-derived stable identities for accurate counts
 }
 
 // ==========================================

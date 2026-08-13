@@ -5,6 +5,7 @@ import { normalizeDimensions, scoreDimensionWeightTotal } from './evaluationMeth
 import { getEffectiveVotes } from './voteUtils';
 import { calculateBradleyTerry, getBradleyTerryAnalysisWeight, type BradleyTerryResult } from './bradleyTerry';
 import { getVoteAuditCsvValues, itemFromVoteSnapshot, VOTE_AUDIT_CSV_HEADERS } from './taskItemSnapshot';
+import { getVoteReviewerKey } from './taskResults';
 
 const escapeCsv = (value: any) => `"${String(value ?? '').replace(/"/g, '""')}"`;
 
@@ -132,6 +133,7 @@ export interface PairwiseInsightBundle {
     prompt: string;
     dimensionValues: Record<string, string>;
     user: string;
+    reviewerKey: string;
     timestamp: number;
     modelAId: string;
     modelAName: string;
@@ -206,7 +208,7 @@ export const buildScoreInsights = ({
   const scoreDimensions = getScoreDimensions(config);
   const rationaleDimensions = getRationaleDimensions(config);
   const itemMap = new Map(items.map(item => [item.id, item]));
-  const voters = new Set(effectiveVotes.map(vote => vote.user || 'Anonymous'));
+  const voters = new Set(effectiveVotes.map(getVoteReviewerKey));
   const modelScores = new Map<string, number[]>();
   const modelDimensionScores = new Map<string, Map<string, number[]>>();
   const caseMap = new Map<string, ScoreCaseSummary>();
@@ -366,7 +368,7 @@ const buildPairwiseRawInsights = ({
   const modelStats = new Map<string, PairwiseModelSummary>();
   const matchups = new Map<string, PairwiseMatchupSummary>();
   const cases = new Map<string, PairwiseInsightBundle['cases'][number]>();
-  const voters = new Set(effectiveVotes.map(vote => vote.user || 'Anonymous'));
+  const voters = new Set(effectiveVotes.map(getVoteReviewerKey));
 
   models.forEach(model => {
     modelStats.set(model.id, {
@@ -558,6 +560,7 @@ export const buildPairwiseInsights = ({
       prompt,
       dimensionValues,
       user: vote.user || 'Anonymous',
+      reviewerKey: getVoteReviewerKey(vote),
       timestamp: vote.timestamp,
       modelAId: pair.modelAId,
       modelAName: pair.modelAName,
@@ -627,7 +630,7 @@ export const buildPairwiseInsights = ({
     mode: 'pairwise',
     summary: {
       itemCount: new Set(battles.map(battle => battle.originalItemId)).size,
-      voterCount: new Set(battles.map(battle => battle.user)).size,
+      voterCount: new Set(battles.map(battle => battle.reviewerKey)).size,
       comparisonCount: bradleyTerry.totalBattles,
       topModelName: topBtModel?.modelName || '数据不足',
       topWinRate: topRawModel?.nonTieWinRate || 0,

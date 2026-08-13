@@ -14,6 +14,7 @@ import {
   resolveEvaluationItemPrompt,
   sortRanking
 } from './rankingUtils';
+import { countUniqueReviewers } from './taskResults';
 
 export interface ConfidenceInterval {
   lower: number;
@@ -30,6 +31,7 @@ export interface RawAbVoteRow {
   vote: VoteType;
   timestamp?: number;
   user?: string;
+  reviewerKey?: string;
 }
 
 export interface AnalysisEvidence {
@@ -53,6 +55,7 @@ export interface AbCaseInsight extends AnalysisEvidence {
   mode: 'ab';
   votes: Record<VoteType, number>;
   voters: string[];
+  voterCount: number;
   winnerSide: VoteType;
   winnerLabel: string;
   agreementRate: number;
@@ -415,7 +418,8 @@ const normalizeAggregatedCases = (
           itemId: vote.itemId,
           vote: vote.vote as VoteType,
           timestamp: vote.timestamp,
-          user: vote.user
+          user: vote.user,
+          reviewerKey: vote.reviewerKey,
         }));
 
   const aggregateMap = new Map<string, AggregatedResult>();
@@ -458,6 +462,9 @@ const normalizeAggregatedCases = (
       ...(aggregate.voters || []),
       ...itemRows.map(row => row.user || 'Anonymous')
     ].filter(Boolean)));
+    const reviewerKeys = itemRows.length
+      ? Array.from(new Set(itemRows.map(row => row.reviewerKey || row.user || 'Anonymous')))
+      : Array.from(new Set((aggregate.reviewerKeys?.length ? aggregate.reviewerKeys : aggregate.voters) || []));
     const dimensionValues = {
       ...(aggregate.dimensionValues || {}),
       ...getDimensionValuesForItem(item as any)
@@ -491,6 +498,7 @@ const normalizeAggregatedCases = (
       },
       votes: aggregate.votes,
       voters,
+      voterCount: reviewerKeys.length,
       winnerSide,
       winnerLabel: getVoteLabel(winnerSide, modelNames),
       agreementRate: safeDivide(maxVotes, total),
@@ -530,10 +538,9 @@ export const buildAbInsights = ({
   }, { A: 0, B: 0, Tie: 0 });
   const totalVotes = totals.A + totals.B + totals.Tie;
   const nonTieVotes = totals.A + totals.B;
-  const voterCount = new Set([
-    ...rows.map(row => row.user || 'Anonymous'),
-    ...cases.flatMap(item => item.voters)
-  ]).size;
+  const voterCount = rows.length
+    ? new Set(rows.map(row => row.reviewerKey || row.user || 'Anonymous')).size
+    : new Set(cases.flatMap(item => item.voters)).size;
   const averageAgreement = cases.length
     ? cases.reduce((sum, item) => sum + item.agreementRate, 0) / cases.length
     : null;
@@ -720,13 +727,13 @@ export const buildRankInsights = ({
       representativeOutputs,
       referenceUrls: (item as EvaluationItem | undefined)?.referenceUrls || [],
       metrics: {
-        voterCount: new Set(itemVotes.map(vote => vote.user || 'Anonymous')).size,
+        voterCount: countUniqueReviewers(itemVotes),
         kendallTauB: agreement.kendallTauB,
         relationAgreement: agreement.relationAgreement,
         distinctionRate: agreement.distinctionRate,
         topModel: consensusLeaders.join(' = ')
       },
-      voterCount: new Set(itemVotes.map(vote => vote.user || 'Anonymous')).size,
+      voterCount: countUniqueReviewers(itemVotes),
       rankings,
       consensusRanking,
       kendallTau: agreement.kendallTauB,
@@ -761,7 +768,7 @@ export const buildRankInsights = ({
     summary: {
       itemCount: cases.length,
       rankingRecords: rankVotes.length,
-      voterCount: new Set(rankVotes.map(vote => vote.user || 'Anonymous')).size,
+      voterCount: countUniqueReviewers(rankVotes),
       bestModel: bestModels.join(' = '),
       bestModels,
       averageKendallTau: validTaus.length ? validTaus.reduce((sum, value) => sum + value, 0) / validTaus.length : null,

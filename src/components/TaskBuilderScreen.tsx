@@ -44,6 +44,7 @@ import {
   normalizeEvaluationConfig,
   normalizeDimensions
 } from '../evaluationMethods';
+import { getTaskResultEntryState } from '../taskResults';
 
 interface TaskBuilderScreenProps {
   projectId?: string;
@@ -55,7 +56,7 @@ interface TaskBuilderScreenProps {
   initialModelColumns?: string[];
   onClearProjectScope?: () => void;
   onEvaluateTask?: (task: EvalTask) => void;
-  onOpenInsights?: (task: EvalTask) => void;
+  onOpenResults?: (task: EvalTask) => void;
 }
 
 type TaskItemEditForm = {
@@ -153,7 +154,7 @@ export default function TaskBuilderScreen({
   initialModelColumns,
   onClearProjectScope,
   onEvaluateTask,
-  onOpenInsights
+  onOpenResults
 }: TaskBuilderScreenProps) {
   const [tasks, setTasks] = useState<EvalTask[]>([]);
   const [datasets, setDatasets] = useState<EvalDataset[]>([]);
@@ -1988,7 +1989,7 @@ export default function TaskBuilderScreen({
           <div>
             <h2 className="text-xl font-bold text-slate-100">{selectedProjectFilter === 'all' ? '全部评测物料' : `${selectedProjectLabel} 的评测物料`}</h2>
             <p className="text-slate-300 text-sm mt-1">
-              在此管理可执行评测配置。草稿可启动，进行中的物料可直接进入评测，已完成的物料可进入结果洞察。
+              在此管理可执行评测配置。进行中和已完成的物料只要已有提交记录，就可以查看该任务的个人结果与全员汇总。
             </p>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
@@ -2023,6 +2024,7 @@ export default function TaskBuilderScreen({
           const dataset = datasets.find(d => d.id === task.datasetId);
           const template = templates.find(t => t.id === task.templateId);
           const taskEvaluation = normalizeEvaluationConfig(task, template);
+          const resultEntry = getTaskResultEntryState(task);
 
           return (
             <div key={task.id} className="bg-white/5 rounded-2xl border border-white/10 shadow-md shadow-black/20 overflow-hidden flex flex-col">
@@ -2111,11 +2113,11 @@ export default function TaskBuilderScreen({
                 </div>
               </div>
               
-              <div className="bg-white/5 p-4 flex items-center justify-between">
+              <div className="flex flex-col gap-3 bg-white/5 p-4">
                 <div className="text-xs text-slate-300">
                   创建于 {new Date(task.createdAt).toLocaleDateString()}
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   {task.status === 'draft' && (
                     <button 
                       onClick={() => handleUpdateTaskStatus(task.id, 'active')}
@@ -2134,13 +2136,15 @@ export default function TaskBuilderScreen({
                       <Play size={14} /> 进入评测
                     </button>
                   )}
-                  {task.status === 'completed' && (
+                  {resultEntry.visible && (
                     <button
-                      onClick={() => onOpenInsights?.(task)}
-                      className="flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-blue-300 bg-blue-500/10 hover:bg-blue-500/20 rounded-lg transition-colors"
-                      title="查看该物料的结果洞察"
+                      type="button"
+                      onClick={() => resultEntry.enabled && onOpenResults?.(task)}
+                      disabled={!resultEntry.enabled}
+                      className="flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-blue-300 bg-blue-500/10 hover:bg-blue-500/20 rounded-lg transition-colors disabled:cursor-not-allowed disabled:bg-white/5 disabled:text-slate-500"
+                      title={resultEntry.enabled ? '查看该任务的我的结果与全员汇总' : '尚无已提交结果'}
                     >
-                      <Eye size={14} /> 结果洞察
+                      <Eye size={14} /> {resultEntry.label}
                     </button>
                   )}
                   {task.status === 'active' && (

@@ -1,4 +1,5 @@
 import { EvaluationItem, ModelOutput, RankingEntry, VoteRecord } from './types';
+import { countUniqueReviewers } from './taskResults';
 
 export interface ArenaRankModelStat {
   modelId: string;
@@ -553,7 +554,7 @@ export const calculateArenaRankCaseSummaries = (
     return {
       itemId,
       prompt: resolveEvaluationItemPrompt(item),
-      voterCount: new Set(itemVotes.map(vote => vote.user || 'Anonymous')).size,
+      voterCount: countUniqueReviewers(itemVotes),
       ranking: calculateArenaRankModelStats(itemVotes),
       relationAgreement: agreement.relationAgreement,
       kendallTauB: agreement.kendallTauB,

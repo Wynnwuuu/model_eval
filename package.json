@@ -42,6 +42,7 @@
     "test:rank-ties": "tsx scripts/test-rank-ties.ts",
     "test:insights-summary": "tsx scripts/test-insights-summary.ts",
     "test:insight-links": "tsx scripts/test-insight-links.ts",
+    "test:task-results": "tsx scripts/test-task-results.ts",
     "test:page-metadata": "tsx scripts/test-page-metadata.ts",
     "test:projects": "tsx scripts/test-project-contract.ts",
     "migrate:postgres": "tsx scripts/migrate-to-postgres.ts",

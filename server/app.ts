@@ -15,6 +15,7 @@ import { projectRoutes } from './projects/projectRoutes.ts';
 import { taskRoutes } from './tasks/taskRoutes.ts';
 import { templateRoutes } from './templates/templateRoutes.ts';
 import {
+  getCanonicalPagePath,
   PageMetadataLoaders,
   renderSpaPage,
   resolveServerPageMetadata,
@@ -141,7 +142,10 @@ export const createApp = (options: CreateAppOptions = {}) => {
         const html = renderSpaPage({
           html: indexTemplate,
           metadata,
-          canonicalUrl: requestedUrl.toString(),
+          canonicalUrl: new URL(
+            getCanonicalPagePath(requestedUrl.pathname, requestedUrl.searchParams),
+            origin,
+          ).toString(),
           origin,
         });
         res.set({

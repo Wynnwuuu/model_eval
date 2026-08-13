@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, BarChart3, Download, Play, RefreshCw, RotateCcw, Trophy, Check, Users, UploadCloud } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, BarChart3, Download, Play, RefreshCw, RotateCcw, Trophy, Check, Users, UploadCloud } from 'lucide-react';
 import { EvalParadigm, EvaluationConfig, ResultsVoteScope, TaskVoteGroup, VoteRecord, EvaluationItem, VotingStats } from '../types';
 import { calculateArenaRankModelStats, formatRanking, getArenaRankModelOutputUrl, getRankingEntryMetrics, getRankingTieSummary, isArenaRankVote, resolveEvaluationItemPrompt, sortRanking } from '../rankingUtils';
 import ArenaRankVideoPreviewList from './ArenaRankVideoPreviewList';
@@ -12,6 +12,7 @@ import { buildScoreCaseCsv, buildPairwiseCaseCsv, buildScoreInsights, buildPairw
 import { getEffectiveVotes, getSkippedVoteCount, isSkippedVote } from '../voteUtils';
 import { DATA_SOURCE_LABEL, IS_OFFLINE_LOCAL_DEMO } from '../runtimeConfig';
 import { getVoteAuditCsvValues, itemFromVoteSnapshot, resolveVoteDisplayItem, VOTE_AUDIT_CSV_HEADERS } from '../taskItemSnapshot';
+import { countUniqueReviewers, withTaskVoteGroupReviewer } from '../taskResults';
 
 interface ResultsScreenProps {
   votes: VoteRecord[];
@@ -31,6 +32,7 @@ interface ResultsScreenProps {
   onResyncMyVotes?: () => void | Promise<void>;
   resyncLoading?: boolean;
   resyncError?: string | null;
+  onBackToTasks?: () => void;
   onGoToDashboard?: () => void;
   onContinueEvaluation?: () => void;
 }
@@ -55,6 +57,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
   onResyncMyVotes,
   resyncLoading = false,
   resyncError = null,
+  onBackToTasks,
   onGoToDashboard,
   onContinueEvaluation
 }) => {
@@ -64,9 +67,10 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
   const activeConfig = evaluationConfig || getDefaultEvaluationConfig(getMethodFromParadigm(paradigm as EvalParadigm));
   const isArenaRank = isRankMethod(activeConfig);
   const isBenchmarkPreview = isPreviewMethod(activeConfig);
-  const teamScopedVotes = useMemo(() => allUserVoteGroups.flatMap(group =>
-    (group.votes || []).map(vote => ({ ...vote, user: vote.user || group.displayName || group.email || group.user }))
-  ), [allUserVoteGroups]);
+  const teamScopedVotes = useMemo(
+    () => allUserVoteGroups.flatMap(withTaskVoteGroupReviewer),
+    [allUserVoteGroups],
+  );
   const hasTeamVotes = teamScopedVotes.length > 0;
   const teamScopeAvailable = hasTeamVotes && !teamVotesError;
   const scopedVotes = voteScope === 'all' && teamScopeAvailable ? teamScopedVotes : votes;
@@ -84,7 +88,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
   const getDisplayItemForVote = (vote: VoteRecord) =>
     resolveVoteDisplayItem(vote, itemMap.get(vote.itemId)) as EvaluationItem | undefined;
   const skippedCount = getSkippedVoteCount(scopedVotes);
-  const teamVoterCount = new Set(allUserVoteGroups.filter(group => group.votes?.length).map(group => group.userId || group.email || group.user)).size;
+  const teamVoterCount = countUniqueReviewers(teamScopedVotes);
   const currentUserCompleted = items.length > 0 && votes.length >= items.length;
   const scopeLabel = voteScope === 'all' && teamScopeAvailable ? '全员汇总' : '我的结果';
   const exportScopeTag = voteScope === 'all' && teamScopeAvailable ? 'all' : 'mine';
@@ -177,6 +181,16 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
           )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {onBackToTasks && (
+            <button
+              type="button"
+              onClick={onBackToTasks}
+              className="inline-flex items-center gap-2 border border-white/10 bg-black/30 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-white/10"
+            >
+              <ArrowLeft size={14} />
+              返回评测物料
+            </button>
+          )}
           {onContinueEvaluation && (
             <button
               type="button"
@@ -264,6 +278,35 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
     document.body.removeChild(link);
   };
 
+  if (scopedVotes.length === 0) {
+    return (
+      <div className="mx-auto max-w-5xl p-6">
+        {scopeControls}
+        <div className="border border-white/10 bg-[var(--surface-panel)] px-6 py-16 text-center shadow-[10px_10px_0_rgba(0,0,0,0.28)]">
+          {teamVotesLoading ? (
+            <>
+              <RefreshCw size={28} className="mx-auto mb-4 animate-spin text-amber-300" />
+              <h1 className="text-xl font-bold text-white">正在加载评测结果</h1>
+              <p className="mt-2 text-sm text-slate-400">正在读取该任务的团队提交记录。</p>
+            </>
+          ) : (
+            <>
+              <BarChart3 size={30} className="mx-auto mb-4 text-slate-500" />
+              <h1 className="text-xl font-bold text-white">
+                {voteScope === 'mine' && hasTeamVotes ? '当前账号尚未提交结果' : '此任务尚无已提交结果'}
+              </h1>
+              <p className="mt-2 text-sm text-slate-400">
+                {voteScope === 'mine' && hasTeamVotes
+                  ? '可切换到“全员汇总”查看团队已有结果，或返回评测继续提交。'
+                  : '完成至少一个 case 并成功提交后，这里会显示个人结果与全员汇总。'}
+              </p>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   if (isBenchmarkPreview) {
     const previewedCount = scopedVotes.filter(vote => vote.choice !== 'skipped').length;
     const skippedCount = scopedVotes.filter(vote => vote.choice === 'skipped').length;
@@ -305,7 +348,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
             <h3 className="font-semibold text-slate-200">逐 case 预览明细</h3>
             <div className="flex flex-wrap gap-2">
               <button onClick={onReset} className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-white/10">
-                <RotateCcw size={16} /> 返回发起任务
+                <RotateCcw size={16} /> 清除当前会话
               </button>
               {onGoToDashboard && (
                 <button onClick={onGoToDashboard} className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-white/10">
@@ -405,7 +448,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
         title={isArenaRank ? 'Arena-rank 单次结果洞察' : '单次评测结果洞察'}
         description={`当前展示范围：${scopeLabel}`}
         controls={scopeControls}
-        items={items}
+        items={snapshotAwareItems}
         votes={effectiveVotes}
         modelNames={modelNames}
         models={arenaRankModelList}
@@ -656,7 +699,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
                 <BarChart3 size={16} /> 结果洞察
               </button>
               <button onClick={onReset} className="flex items-center gap-2 px-4 py-2 text-slate-200 hover:text-white glass-panel-hover rounded-lg transition-colors font-medium text-sm">
-                <RotateCcw size={16} /> 返回发起任务
+                <RotateCcw size={16} /> 清除当前会话
               </button>
               {onGoToDashboard && (
                 <button onClick={onGoToDashboard} className="flex items-center gap-2 px-4 py-2 text-slate-200 hover:text-white glass-panel-hover rounded-lg transition-colors font-medium text-sm">
@@ -826,7 +869,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
               onClick={onReset}
               className="flex items-center gap-2 px-4 py-2 text-slate-200 hover:text-slate-200 glass-panel-hover rounded-lg transition-colors font-medium text-sm"
             >
-              <RotateCcw size={16} /> 返回发起任务
+              <RotateCcw size={16} /> 清除当前会话
             </button>
             {onGoToDashboard && (
               <button

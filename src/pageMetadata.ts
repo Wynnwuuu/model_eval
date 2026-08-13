@@ -68,6 +68,17 @@ const decodePathSegment = (value?: string) => {
   }
 };
 
+export const getCanonicalPagePath = (
+  pathname: string,
+  searchParams = new URLSearchParams(),
+) => {
+  const path = pathname.replace(/\/+$/, '') || '/';
+  const legacyTaskInsights = path.match(/^\/tasks\/([^/]+)\/insights$/);
+  if (legacyTaskInsights) return `/tasks/${legacyTaskInsights[1]}/results`;
+  const search = searchParams.toString();
+  return `${path}${search ? `?${search}` : ''}`;
+};
+
 export const parsePageMetadataResourceRequest = (
   pathname: string,
   searchParams = new URLSearchParams(),
@@ -143,7 +154,7 @@ export const resolvePageMetadata = ({
     return { title: titled(names.taskName, '评测结果'), description: DESCRIPTIONS.results };
   }
   if (/^\/tasks\/[^/]+\/insights$/.test(path)) {
-    return { title: titled(names.taskName, '结果洞察'), description: DESCRIPTIONS.insights };
+    return { title: titled(names.taskName, '评测结果'), description: DESCRIPTIONS.results };
   }
   if (/^\/tasks\/[^/]+$/.test(path)) {
     return { title: titled(names.taskName, '评测物料'), description: DESCRIPTIONS.tasks };

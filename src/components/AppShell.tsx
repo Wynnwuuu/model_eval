@@ -78,7 +78,7 @@ const routeTitles: Record<AppRoute, string> = {
   insights: '结果洞察',
   history: '历史',
   voting: '评测执行',
-  results: '单次结果'
+  results: '评测结果'
 };
 
 const ToastIcon: React.FC<{ size?: number; className?: string }> = ({ size = 20, className = '' }) => (
@@ -166,7 +166,7 @@ const SidebarContent: React.FC<{
           <div id="primary-navigation" className="space-y-2">
             {navItems.map((item, index) => {
               const Icon = iconMap[item.icon as keyof typeof iconMap] || Home;
-              const active = currentRoute === item.route || (currentRoute === 'results' && item.route === 'insights');
+              const active = currentRoute === item.route || (currentRoute === 'results' && item.route === 'tasks');
 
               return (
                 <button

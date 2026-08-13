@@ -16,6 +16,7 @@ import TaskListPage from '../pages/tasks/TaskListPage';
 import InsightDashboardPage from '../pages/insights/InsightDashboardPage';
 import HistoryPage from '../pages/history/HistoryPage';
 import { AppRoute, EvalParadigm, EvaluationConfig, EvaluationItem, HistorySession, RankingEntry, RouteContext, TaskVoteGroup, VoteRecord, VoteType, EvaluationProject } from '../types';
+import { isTaskVoteGroupForReviewer } from '../taskResults';
 import { auth, getCurrentReviewerIdentity, getCurrentUserDisplayName, signInWithGoogle, logout, shouldUseCloudAuth } from '../auth';
 import { getDefaultEvaluationConfig, getMethodFromParadigm, getParadigmFromMethod, isPairwiseMethod, isPreviewMethod, isRankMethod, isScoreMethod } from '../evaluationMethods';
 import { saveTaskUserVotes, loadTaskEvaluation, loadTaskVoteGroups } from '../features/tasks/api';
@@ -96,13 +97,11 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     const reviewer = getCurrentReviewerIdentity();
     const userKey = reviewer.id || nextUserName || 'Anonymous';
     const displayName = reviewer.displayName || nextUserName || 'Anonymous';
-    const merged = groups.filter(group => {
-      const isCurrentReviewer = group.userId === userKey
-        || Boolean(reviewer.email && group.email === reviewer.email)
-        || group.user === displayName
-        || group.displayName === displayName;
-      return !isCurrentReviewer;
-    });
+    const merged = groups.filter(group => !isTaskVoteGroupForReviewer(group, {
+      id: userKey,
+      email: reviewer.email,
+      displayName,
+    }));
     merged.push({
       user: displayName,
       userId: userKey,
@@ -873,7 +872,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
             onBack={() => routeContext.projectId ? navigate('projects', { projectId: routeContext.projectId, source: 'dashboard' }) : navigate('overview')}
             onClearProjectScope={routeContext.projectId ? () => navigate('tasks', { taskBuilderMode: 'list' }) : undefined}
             onEvaluateTask={(task) => navigate('voting', { taskId: task.id, materialId: task.id, source: 'task' })}
-            onOpenInsights={(task) => navigate('insights', { taskId: task.id, materialId: task.id, source: 'task' })}
+            onOpenResults={(task) => navigate('results', { taskId: task.id, materialId: task.id, source: 'task' })}
           />
         </div>
       );
@@ -1019,6 +1018,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
             onResyncMyVotes={activeTaskId ? resyncMyVotes : undefined}
             resyncLoading={resyncLoading}
             resyncError={resyncError}
+            onBackToTasks={() => navigate('tasks', { taskBuilderMode: 'list' })}
             onGoToDashboard={() => navigate('overview')}
             onContinueEvaluation={isSampledArena && votes.length < items.length
               ? () => navigate('voting', activeTaskId ? { taskId: activeTaskId, source: 'task' } : routeContext)

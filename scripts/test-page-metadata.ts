@@ -6,6 +6,7 @@ import path from 'node:path';
 
 import {
   injectPageMetadata,
+  getCanonicalPagePath,
   renderPageMetadataTags,
   resolvePageMetadata,
 } from '../src/pageMetadata';
@@ -47,7 +48,9 @@ assert.equal(
 assert.equal(metadata('/tasks/task-1', { taskName: '双模型盲测' }).title, '双模型盲测 · 评测物料 · Manueval');
 assert.equal(metadata('/tasks/task-1/evaluate', { taskName: '双模型盲测' }).title, '双模型盲测 · 参与评测 · Manueval');
 assert.equal(metadata('/tasks/task-1/results', { taskName: '双模型盲测' }).title, '双模型盲测 · 评测结果 · Manueval');
-assert.equal(metadata('/tasks/task-1/insights', { taskName: '双模型盲测' }).title, '双模型盲测 · 结果洞察 · Manueval');
+assert.equal(metadata('/tasks/task-1/insights', { taskName: '双模型盲测' }).title, '双模型盲测 · 评测结果 · Manueval');
+assert.equal(getCanonicalPagePath('/tasks/task-1/insights', new URLSearchParams('status=completed')), '/tasks/task-1/results');
+assert.equal(getCanonicalPagePath('/projects/project-1/insights', new URLSearchParams('scope=group:arena')), '/projects/project-1/insights?scope=group%3Aarena');
 assert.equal(metadata('/templates/template-1', { templateName: '视频质量 Rubric' }).title, '视频质量 Rubric · Rubric · Manueval');
 assert.equal(metadata('/history').title, '历史 · Manueval');
 assert.equal(metadata('/login').title, '登录 · Manueval');
@@ -128,6 +131,9 @@ try {
   const apiPayload = await apiResponse.json() as { metadata: { title: string } };
   assert.equal(apiResponse.status, 200);
   assert.equal(apiPayload.metadata.title, '双模型盲测 · 评测结果 · Manueval');
+  const legacyTaskResponse = await fetch(`http://127.0.0.1:${port}/tasks/task-1/insights?status=completed`);
+  const legacyTaskHtml = await legacyTaskResponse.text();
+  assert.match(legacyTaskHtml, new RegExp(`<link rel="canonical" href="http:\\/\\/127\\.0\\.0\\.1:${port}\\/tasks\\/task-1\\/results"`));
 } finally {
   if (server) await new Promise<void>(resolve => server!.close(() => resolve()));
   await fs.rm(staticDir, { recursive: true, force: true });

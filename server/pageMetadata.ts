@@ -1,11 +1,14 @@
 import type { PageMetadata, PageMetadataNames } from '../src/pageMetadata.ts';
 import {
   MANUEVAL_SHARE_IMAGE_PATH,
+  getCanonicalPagePath,
   injectPageMetadata,
   parsePageMetadataResourceRequest,
   renderPageMetadataTags,
   resolvePageMetadata,
 } from '../src/pageMetadata.ts';
+
+export { getCanonicalPagePath };
 import { getDataset } from './datasets/datasetRepository.ts';
 import { getGenerationBatch } from './generation/generationExecutionRepository.ts';
 import { getProject } from './projects/projectRepository.ts';

@@ -10,9 +10,9 @@ import {
 } from '../features/generation/workspaceNavigation';
 import {
   buildInsightPath,
-  normalizeInsightScope,
   parseInsightSearchParams,
 } from '../insightDeepLink';
+import { buildTaskResultsPath, getLegacyTaskInsightsRedirect } from '../taskResults';
 
 const buildRoutePath = (route: AppRoute, context: RouteContext = {}) => {
   if (route === 'generation') return buildGenerationRoutePath(context);
@@ -57,14 +57,14 @@ const buildRoutePath = (route: AppRoute, context: RouteContext = {}) => {
         statusFilter: context.materialStatusFilter || 'all',
         scope: context.insightScope,
       });
-      if (context.taskId || context.materialId) return withSearch(`/tasks/${context.taskId || context.materialId}/insights`);
+      if (context.taskId || context.materialId) return buildTaskResultsPath(context.taskId || context.materialId || '');
       return withSearch('/insights');
     case 'history':
       return '/history';
     case 'voting':
       return context.taskId ? `/tasks/${context.taskId}/evaluate` : '/evaluation/run';
     case 'results':
-      return context.taskId ? `/tasks/${context.taskId}/results` : '/evaluation/results';
+      return context.taskId ? buildTaskResultsPath(context.taskId) : '/evaluation/results';
     default:
       return '/';
   }
@@ -133,9 +133,22 @@ const routeFromPath = (pathname: string, searchParams: URLSearchParams): { route
   const taskEvaluate = path.match(/^\/tasks\/([^/]+)\/evaluate$/);
   if (taskEvaluate) return { route: 'voting', context: { taskId: taskEvaluate[1], materialId: taskEvaluate[1], source: 'task' } };
   const taskResults = path.match(/^\/tasks\/([^/]+)\/results$/);
-  if (taskResults) return { route: 'results', context: { taskId: taskResults[1], materialId: taskResults[1], source: 'task' } };
-  const taskInsights = path.match(/^\/tasks\/([^/]+)\/insights$/);
-  if (taskInsights) return { route: 'insights', context: { taskId: taskInsights[1], materialId: taskInsights[1], insightScope: normalizeInsightScope(`material:${taskInsights[1]}`), source: 'task' } };
+  if (taskResults) {
+    const taskId = decodeURIComponent(taskResults[1]);
+    return { route: 'results', context: { taskId, materialId: taskId, source: 'task' } };
+  }
+  const legacyTaskInsights = getLegacyTaskInsightsRedirect(path, searchParams);
+  if (legacyTaskInsights) {
+    return {
+      route: 'results',
+      context: {
+        taskId: legacyTaskInsights.taskId,
+        materialId: legacyTaskInsights.taskId,
+        source: 'task',
+      },
+      redirectTo: legacyTaskInsights.redirectTo,
+    };
+  }
   const taskDetail = path.match(/^\/tasks\/([^/]+)$/);
   if (taskDetail) return { route: 'tasks', context: { taskId: taskDetail[1], materialId: taskDetail[1], source: 'task', taskBuilderMode: 'list' } };
 
