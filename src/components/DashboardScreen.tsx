@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Layers, Plus, Search, Filter, Calendar, Users, BarChart2, ArrowLeft, ArrowRight, Activity, AlertTriangle, Target, Link as LinkIcon, LogIn, LogOut, X, Edit2, Database, LayoutTemplate, Play, ChevronDown, ChevronRight, FolderOpen, Loader2, RefreshCw, Trash2 } from 'lucide-react';
 import { EvalParadigm, EvaluationConfig, EvaluationProject, EvaluationStep, EvaluationItem, EvalTask, TaskVoteGroup } from '../types';
 import { CreateProjectModal } from './CreateProjectModal';
@@ -99,6 +99,11 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
   const [projectDetailReloadKey, setProjectDetailReloadKey] = useState(0);
   const [editingStep, setEditingStep] = useState<{projectId: string, step: EvaluationStep} | null>(null);
   const [user, setUser] = useState<any>(auth.currentUser);
+  const onProjectSelectRef = useRef(onProjectSelect);
+
+  useEffect(() => {
+    onProjectSelectRef.current = onProjectSelect;
+  }, [onProjectSelect]);
 
   useEffect(() => {
     const unsub = auth.onAuthStateChanged(setUser);
@@ -120,7 +125,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
 
   const selectProject = (project: EvaluationProject | null) => {
     setSelectedProject(project);
-    onProjectSelect?.(project);
+    onProjectSelectRef.current?.(project);
   };
 
   useEffect(() => {
@@ -301,7 +306,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
         }
         setSelectedProject(project);
         setProjectDetailStatus('ready');
-        onProjectSelect?.(project);
+        onProjectSelectRef.current?.(project);
       })
       .catch(error => {
         if (!active || (error instanceof DOMException && error.name === 'AbortError')) return;
@@ -315,7 +320,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
       active = false;
       controller.abort();
     };
-  }, [initialProject?.id, onProjectSelect, projectDetailId, projectDetailReloadKey, user]);
+  }, [initialProject?.id, projectDetailId, projectDetailReloadKey, user]);
 
   useEffect(() => {
     if (projectDetailStatus === 'ready' && selectedProject?.id !== projectDetailId) {
