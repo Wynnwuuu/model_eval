@@ -1,5 +1,13 @@
 # Arena Implementation Progress
 
+## 2026-08-13: Evaluation material case selection
+
+- Added case-ID and dimension cascading filters plus explicit replace/add/remove/current-row selection for dataset, CSV/TSV, and pasted-table task sources.
+- New tasks persist `includedDatasetItemIds`; later dataset additions stay out, selected case updates and stable-ID restoration still synchronize, and legacy tasks retain dynamic scope.
+- Removed the obsolete manual Model A/Model B editor. Task models now always derive from the selected result columns and the builder shows method-specific minimums and actual names.
+- Invalid generated media, failure cells, and empty outputs cannot enter a task. Preview uses the first final selected case.
+- `test:task-case-selection`, dataset filters/sync/column deletion, Arena, rank ties, TypeScript, frontend/server builds, PostgreSQL API smoke, local health, and desktop/mobile browser checks pass. The first API smoke hit a stale local API process; restarting the project stack resolved it without code changes.
+
 ## 2026-08-11: Live Aion 500 and optimistic-wave validation
 
 ### Completed

@@ -50,6 +50,14 @@
 - 运行中或等待回填的生成任务只在以下同步变更时阻断：删除所选 case、修改该任务引用的输入列、修改目标结果列。
 - 仅修改无关元数据或新增无关 case 不阻断运行任务。
 
+## 评测物料 Case 范围
+
+- 新创建的评测物料会在 `datasetBinding.includedDatasetItemIds` 中保存创建时最终纳入的稳定 case ID。
+- 数据集后续新增 case 不会进入已有的固定范围物料；范围内 case 的字段或媒体更新仍按现有同步规则传播。
+- 范围内 case 删除后会按现有规则归档；使用相同稳定 ID 恢复时可以重新进入未完成任务。
+- `includedDatasetItemIds` 与历史 `excludedDatasetItemIds` 同时存在时，先限制在 included 范围，再应用 excluded 排除。
+- 历史任务没有 `includedDatasetItemIds` 时继续使用原动态范围，保持新增 case 自动同步的旧语义。
+
 ## 表格显示
 
 - 模型结果列首次默认显示；与模型结果精确对应的状态、seed、请求 ID、错误、参数 JSON 等生成记录列，以及系统审计列，首次默认隐藏。用例 ID 始终显示。

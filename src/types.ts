@@ -379,6 +379,7 @@ export interface DatasetTaskBinding {
   dimensionColumns: string[];
   referenceColumns: string[];
   modelColumns: Record<string, string>;
+  includedDatasetItemIds?: string[];
   excludedDatasetItemIds?: string[];
 }
 

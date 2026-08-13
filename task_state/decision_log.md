@@ -428,3 +428,10 @@ Reference media is derived at render time from task inputs plus the existing sav
 Only explicit media fields and URLs already recorded as references qualify. Prompt, description, note, caption, and nested element text fields are excluded even when they contain web links. Candidate/model outputs are never inspected by the resolver.
 
 All reference images, videos, and audio are visible in a wrapping strip. Per-item source labels are intentionally accessibility-only because imported labels are frequently inaccurate. The fullscreen sequence contains images and videos only; audio remains in its native inline control. Reference loading never participates in candidate readiness or blocks vote submission.
+# 2026-08-13: Evaluation materials freeze case identity, not case content
+
+New evaluation materials store the final selected dataset item IDs in `datasetBinding.includedDatasetItemIds`. Filters are construction-time presentation state and are not persisted as dynamic queries. Later dataset additions therefore cannot silently expand a task, while updates and same-ID restoration for selected cases continue through versioned dataset synchronization.
+
+Selection intent is independent from eligibility. Changing result columns or output type may temporarily exclude a selected case without deleting its intent; restoring valid outputs makes it eligible again. A case is persisted only when it is both selected and valid at creation.
+
+Task model identity comes only from mapped output columns. The removed manual Model A/Model B controls were a legacy fallback that was overwritten on every current dataset/upload path and could contradict the actual media columns.

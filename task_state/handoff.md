@@ -1,5 +1,13 @@
 # Arena And Arena-rank Handoff
 
+## Current work: evaluation material case selection
+
+Implementation and local verification are complete on the current worktree. `TaskBuilderScreen` now exposes a bounded case-scope table with case-ID/dimension filters, explicit selection actions, invalid-output diagnostics, and first-selected-case preview. `task.models` derives only from selected output columns; the legacy manual Model A/Model B editor is removed.
+
+New dataset-backed tasks persist `datasetBinding.includedDatasetItemIds`. `planDatasetTaskSync` applies inclusion before exclusion for additions, so new dataset cases do not enter fixed-scope tasks; tasks without the field retain legacy dynamic additions. Deterministic coverage is `npm.cmd run test:task-case-selection` plus the extended dataset sync suite.
+
+All requested tests pass after restarting a stale local API process. The local stack is healthy at `http://localhost:3000/` and `http://localhost:8787/`. No task or dataset was created during browser QA, and no release or push was requested.
+
 ## Current work: Aion HTTP 500 classification and queue recovery
 
 Implementation and local validation are complete on `codex/aion-500-fix`, based on GitHub main `9a44def`. Received HTTP errors now become `failed` and retain bounded safe Aion detail; only transport failures without an HTTP response remain `submission_unknown`. Both are capacity-neutral, while explicit 429/concurrency/queue/rate-limit feedback still controls optimistic waves.

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { ArrowLeft, Plus, Save, Trash2, Database, LayoutTemplate, Box, CheckCircle2, Play, Link as LinkIcon, Upload, X, Users, Edit, Eye, Loader2, ClipboardList } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2, Database, LayoutTemplate, Box, CheckCircle2, Play, Link as LinkIcon, Upload, X, Users, Edit, Eye, Loader2, ClipboardList } from 'lucide-react';
 import { EvalDataset, EvalTemplate, EvalTask, EvalDimension, EvalParadigm, EvaluationConfig, EvaluationItem, EvaluationMethod, EvaluationProject } from '../types';
 import { db, auth } from '../auth';
 import { collection, onSnapshot, query } from '../datastore';
@@ -7,11 +7,14 @@ import { ConfirmModal } from './ConfirmModal';
 import Papa from 'papaparse';
 import MediaRenderer from './MediaRenderer';
 import DimensionChips from './DimensionChips';
+import TaskCaseScopeSelector from './TaskCaseScopeSelector';
 import { getDimensionValuesForItem, getDimensionValuesFromRecord, isLikelyDimensionColumn } from '../dimensionUtils';
 import { extractMediaUrls, resolvePlaybackUrl } from '../mediaUrlUtils';
 import { sortReferenceUrls } from '../mediaTypeUtils';
 import { normalizeArenaSamplingConfig } from '../arenaSampling';
 import { ensureStableDatasetItemIds, getDatasetItemStableId, stripDatasetInternalFields } from '../datasetSync';
+import { indexDatasetRows } from '../datasetRowFilters';
+import { buildTaskCaseCandidates, defaultTaskCaseSelection, resolveSelectedTaskCases } from '../taskCaseSelection';
 import { createTaskWithItems, deleteTask, deleteTaskItem, loadTaskItems, subscribeTasks, updateTask, updateTaskItem } from '../features/tasks/api';
 import { createDataset, subscribeDatasets } from '../features/datasets/api';
 import { saveTemplate, subscribeTemplates } from '../features/templates/api';
@@ -41,7 +44,6 @@ import {
   normalizeEvaluationConfig,
   normalizeDimensions
 } from '../evaluationMethods';
-import { partitionGenerationEvaluationRows } from '../features/generation/generationFailureCell';
 
 interface TaskBuilderScreenProps {
   projectId?: string;
@@ -171,7 +173,6 @@ export default function TaskBuilderScreen({
     datasetId: '',
     templateId: '',
     outputType: 'text',
-    models: [{ id: 'model-a', name: 'Model A' }, { id: 'model-b', name: 'Model B' }],
     assignees: [],
     status: 'draft'
   });
@@ -186,6 +187,12 @@ export default function TaskBuilderScreen({
   const [inputColumns, setInputColumns] = useState<string[]>([]);
   const [modelColumns, setModelColumns] = useState<string[]>([]);
   const [dimensionColumns, setDimensionColumns] = useState<string[]>([]);
+  const [caseSourceRevision, setCaseSourceRevision] = useState(0);
+  const [caseSelectionState, setCaseSelectionState] = useState<{
+    sourceKey: string;
+    keys: string[];
+    initialized: boolean;
+  }>({ sourceKey: '', keys: [], initialized: false });
   const [saveDatasetToPlatform, setSaveDatasetToPlatform] = useState(true);
   const [showPreview, setShowPreview] = useState(false);
   const [inputType, setInputType] = useState<'text' | 'text_image' | 'text_audio' | 'multi_turn' | 'other'>('text');
@@ -198,15 +205,43 @@ export default function TaskBuilderScreen({
   const [newTemplateParadigm, setNewTemplateParadigm] = useState<EvalParadigm>('GSB');
   const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
   const isBenchmarkPreview = isPreviewMethod(evaluationConfig);
-  const evaluationSourceRows = csvData.length > 0
-    ? csvData
-    : (datasets.find(dataset => dataset.id === newTask.datasetId)?.items || []);
-  const generationEvaluationPartition = useMemo(() => {
-    const mediaEvaluation = ['image', 'video', 'audio'].includes(String(newTask.outputType || ''));
-    return mediaEvaluation && modelColumns.length
-      ? partitionGenerationEvaluationRows(evaluationSourceRows, modelColumns)
-      : { included: evaluationSourceRows, excluded: [] };
-  }, [evaluationSourceRows, modelColumns, newTask.outputType]);
+  const selectedSourceDataset = useMemo(
+    () => datasets.find(dataset => dataset.id === newTask.datasetId),
+    [datasets, newTask.datasetId],
+  );
+  const evaluationSourceRows = useMemo(
+    () => csvData.length > 0 ? csvData : (selectedSourceDataset?.items || []),
+    [csvData, selectedSourceDataset],
+  );
+  const sourceMappings = useMemo(
+    () => selectedSourceDataset?.columnMappings || inferDatasetMappings(csvHeaders, evaluationSourceRows),
+    [csvHeaders, evaluationSourceRows, selectedSourceDataset],
+  );
+  const caseIdColumn = sourceMappings.caseId
+    || ['case_id', 'Case_ID', '用例ID', 'ItemID', 'id'].find(column => csvHeaders.includes(column));
+  const indexedEvaluationRows = useMemo(
+    () => indexDatasetRows(evaluationSourceRows),
+    [evaluationSourceRows],
+  );
+  const taskCaseCandidates = useMemo(
+    () => buildTaskCaseCandidates(indexedEvaluationRows, {
+      modelColumns,
+      outputType: newTask.outputType,
+      minimumModelCount: getMethodMinModelCount(evaluationConfig.method),
+    }),
+    [evaluationConfig.method, indexedEvaluationRows, modelColumns, newTask.outputType],
+  );
+  const caseSelectionSourceKey = evaluationSourceRows.length
+    ? `${csvData.length ? 'upload' : `dataset:${newTask.datasetId}`}:${caseSourceRevision}`
+    : '';
+  const selectedCaseKeys = caseSelectionState.sourceKey === caseSelectionSourceKey
+    ? caseSelectionState.keys
+    : [];
+  const selectedTaskCases = useMemo(
+    () => resolveSelectedTaskCases(taskCaseCandidates, selectedCaseKeys),
+    [selectedCaseKeys, taskCaseCandidates],
+  );
+  const previewRow = selectedTaskCases[0]?.row;
   const [statusFilter, setStatusFilter] = useState<EvalTask['status'] | 'all'>(initialStatusFilter || 'all');
   const [selectedProjectFilter, setSelectedProjectFilter] = useState(projectId || 'all');
   
@@ -223,6 +258,31 @@ export default function TaskBuilderScreen({
   useEffect(() => {
     if (initialStatusFilter) setStatusFilter(initialStatusFilter);
   }, [initialStatusFilter]);
+
+  useEffect(() => {
+    if (caseSelectionState.sourceKey === caseSelectionSourceKey) return;
+    setCaseSelectionState({ sourceKey: caseSelectionSourceKey, keys: [], initialized: false });
+    setShowPreview(false);
+  }, [caseSelectionSourceKey, caseSelectionState.sourceKey]);
+
+  useEffect(() => {
+    if (!caseSelectionSourceKey
+      || caseSelectionState.sourceKey !== caseSelectionSourceKey
+      || caseSelectionState.initialized
+      || modelColumns.length < getMethodMinModelCount(evaluationConfig.method)) return;
+    setCaseSelectionState({
+      sourceKey: caseSelectionSourceKey,
+      keys: defaultTaskCaseSelection(taskCaseCandidates),
+      initialized: true,
+    });
+  }, [
+    caseSelectionSourceKey,
+    caseSelectionState.initialized,
+    caseSelectionState.sourceKey,
+    evaluationConfig.method,
+    modelColumns.length,
+    taskCaseCandidates,
+  ]);
 
   useEffect(() => {
     setLoading(true);
@@ -276,6 +336,7 @@ export default function TaskBuilderScreen({
       if (modelColumns.length < minModels) {
         return `${getEvaluationMethodShortLabel(evaluationConfig.method)} 至少需要 ${minModels} 列${isBenchmarkPreview ? '输出预览' : '模型结果'}，请补充选择。`;
       }
+      if (selectedTaskCases.length === 0) return "请至少选择一个产物有效的 case";
       if ((evaluationConfig.method === 'direct_score' || evaluationConfig.method === 'rubric_score') && !(evaluationConfig.dimensions || []).some(dim => dim.type === 'star_rating')) {
         return "评分类评测至少需要一个星级打分维度。";
       }
@@ -379,6 +440,7 @@ export default function TaskBuilderScreen({
     setInputColumns([]);
     setDimensionColumns([]);
     setModelColumns([]);
+    setCaseSourceRevision(previous => previous + 1);
     const inferredInputType = inferInputTypeFromDataset(dataset);
     setInputType(dataset.inputType && dataset.inputType !== 'text' ? dataset.inputType : inferredInputType);
     setNewTask(prev => ({
@@ -529,11 +591,10 @@ export default function TaskBuilderScreen({
         finalTemplateId = templateId;
       }
 
-      // Update models array based on selected model columns if using CSV or existing dataset
-      const taskModels = (csvData.length > 0 || newTask.datasetId) && modelColumns.length > 0 ? modelColumns.map((col, idx) => ({
+      const taskModels = modelColumns.map((col, idx) => ({
         id: `model-${idx}`,
         name: col
-      })) : newTask.models;
+      }));
 
       const rawSourceRows = csvData.length > 0
         ? csvData
@@ -541,18 +602,23 @@ export default function TaskBuilderScreen({
       const normalizedSourceRows = finalDatasetId
         ? ensureStableDatasetItemIds(finalDatasetId, rawSourceRows)
         : rawSourceRows;
-      const mediaEvaluation = ['image', 'video', 'audio'].includes(String(newTask.outputType || ''));
-      const creationPartition = mediaEvaluation && modelColumns.length
-        ? partitionGenerationEvaluationRows(normalizedSourceRows, modelColumns)
-        : { included: normalizedSourceRows, excluded: [] };
-      const sourceRows = creationPartition.included;
+      const selectedSourceIndexes = new Set(selectedTaskCases.map(candidate => candidate.sourceIndex));
+      const creationCandidates = buildTaskCaseCandidates(indexDatasetRows(normalizedSourceRows), {
+        modelColumns,
+        outputType: newTask.outputType,
+        minimumModelCount: getMethodMinModelCount(evaluationConfig.method),
+      });
+      const sourceRows = creationCandidates
+        .filter(candidate => selectedSourceIndexes.has(candidate.sourceIndex) && candidate.eligible)
+        .map(candidate => candidate.row);
+      const excludedCreationCandidates = creationCandidates.filter(candidate => !candidate.eligible);
       if (rawSourceRows.length > 0 && sourceRows.length === 0) {
         throw new Error('所选结果列没有可用于人工评测的媒体；生成失败和空结果已全部排除。');
       }
       const sourceItemCount = sourceRows.length;
       const isSampledArena = evaluationConfig.method === 'pairwise' && evaluationConfig.pairwiseMode === 'arena_sampled';
       const pairCount = evaluationConfig.method === 'pairwise' && !isSampledArena
-        ? buildPairwisePairs(taskModels || [], evaluationConfig.pairwiseMode).length
+        ? buildPairwisePairs(taskModels, evaluationConfig.pairwiseMode).length
         : 1;
       const finalEvaluationConfig: EvaluationConfig = {
         ...evaluationConfig,
@@ -560,7 +626,7 @@ export default function TaskBuilderScreen({
         sourceRubricId: finalTemplateId || evaluationConfig.sourceRubricId,
         rubricName: finalTemplateId ? `${newTask.name} 评分标准` : evaluationConfig.rubricName,
         arenaSampling: isSampledArena
-          ? normalizeArenaSamplingConfig(evaluationConfig.arenaSampling, sourceItemCount, (taskModels || []).length)
+          ? normalizeArenaSamplingConfig(evaluationConfig.arenaSampling, sourceItemCount, taskModels.length)
           : evaluationConfig.arenaSampling
       };
 
@@ -576,9 +642,12 @@ export default function TaskBuilderScreen({
           dimensionColumns: [...dimensionColumns],
           referenceColumns: datasets.find(dataset => dataset.id === finalDatasetId)?.columnMappings?.referenceColumns || [],
           modelColumns: Object.fromEntries(taskModels.map((model, index) => [model.id, modelColumns[index] || model.name])),
-          ...(creationPartition.excluded.length ? {
-            excludedDatasetItemIds: creationPartition.excluded
-              .map(item => getDatasetItemStableId(item.row))
+          includedDatasetItemIds: sourceRows
+            .map(row => getDatasetItemStableId(row))
+            .filter(Boolean),
+          ...(excludedCreationCandidates.length ? {
+            excludedDatasetItemIds: excludedCreationCandidates
+              .map(candidate => getDatasetItemStableId(candidate.row))
               .filter(Boolean),
           } : {}),
         } : undefined,
@@ -658,10 +727,10 @@ export default function TaskBuilderScreen({
             if (referenceUrls.length > 0) baseItemData.referenceUrls = sortReferenceUrls(referenceUrls);
 
             if (finalEvaluationConfig.method === 'pairwise' && finalEvaluationConfig.pairwiseMode !== 'arena_sampled') {
-              const pairs = buildPairwisePairs(taskModels || [], finalEvaluationConfig.pairwiseMode);
+              const pairs = buildPairwisePairs(taskModels, finalEvaluationConfig.pairwiseMode);
               for (const pair of pairs) {
-                const leftIndex = (taskModels || []).findIndex(model => model.id === pair.modelA.id);
-                const rightIndex = (taskModels || []).findIndex(model => model.id === pair.modelB.id);
+                const leftIndex = taskModels.findIndex(model => model.id === pair.modelA.id);
+                const rightIndex = taskModels.findIndex(model => model.id === pair.modelB.id);
                 const pairItemData = {
                   ...baseItemData,
                   id: `row-${rowIndex}__${pair.pairId}`,
@@ -720,7 +789,6 @@ export default function TaskBuilderScreen({
         datasetId: '',
         templateId: '',
         outputType: 'text',
-        models: [{ id: 'model-a', name: 'Model A' }, { id: 'model-b', name: 'Model B' }],
         status: 'draft',
         externalResultsLink: ''
       });
@@ -731,6 +799,8 @@ export default function TaskBuilderScreen({
       setInputColumns([]);
       setModelColumns([]);
       setDimensionColumns([]);
+      setCaseSourceRevision(previous => previous + 1);
+      setCaseSelectionState({ sourceKey: '', keys: [], initialized: false });
       setError(null);
       setSuccessMessage("创建成功！");
       setTimeout(() => setSuccessMessage(null), 3000);
@@ -904,6 +974,7 @@ export default function TaskBuilderScreen({
 
     setCsvHeaders(headers);
     setCsvData(data);
+    setCaseSourceRevision(previous => previous + 1);
 
     const detectedMappings = inferDatasetMappings(headers, data);
     const detectedInputColumns = detectedMappings.inputColumns.length ? detectedMappings.inputColumns : headers.slice(0, 1);
@@ -1100,29 +1171,6 @@ export default function TaskBuilderScreen({
     }
   };
 
-  const addModel = () => {
-    setNewTask(prev => ({
-      ...prev,
-      models: [...(prev.models || []), { id: `model-${Date.now()}`, name: `Model ${prev.models?.length ? prev.models.length + 1 : 1}` }]
-    }));
-  };
-
-  const updateModelName = (index: number, name: string) => {
-    setNewTask(prev => {
-      const newModels = [...(prev.models || [])];
-      newModels[index].name = name;
-      return { ...prev, models: newModels };
-    });
-  };
-
-  const removeModel = (index: number) => {
-    setNewTask(prev => {
-      const newModels = [...(prev.models || [])];
-      newModels.splice(index, 1);
-      return { ...prev, models: newModels };
-    });
-  };
-
   if (loading) {
     return <div className="flex items-center justify-center h-full">加载中...</div>;
   }
@@ -1252,7 +1300,10 @@ export default function TaskBuilderScreen({
                           }
                         } else {
                           setCsvHeaders([]);
+                          setInputColumns([]);
+                          setModelColumns([]);
                           setDimensionColumns([]);
+                          setCaseSourceRevision(previous => previous + 1);
                         }
                       }}
                       className="w-full px-4 py-2 glass-input rounded-xl focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
@@ -1576,22 +1627,28 @@ export default function TaskBuilderScreen({
                           </label>
                         ))}
                       </div>
-                      {!!generationEvaluationPartition.excluded.length && (
-                        <div className="mt-3 border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-amber-100">
-                          <div className="font-medium">
-                            创建任务时将自动排除 {generationEvaluationPartition.excluded.length} 个缺少可评测媒体的 case。
-                          </div>
-                          <div className="mt-1 text-amber-200/80">
-                            {generationEvaluationPartition.excluded.slice(0, 8).map(item => (
-                              String(item.row.case_id || item.row.case_name || item.row.id || item.row['用例ID'] || '未命名 case')
-                            )).join('、')}
-                            {generationEvaluationPartition.excluded.length > 8 ? ` 等 ${generationEvaluationPartition.excluded.length} 个` : ''}
-                          </div>
-                          <div className="mt-1 text-amber-200/70">
-                            生成失败文本和空结果不会作为图片、视频或音频送入人工评测。
-                          </div>
+                      <div className="mt-3 border border-white/10 bg-black/20 px-3 py-3 text-xs leading-5">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="font-medium text-slate-200">参评模型摘要</span>
+                          <span className={modelColumns.length >= getMethodMinModelCount(evaluationConfig.method) ? 'text-emerald-300' : 'text-amber-300'}>
+                            {modelColumns.length} 个已选 / 至少 {getMethodMinModelCount(evaluationConfig.method)} 个
+                          </span>
                         </div>
-                      )}
+                        <div className="mt-1 text-slate-400">
+                          当前方式：{getEvaluationMethodShortLabel(evaluationConfig.method)}。模型名称直接使用结果列名称，创建后用于评测展示和结果统计。
+                        </div>
+                        {modelColumns.length > 0 ? (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {modelColumns.map((column, index) => (
+                              <span key={column} className="border border-white/10 bg-white/5 px-2 py-1 text-slate-200">
+                                {String.fromCharCode(65 + index)} · {column}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="mt-2 text-amber-300">请在上方选择模型结果列。</div>
+                        )}
+                      </div>
                     </div>
                     <div>
                       <div className="mb-1 flex items-center justify-between gap-2">
@@ -1638,6 +1695,21 @@ export default function TaskBuilderScreen({
                     </div>
                   )}
                 </div>
+              )}
+
+              {(csvData.length > 0 || newTask.datasetId) && evaluationSourceRows.length > 0 && (
+                <TaskCaseScopeSelector
+                  sourceKey={caseSelectionSourceKey}
+                  candidates={taskCaseCandidates}
+                  caseIdColumn={caseIdColumn}
+                  dimensionColumns={dimensionColumns}
+                  selectedKeys={selectedCaseKeys}
+                  onSelectionChange={(keys) => setCaseSelectionState({
+                    sourceKey: caseSelectionSourceKey,
+                    keys,
+                    initialized: true,
+                  })}
+                />
               )}
 
               {(evaluationConfig.method === 'direct_score' || evaluationConfig.method === 'rubric_score') && (
@@ -1822,44 +1894,6 @@ export default function TaskBuilderScreen({
                 </div>
               </div>
 
-              {csvData.length === 0 && (
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <label className="block text-sm font-medium text-slate-200">参评模型</label>
-                    <button 
-                      onClick={addModel}
-                      className="text-sm text-amber-400 hover:text-amber-300 flex items-center gap-1"
-                    >
-                      <Plus size={14} /> 添加模型
-                    </button>
-                  </div>
-                  <div className="space-y-3">
-                    {newTask.models?.map((model, index) => (
-                      <div key={model.id} className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-sm font-medium text-slate-300">
-                          {String.fromCharCode(65 + index)}
-                        </div>
-                        <input 
-                          type="text" 
-                          value={model.name}
-                          onChange={(e) => updateModelName(index, e.target.value)}
-                          className="flex-1 px-4 py-2 glass-input rounded-xl focus:ring-2 focus:ring-amber-500 focus:border-amber-500"
-                          placeholder={`Model ${String.fromCharCode(65 + index)} Name`}
-                        />
-                        {newTask.models!.length > 2 && (
-                          <button 
-                            onClick={() => removeModel(index)}
-                            className="p-2 text-slate-300 hover:text-red-500 transition-colors"
-                          >
-                            <Trash2 size={18} />
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
               <div className="flex justify-end gap-3 pt-4 border-t border-white/10">
                 <button 
                   onClick={() => setIsCreating(false)}
@@ -1867,42 +1901,36 @@ export default function TaskBuilderScreen({
                 >
                   取消
                 </button>
-                {csvData.length > 0 ? (
-                  <button 
-                    onClick={() => {
-                      const err = validateSetup();
-                      if (err) setError(err);
-                      else setShowPreview(true);
-                    }}
-                    className="px-6 py-2 bg-amber-500 text-white rounded-xl hover:bg-amber-600 transition-colors flex items-center gap-2"
-                  >
-                    预览物料
-                  </button>
-                ) : (
-                  <button 
-                    onClick={handleCreateTask}
-                    className="px-6 py-2 bg-amber-500 text-white rounded-xl hover:bg-amber-600 transition-colors flex items-center gap-2"
-                  >
-                    <Save size={18} /> 保存物料
-                  </button>
-                )}
+                <button
+                  onClick={() => {
+                    const err = validateSetup();
+                    if (err) setError(err);
+                    else {
+                      setError(null);
+                      setShowPreview(true);
+                    }
+                  }}
+                  className="px-6 py-2 bg-amber-500 text-white rounded-xl hover:bg-amber-600 transition-colors flex items-center gap-2"
+                >
+                  预览物料
+                </button>
               </div>
             </div>
           ) : (
             <div className="space-y-6 animate-in fade-in duration-300">
               <div className="glass-panel rounded-xl p-6">
                 <h3 className="text-lg font-bold text-slate-200 mb-4 flex items-center gap-2">
-                  <LayoutTemplate size={20} className="text-indigo-500" /> {isBenchmarkPreview ? 'Benchmark 预览物料' : '评测物料预览'} (第一条数据)
+                  <LayoutTemplate size={20} className="text-indigo-500" /> {isBenchmarkPreview ? 'Benchmark 预览物料' : '评测物料预览'} (第一条已选 case)
                 </h3>
                 
                 <div className="glass-panel rounded-2xl overflow-hidden shadow-md shadow-black/20 flex flex-col" style={{ minHeight: '400px' }}>
                   {/* Header/Prompt Area */}
                   <div className="bg-white/5 border-b border-white/10 px-6 py-4 shrink-0 shadow-md shadow-black/20 z-10 space-y-3">
-                    <DimensionChips values={getDimensionValuesFromRecord(csvData[0], dimensionColumns)} />
+                    <DimensionChips values={getDimensionValuesFromRecord(previewRow, dimensionColumns)} />
                     {inputColumns.map(col => (
                       <div key={col} className="text-slate-200 text-sm leading-relaxed flex items-start">
                         <span className="font-semibold text-slate-100 mr-2 select-none uppercase text-xs tracking-wider bg-white/10 px-1.5 py-0.5 rounded shrink-0 mt-0.5">{col}</span>
-                        <div className="break-words whitespace-pre-wrap">{csvData[0][col]}</div>
+                        <div className="break-words whitespace-pre-wrap">{previewRow?.[col]}</div>
                       </div>
                     ))}
                   </div>
@@ -1914,11 +1942,11 @@ export default function TaskBuilderScreen({
                         <div className="flex-1 relative min-h-0 p-1 bg-black/40">
                           {newTask.outputType === 'text' || newTask.outputType === 'markdown' ? (
                             <div className="h-full w-full bg-white/5 p-4 overflow-y-auto text-slate-200 whitespace-pre-wrap text-sm">
-                              {csvData[0][col]}
+                              {previewRow?.[col]}
                             </div>
                           ) : (
                             <MediaRenderer 
-                              url={csvData[0][col]} 
+                              url={previewRow?.[col]}
                               label={`${isBenchmarkPreview ? '输出' : '模型'} ${idx + 1} (${col})`} 
                               isActive={true} 
                               forceType={newTask.outputType}

@@ -154,6 +154,61 @@ assert.deepEqual(
   [String(nextRows[1][DATASET_ITEM_ID_KEY])],
 );
 
+const includedTask: EvalTask = {
+  ...makeTask('active'),
+  id: 'task-active-with-fixed-scope',
+  datasetBinding: {
+    ...makeTask('active').datasetBinding!,
+    includedDatasetItemIds: [String(originalRows[0][DATASET_ITEM_ID_KEY])],
+  },
+};
+const includedPlan = planDatasetTaskSync({
+  task: includedTask,
+  previousRows: originalRows,
+  nextRows,
+  taskItems: [makeTaskItem(includedTask.id, originalRows[0], 0)],
+  nextVersion: 2,
+});
+assert.equal(includedPlan.updates.length, 1, 'selected cases must continue to receive content updates');
+assert.equal(includedPlan.additions.length, 0, 'fixed-scope tasks must not receive later dataset cases');
+assert.deepEqual(
+  includedPlan.binding.includedDatasetItemIds,
+  [String(originalRows[0][DATASET_ITEM_ID_KEY])],
+  'the fixed inclusion scope must survive synchronization',
+);
+
+const restoredSelectedRow = ensureStableDatasetItemIds('dataset-1', [{ ...originalRows[0], 瀹屾暣Prompt: 'restored prompt' }]);
+const restoredIncludedPlan = planDatasetTaskSync({
+  task: includedTask,
+  previousRows: [],
+  nextRows: restoredSelectedRow,
+  taskItems: [],
+  nextVersion: 3,
+});
+assert.equal(restoredIncludedPlan.additions.length, 1, 'a selected case may return when the same stable ID is restored');
+
+const includedAndExcludedTask: EvalTask = {
+  ...makeTask('active'),
+  id: 'task-active-with-inclusion-and-exclusion',
+  datasetBinding: {
+    ...makeTask('active').datasetBinding!,
+    includedDatasetItemIds: [String(nextRows[1][DATASET_ITEM_ID_KEY])],
+    excludedDatasetItemIds: [String(nextRows[1][DATASET_ITEM_ID_KEY])],
+  },
+};
+const includedAndExcludedPlan = planDatasetTaskSync({
+  task: includedAndExcludedTask,
+  previousRows: [],
+  nextRows,
+  taskItems: [],
+  nextVersion: 2,
+});
+assert.equal(
+  includedAndExcludedPlan.additions.length,
+  0,
+  'explicit exclusions must still apply after the fixed inclusion scope',
+);
+
 const completedTask = makeTask('completed');
 const completedPlan = planDatasetTaskSync({
   task: completedTask,

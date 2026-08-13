@@ -1,0 +1,30 @@
+{
+  "feature": "task_case_selection",
+  "requirements": [
+    {
+      "id": "case-filtering",
+      "status": "completed",
+      "description": "Filter task candidates by case ID and mapped dimensions with cascading column filters"
+    },
+    {
+      "id": "case-selection",
+      "status": "completed",
+      "description": "Keep explicit per-case selection independent from the filtered view and exclude invalid outputs"
+    },
+    {
+      "id": "fixed-scope",
+      "status": "completed",
+      "description": "Persist included dataset item IDs so new dataset cases do not enter new tasks"
+    },
+    {
+      "id": "model-summary",
+      "status": "completed",
+      "description": "Derive task models from output columns and remove the misleading manual model editor"
+    },
+    {
+      "id": "verification",
+      "status": "completed",
+      "description": "Pass deterministic, sync, Arena, build, API and responsive browser checks"
+    }
+  ]
+}

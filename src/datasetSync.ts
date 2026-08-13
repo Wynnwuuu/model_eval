@@ -450,9 +450,13 @@ export const planDatasetTaskSync = ({
   const additions: EvaluationItem[] = [];
   if (task.status !== 'completed' && !hasUnmatchedLegacyItems) {
     let nextOrder = taskItems.reduce((max, item) => Math.max(max, item.itemOrder ?? 0), -1) + 1;
+    const includedStableIds = binding.includedDatasetItemIds
+      ? new Set(binding.includedDatasetItemIds)
+      : undefined;
     const excludedStableIds = new Set(binding.excludedDatasetItemIds || []);
     normalizedNext.forEach(row => {
       const stableItemId = getDatasetItemStableId(row);
+      if (includedStableIds && !includedStableIds.has(stableItemId)) return;
       if (existingStableIds.has(stableItemId) || excludedStableIds.has(stableItemId)) return;
       const created = createTaskItemsForDatasetRow(task, binding, row, nextVersion, nextOrder);
       additions.push(...created);
