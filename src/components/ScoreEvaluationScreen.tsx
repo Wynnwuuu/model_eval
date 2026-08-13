@@ -6,6 +6,7 @@ import { getDimensionValuesForItem, hasDimensionValues } from '../dimensionUtils
 import { normalizeDimensions } from '../evaluationMethods';
 import MediaRenderer from './MediaRenderer';
 import DimensionChips from './DimensionChips';
+import EvaluationReferenceMediaStrip from './EvaluationReferenceMediaStrip';
 
 interface ScoreEvaluationScreenProps {
   item: EvaluationItem;
@@ -261,6 +262,7 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
       )}
 
       <div className="min-h-0 flex-1 overflow-auto bg-black/25 p-4 md:p-6">
+        <EvaluationReferenceMediaStrip item={item} className="mb-5 border border-white/10" />
         <div className="grid min-h-[620px] grid-cols-1 gap-5 xl:grid-cols-2 2xl:grid-cols-3">
           {outputs.map((output, index) => {
             const current = draft[output.modelId] || { scores: {}, answers: {}, reason: '' };

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, CheckCircle2, Cloud, Equal, Expand, FileAudio, GripVertical, Layers3, SkipForward, Trophy, Unlink, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, CheckCircle2, Cloud, Equal, GripVertical, Layers3, SkipForward, Trophy, Unlink, X } from 'lucide-react';
 import { EvaluationItem, RankingEntry } from '../types';
 import { getModelOutputsForItem, tiersToRankingEntries } from '../rankingUtils';
 import MediaRenderer from './MediaRenderer';
@@ -7,11 +7,8 @@ import { resolveMediaPlaybackCandidates } from '../mediaProxy';
 import { VIDEO_EXTENSIONS } from '../constants';
 import DimensionChips from './DimensionChips';
 import { getDimensionValuesForItem, hasDimensionValues } from '../dimensionUtils';
-import { extractMediaUrls } from '../mediaUrlUtils';
-import { getReferenceThumbnailUrl, inferReferenceMediaType, sortReferenceUrls } from '../mediaTypeUtils';
-
-const isStartImageKey = (key: string) => /start|first|首帧|首图|起始/i.test(key);
-const isReferenceKey = (key: string) => /ref|reference|参考|參考|music|audio|bgm|配乐|音乐|音频|image_json/i.test(key);
+import { getEvaluationReferenceInputKeys } from '../evaluationReferenceMedia';
+import EvaluationReferenceMediaStrip from './EvaluationReferenceMediaStrip';
 
 interface ArenaRankVotingScreenProps {
   item: EvaluationItem;
@@ -45,8 +42,6 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
   const [mediaWaitTimedOut, setMediaWaitTimedOut] = useState(false);
   const [draggedTierIndex, setDraggedTierIndex] = useState<number | null>(null);
   const [justSaved, setJustSaved] = useState(false);
-  const [showReference, setShowReference] = useState(false);
-  const [currentRefIndex, setCurrentRefIndex] = useState(0);
   const [showRankDrawer, setShowRankDrawer] = useState(false);
   const [rankAnnouncement, setRankAnnouncement] = useState('');
   const draggedTierIndexRef = useRef<number | null>(null);
@@ -74,10 +69,8 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
     draggedTierIndexRef.current = null;
     setDraggedTierIndex(null);
     setShowFullPrompt(false);
-    setShowReference(false);
     setShowRankDrawer(false);
     setRankAnnouncement('');
-    setCurrentRefIndex(0);
     setJustSaved(true);
     const timer = setTimeout(() => setJustSaved(false), 2000);
     return () => clearTimeout(timer);
@@ -104,44 +97,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
   const dimensionValues = getDimensionValuesForItem(item as any);
   const hasDimensions = hasDimensionValues(dimensionValues);
 
-  const effectiveStartImageUrl = item.startImageUrl || (() => {
-    if (!item.inputs) return undefined;
-    for (const [key, val] of Object.entries(item.inputs)) {
-      if (isStartImageKey(key)) {
-        const [url] = extractMediaUrls(val);
-        if (url) return url;
-      }
-    }
-    return undefined;
-  })();
-
-  const effectiveReferenceUrls = (() => {
-    const refs = item.referenceUrls || (() => {
-      if (!item.inputs) return [] as string[];
-      const collected: string[] = [];
-      for (const [key, val] of Object.entries(item.inputs)) {
-        if (isReferenceKey(key)) {
-          collected.push(...extractMediaUrls(val));
-        }
-      }
-      return collected;
-    })();
-    return refs.length > 0 ? sortReferenceUrls(refs) : undefined;
-  })();
-
-  const referenceThumbnailUrl = effectiveReferenceUrls
-    ? getReferenceThumbnailUrl(effectiveReferenceUrls)
-    : undefined;
-  const hasReferences = Boolean(effectiveReferenceUrls && effectiveReferenceUrls.length > 0);
-
-  const hiddenInputKeys = new Set<string>();
-  if (item.inputs) {
-    for (const [key, val] of Object.entries(item.inputs)) {
-      if (extractMediaUrls(val).length > 0 && (isStartImageKey(key) || isReferenceKey(key))) {
-        hiddenInputKeys.add(key);
-      }
-    }
-  }
+  const hiddenInputKeys = getEvaluationReferenceInputKeys(item);
 
   const progress = (currentIndex / totalItems) * 100;
   const allMediaLoaded = displayOutputs.length >= 3 && displayOutputs.every(output => loaded[output.modelId]);
@@ -204,25 +160,6 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
 
     return () => window.clearTimeout(timer);
   }, [mediaCycleKey, displayOutputs.length, allMediaLoaded]);
-
-  useEffect(() => {
-    if (!showReference) return;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setShowReference(false);
-        return;
-      }
-      if (effectiveReferenceUrls && effectiveReferenceUrls.length > 1 && currentRefIndex !== -1) {
-        if (event.key === 'ArrowLeft') {
-          setCurrentRefIndex(prev => (prev === 0 ? effectiveReferenceUrls.length - 1 : prev - 1));
-        } else if (event.key === 'ArrowRight') {
-          setCurrentRefIndex(prev => (prev === effectiveReferenceUrls.length - 1 ? 0 : prev + 1));
-        }
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showReference, effectiveReferenceUrls, currentRefIndex]);
 
   const getTierLabel = (tier: string[]) => tier.map(modelId => optionLabels.get(modelId) || modelId).join(' = ');
 
@@ -528,6 +465,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
       )}
 
       <div className="flex-1 min-h-0 overflow-auto bg-black/25 p-4 pb-24 md:p-6 md:pb-24 xl:pb-6">
+        <EvaluationReferenceMediaStrip item={item} className="mb-4 border border-white/10" />
         {displayOutputs.length < 3 ? (
           <div className="flex h-full flex-col items-center justify-center text-center text-slate-300">
             <Trophy size={40} className="mb-4 text-[var(--accent)]" />
@@ -634,62 +572,6 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
             </div>
 
             <aside className="ark-panel h-fit p-4 xl:sticky xl:top-4">
-              {(hasReferences || effectiveStartImageUrl) && (
-                <div className="mb-4 border-b border-white/10 pb-4">
-                  <h3 className="mb-3 text-sm font-black uppercase tracking-wide text-slate-100">参考素材</h3>
-                  <div className="flex flex-wrap gap-3">
-                    {effectiveStartImageUrl && (
-                      <div className="relative group">
-                        <button
-                          onClick={() => {
-                            setShowReference(true);
-                            setCurrentRefIndex(-1);
-                          }}
-                          className="relative flex h-16 w-16 items-center justify-center overflow-hidden border-2 border-[var(--accent-cold)] bg-white/5 shadow-md shadow-black/20 transition-all hover:border-[var(--accent)]"
-                          title="查看首帧图"
-                        >
-                          <img src={effectiveStartImageUrl} className="h-full w-full object-cover opacity-80 group-hover:opacity-100" referrerPolicy="no-referrer" />
-                          <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
-                            <Expand size={16} className="text-white" />
-                          </div>
-                        </button>
-                        <div className="mt-1 text-center text-[10px] font-medium text-slate-300">首帧图</div>
-                      </div>
-                    )}
-
-                    {hasReferences && (
-                      <div className="relative group">
-                        <button
-                          onClick={() => {
-                            setShowReference(true);
-                            setCurrentRefIndex(0);
-                          }}
-                          className="relative flex h-16 w-16 items-center justify-center overflow-hidden border-2 border-white/15 bg-white/5 shadow-md shadow-black/20 transition-all hover:border-[var(--accent)]"
-                          title="查看参考素材"
-                        >
-                          {referenceThumbnailUrl ? (
-                            <img src={referenceThumbnailUrl} className="h-full w-full object-cover opacity-80 group-hover:opacity-100" referrerPolicy="no-referrer" />
-                          ) : (
-                            <FileAudio className="h-7 w-7 text-amber-300" />
-                          )}
-                          <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
-                            <Expand size={16} className="text-white" />
-                          </div>
-                          {effectiveReferenceUrls!.length > 1 && (
-                            <div className="absolute -right-2 -top-2 flex h-5 w-5 items-center justify-center rounded-full border border-white bg-[var(--accent-cold)] text-[10px] text-white">
-                              {effectiveReferenceUrls!.length}
-                            </div>
-                          )}
-                        </button>
-                        <div className="mt-1 text-center text-[10px] font-medium text-slate-300">
-                          {effectiveReferenceUrls!.length > 1 ? `${effectiveReferenceUrls!.length} 项参考` : (referenceThumbnailUrl ? '参考图' : '参考音频')}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
               <div className="hidden xl:block">
                 {renderRankEditor()}
               </div>
@@ -728,62 +610,6 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
         </div>
       )}
 
-      {showReference && (hasReferences || effectiveStartImageUrl) && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm" onClick={() => setShowReference(false)}>
-          <div className="relative flex h-full w-full max-w-5xl flex-col items-center justify-center p-4" onClick={(event) => event.stopPropagation()}>
-            <div className="relative mb-4 h-[80vh] min-h-0 w-full">
-              <MediaRenderer
-                url={currentRefIndex === -1 ? effectiveStartImageUrl! : effectiveReferenceUrls![currentRefIndex]}
-                isActive={true}
-                className="border-none bg-transparent shadow-none"
-              />
-            </div>
-
-            <div className="flex items-center gap-4 border border-white/10 bg-black/55 px-6 py-3 backdrop-blur-md">
-              {currentRefIndex === -1 ? (
-                <span className="text-sm font-medium text-white">首帧图</span>
-              ) : (
-                <>
-                  {effectiveReferenceUrls && effectiveReferenceUrls.length > 1 && (
-                    <>
-                      <button
-                        onClick={() => setCurrentRefIndex(prev => (prev === 0 ? effectiveReferenceUrls.length - 1 : prev - 1))}
-                        className="glass-panel-hover p-2 text-white transition-colors"
-                        aria-label="上一张参考图"
-                      >
-                        <ArrowLeft size={20} />
-                      </button>
-                      <span className="mx-2 font-mono text-sm text-white">
-                        {currentRefIndex + 1} / {effectiveReferenceUrls.length}
-                      </span>
-                      <button
-                        onClick={() => setCurrentRefIndex(prev => (prev === effectiveReferenceUrls.length - 1 ? 0 : prev + 1))}
-                        className="glass-panel-hover p-2 text-white transition-colors"
-                        aria-label="下一张参考图"
-                      >
-                        <ArrowRight size={20} />
-                      </button>
-                    </>
-                  )}
-                  {effectiveReferenceUrls && effectiveReferenceUrls.length === 1 && (
-                    <span className="text-sm font-medium text-white">
-                      {inferReferenceMediaType(effectiveReferenceUrls[0]) === 'audio' ? '参考音频' : '参考图像'}
-                    </span>
-                  )}
-                </>
-              )}
-            </div>
-
-            <button
-              onClick={() => setShowReference(false)}
-              className="glass-panel-hover absolute right-6 top-6 p-2 text-white/70 transition-colors hover:text-white"
-            >
-              <span className="mr-2 text-sm font-medium">关闭</span>
-              <kbd className="bg-white/10 px-1.5 text-xs">Esc</kbd>
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

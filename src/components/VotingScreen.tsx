@@ -1,13 +1,13 @@
 import React, { useEffect, useCallback, useRef, useState } from 'react';
-import { CheckCircle2, ChevronDown, ChevronUp, Cloud, Equal, Expand, ThumbsUp, ArrowLeft, ArrowRight, Shuffle, SkipForward, FileAudio } from 'lucide-react';
+import { CheckCircle2, ChevronDown, ChevronUp, Cloud, Equal, ThumbsUp, Shuffle, SkipForward } from 'lucide-react';
 import { EvaluationItem, VoteType } from '../types';
 import MediaRenderer from './MediaRenderer';
 import { KEYBOARD_SHORTCUTS, VIDEO_EXTENSIONS } from '../constants';
 import { resolveMediaPlaybackCandidates } from '../mediaProxy';
 import DimensionChips from './DimensionChips';
 import { getDimensionValuesForItem, hasDimensionValues } from '../dimensionUtils';
-import { extractMediaUrls } from '../mediaUrlUtils';
-import { getReferenceThumbnailUrl, inferReferenceMediaType, sortReferenceUrls } from '../mediaTypeUtils';
+import { getEvaluationReferenceInputKeys, resolveEvaluationReferenceMedia } from '../evaluationReferenceMedia';
+import EvaluationReferenceMediaStrip from './EvaluationReferenceMediaStrip';
 
 interface VotingScreenProps {
   item: EvaluationItem;
@@ -27,8 +27,6 @@ interface VotingScreenProps {
   };
 }
 
-const isStartImageKey = (key: string) => /start|first|首帧|首图|起始/i.test(key);
-const isReferenceKey = (key: string) => /ref|reference|参考|參考|music|audio|bgm|配乐|音乐|音频|image_json/i.test(key);
 const VOTE_MEDIA_WAIT_FALLBACK_MS = 8000;
 
 const VotingScreen: React.FC<VotingScreenProps> = ({
@@ -45,8 +43,7 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
   arenaProgress
 }) => {
   const [showFullPrompt, setShowFullPrompt] = useState(false);
-  const [showReference, setShowReference] = useState(false);
-  const [currentRefIndex, setCurrentRefIndex] = useState(0);
+  const [referenceViewerOpen, setReferenceViewerOpen] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
 
   const [leftLoaded, setLeftLoaded] = useState(false);
@@ -55,44 +52,7 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
   const allMediaLoaded = leftLoaded && rightLoaded;
   const canVote = allMediaLoaded || mediaWaitTimedOut;
 
-  const effectiveStartImageUrl = item.startImageUrl || (() => {
-    if (!item.inputs) return undefined;
-    for (const [key, val] of Object.entries(item.inputs)) {
-      if (isStartImageKey(key)) {
-        const [url] = extractMediaUrls(val);
-        if (url) return url;
-      }
-    }
-    return undefined;
-  })();
-
-  const effectiveReferenceUrls = (() => {
-    const refs = item.referenceUrls || (() => {
-      if (!item.inputs) return [] as string[];
-      const collected: string[] = [];
-      for (const [key, val] of Object.entries(item.inputs)) {
-        if (isReferenceKey(key)) {
-          collected.push(...extractMediaUrls(val));
-        }
-      }
-      return collected;
-    })();
-    return refs.length > 0 ? sortReferenceUrls(refs) : undefined;
-  })();
-
-  const referenceThumbnailUrl = effectiveReferenceUrls
-    ? getReferenceThumbnailUrl(effectiveReferenceUrls)
-    : undefined;
-  const hasReferences = Boolean(effectiveReferenceUrls && effectiveReferenceUrls.length > 0);
-
-  const hiddenInputKeys = new Set<string>();
-  if (item.inputs) {
-    for (const [key, val] of Object.entries(item.inputs)) {
-      if (extractMediaUrls(val).length > 0 && (isStartImageKey(key) || isReferenceKey(key))) {
-        hiddenInputKeys.add(key);
-      }
-    }
-  }
+  const hiddenInputKeys = getEvaluationReferenceInputKeys(item);
 
   const visibleInputs = item.inputs
     ? Object.entries(item.inputs).filter(([key]) => !hiddenInputKeys.has(key))
@@ -131,29 +91,14 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
 
     const key = event.key;
 
-    if (showReference && effectiveReferenceUrls && effectiveReferenceUrls.length > 1) {
-      if (key === 'ArrowLeft') {
-        setCurrentRefIndex(prev => (prev === 0 ? effectiveReferenceUrls.length - 1 : prev - 1));
-        event.stopPropagation();
-        return;
-      }
-      if (key === 'ArrowRight') {
-        setCurrentRefIndex(prev => (prev === effectiveReferenceUrls.length - 1 ? 0 : prev + 1));
-        event.stopPropagation();
-        return;
-      }
-      if (key === 'Escape') {
-        setShowReference(false);
-        return;
-      }
-    }
+    if (referenceViewerOpen) return;
 
-    if (!showReference && canVote) {
+    if (canVote) {
       if (KEYBOARD_SHORTCUTS.A.includes(key)) onVote(leftData.voteVal);
       else if (KEYBOARD_SHORTCUTS.B.includes(key)) onVote(rightData.voteVal);
       else if (allowTie && KEYBOARD_SHORTCUTS.TIE.includes(key)) onVote('Tie');
     }
-  }, [onVote, showReference, effectiveReferenceUrls, leftData.voteVal, rightData.voteVal, canVote, allowTie]);
+  }, [onVote, referenceViewerOpen, leftData.voteVal, rightData.voteVal, canVote, allowTie]);
 
   useEffect(() => {
     window.addEventListener('keydown', handleKeyPress);
@@ -190,24 +135,9 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
 
     const preloadUrls = [nextItem.modelA_Url, nextItem.modelB_Url].filter(Boolean) as string[];
 
-    const nextRefs = (() => {
-      const collected = nextItem.referenceUrls || (() => {
-        if (!nextItem.inputs) return [] as string[];
-        const refs: string[] = [];
-        for (const [key, val] of Object.entries(nextItem.inputs)) {
-          if (isReferenceKey(key)) refs.push(...extractMediaUrls(val));
-        }
-        return refs;
-      })();
-      return collected.length > 0 ? sortReferenceUrls(collected) : undefined;
-    })();
-
-    const nextRefThumbnail = nextRefs ? getReferenceThumbnailUrl(nextRefs) : undefined;
-    if (nextRefThumbnail) {
-      preloadUrls.push(nextRefThumbnail);
-    } else if (nextRefs?.[0]) {
-      preloadUrls.push(nextRefs[0]);
-    }
+    const nextReference = resolveEvaluationReferenceMedia(nextItem)
+      .find(reference => reference.type !== 'audio');
+    if (nextReference) preloadUrls.push(nextReference.url);
 
     preloadUrls.slice(0, allMediaLoaded ? 3 : 1).forEach(preloadMedia);
 
@@ -226,8 +156,7 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
   useEffect(() => {
     mediaCycleKeyRef.current = mediaCycleKey;
     setShowFullPrompt(false);
-    setShowReference(false);
-    setCurrentRefIndex(0);
+    setReferenceViewerOpen(false);
     setLeftLoaded(false);
     setRightLoaded(false);
     setMediaWaitTimedOut(false);
@@ -345,6 +274,7 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
         )}
 
         <div className="min-h-0 flex-1 overflow-auto">
+          <EvaluationReferenceMediaStrip item={item} onViewerOpenChange={setReferenceViewerOpen} />
           <div className="flex h-full min-h-[560px] flex-col gap-4 p-4 md:gap-6 md:p-6 lg:flex-row">
             <div className="ark-vote-card flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden transition-colors hover:border-[var(--accent-cold)]">
               <div className="relative min-h-0 flex-1 overflow-hidden bg-black/55 p-1">
@@ -373,63 +303,6 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
               <div className="hidden lg:block" title="盲测开启：位置已随机打乱">
                 <Shuffle size={14} className="text-slate-200" />
               </div>
-
-              {(hasReferences || effectiveStartImageUrl) && (
-                <div className="flex flex-row gap-4 lg:flex-col">
-                  {effectiveStartImageUrl && (
-                    <div className="relative group">
-                      <button
-                        onClick={() => {
-                          setShowReference(true);
-                          setCurrentRefIndex(-1);
-                        }}
-                        className="relative flex h-16 w-16 items-center justify-center overflow-hidden border-2 border-[var(--accent-cold)] bg-white/5 shadow-md shadow-black/20 transition-all hover:border-[var(--accent)]"
-                        title="查看首帧图"
-                      >
-                        <img src={effectiveStartImageUrl} className="h-full w-full object-cover opacity-80 group-hover:opacity-100" referrerPolicy="no-referrer" />
-                        <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
-                          <Expand size={16} className="text-white" />
-                        </div>
-                      </button>
-                      <div className="absolute -bottom-6 left-1/2 -translate-x-1/2 whitespace-nowrap text-[10px] font-medium text-slate-200">
-                        首帧图
-                      </div>
-                    </div>
-                  )}
-
-                  {hasReferences && (
-                    <div className="relative group">
-                      <button
-                        onClick={() => {
-                          setShowReference(true);
-                          setCurrentRefIndex(0);
-                        }}
-                        className="relative flex h-16 w-16 items-center justify-center overflow-hidden border-2 border-white/15 bg-white/5 shadow-md shadow-black/20 transition-all hover:border-[var(--accent)]"
-                        title="查看参考素材"
-                      >
-                        {referenceThumbnailUrl ? (
-                          <img src={referenceThumbnailUrl} className="h-full w-full object-cover opacity-80 group-hover:opacity-100" referrerPolicy="no-referrer" />
-                        ) : (
-                          <FileAudio className="h-7 w-7 text-amber-300" />
-                        )}
-                        <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
-                          <Expand size={16} className="text-white" />
-                        </div>
-                      </button>
-                      <div className="absolute -bottom-6 left-1/2 -translate-x-1/2 whitespace-nowrap text-[10px] font-medium text-slate-200">
-                        {effectiveReferenceUrls!.length > 1 ? `${effectiveReferenceUrls!.length} 项参考素材` : (referenceThumbnailUrl ? '参考图' : '参考音频')}
-                      </div>
-                      {effectiveReferenceUrls!.length > 1 && (
-                        <div className="absolute -right-2 -top-2 flex h-5 w-5 items-center justify-center rounded-full border border-white bg-[var(--accent-cold)] text-[10px] text-white">
-                          {effectiveReferenceUrls!.length}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {(hasReferences || effectiveStartImageUrl) && <div className="hidden h-8 w-px bg-white/10 lg:block" />}
 
               {allowTie && (
                 <>
@@ -481,62 +354,6 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
         </div>
       </div>
 
-      {showReference && (hasReferences || effectiveStartImageUrl) && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm" onClick={() => setShowReference(false)}>
-          <div className="relative flex h-full w-full max-w-5xl flex-col items-center justify-center p-4" onClick={(event) => event.stopPropagation()}>
-            <div className="relative mb-4 h-[80vh] min-h-0 w-full">
-              <MediaRenderer
-                url={currentRefIndex === -1 ? effectiveStartImageUrl! : effectiveReferenceUrls![currentRefIndex]}
-                isActive={true}
-                className="border-none bg-transparent shadow-none"
-              />
-            </div>
-
-            <div className="flex items-center gap-4 border border-white/10 bg-black/55 px-6 py-3 backdrop-blur-md">
-              {currentRefIndex === -1 ? (
-                <span className="text-sm font-medium text-white">首帧图</span>
-              ) : (
-                <>
-                  {effectiveReferenceUrls && effectiveReferenceUrls.length > 1 && (
-                    <>
-                      <button
-                        onClick={() => setCurrentRefIndex(prev => (prev === 0 ? effectiveReferenceUrls.length - 1 : prev - 1))}
-                        className="glass-panel-hover p-2 text-white transition-colors"
-                        aria-label="上一张参考图"
-                      >
-                        <ArrowLeft size={20} />
-                      </button>
-                      <span className="mx-2 font-mono text-sm text-white">
-                        {currentRefIndex + 1} / {effectiveReferenceUrls.length}
-                      </span>
-                      <button
-                        onClick={() => setCurrentRefIndex(prev => (prev === effectiveReferenceUrls.length - 1 ? 0 : prev + 1))}
-                        className="glass-panel-hover p-2 text-white transition-colors"
-                        aria-label="下一张参考图"
-                      >
-                        <ArrowRight size={20} />
-                      </button>
-                    </>
-                  )}
-                  {effectiveReferenceUrls && effectiveReferenceUrls.length === 1 && (
-                    <span className="text-sm font-medium text-white">
-                      {inferReferenceMediaType(effectiveReferenceUrls[0]) === 'audio' ? '参考音频' : '参考图像'}
-                    </span>
-                  )}
-                </>
-              )}
-            </div>
-
-            <button
-              onClick={() => setShowReference(false)}
-              className="glass-panel-hover absolute right-6 top-6 p-2 text-white/70 transition-colors hover:text-white"
-            >
-              <span className="mr-2 text-sm font-medium">关闭</span>
-              <kbd className="bg-white/10 px-1.5 text-xs">Esc</kbd>
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

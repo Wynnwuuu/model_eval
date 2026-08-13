@@ -755,3 +755,31 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Commit `99d318f` was fast-forward pushed to `world-sim-dev/ManuEval` main without force-pushing. The unrelated dirty `ManuEval-friendly-preflight` worktree remained untouched.
 - Eval Studio Test run `31655632535` passed. Dev CI/CD run `31655632603` passed tests, image build/push, database configuration validation, and Kubernetes rollout.
 - Public health returned successfully, and the deployed frontend bundle contains the retry select-all label, logical-attempt merge label, and skipped-failure prefix. The browser's Feishu session had expired, so the authenticated 78-case production batch was not mutated or claimed as a live interaction check.
+
+## 2026-08-13: Generated result column visibility
+
+### Completed
+
+- Model result columns declared by schema or saved output mappings now display by default, including newly written image, video, audio, and text results.
+- Exact output companion fields ending in `_status`, `_seed`, `_request_id`, `_error`, or `_params_json` now form a separate generation-record group and default hidden. Ordinary metadata with similar names remains visible.
+- Existing per-dataset visibility overrides remain authoritative. Result expand/collapse controls affect only model outputs, while show-all still reveals every manageable column.
+- Reused one shared exact companion-column matcher in dataset presentation and versioned synchronization without changing dataset schemas, generation writeback, task bindings, exports, or APIs.
+
+### Validation
+
+- Passed dataset table projection, synchronization, column deletion, and generation/MCP/seed suites, TypeScript, frontend build, server build, `local:check`, and `git diff --check`.
+- Browser-validated the shared 12-case generated-video dataset: the output column appeared in the table, five generation-record columns showed as `0/5`, show-all/reset-default and output-only expand/collapse behaved correctly, media players mounted, and the console had no errors.
+
+## 2026-08-13: Evaluation reference media strip
+
+### Completed
+
+- Replaced the collapsed reference thumbnail/count entry with one shared full-width strip below the prompt and above candidates in pairwise, Arena-rank, and score/Rubric evaluation screens.
+- Added ordered recursive recovery for `image_urls`, nested `elements`, audio/video fields, first/end frames, saved references, and legacy tasks. URLs are normalized and deduplicated without collecting model outputs or ordinary links from Prompt, notes, descriptions, or nested element text.
+- Images and videos use compact contained previews and an image/video-only fullscreen viewer; audio uses a compact native control. No per-item source names or count badges are rendered.
+- Reference media stays independent from candidate load readiness, uses metadata-only media preload, wraps on narrow screens, and blocks voting shortcuts while the fullscreen viewer is open.
+
+### Validation
+
+- Passed `test:evaluation-reference-media`, `test:arena`, TypeScript, frontend build, server build, and `local:check`.
+- Browser-validated a mixed image/audio/video case on desktop and `390x844`: all three references rendered in source order, audio/video remained paused with metadata preload, the strip wrapped without horizontal overflow, and image/video fullscreen navigation skipped audio and did not trigger voting shortcuts.

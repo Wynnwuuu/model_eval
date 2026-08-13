@@ -400,7 +400,7 @@ For each output column, synchronization explicitly chooses preserve-platform, fi
 
 Dataset synchronization and generation submission take the dataset-row lock first. A stale preflight cannot create a batch after the dataset version changes. Active generation blocks only destructive changes to its selected cases, generation inputs, or target result column; metadata-only edits and unrelated new cases remain allowed.
 
-Column visibility and sorting are presentation state. Output and technical columns default hidden; operators can show individual outputs or all outputs. One-column typed sorting is stable with blanks last and never changes source order, stored order, or generation execution order.
+Column visibility and sorting are presentation state. Model output columns default visible so completed generation results are discoverable immediately. Exact output companion columns (`_status`, `_seed`, `_request_id`, `_error`, and `_params_json`) and system audit columns default hidden, while ordinary business metadata remains visible. Companion columns have their own column-manager group, and output expansion controls never include them. Explicit per-dataset browser preferences still override these defaults. One-column typed sorting is stable with blanks last and never changes source order, stored order, or generation execution order.
 
 Existing datasets may store an imported `case_id` under a mapped display column such as `用例ID`. Current identity therefore resolves through saved column mappings, while historical restoration falls back to the persisted dataset-item `case_key`; new source snapshots still require an exact `case_id` header.
 
@@ -420,3 +420,11 @@ Provider submissions remain separate generation jobs so task IDs, charging ackno
 Retry and skip actions target the latest leaf attempt for each stable dataset item. Server-side family validation prevents stale selections, cross-family items, successful items, and concurrent retries from being acted on.
 
 Selecting "skip / do not retry" is a terminal human resolution. The target media cell stores a recognizable, human-readable, sanitized failure report; companion status/error/request/params fields preserve structured diagnostics. Media preview renders the report as text, and evaluation-task creation excludes failure reports and missing media.
+
+## 2026-08-13: Evaluation reference media is one ordered presentation stream
+
+Reference media is derived at render time from task inputs plus the existing saved `startImageUrl` and `referenceUrls`; it does not change task snapshots, dataset rows, votes, or exports. Input object/array order is authoritative when present, while legacy stored-reference order is the fallback. Normalized URLs are deduplicated without grouping or sorting by media type.
+
+Only explicit media fields and URLs already recorded as references qualify. Prompt, description, note, caption, and nested element text fields are excluded even when they contain web links. Candidate/model outputs are never inspected by the resolver.
+
+All reference images, videos, and audio are visible in a wrapping strip. Per-item source labels are intentionally accessibility-only because imported labels are frequently inaccurate. The fullscreen sequence contains images and videos only; audio remains in its native inline control. Reference loading never participates in candidate readiness or blocks vote submission.

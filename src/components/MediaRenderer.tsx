@@ -12,6 +12,7 @@ interface MediaRendererProps {
   onLoadStatusChange?: (isLoaded: boolean) => void;
   forceType?: 'image' | 'video' | 'audio' | string;
   videoPreload?: 'none' | 'metadata' | 'auto';
+  compact?: boolean;
 }
 
 const REFERRER_POLICY_FALLBACKS = ['no-referrer', 'origin', 'unsafe-url'] as const;
@@ -77,7 +78,8 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
   className = '',
   onLoadStatusChange,
   forceType,
-  videoPreload = 'auto'
+  videoPreload = 'auto',
+  compact = false,
 }) => {
   const sourceUrl = useMemo(() => resolvePlaybackUrl(url), [url]);
   const candidates = useMemo(() => resolveMediaPlaybackCandidates(sourceUrl || ''), [sourceUrl]);
@@ -378,8 +380,8 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
             onKeyDown={(event) => event.stopPropagation()}
           />
         ) : mediaType === 'audio' ? (
-          <div className="flex h-full w-full flex-col items-center justify-center gap-4 p-6">
-            <FileAudio className="h-14 w-14 text-amber-300" />
+          <div className={`flex h-full w-full flex-col items-center justify-center ${compact ? 'gap-2 p-2' : 'gap-4 p-6'}`}>
+            <FileAudio className={`${compact ? 'h-6 w-6' : 'h-14 w-14'} text-amber-300`} />
             <audio
               key={`audio-${mediaRequestKey}`}
               ref={audioRef}
@@ -450,7 +452,7 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
         </div>
       )}
 
-      <div className="absolute bottom-4 right-4 z-20 bg-black/40 backdrop-blur-sm p-1.5 rounded-lg text-white/70 pointer-events-none">
+      <div className={`absolute z-20 bg-black/40 backdrop-blur-sm rounded-lg text-white/70 pointer-events-none ${compact ? 'bottom-2 right-2 p-1' : 'bottom-4 right-4 p-1.5'}`}>
         {mediaType === 'video' ? <FileVideo size={16} /> : mediaType === 'audio' ? <FileAudio size={16} /> : <ImageIcon size={16} />}
       </div>
     </div>
