@@ -901,6 +901,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
           <InsightDashboardPage
             onBack={() => navigate('evaluation')}
             onGoToDashboard={() => navigate('overview')}
+            onOpenTaskResults={(taskId) => navigate('results', { taskId, materialId: taskId, source: 'task' })}
             initialProjectId={routeContext.projectId}
             initialMaterialId={routeContext.materialId || routeContext.taskId}
             initialStatusFilter={routeContext.materialStatusFilter}

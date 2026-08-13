@@ -162,8 +162,8 @@ const InsightTopSummaryPanel: React.FC<InsightTopSummaryPanelProps> = ({ summary
               <p className="mt-2 text-base font-semibold text-slate-200">{summary.basis}</p>
               <p className="mt-1 text-sm leading-6 text-slate-400">{summary.supporting}</p>
             </div>
-            <span className={`border px-3 py-1.5 text-xs font-semibold ${summary.tone === 'success' ? 'border-emerald-400/30 text-emerald-300' : summary.tone === 'warning' ? 'border-orange-400/30 text-orange-300' : 'border-amber-400/30 text-amber-300'}`}>
-              {summary.tone === 'success' ? '证据较明确' : '查看当前结果'}
+            <span className={`border px-3 py-1.5 text-xs font-semibold ${summary.tone === 'success' ? 'border-emerald-400/30 text-emerald-300' : summary.tone === 'warning' ? 'border-orange-400/30 text-orange-300' : 'border-slate-500/40 text-slate-300'}`}>
+              {summary.tone === 'success' ? '证据较明确' : summary.tone === 'warning' ? '需要谨慎解读' : '结果持续更新'}
             </span>
           </div>
           <InsightDistribution summary={summary} />

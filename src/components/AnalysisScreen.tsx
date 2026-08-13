@@ -27,6 +27,7 @@ import {
 import { buildInsightPath, normalizeInsightScope } from '../insightDeepLink';
 import {
   getTaskVoteGroupReviewerKey,
+  getTaskResultTargetId,
   getVoteReviewerKey,
   withTaskVoteGroupReviewer,
 } from '../taskResults';
@@ -34,6 +35,7 @@ import {
 interface AnalysisScreenProps {
   onBack: () => void;
   onGoToDashboard?: () => void;
+  onOpenTaskResults?: (taskId: string) => void;
   initialProjectId?: string;
   initialMaterialId?: string;
   initialStatusFilter?: EvalTask['status'];
@@ -377,6 +379,7 @@ const UNASSIGNED_PROJECT_ID = '__unassigned_project__';
 const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   onBack,
   onGoToDashboard,
+  onOpenTaskResults,
   initialProjectId,
   initialMaterialId,
   initialStatusFilter,
@@ -611,9 +614,9 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   }, [location.pathname, location.search, navigateTo, selectedMaterialScope, selectedProjectId, statusFilter]);
 
   useEffect(() => {
-    if (selectedTaskId && projectMaterials.some(task => task.id === selectedTaskId)) return;
+    if (selectedTaskId && selectedMaterialIds.includes(selectedTaskId)) return;
     setSelectedTaskId(selectedMaterialIds[0] || '');
-  }, [projectMaterials, selectedMaterialIds, selectedTaskId]);
+  }, [selectedMaterialIds, selectedTaskId]);
 
   const loadMaterialResult = async (materialId: string): Promise<ImportedMaterialResult> => {
     const selectedTask = tasks.find(task => task.id === materialId);
@@ -1442,11 +1445,52 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   const selectedMaterialsLabel = selectedMaterialIds.length
     ? analysisScopeMode === 'comparable-group'
       ? `合并 ${selectedMaterialIds.length} 个可比任务`
-      : '查看 1 个单次任务'
+      : '仅汇总 1 个任务'
     : '尚未选择统计对象';
+  const selectedResultTasks = selectedMaterialIds
+    .map(materialId => tasks.find(task => task.id === materialId))
+    .filter((task): task is EvalTask => Boolean(task));
+  const taskResultTargetId = getTaskResultTargetId(selectedResultTasks.map(task => task.id), selectedTaskId);
+  const taskResultTarget = selectedResultTasks.find(task => task.id === taskResultTargetId);
 
   const insightControls = (
     <div className="glass-panel p-4">
+      <div className="mb-4 flex flex-col gap-3 border border-sky-400/20 bg-sky-400/[0.045] px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex min-w-0 items-start gap-3">
+          <Users size={18} className="mt-0.5 shrink-0 text-sky-300" />
+          <div>
+            <div className="text-sm font-semibold text-slate-100">当前页面是项目汇总洞察</div>
+            <p className="mt-1 text-xs leading-5 text-slate-400">
+              这里汇总所选任务的全部评委数据。要分别查看当前账号的“我的结果”和同一任务的“全员汇总”，请打开任务级结果页。
+            </p>
+          </div>
+        </div>
+        {onOpenTaskResults && taskResultTarget && (
+          <div className="flex w-full min-w-0 flex-col gap-2 sm:flex-row sm:items-center lg:w-auto lg:shrink-0">
+            {selectedResultTasks.length > 1 && (
+              <select
+                value={taskResultTarget.id}
+                onChange={event => setSelectedTaskId(event.target.value)}
+                className="glass-input w-full min-w-0 px-3 py-2 text-xs sm:max-w-64"
+                aria-label="选择要查看个人与全员结果的任务"
+              >
+                {selectedResultTasks.map(task => (
+                  <option key={task.id} value={task.id}>{task.name}</option>
+                ))}
+              </select>
+            )}
+            <button
+              type="button"
+              onClick={() => onOpenTaskResults(taskResultTarget.id)}
+              className="inline-flex min-h-10 max-w-full items-center justify-center gap-2 whitespace-normal border border-amber-400 bg-amber-400 px-3 py-2 text-center text-xs font-bold leading-5 text-black transition-colors hover:bg-amber-300"
+            >
+              打开任务结果（我的 / 全员）
+              <ArrowRight size={14} />
+            </button>
+          </div>
+        )}
+      </div>
+
       <div className="grid gap-3 lg:grid-cols-[minmax(220px,0.8fr)_160px_minmax(360px,1.4fr)_auto] lg:items-end">
         <label className="block">
           <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]">选择项目</span>
@@ -1514,7 +1558,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
                 disabled={projectMaterials.length === 0}
                 className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold transition-colors ${analysisScopeMode === 'single-task' ? 'bg-amber-400 text-black' : 'text-slate-300 hover:bg-white/5'} disabled:opacity-40`}
               >
-                <FileText size={13} /> 查看单次任务
+                <FileText size={13} /> 单任务汇总
               </button>
             </div>
             <select
@@ -1558,7 +1602,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
           <ListFilter size={13} className="text-amber-400" />
           {analysisScopeMode === 'comparable-group'
             ? '仅合并评测方式、产物类型和模型组合一致的任务。'
-            : '只查看所选任务，不与其他评测结果合并。'}
+            : '只汇总所选任务的全部评委数据；个人结果请打开任务级结果页。'}
         </span>
       </div>
     </div>
