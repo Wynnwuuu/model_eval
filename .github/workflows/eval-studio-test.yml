@@ -69,6 +69,8 @@ jobs:
 
       - run: npm run test:dataset-sync
 
+      - run: npm run test:projects
+
       - run: npm run build
 
       - run: npm run server:build

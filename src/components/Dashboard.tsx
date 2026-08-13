@@ -14,9 +14,9 @@ export function Dashboard({ projects, onSelectProject }: DashboardProps) {
   const [filterType, setFilterType] = useState<string>('all');
 
   const filteredProjects = projects.filter(p => {
-    const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                          p.initiator.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesType = filterType === 'all' || p.type.includes(filterType);
+    const matchesSearch = (p.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+                          (p.initiator || p.initiatorName || '').toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesType = filterType === 'all' || (p.type || '').includes(filterType);
     return matchesSearch && matchesType;
   });
 
@@ -133,12 +133,12 @@ export function Dashboard({ projects, onSelectProject }: DashboardProps) {
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="text-sm text-slate-100">{project.category}</div>
                     <div className="text-xs text-slate-400 mt-1">
-                      <Badge variant={project.type.includes('重度') ? 'outline' : 'info'}>{project.type}</Badge>
+                      <Badge variant={(project.type || '').includes('重度') ? 'outline' : 'info'}>{project.type || '未分类'}</Badge>
                     </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="text-sm font-medium text-slate-100">{project.initiator}</div>
-                    <div className="text-xs text-slate-400 mt-1">支持: {project.support.join(', ')}</div>
+                    <div className="text-xs text-slate-400 mt-1">支持: {(project.support || []).join(', ') || '无'}</div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-slate-400">
                     {project.cycle}

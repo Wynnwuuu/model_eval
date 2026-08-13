@@ -18,6 +18,7 @@
   "include": [
     "server/**/*.ts",
     "src/types.ts",
+    "src/features/projects/projectContract.ts",
     "src/pageMetadata.ts"
   ]
 }

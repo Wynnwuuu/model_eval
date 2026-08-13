@@ -1,11 +1,11 @@
-import React, { useState } from 'react';
-import { X } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { AlertCircle, Loader2, X } from 'lucide-react';
 import { EvaluationProject, Category, Priority, ProjectType } from '../types';
 
 interface CreateProjectModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSubmit: (project: Partial<EvaluationProject>) => void;
+  onSubmit: (project: Partial<EvaluationProject>) => Promise<EvaluationProject | void>;
 }
 
 export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({ isOpen, onClose, onSubmit }) => {
@@ -17,6 +17,8 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({ isOpen, 
   const [cycle, setCycle] = useState('');
   const [support, setSupport] = useState('');
   const [datasetIds, setDatasetIds] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState('');
 
   // Step owners and execution types
   const [step1Owner, setStep1Owner] = useState('');
@@ -26,40 +28,69 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({ isOpen, 
   const [step3Owner, setStep3Owner] = useState('');
   const [step3Type, setStep3Type] = useState<'internal' | 'external'>('internal');
 
+  useEffect(() => {
+    if (isOpen) setSubmitError('');
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    onSubmit({
-      name,
-      goal,
-      type,
-      priority,
-      category,
-      cycle,
-      support: support.split(',').map(s => s.trim()).filter(s => s),
-      progress: 0,
-      steps: [
-        { id: 1, name: '评测物料生产', owner: step1Owner || '待分配', status: 'in-progress', executionType: step1Type },
-        { id: 2, name: '评测执行', owner: step2Owner || '待分配', status: 'pending', executionType: step2Type },
-        { id: 3, name: '评测结果分析', owner: step3Owner || '待分配', status: 'pending', executionType: step3Type }
-      ],
-      resultSummary: '待产出',
-      link: '',
-      datasetIds: [],
-      dimensions: [],
-      generatedDataStatus: '未开始',
-      analysis: '暂无',
-    });
-    onClose();
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+    setSubmitError('');
+    try {
+      await onSubmit({
+        name,
+        goal,
+        type,
+        priority,
+        category,
+        cycle,
+        support: support.split(',').map(s => s.trim()).filter(s => s),
+        progress: 0,
+        steps: [
+          { id: 1, name: '评测物料生产', owner: step1Owner || '待分配', status: 'in-progress', executionType: step1Type },
+          { id: 2, name: '评测执行', owner: step2Owner || '待分配', status: 'pending', executionType: step2Type },
+          { id: 3, name: '评测结果分析', owner: step3Owner || '待分配', status: 'pending', executionType: step3Type }
+        ],
+        resultSummary: '待产出',
+        link: '',
+        datasetIds: [],
+        dimensions: [],
+        generatedDataStatus: '未开始',
+        analysis: '暂无',
+      });
+      setName('');
+      setGoal('');
+      setCycle('');
+      setSupport('');
+      setDatasetIds('');
+      setStep1Owner('');
+      setStep2Owner('');
+      setStep3Owner('');
+      onClose();
+    } catch (error) {
+      setSubmitError(error instanceof Error && error.message
+        ? `创建失败：${error.message}`
+        : '创建失败，请检查网络或权限后重试。');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md p-4">
       <div className="glass-panel rounded-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh] border border-white/10 shadow-2xl">
         <div className="px-6 py-4 border-b border-white/10 flex justify-between items-center bg-white/5">
-          <h2 className="text-xl font-bold text-slate-200">发起新任务</h2>
-          <button onClick={onClose} className="text-slate-500 hover:text-slate-300 transition-colors">
+          <h2 className="text-xl font-bold text-slate-200">创建项目</h2>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={isSubmitting}
+            className="text-slate-500 hover:text-slate-300 transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+            aria-label="关闭创建项目弹窗"
+          >
             <X size={24} />
           </button>
         </div>
@@ -67,7 +98,7 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({ isOpen, 
         <div className="p-6 overflow-y-auto flex-1 custom-scrollbar">
           <form id="create-project-form" onSubmit={handleSubmit} className="space-y-6">
             <div>
-              <label className="block text-sm font-medium text-slate-400 mb-1.5">任务名称 *</label>
+              <label className="block text-sm font-medium text-slate-400 mb-1.5">项目名称 *</label>
               <input 
                 required
                 type="text" 
@@ -79,7 +110,7 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({ isOpen, 
             </div>
             
             <div>
-              <label className="block text-sm font-medium text-slate-400 mb-1.5">任务目标 *</label>
+              <label className="block text-sm font-medium text-slate-400 mb-1.5">项目目标 *</label>
               <textarea 
                 required
                 value={goal}
@@ -235,21 +266,34 @@ export const CreateProjectModal: React.FC<CreateProjectModalProps> = ({ isOpen, 
           </form>
         </div>
 
-        <div className="px-6 py-4 border-t border-white/10 bg-white/5 flex justify-end gap-3">
-          <button 
-            type="button"
-            onClick={onClose}
-            className="px-5 py-2 text-slate-400 glass-panel-hover hover:text-slate-200 rounded-xl font-medium transition-colors text-sm"
-          >
-            取消
-          </button>
-          <button 
-            type="submit"
-            form="create-project-form"
-            className="px-5 py-2 bg-gradient-accent text-black rounded-xl font-medium shadow-lg shadow-amber-500/20 hover:opacity-90 transition-all text-sm"
-          >
-            创建任务
-          </button>
+        <div className="px-6 py-4 border-t border-white/10 bg-white/5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-h-5 flex-1" role="status" aria-live="polite">
+            {submitError && (
+              <div className="flex items-start gap-2 text-sm text-red-300">
+                <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                <span>{submitError}</span>
+              </div>
+            )}
+          </div>
+          <div className="flex justify-end gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={isSubmitting}
+              className="px-5 py-2 text-slate-400 glass-panel-hover hover:text-slate-200 rounded-xl font-medium transition-colors text-sm disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              取消
+            </button>
+            <button
+              type="submit"
+              form="create-project-form"
+              disabled={isSubmitting}
+              className="px-5 py-2 bg-gradient-accent text-black rounded-xl font-medium shadow-lg shadow-amber-500/20 hover:opacity-90 transition-all text-sm disabled:cursor-wait disabled:opacity-60 flex items-center gap-2"
+            >
+              {isSubmitting && <Loader2 size={16} className="animate-spin" />}
+              {isSubmitting ? '正在创建...' : '创建项目'}
+            </button>
+          </div>
         </div>
       </div>
     </div>

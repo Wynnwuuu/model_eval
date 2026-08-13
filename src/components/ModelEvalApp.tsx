@@ -21,6 +21,7 @@ import { getDefaultEvaluationConfig, getMethodFromParadigm, getParadigmFromMetho
 import { saveTaskUserVotes, loadTaskEvaluation, loadTaskVoteGroups } from '../features/tasks/api';
 import { createVoteItemSnapshot } from '../taskItemSnapshot';
 import { applyArenaAssignmentToItem, assignArenaBattle, buildArenaSessionItems } from '../arenaSampling';
+import { RouteContent, RouteErrorBoundary } from './RouteErrorBoundary';
 
 const STORAGE_KEY = 'modeleval_session';
 const HISTORY_KEY = 'modeleval_history';
@@ -787,7 +788,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
       return (
         <div className="py-6">
           <ProjectListPage
-            initialProject={routeContext.projectId ? activeProject : null}
+            initialProject={routeContext.projectId && activeProject?.id === routeContext.projectId ? activeProject : null}
             initialProjectId={routeContext.projectId}
             onProjectSelect={(project) => {
               setActiveProject(project);
@@ -1041,9 +1042,18 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
       onClearLocalSession={discardSession}
       hasSavedSession={hasSavedSession}
       focusMode={currentRoute === 'voting'}
-      contextTitle={activeProject?.name}
+      contextTitle={currentRoute === 'projects'
+        ? (routeContext.projectId && activeProject?.id === routeContext.projectId ? activeProject.name : undefined)
+        : activeProject?.name}
     >
-      {renderRoute()}
+      <RouteErrorBoundary
+        resetKey={`${currentRoute}:${routeContext.projectId || routeContext.taskId || routeContext.datasetId || ''}`}
+        routeLabel={currentRoute === 'projects' ? '项目页面' : undefined}
+        onBack={() => navigate(currentRoute === 'projects' ? 'projects' : 'overview')}
+        backLabel={currentRoute === 'projects' ? '返回项目列表' : '返回运营总览'}
+      >
+        <RouteContent render={renderRoute} />
+      </RouteErrorBoundary>
       <ConfirmModal
         isOpen={confirmConfig.isOpen}
         title={confirmConfig.title}

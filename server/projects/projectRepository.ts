@@ -2,17 +2,18 @@ import { randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 
 import type { EvaluationProject, EvaluationStep } from '../../src/types.ts';
+import { normalizeEvaluationProject } from '../../src/features/projects/projectContract.ts';
 import type { RequestUser } from '../auth/context.ts';
 import { dbPool } from '../db/client.ts';
 
 type ProjectRow = {
   id: string;
   name: string;
-  category: EvaluationProject['category'];
-  priority: EvaluationProject['priority'];
-  type: EvaluationProject['type'];
-  goal: string;
-  cycle: string;
+  category: EvaluationProject['category'] | null;
+  priority: EvaluationProject['priority'] | null;
+  type: EvaluationProject['type'] | null;
+  goal: string | null;
+  cycle: string | null;
   progress: number;
   result_summary: string | null;
   analysis: string | null;
@@ -45,7 +46,7 @@ const toTimestamp = (date: Date | string | number | null | undefined) => {
 
 const mapProject = (row: ProjectRow, steps: StepRow[]): EvaluationProject => {
   const source = row.source_json || {};
-  return {
+  return normalizeEvaluationProject({
     id: row.id,
     name: row.name,
     category: row.category,
@@ -77,7 +78,7 @@ const mapProject = (row: ProjectRow, steps: StepRow[]): EvaluationProject => {
     analysis: row.analysis || '暂无',
     createdAt: toTimestamp(row.created_at),
     lastUpdated: toTimestamp(row.updated_at),
-  };
+  });
 };
 
 const insertSteps = async (

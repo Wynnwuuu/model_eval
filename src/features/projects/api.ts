@@ -1,13 +1,28 @@
-import { addDoc, collection, deleteDoc, doc, onSnapshot, orderBy, query, updateDoc } from '../../datastore';
+import { addDoc, collection, deleteDoc, doc, getDoc, onSnapshot, orderBy, query, updateDoc } from '../../datastore';
 import { db } from '../../auth';
 import { EvaluationProject } from '../../types';
 import { getApiAuthHeaders } from '../apiAuthHeaders';
 import { API_BASE_URL, USE_SHARED_DATA_SOURCE } from '../../runtimeConfig';
 import { notifyPageMetadataRefresh } from '../../pageMetadataClient';
+import { normalizeEvaluationProject, normalizeEvaluationProjects } from './projectContract';
 
 const HTTP_REFRESH_INTERVAL_MS = 5000;
 
 const projectReloaders = new Set<() => void>();
+
+class ProjectApiError extends Error {
+  status: number;
+  code?: string;
+  details?: unknown;
+
+  constructor(message: string, status: number, code?: string, details?: unknown) {
+    super(message);
+    this.name = 'ProjectApiError';
+    this.status = status;
+    this.code = code;
+    this.details = details;
+  }
+}
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -21,7 +36,12 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const errorBody = await response.json().catch(() => ({}));
-    throw new Error(errorBody.error?.message || errorBody.error || `Request failed: ${response.status}`);
+    throw new ProjectApiError(
+      errorBody.error?.message || errorBody.error || `Request failed: ${response.status}`,
+      response.status,
+      errorBody.error?.code,
+      errorBody.error?.details,
+    );
   }
 
   if (response.status === 204) {
@@ -33,7 +53,7 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 
 async function loadHttpProjects() {
   const response = await requestJson<{ projects: EvaluationProject[] }>('/api/projects');
-  return response.projects;
+  return normalizeEvaluationProjects(response.projects);
 }
 
 function notifyProjectReloaders() {
@@ -70,10 +90,27 @@ export function subscribeProjects(
   return onSnapshot(projectsQuery, (snapshot: any) => {
     const projects: EvaluationProject[] = [];
     snapshot.forEach((docSnap: any) => {
-      projects.push({ id: docSnap.id, ...(docSnap.data() as EvaluationProject) });
+      projects.push(normalizeEvaluationProject({ ...(docSnap.data() || {}), id: docSnap.id }, docSnap.id));
     });
     onNext(projects);
   }, onError);
+}
+
+export async function getProject(projectId: string, signal?: AbortSignal): Promise<EvaluationProject | null> {
+  if (USE_SHARED_DATA_SOURCE) {
+    try {
+      const response = await requestJson<{ project: EvaluationProject }>(`/api/projects/${encodeURIComponent(projectId)}`, { signal });
+      return normalizeEvaluationProject(response.project, projectId);
+    } catch (error) {
+      if (error instanceof ProjectApiError && error.status === 404) return null;
+      throw error;
+    }
+  }
+
+  const snapshot = await getDoc(doc(db, 'projects', projectId));
+  return snapshot.exists
+    ? normalizeEvaluationProject({ ...(snapshot.data() || {}), id: snapshot.id }, snapshot.id)
+    : null;
 }
 
 export async function createProject(project: Partial<EvaluationProject>, user: any) {
@@ -90,17 +127,19 @@ export async function createProject(project: Partial<EvaluationProject>, user: a
       }),
     });
     notifyProjectReloaders();
-    return response.project;
+    return normalizeEvaluationProject(response.project);
   }
 
   const cleanProject = JSON.parse(JSON.stringify(project));
-  return addDoc(collection(db, 'projects'), {
+  const storedProject = {
     ...cleanProject,
     initiatorUid: user.uid,
     initiatorName: user.displayName || user.email || 'Anonymous',
     createdAt: Date.now(),
     lastUpdated: Date.now(),
-  });
+  };
+  const createdRef = await addDoc(collection(db, 'projects'), storedProject);
+  return normalizeEvaluationProject({ ...storedProject, id: createdRef.id }, createdRef.id);
 }
 
 export async function updateProject(projectId: string, patch: Partial<EvaluationProject>) {
@@ -110,10 +149,11 @@ export async function updateProject(projectId: string, patch: Partial<Evaluation
       body: JSON.stringify({ patch }),
     });
     notifyProjectReloaders();
-    return response.project;
+    return normalizeEvaluationProject(response.project, projectId);
   }
 
   await updateDoc(doc(db, 'projects', projectId), patch);
+  return getProject(projectId);
 }
 
 export async function updateProjectSteps(projectId: string, steps: EvaluationProject['steps'], progress: number) {

@@ -119,6 +119,41 @@ const main = async () => {
     });
     assert(project.project.id, 'project was not created');
 
+    const projectDetail = await request<{ project: any }>(`/api/projects/${ids.project}`);
+    assert(projectDetail.project.id === project.project.id, 'created project was not available by id');
+    assert(projectDetail.project.name === project.project.name, 'project detail did not match the create response');
+    assert(Array.isArray(projectDetail.project.steps) && projectDetail.project.steps.length === 3, 'project detail steps were not returned');
+
+    const projectList = await request<{ projects: any[] }>('/api/projects');
+    assert(projectList.projects.some(item => item.id === project.project.id), 'created project was not present in the project list');
+
+    const missingProject = await expectJsonFailure(`/api/projects/missing-${RUN_ID}`, 404);
+    assert(missingProject.error?.code === 'NOT_FOUND', 'missing project did not return the NOT_FOUND contract');
+
+    const normalizedLegacyProject = await request<{ project: any }>(`/api/projects/${ids.project}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        patch: {
+          category: null,
+          priority: null,
+          type: null,
+          goal: null,
+          cycle: null,
+          support: null,
+          datasetIds: null,
+          dimensions: null,
+        },
+      }),
+    });
+    assert(normalizedLegacyProject.project.category === '产品上游模型能力评测', 'null project category was not normalized');
+    assert(normalizedLegacyProject.project.priority === 'P1', 'null project priority was not normalized');
+    assert(normalizedLegacyProject.project.type === '轻度评测 (快速/专项)', 'null project type was not normalized');
+    assert(Array.isArray(normalizedLegacyProject.project.steps), 'project steps were not returned as an array');
+
+    const normalizedLegacyDetail = await request<{ project: any }>(`/api/projects/${ids.project}`);
+    assert(normalizedLegacyDetail.project.goal === '', 'normalized legacy project was not safe after reloading by id');
+    assert(Array.isArray(normalizedLegacyDetail.project.support), 'normalized legacy support was not an array after reloading by id');
+
     const forbidden = await expectJsonFailure(`/api/projects/${ids.project}`, 403, {
       method: 'PATCH',
       headers: {

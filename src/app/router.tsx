@@ -36,7 +36,7 @@ const buildRoutePath = (route: AppRoute, context: RouteContext = {}) => {
     case 'overview':
       return '/';
     case 'projects':
-      return context.projectId ? `/projects/${context.projectId}` : '/projects';
+      return context.projectId ? `/projects/${encodeURIComponent(context.projectId)}` : '/projects';
     case 'datasets':
       return context.datasetId ? `/datasets/${context.datasetId}` : '/datasets';
     case 'templates':
@@ -108,7 +108,7 @@ const routeFromPath = (pathname: string, searchParams: URLSearchParams): { route
   const projectInsights = path.match(/^\/projects\/([^/]+)\/insights$/);
   if (projectInsights) return { route: 'insights', context: { projectId: decodeURIComponent(projectInsights[1]), source: 'dashboard' } };
   const projectDetail = path.match(/^\/projects\/([^/]+)$/);
-  if (projectDetail) return { route: 'projects', context: { projectId: projectDetail[1], source: 'dashboard' } };
+  if (projectDetail) return { route: 'projects', context: { projectId: decodeURIComponent(projectDetail[1]), source: 'dashboard' } };
 
   if (path === '/datasets') return { route: 'datasets' };
   const generationContext = parseGenerationRouteContext(path, searchParams);

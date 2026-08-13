@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Layers, Plus, Search, Filter, Calendar, Users, BarChart2, ArrowRight, Activity, Target, Link as LinkIcon, LogIn, LogOut, X, Edit2, Database, LayoutTemplate, Play, ChevronDown, ChevronRight, FolderOpen, Loader2, Trash2 } from 'lucide-react';
+import { Layers, Plus, Search, Filter, Calendar, Users, BarChart2, ArrowLeft, ArrowRight, Activity, AlertTriangle, Target, Link as LinkIcon, LogIn, LogOut, X, Edit2, Database, LayoutTemplate, Play, ChevronDown, ChevronRight, FolderOpen, Loader2, RefreshCw, Trash2 } from 'lucide-react';
 import { EvalParadigm, EvaluationConfig, EvaluationProject, EvaluationStep, EvaluationItem, EvalTask, TaskVoteGroup } from '../types';
 import { CreateProjectModal } from './CreateProjectModal';
 import { auth, signInWithGoogle, logout } from '../auth';
@@ -8,7 +8,7 @@ import { getEvaluationMethodShortLabel, normalizeEvaluationConfig } from '../eva
 import { deleteTask, loadTaskEvaluation, loadTaskVoteGroups, subscribeTasks } from '../features/tasks/api';
 import { subscribeDatasets } from '../features/datasets/api';
 import { subscribeTemplates } from '../features/templates/api';
-import { createProject, deleteProject, subscribeProjects, updateProject, updateProjectSteps } from '../features/projects/api';
+import { createProject, deleteProject, getProject, subscribeProjects, updateProject, updateProjectSteps } from '../features/projects/api';
 import {
   ProjectResultGroupDigest,
   buildProjectResultGroupDigests,
@@ -40,11 +40,63 @@ const resultPhaseLabel = (phase: ProjectResultGroupDigest['phase']) => {
   return '尚未产生有效结果';
 };
 
+type ProjectDetailLoadStatus = 'idle' | 'loading' | 'ready' | 'not_found' | 'error';
+
+const ProjectDetailRouteState: React.FC<{
+  status: ProjectDetailLoadStatus;
+  error: string;
+  onRetry: () => void;
+  onBack: () => void;
+}> = ({ status, error, onRetry, onBack }) => {
+  const isLoading = status === 'idle' || status === 'loading';
+
+  return (
+    <div className="mx-auto max-w-4xl px-6 py-10">
+      <div className="border border-white/10 bg-[var(--surface-panel)] p-8">
+        {isLoading ? (
+          <div className="flex min-h-72 flex-col items-center justify-center text-center" role="status" aria-live="polite">
+            <Loader2 size={32} className="mb-5 animate-spin text-amber-400" />
+            <h1 className="text-xl font-semibold text-white">正在加载项目</h1>
+            <p className="mt-2 text-sm text-slate-400">正在按项目 ID 读取工作台数据，请稍候。</p>
+          </div>
+        ) : (
+          <div className="flex min-h-72 flex-col items-center justify-center text-center">
+            <AlertTriangle size={36} className={status === 'not_found' ? 'text-amber-400' : 'text-red-400'} />
+            <h1 className="mt-5 text-xl font-semibold text-white">
+              {status === 'not_found' ? '项目不存在或已被删除' : '项目加载失败'}
+            </h1>
+            <p className="mt-3 max-w-xl text-sm leading-6 text-slate-400">
+              {status === 'not_found'
+                ? '当前地址对应的项目无法找到。请确认链接是否完整，或返回项目列表重新选择。'
+                : error || '暂时无法读取该项目，请检查网络后重试。'}
+            </p>
+            <div className="mt-6 flex flex-wrap justify-center gap-3">
+              {status === 'error' && (
+                <button type="button" onClick={onRetry} className="btn-primary">
+                  <RefreshCw size={16} /> 重新加载
+                </button>
+              )}
+              <button type="button" onClick={onBack} className="btn-secondary">
+                <ArrowLeft size={16} /> 返回项目列表
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject, initialProjectId, onProjectSelect, onGoToExecution, onGoToAnalysis, onGoToDatasetRepo, onGoToTemplateRepo, onGoToTaskBuilder }) => {
   const [projects, setProjects] = useState<EvaluationProject[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedProject, setSelectedProject] = useState<EvaluationProject | null>(initialProject || null);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [projectDetailStatus, setProjectDetailStatus] = useState<ProjectDetailLoadStatus>(
+    initialProjectId && initialProject?.id === initialProjectId ? 'ready' : initialProjectId ? 'loading' : 'idle'
+  );
+  const [projectDetailError, setProjectDetailError] = useState('');
+  const [projectDetailReloadKey, setProjectDetailReloadKey] = useState(0);
   const [editingStep, setEditingStep] = useState<{projectId: string, step: EvaluationStep} | null>(null);
   const [user, setUser] = useState<any>(auth.currentUser);
 
@@ -64,6 +116,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
   const [resultDigestError, setResultDigestError] = useState('');
   const [expandedResultGroupId, setExpandedResultGroupId] = useState('');
   const activeResultDigest = projectResultDigests.find(digest => digest.id === expandedResultGroupId) || projectResultDigests[0];
+  const projectDetailId = initialProjectId || initialProject?.id || '';
 
   const selectProject = (project: EvaluationProject | null) => {
     setSelectedProject(project);
@@ -130,7 +183,16 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
   }, [projectTasks, selectedProject?.id, templates]);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user) {
+      setLoading(false);
+      return;
+    }
+    if (projectDetailId) {
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
 
     const unsubscribe = subscribeProjects((loadedProjects) => {
       const fetchedProjects: EvaluationProject[] = [];
@@ -204,40 +266,107 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
     });
 
     return () => unsubscribe();
-  }, [user]);
+  }, [projectDetailId, user]);
 
   useEffect(() => {
-    if (!initialProject?.id && !initialProjectId) {
+    if (!projectDetailId) {
+      setProjectDetailStatus('idle');
+      setProjectDetailError('');
       setSelectedProject(null);
       return;
     }
 
-    if (initialProject?.id && selectedProject?.id !== initialProject.id) {
+    if (!user) return;
+
+    if (initialProject?.id === projectDetailId) {
       setSelectedProject(initialProject);
+      setProjectDetailStatus('ready');
+      setProjectDetailError('');
       return;
     }
 
-    if (initialProjectId && selectedProject?.id !== initialProjectId) {
-      const matchedProject = projects.find(project => project.id === initialProjectId);
-      if (matchedProject) {
-        setSelectedProject(matchedProject);
-      }
+    const controller = new AbortController();
+    let active = true;
+    setSelectedProject(current => current?.id === projectDetailId ? current : null);
+    setProjectDetailStatus('loading');
+    setProjectDetailError('');
+
+    getProject(projectDetailId, controller.signal)
+      .then(project => {
+        if (!active) return;
+        if (!project) {
+          setSelectedProject(null);
+          setProjectDetailStatus('not_found');
+          return;
+        }
+        setSelectedProject(project);
+        setProjectDetailStatus('ready');
+        onProjectSelect?.(project);
+      })
+      .catch(error => {
+        if (!active || (error instanceof DOMException && error.name === 'AbortError')) return;
+        console.error('Error loading project detail:', error);
+        setSelectedProject(null);
+        setProjectDetailStatus('error');
+        setProjectDetailError(error instanceof Error ? error.message : '未知错误');
+      });
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [initialProject?.id, onProjectSelect, projectDetailId, projectDetailReloadKey, user]);
+
+  useEffect(() => {
+    if (projectDetailStatus === 'ready' && selectedProject?.id !== projectDetailId) {
+      setProjectDetailStatus(projectDetailId ? 'loading' : 'idle');
     }
-  }, [initialProject, initialProjectId, projects, selectedProject?.id]);
+  }, [projectDetailId, projectDetailStatus, selectedProject?.id]);
 
   const handleCreateProject = async (projectData: Partial<EvaluationProject>) => {
-    if (!user) return;
-    
+    if (!user) {
+      throw new Error('登录状态已失效，请重新登录后再创建项目。');
+    }
+
     try {
-      await createProject(projectData, user);
+      const createdProject = await createProject(projectData, user);
+      setProjectDetailStatus('ready');
+      setProjectDetailError('');
+      selectProject(createdProject);
+      return createdProject;
     } catch (error) {
-      console.error("Error adding document: ", error);
-      alert("创建任务失败，请检查权限或重试。");
+      console.error('Error creating project:', error);
+      throw error instanceof Error ? error : new Error('创建项目失败，请检查权限或网络后重试。');
     }
   };
 
+  const handleRetryProjectDetail = () => {
+    setProjectDetailReloadKey(current => current + 1);
+  };
+
+  const handleBackToProjectList = () => {
+    selectProject(null);
+  };
+
+  /*
+   * Detail routes load one project directly. The project list subscription remains
+   * isolated to /projects so a slow list refresh cannot blank or replace the detail.
+   */
+  if (projectDetailId && selectedProject?.id !== projectDetailId) {
+    return (
+      <ProjectDetailRouteState
+        status={projectDetailStatus === 'ready' ? 'loading' : projectDetailStatus}
+        error={projectDetailError}
+        onRetry={handleRetryProjectDetail}
+        onBack={handleBackToProjectList}
+      />
+    );
+  }
+
   const handleUpdateStepStatus = async (projectId: string, stepId: number, currentStatus: string) => {
-    const project = projects.find(p => p.id === projectId);
+    const project = selectedProject?.id === projectId
+      ? selectedProject
+      : projects.find(p => p.id === projectId);
     if (!project) return;
 
     // Cycle status: pending -> in-progress -> completed -> pending
@@ -269,7 +398,9 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
   const handleSaveStepEdit = async (updatedStep: EvaluationStep) => {
     if (!editingStep || !user) return;
     
-    const project = projects.find(p => p.id === editingStep.projectId);
+    const project = selectedProject?.id === editingStep.projectId
+      ? selectedProject
+      : projects.find(p => p.id === editingStep.projectId);
     if (!project) return;
 
     const updatedSteps = project.steps.map(s => s.id === updatedStep.id ? updatedStep : s);
@@ -356,7 +487,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
   );
 
   // If a project is selected, show its details
-  if (selectedProject) {
+  if (projectDetailId && selectedProject) {
     return (
       <div className="max-w-7xl mx-auto p-6 animate-in fade-in duration-300">
         <button 
@@ -374,7 +505,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
               <div>
                 <div className="flex items-center gap-3 mb-3">
                   <span className={`px-2.5 py-1 rounded-md text-xs font-semibold border ${
-                    selectedProject.type.includes('重度') ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' : 'bg-blue-500/10 text-blue-400 border-blue-500/20'
+                    (selectedProject.type || '').includes('重度') ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' : 'bg-blue-500/10 text-blue-400 border-blue-500/20'
                   }`}>
                     {selectedProject.type}
                   </span>
@@ -1060,7 +1191,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
                 <div className="flex-1">
                   <div className="flex items-center gap-3 mb-3">
                     <span className="px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider bg-white/5 text-slate-300 border border-white/10">
-                      {project.type.split(' ')[0]}
+                      {project.type?.split(' ')[0] || '未分类'}
                     </span>
                     <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider border ${
                       project.priority === 'P0' ? 'bg-red-500/10 text-red-400 border-red-500/20' : 
@@ -1069,7 +1200,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
                       {project.priority}
                     </span>
                     <span className="text-xs text-slate-300 font-mono">
-                      {new Date(project.createdAt).toLocaleDateString()}
+                      {project.createdAt ? new Date(project.createdAt).toLocaleDateString() : '日期未知'}
                     </span>
                   </div>
                   <h3 className="text-xl font-semibold text-white mb-2 group-hover:text-amber-400 transition-colors">{project.name}</h3>
