@@ -7,7 +7,7 @@
     { "id": "family-actions", "status": "completed", "description": "Retry or skip current leaf attempts across a logical batch family." },
     { "id": "skip-writeback", "status": "completed", "description": "Atomically write a safe full error into the target cell when a case is skipped." },
     { "id": "failure-preview", "status": "completed", "description": "Render failure cells as text and exclude them from human-evaluation task material." },
-    { "id": "release", "status": "in_progress", "description": "Run full regression, browser QA, fast-forward main, and verify dev." }
+    { "id": "release", "status": "completed", "description": "Run full regression, browser QA, fast-forward main, and verify dev." }
   ],
   "constraints": {
     "aion_changes": false,

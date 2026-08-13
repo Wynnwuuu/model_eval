@@ -749,3 +749,9 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Passed generation unit tests, the exact `78 total / 71 success / 7 retry` regression, generation PostgreSQL integration tests, dataset sync (pure and PostgreSQL), clone, column deletion, import mapping, table projection, filters, structured evaluation audit, Arena, rank ties, insight links/summary, page metadata, layout sizing, Worker-disabled API smoke, TypeScript, server build, and frontend production build.
 - Browser QA passed on desktop and 390x844 mobile. The task center showed one root row with two merged physical attempts; root and child deep links opened the same logical family; select-all changed from `0 / 1` to `1 / 1` and enabled retry/skip only after selecting the current failed case; attempt history rendered without console errors.
 - Browser/API QA did not click retry or skip, and `GENERATION_WORKER_ENABLED=false`; no model request or paid generation occurred.
+
+### Release
+
+- Commit `99d318f` was fast-forward pushed to `world-sim-dev/ManuEval` main without force-pushing. The unrelated dirty `ManuEval-friendly-preflight` worktree remained untouched.
+- Eval Studio Test run `31655632535` passed. Dev CI/CD run `31655632603` passed tests, image build/push, database configuration validation, and Kubernetes rollout.
+- Public health returned successfully, and the deployed frontend bundle contains the retry select-all label, logical-attempt merge label, and skipped-failure prefix. The browser's Feishu session had expired, so the authenticated 78-case production batch was not mutated or claimed as a live interaction check.
