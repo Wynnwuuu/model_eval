@@ -727,3 +727,25 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 
 - Passed `test:layout-sizing`, `test:dataset-table-columns`, `test:dataset-filters`, `test:dataset-column-deletion`, TypeScript, frontend build, and server build.
 - Browser-validated navigation/content synchronization, full-height pane hit areas, table header/cell alignment, keyboard resizing, refresh persistence, and shared widths in the production workspace. A temporary local dataset was removed after the checks, and browser console logs were empty.
+# 2026-08-13: Generation retry family and skipped-error writeback
+
+## Release validation in progress
+
+- Started from `github/main@b2c84ab` in an isolated clean worktree. The existing `ManuEval-friendly-preflight` worktree and its uncommitted mapping changes remain untouched.
+- Confirmed the retry failure: the route selects only failed stable item IDs but forwards the parent batch's complete `caseReviews`; preflight correctly rejects reviews outside the selected retry scope.
+- Confirmed retry children already inherit the same target column and fill only empty source cells, but task-center/detail APIs expose children as separate batches.
+- Confirmed a post-writeback skip currently changes only `resolution_status`; the completed writeback lane cannot update the dataset target cell afterward.
+- Validation gate: first add deterministic retry-scope/family/skip-writeback regressions, then run generation, database, dataset, Arena, API, TypeScript, builds, and browser QA. No paid generation is permitted.
+
+### Implemented
+
+- Retry preflight now scopes every stable-ID keyed review and reference-audio duration snapshot to the selected failed cases. Exact server validation remains in place to reject stale or foreign IDs.
+- Retry descendants remain immutable physical attempts for billing and audit, while task-center/detail APIs aggregate the root family by stable item ID and preserve the root case order and target column.
+- Skip acknowledgement writes a sanitized diagnostic into the target cell and companion metadata. Initial writeback and post-writeback incremental versions both use stable IDs and refuse to overwrite non-empty results.
+- Dataset preview renders skipped failures as text. Human-evaluation creation excludes failed or empty media rows, records the excluded stable IDs, and dataset synchronization does not add them back later.
+
+### Validation
+
+- Passed generation unit tests, the exact `78 total / 71 success / 7 retry` regression, generation PostgreSQL integration tests, dataset sync (pure and PostgreSQL), clone, column deletion, import mapping, table projection, filters, structured evaluation audit, Arena, rank ties, insight links/summary, page metadata, layout sizing, Worker-disabled API smoke, TypeScript, server build, and frontend production build.
+- Browser QA passed on desktop and 390x844 mobile. The task center showed one root row with two merged physical attempts; root and child deep links opened the same logical family; select-all changed from `0 / 1` to `1 / 1` and enabled retry/skip only after selecting the current failed case; attempt history rendered without console errors.
+- Browser/API QA did not click retry or skip, and `GENERATION_WORKER_ENABLED=false`; no model request or paid generation occurred.

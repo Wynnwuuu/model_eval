@@ -413,3 +413,10 @@ Repair application uses optimistic concurrency on the Aion configuration fingerp
 Navigation width, dataset repository pane widths, and per-dataset business-column widths are browser-local presentation state. They do not belong to dataset versions, collaboration records, task snapshots, or server APIs. Dataset copies therefore receive independent default widths even though their business content is cloned.
 
 Pointer drags update CSS geometry through `requestAnimationFrame` and commit React state only at the end of the gesture. Dataset columns use a fixed-layout table plus `colgroup`, keeping the header, every cell, and media preview aligned without re-rendering large case tables on every pointer move. Hidden columns retain their preferences; rename and delete operations explicitly migrate or remove the matching local keys.
+# 2026-08-13: Retry attempts are one logical batch, not one physical submission
+
+Provider submissions remain separate generation jobs so task IDs, charging acknowledgements, and ambiguous POST outcomes stay auditable. ManuEval resolves those jobs into one root-batch family for task-center and detail presentation. Worker, lease, polling, and exact writeback code continue to read physical jobs.
+
+Retry and skip actions target the latest leaf attempt for each stable dataset item. Server-side family validation prevents stale selections, cross-family items, successful items, and concurrent retries from being acted on.
+
+Selecting "skip / do not retry" is a terminal human resolution. The target media cell stores a recognizable, human-readable, sanitized failure report; companion status/error/request/params fields preserve structured diagnostics. Media preview renders the report as text, and evaluation-task creation excludes failure reports and missing media.

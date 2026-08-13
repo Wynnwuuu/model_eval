@@ -451,14 +451,22 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     value: reviewDialogRow?.[column],
   }));
   const selectedBatchItems = batch?.items.filter(item => selectedBatchItemIds.includes(item.id)) || [];
-  const selectableBatchItems = batch?.items.filter(item =>
-    ['pending', 'failed', 'submission_unknown', 'cancelled'].includes(item.status)
-    && item.resolutionStatus !== 'retrying') || [];
+  const retryableBatchItems = batch?.items.filter(item =>
+    ['failed', 'submission_unknown', 'cancelled'].includes(item.status)
+    && !['skipped', 'retrying'].includes(item.resolutionStatus || '')) || [];
+  const skippableBatchItems = batch?.items.filter(item =>
+    ['pending', 'failed', 'submission_unknown'].includes(item.status)
+    && !['skipped', 'retrying', 'resolved'].includes(item.resolutionStatus || '')) || [];
+  const selectableBatchItems = batch?.items.filter(item => (
+    retryableBatchItems.some(candidate => candidate.id === item.id)
+    || skippableBatchItems.some(candidate => candidate.id === item.id)
+  )) || [];
   const canSkipSelected = selectedBatchItems.length > 0 && selectedBatchItems.every(item =>
-    ['pending', 'failed', 'submission_unknown'].includes(item.status));
+    ['pending', 'failed', 'submission_unknown'].includes(item.status)
+    && !['skipped', 'retrying', 'resolved'].includes(item.resolutionStatus || ''));
   const canRetrySelected = selectedBatchItems.length > 0 && selectedBatchItems.every(item =>
     ['failed', 'submission_unknown', 'cancelled'].includes(item.status)
-    && item.resolutionStatus !== 'retrying');
+    && !['skipped', 'retrying', 'resolved'].includes(item.resolutionStatus || ''));
   const selectedHasDuplicateBillingRisk = selectedBatchItems.some(item =>
     item.status === 'submission_unknown' || item.error?.code === 'GENERATION_TIMEOUT');
   const selectableBatchSignature = selectableBatchItems.map(item => item.id).join('|');
@@ -2210,13 +2218,17 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                       <label className="flex items-center gap-2 text-xs text-slate-400">
                         <input
                           type="checkbox"
-                          checked={selectableBatchItems.length > 0 && selectedBatchItemIds.length === selectableBatchItems.length}
+                          checked={retryableBatchItems.length > 0 && retryableBatchItems.every(item => selectedBatchItemIds.includes(item.id))}
                           onChange={event => setSelectedBatchItemIds(
-                            event.target.checked ? selectableBatchItems.map(item => item.id) : [],
+                            event.target.checked ? retryableBatchItems.map(item => item.id) : [],
                           )}
-                          disabled={!selectableBatchItems.length}
+                          disabled={!retryableBatchItems.length}
                         />
-                        {'\u5df2\u9009'} {selectedBatchItemIds.length} / {selectableBatchItems.length}
+                        {'\u5168\u9009\u53ef\u91cd\u8bd5\u5931\u8d25\u9879'}
+                        <span className="tabular-nums text-slate-500">
+                          {selectedBatchItemIds.filter(id => retryableBatchItems.some(item => item.id === id)).length}
+                          {' / '}{retryableBatchItems.length}
+                        </span>
                       </label>
                       <div className="flex flex-wrap gap-2">
                         <button type="button" disabled={busy || !canSkipSelected} onClick={() => { void skipSelectedItems(); }} className="inline-flex items-center gap-2 rounded-md border border-amber-400/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-100 disabled:opacity-30">
@@ -2226,12 +2238,12 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                           <RefreshCw size={13} /> {'\u91cd\u8bd5\u9009\u4e2d case'}
                         </button>
                       </div>
+                    </div>
                     {batch.items.some(item => ['submitting', 'submitted', 'processing', 'reconciling', 'archiving'].includes(item.status)) && (
                       <div className="mb-3 text-xs text-slate-500">
                         {'\u8fd0\u884c\u4e2d\u548c\u5f52\u6863\u4e2d\u7684 case \u4e0d\u80fd\u8df3\u8fc7\uff1aAion \u6682\u65e0\u901a\u7528\u53d6\u6d88\u63a5\u53e3\uff0c\u5df2\u63d0\u4ea4\u4efb\u52a1\u4f1a\u7ee7\u7eed\u8f6e\u8be2\u5e76\u5f52\u6863\u3002'}
                       </div>
                     )}
-                    </div>
                     <div className="max-h-[380px] overflow-auto border border-white/10">
                       {batch.items.map(item => {
                         const isSelectable = selectableBatchItems.some(candidate => candidate.id === item.id);
@@ -2272,6 +2284,11 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                               {item.resolutionStatus === 'retrying' && (
                                 <div className="mt-1 text-blue-300">{'\u5df2\u5efa\u7acb retry \u6279\u6b21'}</div>
                               )}
+                              {(item.attemptCount || 1) > 1 && (
+                                <div className="mt-1 text-sky-300">
+                                  {'\u5df2\u5c1d\u8bd5'} {item.attemptCount} {'\u6b21'}
+                                </div>
+                              )}
                             </div>
                             <div className="min-w-0 break-words text-slate-400">
                               {receivedAionError && (
@@ -2303,6 +2320,20 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                                   {' / \u5df2\u8fd0\u884c'} {formatElapsed(clock - startedAt)}
                                   {' / \u5360\u7528'} {batch.modelConfig.outputModality === 'video' ? '\u89c6\u9891' : '\u56fe\u7247'} {'\u69fd\u4f4d'}
                                 </div>
+                              )}
+                              {(item.attemptHistory?.length || 0) > 1 && (
+                                <details className="mt-2 border-t border-white/5 pt-2 text-[11px] text-slate-500">
+                                  <summary className="cursor-pointer text-slate-400">{'\u67e5\u770b\u5386\u6b21\u5c1d\u8bd5'}</summary>
+                                  <div className="mt-2 space-y-1.5">
+                                    {item.attemptHistory!.map((attempt, attemptIndex) => (
+                                      <div key={attempt.itemId} className="grid gap-1 md:grid-cols-[56px_80px_minmax(0,1fr)]">
+                                        <span>{'\u7b2c'} {attemptIndex + 1} {'\u6b21'}</span>
+                                        <span>{statusLabel(attempt.status)}</span>
+                                        <span className="break-words">{attempt.error?.message || attempt.providerTaskId || attempt.resultUrl || '-'}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </details>
                               )}
                               {providerActive && item.timeoutAt && (
                                 <div className="mt-1 text-slate-500">

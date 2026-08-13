@@ -398,7 +398,11 @@ const GenerationTaskCenter: React.FC<GenerationTaskCenterProps> = ({
                 </td>
                 <td className="px-4 py-3 text-xs">
                   <div className="flex items-center gap-1.5 text-slate-300"><Clock3 size={13} /> {queueReason(job, queue)}</div>
-                  {!!job.retryOfJobId && <div className="mt-1 text-slate-500">Retry {'\u5b50\u6279\u6b21'}</div>}
+                  {(job.physicalBatchCount || 1) > 1 && (
+                    <div className="mt-1 text-slate-500">
+                      {'\u5df2\u5408\u5e76'} {job.physicalBatchCount} {'\u6b21\u751f\u6210\u5c1d\u8bd5'}
+                    </div>
+                  )}
                 </td>
                 <td className="px-4 py-3 text-xs text-slate-400">{job.createdBy || job.createdByUid || '-'}</td>
                 <td className="px-4 py-3 text-xs text-slate-400">{formatTime(job.updatedAt)}</td>

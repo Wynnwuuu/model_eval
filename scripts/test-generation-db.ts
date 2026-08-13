@@ -14,12 +14,13 @@ import {
   findGenerationWritebackCandidate,
   listGenerationJobEvents,
   getGenerationBatch,
+  getGenerationBatchFamily,
   getGenerationQueueState,
   refreshGenerationJob,
   releaseGenerationItemLease,
   requestGenerationCancellation,
   saveGenerationPreflight,
-  skipGenerationItems,
+  skipGenerationFamilyItems,
   renewGenerationItemLease,
   updateGenerationItem,
   type StoredGenerationPreflight,
@@ -30,7 +31,11 @@ import {
   markAdaptiveGenerationSubmissionAccepted,
   recordAdaptiveGenerationSubmissionOutcome,
 } from '../server/generation/generationAdaptiveCapacityRepository.ts';
-import { writeGenerationBatchToDataset } from '../server/generation/generationWritebackService.ts';
+import {
+  skipGenerationFamilyItemsWithWriteback,
+  writeGenerationBatchToDataset,
+} from '../server/generation/generationWritebackService.ts';
+import { isGenerationFailureCell } from '../src/features/generation/generationFailureCell.ts';
 import { DATASET_ITEM_ID_KEY } from '../src/datasetSync.ts';
 import type { EvalDataset } from '../src/types.ts';
 
@@ -300,13 +305,15 @@ try {
     error: { code: 'PROVIDER_FAILED', message: 'Provider returned a terminal failure.' },
     finishedAt: Date.now(),
   });
-  await skipGenerationItems(
+  const skippedPhysicalJobs = await skipGenerationFamilyItems(
     skipJob.id,
     skipBefore!.items.map(item => item.id),
     teammate,
   );
+  assert.deepEqual(skippedPhysicalJobs, [skipJob.id]);
   await refreshGenerationJob(skipJob.id);
   const skipAfter = await getGenerationBatch(skipJob.id, teammate.organizationId);
+  const logicalSkipAfter = await getGenerationBatchFamily(skipJob.id, teammate.organizationId);
   assert.equal(skipAfter?.items[0].status, 'cancelled');
   assert.equal(skipAfter?.items[0].resolutionStatus, 'skipped');
   assert.equal(skipAfter?.items[1].status, 'failed');
@@ -334,7 +341,7 @@ try {
   const filteredJobs = await listGenerationJobs({
     organizationId: 'default',
     datasetId,
-    status: skipAfter!.status,
+    status: logicalSkipAfter!.status,
     createdBy: 'Generation DB Test',
   });
   assert.ok(filteredJobs.jobs.some(job => job.id === skipJob.id));
@@ -348,6 +355,11 @@ try {
   assert.ok(skipEvents.some(event =>
     event.action === 'items_skipped' && event.actorId === teammate.id));
   assert.equal(await writeGenerationBatchToDataset(skipJob.id), true);
+  const skippedInitialWriteback = (await getDataset(datasetId))!;
+  assert.equal(isGenerationFailureCell(skippedInitialWriteback.items[0].skip_result), true);
+  assert.equal(isGenerationFailureCell(skippedInitialWriteback.items[1].skip_result), true);
+  assert.equal(skippedInitialWriteback.items[0].skip_result_status, 'skipped');
+  assert.match(String(skippedInitialWriteback.items[1].skip_result), /PROVIDER_FAILED/);
 
   const retryBaseDataset = (await getDataset(datasetId))!;
   const retryParentPreflight = createPreflightRecord(
@@ -429,10 +441,187 @@ try {
   );
   assert.equal(await writeGenerationBatchToDataset(retryParent.id), true);
   assert.equal(await writeGenerationBatchToDataset(retryChild.id), true);
+  const logicalRetryFamily = await getGenerationBatchFamily(retryChild.id, user.organizationId);
+  assert.equal(logicalRetryFamily?.id, retryParent.id);
+  assert.equal(logicalRetryFamily?.rootBatchId, retryParent.id);
+  assert.equal(logicalRetryFamily?.status, 'completed');
+  assert.equal(logicalRetryFamily?.succeeded, 1);
+  assert.equal(logicalRetryFamily?.failed, 0);
+  assert.equal(logicalRetryFamily?.items[0]?.id, retryChildBatch!.items[0].id);
+  assert.equal(logicalRetryFamily?.items[0]?.attemptCount, 2);
+  const logicalJobsAfterRetry = await listGenerationJobs({
+    organizationId: user.organizationId,
+    datasetId,
+    limit: 100,
+  });
+  assert.ok(logicalJobsAfterRetry.jobs.some(job => job.id === retryParent.id));
+  assert.equal(logicalJobsAfterRetry.jobs.some(job => job.id === retryChild.id), false);
   const retryWrittenDataset = await getDataset(datasetId);
   assert.equal(retryWrittenDataset?.items[0].retry_result, 'https://example.com/retry-result.png');
   const retryResolvedParent = await getGenerationBatch(retryParent.id);
   assert.equal(retryResolvedParent?.items[0].resolutionStatus, 'resolved');
+
+  const retryTwiceDataset = (await getDataset(datasetId))!;
+  const retryTwiceParentPreflight = createPreflightRecord(
+    retryTwiceDataset,
+    'retry_twice_result',
+    `request-${suffix}-retry-twice-parent`,
+  );
+  await saveGenerationPreflight(retryTwiceParentPreflight);
+  const retryTwiceParent = await createGenerationBatchFromPreflight(retryTwiceParentPreflight, user);
+  const retryTwiceParentBatch = await getGenerationBatch(retryTwiceParent.id);
+  const retryTwiceParentItem = retryTwiceParentBatch!.items[0];
+  await updateGenerationItem(retryTwiceParentItem.id, {
+    status: 'failed',
+    error: { code: 'FIRST_FAILURE', message: 'The first attempt failed.' },
+    finishedAt: Date.now(),
+  });
+  await refreshGenerationJob(retryTwiceParent.id);
+
+  const retryTwiceChildPreflight = createPreflightRecord(
+    retryTwiceDataset,
+    'retry_twice_result',
+    `request-${suffix}-retry-twice-child`,
+  );
+  retryTwiceChildPreflight.payload.retryOfJobId = retryTwiceParent.id;
+  retryTwiceChildPreflight.payload.retrySourceItemIds = {
+    [retryTwiceParentItem.datasetItemId]: retryTwiceParentItem.id,
+  };
+  await saveGenerationPreflight(retryTwiceChildPreflight);
+  const retryTwiceChild = await createGenerationBatchFromPreflight(retryTwiceChildPreflight, teammate);
+  const retryTwiceChildBatch = await getGenerationBatch(retryTwiceChild.id);
+  const retryTwiceChildItem = retryTwiceChildBatch!.items[0];
+  await updateGenerationItem(retryTwiceChildItem.id, {
+    status: 'failed',
+    error: { code: 'SECOND_FAILURE', message: 'The second attempt also failed.' },
+    finishedAt: Date.now(),
+  });
+  await refreshGenerationJob(retryTwiceChild.id);
+  assert.equal(await writeGenerationBatchToDataset(retryTwiceParent.id), true);
+  assert.equal(await writeGenerationBatchToDataset(retryTwiceChild.id), true);
+  const twiceFailedFamily = await getGenerationBatchFamily(retryTwiceChild.id, user.organizationId);
+  assert.equal(twiceFailedFamily?.status, 'failed');
+  assert.equal(twiceFailedFamily?.items[0]?.id, retryTwiceChildItem.id);
+  assert.equal(twiceFailedFamily?.items[0]?.attemptCount, 2);
+
+  const retryTwiceGrandchildDataset = (await getDataset(datasetId))!;
+  const retryTwiceGrandchildPreflight = createPreflightRecord(
+    retryTwiceGrandchildDataset,
+    'retry_twice_result',
+    `request-${suffix}-retry-twice-grandchild`,
+  );
+  retryTwiceGrandchildPreflight.payload.retryOfJobId = retryTwiceParent.id;
+  retryTwiceGrandchildPreflight.payload.retrySourceItemIds = {
+    [retryTwiceChildItem.datasetItemId]: retryTwiceChildItem.id,
+  };
+  await saveGenerationPreflight(retryTwiceGrandchildPreflight);
+  const retryTwiceGrandchild = await createGenerationBatchFromPreflight(
+    retryTwiceGrandchildPreflight,
+    teammate,
+  );
+  const retryTwiceGrandchildBatch = await getGenerationBatch(retryTwiceGrandchild.id);
+  assert.equal(retryTwiceGrandchildBatch?.retryOfJobId, retryTwiceParent.id);
+  assert.equal(retryTwiceGrandchildBatch?.items[0].retryOfItemId, retryTwiceChildItem.id);
+  await updateGenerationItem(retryTwiceGrandchildBatch!.items[0].id, {
+    status: 'succeeded',
+    result: {
+      resultUrl: 'https://example.com/retry-twice-result.png',
+      mediaType: 'image',
+      durability: 'temporary',
+    },
+    finishedAt: Date.now(),
+  });
+  await refreshGenerationJob(retryTwiceGrandchild.id);
+  assert.equal(await writeGenerationBatchToDataset(retryTwiceGrandchild.id), true);
+  const retryTwiceFamily = await getGenerationBatchFamily(retryTwiceParent.id, user.organizationId);
+  assert.equal(retryTwiceFamily?.status, 'completed');
+  assert.equal(retryTwiceFamily?.items[0]?.id, retryTwiceGrandchildBatch!.items[0].id);
+  assert.equal(retryTwiceFamily?.items[0]?.attemptCount, 3);
+  assert.equal((await getDataset(datasetId))?.items[0].retry_twice_result,
+    'https://example.com/retry-twice-result.png');
+
+  const skippedErrorDataset = (await getDataset(datasetId))!;
+  const skippedErrorPreflight = createPreflightRecord(
+    skippedErrorDataset,
+    'skipped_error_result',
+    `request-${suffix}-skipped-error`,
+  );
+  await saveGenerationPreflight(skippedErrorPreflight);
+  const skippedErrorJob = await createGenerationBatchFromPreflight(skippedErrorPreflight, user);
+  const skippedErrorBatch = await getGenerationBatch(skippedErrorJob.id);
+  const skippedErrorItem = skippedErrorBatch!.items[0];
+  await updateGenerationItem(skippedErrorItem.id, {
+    status: 'failed',
+    providerTaskId: 'provider-task-safe',
+    error: {
+      code: 'AION_SUBMIT_REJECTED',
+      message: 'Rejected https://provider.example.com/result.mp4?X-Signature=must-not-leak',
+      httpStatus: 400,
+      errorType: 'validation_error',
+      errorCode: 'invalid_parameter',
+      responseReceived: true,
+    },
+    finishedAt: Date.now(),
+  });
+  await refreshGenerationJob(skippedErrorJob.id);
+  assert.equal(await writeGenerationBatchToDataset(skippedErrorJob.id), true);
+  const beforeSkippedError = (await getDataset(datasetId))!;
+  assert.equal(beforeSkippedError.items[0].skipped_error_result, undefined);
+  const skippedResult = await skipGenerationFamilyItemsWithWriteback(
+    skippedErrorJob.id,
+    [skippedErrorItem.id],
+    teammate,
+  );
+  assert.equal(skippedResult.handled, true);
+  const afterSkippedError = (await getDataset(datasetId))!;
+  assert.equal(afterSkippedError.version, (beforeSkippedError.version || 0) + 1);
+  assert.equal(isGenerationFailureCell(afterSkippedError.items[0].skipped_error_result), true);
+  assert.match(String(afterSkippedError.items[0].skipped_error_result), /invalid_parameter/);
+  assert.doesNotMatch(String(afterSkippedError.items[0].skipped_error_result), /must-not-leak/);
+  assert.equal(afterSkippedError.items[0].skipped_error_result_status, 'skipped');
+  assert.equal(isGenerationFailureCell(afterSkippedError.items[0].skipped_error_result_error), true);
+  assert.doesNotMatch(String(afterSkippedError.items[0].skipped_error_result_params_json), /must-not-leak/);
+  assert.match(String(afterSkippedError.items[0].skipped_error_result_params_json), /\?\[redacted\]/);
+  const afterSkippedErrorBatch = await getGenerationBatchFamily(skippedErrorJob.id, user.organizationId);
+  assert.equal(afterSkippedErrorBatch?.items[0]?.resolutionStatus, 'skipped');
+  assert.equal(afterSkippedErrorBatch?.skipped, 1);
+  await assert.rejects(
+    skipGenerationFamilyItemsWithWriteback(skippedErrorJob.id, [skippedErrorItem.id], teammate),
+    /not currently skippable|not current attempts/,
+  );
+
+  const conflictedSkipDataset = (await getDataset(datasetId))!;
+  const conflictedSkipPreflight = createPreflightRecord(
+    conflictedSkipDataset,
+    'conflicted_skip_result',
+    `request-${suffix}-conflicted-skip`,
+  );
+  await saveGenerationPreflight(conflictedSkipPreflight);
+  const conflictedSkipJob = await createGenerationBatchFromPreflight(conflictedSkipPreflight, user);
+  const conflictedSkipBatch = await getGenerationBatch(conflictedSkipJob.id);
+  const conflictedSkipItem = conflictedSkipBatch!.items[0];
+  await updateGenerationItem(conflictedSkipItem.id, {
+    status: 'failed',
+    error: { code: 'CONFLICT_TEST_FAILURE', message: 'Failure before a writeback conflict.' },
+    finishedAt: Date.now(),
+  });
+  await refreshGenerationJob(conflictedSkipJob.id);
+  assert.equal(await writeGenerationBatchToDataset(conflictedSkipJob.id), true);
+  await dbPool.query(
+    `UPDATE generation_jobs SET writeback_status = 'conflict', updated_at = now() WHERE id = $1`,
+    [conflictedSkipJob.id],
+  );
+  await assert.rejects(
+    skipGenerationFamilyItemsWithWriteback(
+      conflictedSkipJob.id,
+      [conflictedSkipItem.id],
+      teammate,
+    ),
+    /writeback is unavailable/,
+  );
+  const conflictedSkipAfter = await getGenerationBatch(conflictedSkipJob.id);
+  assert.notEqual(conflictedSkipAfter?.items[0].resolutionStatus, 'skipped',
+    'a writeback conflict must not commit the skip acknowledgement');
 
   const unknownPreflight = createPreflightRecord(
     (await getDataset(datasetId))!,

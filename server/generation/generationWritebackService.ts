@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { DATASET_ITEM_ID_KEY } from '../../src/datasetSync.ts';
 import {
   DATASET_RESULT_META_KEY,
@@ -6,15 +8,31 @@ import {
   type DatasetResultFreshnessMap,
 } from '../../src/datasetVersionedSync.ts';
 import type { DatasetSchemaField, EvalDataset } from '../../src/types.ts';
+import {
+  formatGenerationFailureCell,
+  sanitizeGenerationFailureError,
+} from '../../src/features/generation/generationFailureCell.ts';
 import type { RequestUser } from '../auth/context.ts';
 import { getDataset, getDatasetVersion, saveDataset } from '../datasets/datasetRepository.ts';
+import { conflict } from '../http/errors.ts';
 import {
   claimGenerationWriteback,
   finishGenerationWriteback,
   getGenerationBatch,
+  getGenerationBatchFamily,
 } from './generationExecutionRepository.ts';
 
 const terminalItemStatuses = new Set(['succeeded', 'failed', 'submission_unknown', 'cancelled']);
+
+const skippedStatus = (item: { resolutionStatus?: string; status: string }) => (
+  item.resolutionStatus === 'skipped' ? 'skipped' : item.status
+);
+
+const itemErrorMessage = (item: { error?: { message?: string }; resolutionStatus?: string }) => (
+  item.resolutionStatus === 'skipped'
+    ? formatGenerationFailureCell(item as any)
+    : item.error?.message || ''
+);
 
 const metadataFields = (targetColumn: string): DatasetSchemaField[] => [
   {
@@ -122,10 +140,11 @@ export const writeGenerationBatchToDataset = async (jobId: string) => {
       if (!currentRow) continue;
       const row = nextItems[currentRow.index];
       if (item.status === 'succeeded') row[batch.targetColumn] = item.resultUrl || '';
-      row[`${batch.targetColumn}_status`] = item.status;
+      if (item.resolutionStatus === 'skipped') row[batch.targetColumn] = formatGenerationFailureCell(item);
+      row[`${batch.targetColumn}_status`] = skippedStatus(item);
       row[`${batch.targetColumn}_seed`] = item.seed ?? '';
       row[`${batch.targetColumn}_request_id`] = item.providerTaskId || item.id;
-      row[`${batch.targetColumn}_error`] = item.error?.message || '';
+      row[`${batch.targetColumn}_error`] = itemErrorMessage(item);
       row[`${batch.targetColumn}_params_json`] = JSON.stringify({
         modelName: batch.modelConfig.modelName,
         displayName: batch.modelConfig.displayName,
@@ -137,6 +156,10 @@ export const writeGenerationBatchToDataset = async (jobId: string) => {
         seed: item.seed,
         originalResultUrl: item.originalResultUrl,
         durability: item.durability,
+        resolutionStatus: item.resolutionStatus,
+        error: item.resolutionStatus === 'skipped'
+          ? sanitizeGenerationFailureError(item.error)
+          : item.error || undefined,
       });
       if (item.status === 'succeeded' && row[batch.targetColumn]) {
         const sourceRow = sourceRowsByStableId.get(String(item.datasetItemId || '')) || row;
@@ -233,4 +256,152 @@ export const writeGenerationBatchToDataset = async (jobId: string) => {
     });
     return false;
   }
+};
+
+export const skipGenerationFamilyItemsWithWriteback = async (
+  jobId: string,
+  itemIds: string[],
+  user: RequestUser,
+) => {
+  const family = await getGenerationBatchFamily(jobId, user.organizationId);
+  if (!family) throw new Error('Generation batch was not found.');
+  const uniqueItemIds = [...new Set(itemIds.filter(Boolean))];
+  const selected = uniqueItemIds.map(itemId => family.items.find(item => item.id === itemId));
+  if (!uniqueItemIds.length || selected.some(item => !item)) {
+    throw conflict('One or more selected cases are not current attempts in this batch. Refresh and try again.');
+  }
+  const items = selected.filter(Boolean) as typeof family.items;
+  const invalid = items.filter(item => (
+    !['pending', 'failed', 'submission_unknown'].includes(item.status)
+    || ['skipped', 'retrying', 'resolved'].includes(item.resolutionStatus || '')
+  ));
+  if (invalid.length) {
+    throw conflict('One or more selected cases are not currently skippable. Refresh and try again.', {
+      itemIds: invalid.map(item => item.id),
+    });
+  }
+  if (family.writebackStatus === 'conflict' || family.writebackStatus === 'failed') {
+    throw conflict('Dataset writeback is unavailable for this batch. Resolve the writeback error before skipping cases.');
+  }
+  if (family.writebackStatus !== 'completed') return { handled: false as const };
+
+  const current = await getDataset(family.datasetId);
+  if (!current) throw new Error('Target dataset was not found during skip writeback.');
+  const rowsByStableId = new Map(current.items.map((row, index) => [
+    String(row[DATASET_ITEM_ID_KEY] || ''),
+    { row, index },
+  ]));
+  const nextItems = current.items.map(row => ({ ...row }));
+  for (const item of items) {
+    const currentRow = rowsByStableId.get(String(item.datasetItemId || ''));
+    if (!currentRow) throw conflict('A selected case no longer exists in the current dataset.', {
+      datasetItemId: item.datasetItemId,
+    });
+    const existing = String(currentRow.row[family.targetColumn] ?? '').trim();
+    if (existing) throw conflict('A selected case already has a result and cannot be skipped.', {
+      datasetItemId: item.datasetItemId,
+    });
+    const row = nextItems[currentRow.index];
+    const skippedItem = { ...item, resolutionStatus: 'skipped' as const };
+    const failureText = formatGenerationFailureCell(skippedItem);
+    row[family.targetColumn] = failureText;
+    row[`${family.targetColumn}_status`] = 'skipped';
+    row[`${family.targetColumn}_seed`] = item.seed ?? '';
+    row[`${family.targetColumn}_request_id`] = item.providerJobId || item.requestId || item.id;
+    row[`${family.targetColumn}_error`] = failureText;
+    row[`${family.targetColumn}_params_json`] = JSON.stringify({
+      modelName: family.modelConfig.modelName,
+      displayName: family.modelConfig.displayName,
+      provider: family.modelConfig.provider,
+      configFingerprint: family.modelConfig.configFingerprint,
+      generationType: item.resolvedInputs?.generationType,
+      controls: item.resolvedControls || {},
+      duration: item.resolvedInputs?.durationResolution,
+      seed: item.seed,
+      resolutionStatus: 'skipped',
+      error: sanitizeGenerationFailureError(item.error),
+      attemptCount: item.attemptCount || 1,
+    });
+  }
+
+  const now = Date.now();
+  const version = (current.version || 0) + 1;
+  const changeSummary = `Generation batch ${family.rootBatchId || family.id} recorded ${items.length} skipped case${items.length === 1 ? '' : 's'} in ${family.targetColumn}.`;
+  const next: EvalDataset = {
+    ...current,
+    items: nextItems,
+    version,
+    versionHistory: [
+      ...(current.versionHistory || []),
+      {
+        version,
+        changedAt: now,
+        changedBy: user.displayName || user.id,
+        changeSummary,
+        itemCountBefore: current.items.length,
+        itemCountAfter: nextItems.length,
+      },
+    ],
+    datasetCard: current.datasetCard ? {
+      ...current.datasetCard,
+      latestChange: changeSummary,
+      updatedAt: now,
+    } : current.datasetCard,
+    updatedAt: now,
+  };
+  const saved = await saveDataset(next, user.id, {
+    expectedVersion: current.version || 1,
+    forcePropagation: true,
+    beforePersist: async client => {
+      const lockedItems = await client.query(
+        `
+          SELECT item.id, item.status, item.resolution_status
+          FROM generation_job_items item
+          JOIN generation_jobs job ON job.id = item.job_id
+          JOIN datasets dataset ON dataset.id = job.dataset_id
+          WHERE item.id = ANY($1::text[])
+            AND dataset.organization_id = $2
+          FOR UPDATE OF item
+        `,
+        [uniqueItemIds, user.organizationId],
+      );
+      const stillValid = lockedItems.rowCount === uniqueItemIds.length
+        && lockedItems.rows.every(row => (
+          ['pending', 'failed', 'submission_unknown'].includes(row.status)
+          && !['skipped', 'retrying', 'resolved'].includes(row.resolution_status || '')
+        ));
+      if (!stillValid) throw conflict('Case status changed. Refresh the task before trying again.');
+      await client.query(
+        `
+          UPDATE generation_job_items
+          SET status = CASE WHEN status = 'pending' THEN 'cancelled' ELSE status END,
+              resolution_status = 'skipped',
+              resolution_by = $2,
+              resolution_at = now(),
+              finished_at = CASE WHEN status = 'pending' THEN now() ELSE finished_at END,
+              updated_at = now()
+          WHERE id = ANY($1::text[])
+        `,
+        [uniqueItemIds, user.id],
+      );
+      await client.query(
+        `
+          INSERT INTO generation_job_events (
+            id, organization_id, job_id, action, item_ids_json, actor_id, actor_name, details_json
+          )
+          VALUES ($1, $2, $3, 'items_skipped', $4::jsonb, $5, $6, $7::jsonb)
+        `,
+        [
+          `gen-event-${randomUUID()}`,
+          user.organizationId,
+          family.rootBatchId || family.id,
+          JSON.stringify(uniqueItemIds),
+          user.id,
+          user.displayName,
+          JSON.stringify({ datasetVersion: version, targetColumn: family.targetColumn }),
+        ],
+      );
+    },
+  });
+  return { handled: true as const, datasetVersion: saved.version };
 };

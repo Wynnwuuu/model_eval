@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { ArrowLeft, Plus, Save, Trash2, Database, LayoutTemplate, Box, CheckCircle2, Play, Link as LinkIcon, Upload, X, Users, Edit, Eye, Loader2, ClipboardList } from 'lucide-react';
 import { EvalDataset, EvalTemplate, EvalTask, EvalDimension, EvalParadigm, EvaluationConfig, EvaluationItem, EvaluationMethod, EvaluationProject } from '../types';
 import { db, auth } from '../auth';
@@ -41,6 +41,7 @@ import {
   normalizeEvaluationConfig,
   normalizeDimensions
 } from '../evaluationMethods';
+import { partitionGenerationEvaluationRows } from '../features/generation/generationFailureCell';
 
 interface TaskBuilderScreenProps {
   projectId?: string;
@@ -197,6 +198,15 @@ export default function TaskBuilderScreen({
   const [newTemplateParadigm, setNewTemplateParadigm] = useState<EvalParadigm>('GSB');
   const [taskToDelete, setTaskToDelete] = useState<string | null>(null);
   const isBenchmarkPreview = isPreviewMethod(evaluationConfig);
+  const evaluationSourceRows = csvData.length > 0
+    ? csvData
+    : (datasets.find(dataset => dataset.id === newTask.datasetId)?.items || []);
+  const generationEvaluationPartition = useMemo(() => {
+    const mediaEvaluation = ['image', 'video', 'audio'].includes(String(newTask.outputType || ''));
+    return mediaEvaluation && modelColumns.length
+      ? partitionGenerationEvaluationRows(evaluationSourceRows, modelColumns)
+      : { included: evaluationSourceRows, excluded: [] };
+  }, [evaluationSourceRows, modelColumns, newTask.outputType]);
   const [statusFilter, setStatusFilter] = useState<EvalTask['status'] | 'all'>(initialStatusFilter || 'all');
   const [selectedProjectFilter, setSelectedProjectFilter] = useState(projectId || 'all');
   
@@ -525,7 +535,21 @@ export default function TaskBuilderScreen({
         name: col
       })) : newTask.models;
 
-      const sourceItemCount = csvData.length > 0 ? csvData.length : (datasets.find(d => d.id === finalDatasetId)?.items?.length || 0);
+      const rawSourceRows = csvData.length > 0
+        ? csvData
+        : (datasets.find(d => d.id === finalDatasetId)?.items || []);
+      const normalizedSourceRows = finalDatasetId
+        ? ensureStableDatasetItemIds(finalDatasetId, rawSourceRows)
+        : rawSourceRows;
+      const mediaEvaluation = ['image', 'video', 'audio'].includes(String(newTask.outputType || ''));
+      const creationPartition = mediaEvaluation && modelColumns.length
+        ? partitionGenerationEvaluationRows(normalizedSourceRows, modelColumns)
+        : { included: normalizedSourceRows, excluded: [] };
+      const sourceRows = creationPartition.included;
+      if (rawSourceRows.length > 0 && sourceRows.length === 0) {
+        throw new Error('所选结果列没有可用于人工评测的媒体；生成失败和空结果已全部排除。');
+      }
+      const sourceItemCount = sourceRows.length;
       const isSampledArena = evaluationConfig.method === 'pairwise' && evaluationConfig.pairwiseMode === 'arena_sampled';
       const pairCount = evaluationConfig.method === 'pairwise' && !isSampledArena
         ? buildPairwisePairs(taskModels || [], evaluationConfig.pairwiseMode).length
@@ -552,6 +576,11 @@ export default function TaskBuilderScreen({
           dimensionColumns: [...dimensionColumns],
           referenceColumns: datasets.find(dataset => dataset.id === finalDatasetId)?.columnMappings?.referenceColumns || [],
           modelColumns: Object.fromEntries(taskModels.map((model, index) => [model.id, modelColumns[index] || model.name])),
+          ...(creationPartition.excluded.length ? {
+            excludedDatasetItemIds: creationPartition.excluded
+              .map(item => getDatasetItemStableId(item.row))
+              .filter(Boolean),
+          } : {}),
         } : undefined,
         models: taskModels,
         evaluationConfig: finalEvaluationConfig,
@@ -566,7 +595,6 @@ export default function TaskBuilderScreen({
         progress: {}
       };
 
-      const sourceRows = csvData.length > 0 ? csvData : (datasets.find(d => d.id === finalDatasetId)?.items || []);
       const dataToSave = finalDatasetId
         ? ensureStableDatasetItemIds(finalDatasetId, sourceRows)
         : sourceRows;
@@ -1548,6 +1576,22 @@ export default function TaskBuilderScreen({
                           </label>
                         ))}
                       </div>
+                      {!!generationEvaluationPartition.excluded.length && (
+                        <div className="mt-3 border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-amber-100">
+                          <div className="font-medium">
+                            创建任务时将自动排除 {generationEvaluationPartition.excluded.length} 个缺少可评测媒体的 case。
+                          </div>
+                          <div className="mt-1 text-amber-200/80">
+                            {generationEvaluationPartition.excluded.slice(0, 8).map(item => (
+                              String(item.row.case_id || item.row.case_name || item.row.id || item.row['用例ID'] || '未命名 case')
+                            )).join('、')}
+                            {generationEvaluationPartition.excluded.length > 8 ? ` 等 ${generationEvaluationPartition.excluded.length} 个` : ''}
+                          </div>
+                          <div className="mt-1 text-amber-200/70">
+                            生成失败文本和空结果不会作为图片、视频或音频送入人工评测。
+                          </div>
+                        </div>
+                      )}
                     </div>
                     <div>
                       <div className="mb-1 flex items-center justify-between gap-2">

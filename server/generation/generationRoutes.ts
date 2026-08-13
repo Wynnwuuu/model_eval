@@ -7,20 +7,26 @@ import { generationOptionsSupportSeed } from './generationPlanning.ts';
 import { generationAssetService } from './generationAssetService.ts';
 import {
   getGenerationBatch,
+  getGenerationBatchFamily,
+  getGenerationBatchFamilyBatches,
   refreshGenerationJob,
   getGenerationQueueState,
   isGenerationBatchInOrganization,
   isGenerationDatasetInOrganization,
   listGenerationJobEvents,
-  skipGenerationItems,
   requestGenerationCancellation,
+  skipGenerationFamilyItems,
 } from './generationExecutionRepository.ts';
+import { scopeGenerationRetryControls } from './generationRetryScope.ts';
 import {
   confirmGenerationPreflight,
   createGenerationPreflight,
 } from './generationPreflightService.ts';
 
-import { writeGenerationBatchToDataset } from './generationWritebackService.ts';
+import {
+  skipGenerationFamilyItemsWithWriteback,
+  writeGenerationBatchToDataset,
+} from './generationWritebackService.ts';
 import {
   deleteGenerationJob,
   isExecutionManagedGenerationJob,
@@ -114,7 +120,7 @@ generationRoutes.post('/batches', async (req, res) => {
 
 generationRoutes.get('/batches/:batchId', async (req, res) => {
   try {
-    const batch = await getGenerationBatch(req.params.batchId, req.user.organizationId);
+    const batch = await getGenerationBatchFamily(req.params.batchId, req.user.organizationId);
     if (!batch) throw notFound('Generation batch');
     res.json({ batch });
   } catch (error) {
@@ -124,12 +130,15 @@ generationRoutes.get('/batches/:batchId', async (req, res) => {
 
 generationRoutes.post('/batches/:batchId/cancel', async (req, res) => {
   try {
-    const batch = await getGenerationBatch(req.params.batchId, req.user.organizationId);
-    if (!batch) throw notFound('Generation batch');
-    const cancelled = await requestGenerationCancellation(req.params.batchId, req.user);
-    if (!cancelled) throw notFound('Generation batch');
-    const aggregate = await refreshGenerationJob(req.params.batchId);
-    if (aggregate?.terminal) await writeGenerationBatchToDataset(req.params.batchId);
+    const familyBatches = await getGenerationBatchFamilyBatches(req.params.batchId, req.user.organizationId);
+    if (!familyBatches.length) throw notFound('Generation batch');
+    const active = familyBatches.filter(candidate => ['queued', 'running'].includes(candidate.status));
+    if (!active.length) throw badRequest('This logical batch has no cancellable generation attempt.');
+    for (const candidate of active) {
+      await requestGenerationCancellation(candidate.id, req.user);
+      const aggregate = await refreshGenerationJob(candidate.id);
+      if (aggregate?.terminal) await writeGenerationBatchToDataset(candidate.id);
+    }
     res.status(202).json({ accepted: true });
   } catch (error) {
     sendError(res, error, 'Failed to cancel generation batch');
@@ -138,8 +147,15 @@ generationRoutes.post('/batches/:batchId/cancel', async (req, res) => {
 
 generationRoutes.post('/batches/:batchId/retry', async (req, res) => {
   try {
-    const batch = await getGenerationBatch(req.params.batchId, req.user.organizationId);
+    const familyBatches = await getGenerationBatchFamilyBatches(
+      req.params.batchId,
+      req.user.organizationId,
+    );
+    if (!familyBatches.length) throw notFound('Generation batch');
+    const batch = await getGenerationBatchFamily(req.params.batchId, req.user.organizationId);
     if (!batch) throw notFound('Generation batch');
+    const rootBatch = familyBatches.find(candidate => candidate.id === batch.rootBatchId)
+      || familyBatches[0];
     const itemIds = Array.isArray(req.body?.itemIds)
       ? [...new Set(req.body.itemIds.filter((id: unknown) => typeof id === 'string' && id))]
       : [];
@@ -153,7 +169,7 @@ generationRoutes.post('/batches/:batchId/retry', async (req, res) => {
     const retryable = selected.filter(item =>
       item
       && ['failed', 'submission_unknown', 'cancelled'].includes(item.status)
-      && item.resolutionStatus !== 'retrying');
+      && !['skipped', 'retrying', 'resolved'].includes(item.resolutionStatus || ''));
     if (retryable.length !== selected.length) {
       throw badRequest('One or more selected cases are not currently retryable.');
     }
@@ -174,37 +190,38 @@ generationRoutes.post('/batches/:batchId/retry', async (req, res) => {
     }
     const legacySeedSupported = batch.modelConfig.supportsSeed
       ?? generationOptionsSupportSeed(batch.modelConfig.options);
-    const retrySeedMode = batch.controls.seedPolicyVersion === 2
-      ? batch.controls.seedMode || 'unused'
+    const retryControls = scopeGenerationRetryControls(rootBatch.controls || {}, stableDatasetItemIds);
+    const retrySeedMode = rootBatch.controls?.seedPolicyVersion === 2
+      ? rootBatch.controls.seedMode || 'unused'
       : legacySeedSupported
-        ? batch.controls.seedMode || 'derive_from_case'
+        ? rootBatch.controls?.seedMode || 'derive_from_case'
         : 'unused';
     const preflight = await createGenerationPreflight({
-      datasetId: batch.datasetId,
+      datasetId: rootBatch.datasetId,
       datasetVersion: currentDataset.version || 1,
       datasetName: currentDataset.name,
-      modelName: batch.modelConfig.modelName,
-      targetColumn: batch.targetColumn,
-      targetMode: batch.controls.targetMode || 'new',
-      inputMapping: batch.inputMapping,
-      defaultControls: batch.controls.defaultControls || {},
-      perCaseControlColumns: batch.controls.perCaseControlColumns || {},
-      parameterBindings: batch.controls.parameterBindings,
-      caseReviews: batch.controls.caseReviews,
-      durationSource: batch.controls.durationSource,
-      retryOfJobId: batch.id,
+      modelName: rootBatch.modelConfig.modelName,
+      targetColumn: rootBatch.targetColumn,
+      targetMode: rootBatch.controls?.targetMode || 'new',
+      inputMapping: rootBatch.inputMapping,
+      defaultControls: rootBatch.controls?.defaultControls || {},
+      perCaseControlColumns: rootBatch.controls?.perCaseControlColumns || {},
+      parameterBindings: rootBatch.controls?.parameterBindings,
+      caseReviews: retryControls.caseReviews,
+      durationSource: retryControls.durationSource,
+      retryOfJobId: rootBatch.id,
       retrySourceItemIds: Object.fromEntries(
         retryable.map(item => [item!.datasetItemId, item!.id]),
       ),
       retryDuplicateBillingRiskConfirmed: duplicateRiskAcknowledged,
       seedMode: retrySeedMode,
-      seedPolicyVersion: batch.controls.seedPolicyVersion === 2 || !legacySeedSupported
+      seedPolicyVersion: rootBatch.controls?.seedPolicyVersion === 2 || !legacySeedSupported
         ? 2
         : undefined,
-      fixedSeed: batch.controls.fixedSeed,
-      seedColumn: batch.controls.seedColumn,
+      fixedSeed: rootBatch.controls?.fixedSeed,
+      seedColumn: rootBatch.controls?.seedColumn,
       selectedDatasetItemIds: stableDatasetItemIds,
-      assetBindings: batch.controls.assetBindings || [],
+      assetBindings: rootBatch.controls?.assetBindings || [],
     }, req.user);
     res.status(201).json({ preflight });
   } catch (error) {
@@ -214,17 +231,30 @@ generationRoutes.post('/batches/:batchId/retry', async (req, res) => {
 
 generationRoutes.post('/batches/:batchId/items/skip', async (req, res) => {
   try {
-    const batch = await getGenerationBatch(req.params.batchId, req.user.organizationId);
+    const batch = await getGenerationBatchFamily(req.params.batchId, req.user.organizationId);
     if (!batch) throw notFound('Generation batch');
     const itemIds = Array.isArray(req.body?.itemIds)
       ? req.body.itemIds.filter((id: unknown) => typeof id === 'string' && id)
       : [];
-    await skipGenerationItems(req.params.batchId, itemIds, req.user);
-    const aggregate = await refreshGenerationJob(req.params.batchId);
-    if (aggregate?.terminal) await writeGenerationBatchToDataset(req.params.batchId);
+    const skipWriteback = await skipGenerationFamilyItemsWithWriteback(
+      req.params.batchId,
+      itemIds,
+      req.user,
+    );
+    if (!skipWriteback.handled) {
+      const affectedJobIds = await skipGenerationFamilyItems(
+        req.params.batchId,
+        itemIds,
+        req.user,
+      );
+      for (const physicalJobId of affectedJobIds) {
+        const aggregate = await refreshGenerationJob(physicalJobId);
+        if (aggregate?.terminal) await writeGenerationBatchToDataset(physicalJobId);
+      }
+    }
     res.json({
       accepted: true,
-      batch: await getGenerationBatch(req.params.batchId, req.user.organizationId),
+      batch: await getGenerationBatchFamily(req.params.batchId, req.user.organizationId),
     });
   } catch (error) {
     sendError(res, error, 'Failed to skip generation cases');

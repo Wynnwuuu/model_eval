@@ -379,6 +379,7 @@ export interface DatasetTaskBinding {
   dimensionColumns: string[];
   referenceColumns: string[];
   modelColumns: Record<string, string>;
+  excludedDatasetItemIds?: string[];
 }
 
 export interface DatasetValidationSummary {
@@ -830,6 +831,10 @@ export interface DatasetGenerationJob {
   unresolved?: number;
   queueReason?: string;
   retryOfJobId?: string;
+  rootBatchId?: string;
+  retryBatchIds?: string[];
+  physicalBatchCount?: number;
+  skipped?: number;
   createdByUid?: string;
   createdBy?: string;
   createdAt: number;
@@ -881,6 +886,25 @@ export interface DatasetGenerationJobItem {
   reconciliationDeadlineAt?: number;
   lastPollSucceededAt?: number;
   consecutivePollFailures?: number;
+  createdAt?: number;
+  rootItemId?: string;
+  latestAttemptJobId?: string;
+  attemptCount?: number;
+  attemptHistory?: GenerationItemAttemptSummary[];
+}
+
+export interface GenerationItemAttemptSummary {
+  itemId: string;
+  jobId: string;
+  retryOfItemId?: string;
+  status: GenerationItemStatus;
+  resolutionStatus?: GenerationItemResolutionStatus;
+  providerTaskId?: string;
+  resultUrl?: string;
+  error?: DatasetGenerationJobItem['error'];
+  createdAt?: number;
+  startedAt?: number;
+  finishedAt?: number;
 }
 
 export interface GenerationAssetBinding {

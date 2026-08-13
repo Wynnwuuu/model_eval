@@ -1,4 +1,4 @@
-import { normalizeUrl } from './utils';
+import { normalizeUrl } from './utils.js';
 
 const stripTrailingUrlJunk = (value: string): string =>
   value.trim().replace(/[)\],;，；。]+$/g, '').trim();

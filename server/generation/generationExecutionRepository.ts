@@ -17,6 +17,10 @@ import {
   getAdaptiveVideoCapacitySnapshot,
   reserveAdaptiveVideoCapacity,
 } from './generationAdaptiveCapacityRepository.ts';
+import {
+  buildGenerationBatchFamily,
+  type PhysicalGenerationBatch,
+} from './generationBatchFamily.ts';
 
 
 export type StoredGenerationPreflight = {
@@ -268,6 +272,15 @@ export const createGenerationBatchFromPreflight = async (
       }
       const sourceResult = await client.query(
         `
+          WITH RECURSIVE family_ids AS (
+            SELECT id
+            FROM generation_jobs
+            WHERE id = $1
+            UNION ALL
+            SELECT child.id
+            FROM generation_jobs child
+            JOIN family_ids parent ON child.retry_of_job_id = parent.id
+          )
           SELECT
             item.id,
             item.stable_dataset_item_id,
@@ -276,7 +289,7 @@ export const createGenerationBatchFromPreflight = async (
           FROM generation_job_items item
           JOIN generation_jobs source_job ON source_job.id = item.job_id
           JOIN datasets source_dataset ON source_dataset.id = source_job.dataset_id
-          WHERE source_job.id = $1
+          WHERE source_job.id IN (SELECT id FROM family_ids)
             AND item.id = ANY($2::text[])
             AND source_job.dataset_id = $3
             AND source_dataset.organization_id = $4
@@ -302,7 +315,7 @@ export const createGenerationBatchFromPreflight = async (
         return !source
           || source.stable_dataset_item_id !== item.resolvedCase.datasetItemId
           || !['failed', 'submission_unknown', 'cancelled'].includes(source.status)
-          || (source.status !== 'cancelled' && source.resolution_status === 'resolved');
+          || ['skipped', 'resolved'].includes(source.resolution_status || '');
       });
       if (invalidSource) {
         throw conflict('A retry source case changed or was already resolved. Refresh the task.');
@@ -514,6 +527,7 @@ const mapBatch = (job: any, items: any[]) => ({
   items: items.map(item => ({
     id: item.id,
     jobId: item.job_id,
+    datasetId: item.request_json?.datasetId || job.dataset_id,
     datasetItemId: item.stable_dataset_item_id,
     rowIndex: item.row_index,
     caseId: item.case_key,
@@ -542,6 +556,7 @@ const mapBatch = (job: any, items: any[]) => ({
     reconciliationDeadlineAt: toTimestamp(item.reconciliation_deadline_at),
     lastPollSucceededAt: toTimestamp(item.last_poll_succeeded_at),
     consecutivePollFailures: Number(item.consecutive_poll_failures || 0),
+    createdAt: toTimestamp(item.created_at),
     timeoutAt: toTimestamp(item.submission_started_at)
       ? toTimestamp(item.submission_started_at)! + serverConfig.generationTaskTimeoutMs : undefined,
   })),
@@ -566,6 +581,73 @@ export const getGenerationBatch = async (jobId: string, organizationId?: string)
   ]);
   if (!jobResult.rows[0]) return null;
   return mapBatch(jobResult.rows[0], itemResult.rows);
+};
+
+export const getGenerationBatchFamilyBatches = async (
+  jobId: string,
+  organizationId?: string,
+): Promise<PhysicalGenerationBatch[]> => {
+  const requested = await getGenerationBatch(jobId, organizationId);
+  if (!requested) return [];
+  const rootResult = await dbPool.query(
+    `
+      WITH RECURSIVE ancestors AS (
+        SELECT id, retry_of_job_id
+        FROM generation_jobs
+        WHERE id = $1
+        UNION ALL
+        SELECT parent.id, parent.retry_of_job_id
+        FROM generation_jobs parent
+        JOIN ancestors child ON child.retry_of_job_id = parent.id
+      )
+      SELECT id
+      FROM ancestors
+      WHERE retry_of_job_id IS NULL
+      LIMIT 1
+    `,
+    [jobId],
+  );
+  const rootBatchId = String(rootResult.rows[0]?.id || requested.id);
+  const jobsResult = await dbPool.query(
+    `
+      WITH RECURSIVE family_ids AS (
+        SELECT id
+        FROM generation_jobs
+        WHERE id = $1
+        UNION ALL
+        SELECT child.id
+        FROM generation_jobs child
+        JOIN family_ids parent ON child.retry_of_job_id = parent.id
+      )
+      SELECT job.*
+      FROM generation_jobs job
+      JOIN family_ids family ON family.id = job.id
+      JOIN datasets dataset ON dataset.id = job.dataset_id
+      WHERE ($2::text IS NULL OR dataset.organization_id = $2)
+      ORDER BY job.created_at, job.id
+    `,
+    [rootBatchId, organizationId || null],
+  );
+  if (!jobsResult.rows.length) return [];
+  const jobIds = jobsResult.rows.map(row => String(row.id));
+  const itemsResult = await dbPool.query(
+    `
+      SELECT *
+      FROM generation_job_items
+      WHERE job_id = ANY($1::text[])
+      ORDER BY row_index, created_at, id
+    `,
+    [jobIds],
+  );
+  return jobsResult.rows.map(job => mapBatch(
+    job,
+    itemsResult.rows.filter(item => item.job_id === job.id),
+  ));
+};
+
+export const getGenerationBatchFamily = async (jobId: string, organizationId?: string) => {
+  const batches = await getGenerationBatchFamilyBatches(jobId, organizationId);
+  return batches.length ? buildGenerationBatchFamily(batches, jobId) : null;
 };
 
 export type GenerationClaimPurpose = 'any' | 'submit' | 'poll';
@@ -1216,9 +1298,27 @@ const insertGenerationEvent = async (
 export const listGenerationJobEvents = async (jobId: string, organizationId: string) => {
   const result = await dbPool.query(
     `
+      WITH RECURSIVE ancestors AS (
+        SELECT id, retry_of_job_id
+        FROM generation_jobs
+        WHERE id = $1
+        UNION ALL
+        SELECT parent.id, parent.retry_of_job_id
+        FROM generation_jobs parent
+        JOIN ancestors child ON child.retry_of_job_id = parent.id
+      ), root AS (
+        SELECT id FROM ancestors WHERE retry_of_job_id IS NULL LIMIT 1
+      ), family_ids AS (
+        SELECT id FROM root
+        UNION ALL
+        SELECT child.id
+        FROM generation_jobs child
+        JOIN family_ids parent ON child.retry_of_job_id = parent.id
+      )
       SELECT event.*
       FROM generation_job_events event
-      WHERE event.job_id = $1 AND event.organization_id = $2
+      WHERE event.job_id IN (SELECT id FROM family_ids)
+        AND event.organization_id = $2
       ORDER BY event.created_at DESC, event.id DESC
     `,
     [jobId, organizationId],
@@ -1295,6 +1395,92 @@ export const skipGenerationItems = async (
     );
     await client.query('COMMIT');
     return true;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
+export const skipGenerationFamilyItems = async (
+  jobId: string,
+  itemIds: string[],
+  user: RequestUser,
+) => {
+  const uniqueItemIds = [...new Set(itemIds.filter(Boolean))];
+  if (!uniqueItemIds.length) throw conflict('Select at least one case to skip.');
+  const client = await dbPool.connect();
+  try {
+    await client.query('BEGIN');
+    const itemResult = await client.query(
+      `
+        WITH RECURSIVE ancestors AS (
+          SELECT job.id, job.retry_of_job_id
+          FROM generation_jobs job
+          JOIN datasets dataset ON dataset.id = job.dataset_id
+          WHERE job.id = $1 AND dataset.organization_id = $2
+          UNION ALL
+          SELECT parent.id, parent.retry_of_job_id
+          FROM generation_jobs parent
+          JOIN ancestors child ON child.retry_of_job_id = parent.id
+        ), root AS (
+          SELECT id FROM ancestors WHERE retry_of_job_id IS NULL LIMIT 1
+        ), family_ids AS (
+          SELECT id FROM root
+          UNION ALL
+          SELECT child.id
+          FROM generation_jobs child
+          JOIN family_ids parent ON child.retry_of_job_id = parent.id
+        )
+        SELECT item.id, item.job_id, item.status, item.resolution_status, root.id AS root_job_id
+        FROM generation_job_items item
+        CROSS JOIN root
+        WHERE item.job_id IN (SELECT id FROM family_ids)
+          AND item.id = ANY($3::text[])
+        FOR UPDATE OF item
+      `,
+      [jobId, user.organizationId, uniqueItemIds],
+    );
+    const invalid = itemResult.rows.filter(row => (
+      !['pending', 'failed', 'submission_unknown'].includes(row.status)
+      || ['skipped', 'retrying', 'resolved'].includes(row.resolution_status || '')
+    ));
+    if (itemResult.rowCount !== uniqueItemIds.length || invalid.length) {
+      throw conflict('Case status changed. Refresh the task before trying again.', {
+        invalid: invalid.map(row => ({
+          id: row.id,
+          status: row.status,
+          resolutionStatus: row.resolution_status,
+        })),
+      });
+    }
+    await client.query(
+      `
+        UPDATE generation_job_items
+        SET status = CASE WHEN status = 'pending' THEN 'cancelled' ELSE status END,
+            resolution_status = 'skipped',
+            resolution_by = $2,
+            resolution_at = now(),
+            finished_at = CASE WHEN status = 'pending' THEN now() ELSE finished_at END,
+            updated_at = now()
+        WHERE id = ANY($1::text[])
+      `,
+      [uniqueItemIds, user.id],
+    );
+    const rootJobId = String(itemResult.rows[0].root_job_id);
+    const physicalJobIds = [...new Set(itemResult.rows.map(row => String(row.job_id)))];
+    await insertGenerationEvent(
+      client,
+      rootJobId,
+      user.organizationId,
+      'items_skipped',
+      uniqueItemIds,
+      user,
+      { physicalJobIds },
+    );
+    await client.query('COMMIT');
+    return physicalJobIds;
   } catch (error) {
     await client.query('ROLLBACK').catch(() => undefined);
     throw error;

@@ -132,6 +132,28 @@ assert.equal(activePlan.updates[0].item.modelA_Url, 'https://example.com/a-new.m
 assert.equal(activePlan.updates[0].item.isSwapped, true, 'task-owned blind placement must be preserved');
 assert.equal(activePlan.updates[0].item.id, activeItems[0].id, 'task item identity must be preserved');
 
+const excludedTask: EvalTask = {
+  ...makeTask('active'),
+  id: 'task-active-with-generation-exclusion',
+  datasetBinding: {
+    ...makeTask('active').datasetBinding!,
+    excludedDatasetItemIds: [String(nextRows[1][DATASET_ITEM_ID_KEY])],
+  },
+};
+const excludedPlan = planDatasetTaskSync({
+  task: excludedTask,
+  previousRows: originalRows,
+  nextRows,
+  taskItems: originalRows.map((row, index) => makeTaskItem(excludedTask.id, row, index)),
+  nextVersion: 2,
+});
+assert.equal(excludedPlan.additions.length, 0,
+  'generation failures excluded at task creation must not reappear during dataset sync');
+assert.deepEqual(
+  excludedPlan.binding.excludedDatasetItemIds,
+  [String(nextRows[1][DATASET_ITEM_ID_KEY])],
+);
+
 const completedTask = makeTask('completed');
 const completedPlan = planDatasetTaskSync({
   task: completedTask,

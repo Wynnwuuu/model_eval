@@ -78,6 +78,7 @@ import { subscribeTasks } from '../features/tasks/api';
 import { getExecutionBatch } from '../features/generation/executionApi';
 import { subscribeGenerationJobs } from '../features/generation/api';
 import { parseVidMuseDatasetJson } from '../features/generation/vidmuseInputContract';
+import { isGenerationFailureCell } from '../features/generation/generationFailureCell';
 import {
   parseVerifiedEvaluationImportEnvelope,
   sameVerifiedEvaluationDatasetContent,
@@ -706,6 +707,13 @@ const MediaCell = ({
   previewSize: DatasetPreviewSize;
 }) => {
   const serializedValue = serializeCellValue(value);
+  if (isGenerationFailureCell(serializedValue)) {
+    return (
+      <div className="max-w-[520px] border-l-2 border-red-400 bg-red-500/[0.06] px-3 py-2 text-xs leading-5 text-red-100 whitespace-pre-wrap">
+        {serializedValue}
+      </div>
+    );
+  }
   const url = firstUrl(serializedValue);
   if (!url) return <span className="text-xs text-slate-500">{'\u7a7a'}</span>;
 

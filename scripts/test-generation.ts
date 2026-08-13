@@ -120,6 +120,248 @@ import {
   resolveDefaultGenerationCaseStatus,
 } from '../src/features/generation/preflightPresentation.ts';
 import { applyGenerationCaseInputOverride } from '../src/features/generation/caseInputOverride.ts';
+import {
+  scopeGenerationRetryControls,
+} from '../server/generation/generationRetryScope.ts';
+import {
+  buildGenerationBatchFamily,
+} from '../server/generation/generationBatchFamily.ts';
+import {
+  formatGenerationFailureCell,
+  isGenerationFailureCell,
+  partitionGenerationEvaluationRows,
+  sanitizeGenerationFailureError,
+} from '../src/features/generation/generationFailureCell.ts';
+
+const retryStableIds = Array.from({ length: 78 }, (_, index) => `stable-${index + 1}`);
+const selectedRetryStableIds = retryStableIds.slice(-7);
+const scopedRetryControls = scopeGenerationRetryControls({
+  caseReviews: Object.fromEntries(retryStableIds.map(id => [id, {
+    promptOverride: `Prompt for ${id}`,
+  }])),
+  durationSource: {
+    mode: 'reference_audio',
+    referenceAudio: Object.fromEntries(retryStableIds.map(id => [id, {
+      audioUrl: `https://assets.example.com/${id}.mp3`,
+      detectedSeconds: 4,
+      resolvedDuration: 5,
+    }])),
+  },
+}, selectedRetryStableIds);
+assert.deepEqual(Object.keys(scopedRetryControls.caseReviews || {}), selectedRetryStableIds);
+assert.deepEqual(
+  Object.keys(scopedRetryControls.durationSource?.referenceAudio || {}),
+  selectedRetryStableIds,
+);
+assert.equal(scopedRetryControls.caseReviews?.['stable-1'], undefined);
+
+const exactRetryRootItems = retryStableIds.map((stableId, index) => ({
+  id: `root-item-${index + 1}`,
+  jobId: 'exact-retry-root',
+  datasetId: 'exact-retry-dataset',
+  datasetItemId: stableId,
+  rowIndex: index,
+  caseId: `case-${index + 1}`,
+  status: index < 71 ? 'succeeded' : 'failed',
+  resolvedInputs: {},
+  resolvedControls: {},
+  ...(index < 71
+    ? { resultUrl: `https://assets.example.com/result-${index + 1}.mp4` }
+    : { error: { code: 'PROVIDER_FAILED', message: 'The original attempt failed.' } }),
+  createdAt: 100 + index,
+}));
+const exactRetryFamily = buildGenerationBatchFamily([
+  {
+    id: 'exact-retry-root',
+    datasetId: 'exact-retry-dataset',
+    modelConfig: { modelName: 'fake/video', outputModality: 'video' },
+    targetColumn: 'shared_result_column',
+    inputMapping: {},
+    controls: {},
+    status: 'partial',
+    total: 78,
+    succeeded: 71,
+    failed: 7,
+    writebackStatus: 'completed',
+    createdAt: 100,
+    updatedAt: 200,
+    items: exactRetryRootItems,
+  },
+  {
+    id: 'exact-retry-child',
+    retryOfJobId: 'exact-retry-root',
+    datasetId: 'exact-retry-dataset',
+    modelConfig: { modelName: 'fake/video', outputModality: 'video' },
+    targetColumn: 'shared_result_column',
+    inputMapping: {},
+    controls: {},
+    status: 'completed',
+    total: 7,
+    succeeded: 7,
+    failed: 0,
+    writebackStatus: 'completed',
+    createdAt: 300,
+    updatedAt: 400,
+    items: exactRetryRootItems.slice(71).map((sourceItem, index) => ({
+      ...sourceItem,
+      id: `retry-item-${index + 1}`,
+      jobId: 'exact-retry-child',
+      retryOfItemId: sourceItem.id,
+      status: 'succeeded',
+      error: undefined,
+      resultUrl: `https://assets.example.com/retry-${index + 1}.mp4`,
+      createdAt: 300 + index,
+    })),
+  },
+] as any, 'exact-retry-child');
+assert.equal(exactRetryFamily.id, 'exact-retry-root');
+assert.equal(exactRetryFamily.targetColumn, 'shared_result_column');
+assert.equal(exactRetryFamily.total, 78);
+assert.equal(exactRetryFamily.succeeded, 78);
+assert.equal(exactRetryFamily.failed, 0);
+assert.equal(exactRetryFamily.status, 'completed');
+assert.deepEqual(exactRetryFamily.items.map(item => item.datasetItemId), retryStableIds);
+assert.deepEqual(exactRetryFamily.items.slice(71).map(item => item.attemptCount), Array(7).fill(2));
+
+const familyRoot = {
+  id: 'batch-root',
+  datasetId: 'dataset-family',
+  modelConfig: { modelName: 'fake/video', outputModality: 'video' },
+  targetColumn: 'model_result',
+  inputMapping: {},
+  controls: {},
+  status: 'partial',
+  total: 3,
+  succeeded: 1,
+  failed: 2,
+  writebackStatus: 'completed',
+  createdAt: 100,
+  updatedAt: 200,
+  items: [
+    { id: 'root-a', jobId: 'batch-root', datasetId: 'dataset-family', datasetItemId: 'stable-a', rowIndex: 0, caseId: 'case-a', status: 'succeeded', resolvedInputs: {}, resolvedControls: {}, resultUrl: 'https://assets.example.com/a.mp4', createdAt: 100 },
+    { id: 'root-b', jobId: 'batch-root', datasetId: 'dataset-family', datasetItemId: 'stable-b', rowIndex: 1, caseId: 'case-b', status: 'failed', resolutionStatus: 'resolved', resolvedInputs: {}, resolvedControls: {}, error: { message: 'first failure' }, createdAt: 101 },
+    { id: 'root-c', jobId: 'batch-root', datasetId: 'dataset-family', datasetItemId: 'stable-c', rowIndex: 2, caseId: 'case-c', status: 'failed', resolutionStatus: 'retrying', resolvedInputs: {}, resolvedControls: {}, error: { message: 'first failure' }, createdAt: 102 },
+  ],
+} as any;
+const familyRetryOne = {
+  ...familyRoot,
+  id: 'batch-retry-one',
+  retryOfJobId: 'batch-root',
+  status: 'partial',
+  total: 2,
+  succeeded: 1,
+  failed: 1,
+  createdAt: 300,
+  updatedAt: 400,
+  items: [
+    { ...familyRoot.items[1], id: 'retry-b-1', jobId: 'batch-retry-one', retryOfItemId: 'root-b', status: 'succeeded', resultUrl: 'https://assets.example.com/b.mp4', error: undefined, createdAt: 301 },
+    { ...familyRoot.items[2], id: 'retry-c-1', jobId: 'batch-retry-one', retryOfItemId: 'root-c', status: 'failed', resolutionStatus: 'resolved', error: { message: 'second failure' }, createdAt: 302 },
+  ],
+} as any;
+const familyRetryTwo = {
+  ...familyRoot,
+  id: 'batch-retry-two',
+  retryOfJobId: 'batch-root',
+  status: 'completed',
+  total: 1,
+  succeeded: 1,
+  failed: 0,
+  createdAt: 500,
+  updatedAt: 600,
+  items: [
+    { ...familyRoot.items[2], id: 'retry-c-2', jobId: 'batch-retry-two', retryOfItemId: 'retry-c-1', status: 'succeeded', resultUrl: 'https://assets.example.com/c.mp4', error: undefined, createdAt: 501 },
+  ],
+} as any;
+const completedFamily = buildGenerationBatchFamily([
+  familyRoot,
+  familyRetryOne,
+  familyRetryTwo,
+], 'batch-retry-two');
+assert.equal(completedFamily.id, 'batch-root');
+assert.equal(completedFamily.rootBatchId, 'batch-root');
+assert.equal(completedFamily.status, 'completed');
+assert.equal(completedFamily.succeeded, 3);
+assert.equal(completedFamily.failed, 0);
+assert.deepEqual(completedFamily.items.map((item: any) => item.id), ['root-a', 'retry-b-1', 'retry-c-2']);
+assert.deepEqual(completedFamily.items.map((item: any) => item.attemptCount), [1, 2, 3]);
+
+const queuedFamily = buildGenerationBatchFamily([{
+  ...familyRoot,
+  id: 'batch-queued',
+  status: 'queued',
+  total: 2,
+  succeeded: 0,
+  failed: 0,
+  writebackStatus: 'pending',
+  items: familyRoot.items.slice(0, 2).map((item: any, index: number) => ({
+    ...item,
+    id: `queued-${index}`,
+    jobId: 'batch-queued',
+    status: 'pending',
+    resultUrl: undefined,
+    error: undefined,
+    resolutionStatus: undefined,
+  })),
+} as any], 'batch-queued');
+assert.equal(queuedFamily.status, 'queued');
+assert.equal(queuedFamily.statusCounts?.pending, 2);
+assert.equal(queuedFamily.failed, 0);
+
+const cancelledFamily = buildGenerationBatchFamily([{
+  ...familyRoot,
+  id: 'batch-cancelled',
+  status: 'cancelled',
+  total: 2,
+  succeeded: 0,
+  failed: 0,
+  items: familyRoot.items.slice(0, 2).map((item: any, index: number) => ({
+    ...item,
+    id: `cancelled-${index}`,
+    jobId: 'batch-cancelled',
+    status: 'cancelled',
+    resultUrl: undefined,
+    error: undefined,
+    resolutionStatus: undefined,
+  })),
+} as any], 'batch-cancelled');
+assert.equal(cancelledFamily.status, 'cancelled');
+assert.equal(cancelledFamily.statusCounts?.cancelled, 2);
+assert.equal(cancelledFamily.failed, 0);
+
+const failureCell = formatGenerationFailureCell({
+  status: 'failed',
+  error: {
+    code: 'AION_SUBMIT_REJECTED',
+    message: 'Provider rejected https://provider.example.com/result.mp4?X-Signature=secret-token',
+    httpStatus: 400,
+    errorType: 'validation_error',
+    errorCode: 'invalid_parameter',
+    transportCode: 'ECONNRESET',
+  },
+  providerTaskId: 'task-safe-123',
+});
+assert.equal(isGenerationFailureCell(failureCell), true);
+assert.match(failureCell, /生成失败（已跳过，不再重试）/);
+assert.match(failureCell, /AION_SUBMIT_REJECTED/);
+assert.match(failureCell, /\?\[redacted\]/);
+assert.doesNotMatch(failureCell, /secret-token/);
+assert.deepEqual(sanitizeGenerationFailureError({
+  code: 'AION_SUBMIT_REJECTED',
+  message: 'Provider rejected https://provider.example.com/result.mp4?X-Signature=secret-token',
+  httpStatus: 400,
+}), {
+  code: 'AION_SUBMIT_REJECTED',
+  message: 'Provider rejected https://provider.example.com/result.mp4?[redacted]',
+  httpStatus: 400,
+});
+const evaluationPartition = partitionGenerationEvaluationRows([
+  { case_id: 'success', result: 'https://assets.example.com/success.mp4' },
+  { case_id: 'failed', result: failureCell },
+  { case_id: 'missing', result: '' },
+], ['result']);
+assert.deepEqual(evaluationPartition.included.map(item => item.case_id), ['success']);
+assert.deepEqual(evaluationPartition.excluded.map(item => item.row.case_id), ['failed', 'missing']);
+assert.deepEqual(evaluationPartition.excluded.map(item => item.reason), ['generation_failed', 'missing_media']);
 
 const promptChannelMismatchCase = {
   valid: false,

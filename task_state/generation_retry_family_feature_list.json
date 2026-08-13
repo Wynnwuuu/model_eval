@@ -1,0 +1,18 @@
+{
+  "feature": "generation-retry-family-and-skip-writeback",
+  "base_commit": "b2c84ab",
+  "requirements": [
+    { "id": "retry-scope", "status": "completed", "description": "Scope retry reviews and per-case metadata to selected stable item IDs." },
+    { "id": "family-view", "status": "completed", "description": "Present retry descendants as one logical root batch with latest attempts." },
+    { "id": "family-actions", "status": "completed", "description": "Retry or skip current leaf attempts across a logical batch family." },
+    { "id": "skip-writeback", "status": "completed", "description": "Atomically write a safe full error into the target cell when a case is skipped." },
+    { "id": "failure-preview", "status": "completed", "description": "Render failure cells as text and exclude them from human-evaluation task material." },
+    { "id": "release", "status": "in_progress", "description": "Run full regression, browser QA, fast-forward main, and verify dev." }
+  ],
+  "constraints": {
+    "aion_changes": false,
+    "database_migration": false,
+    "paid_generation": false,
+    "preserve_unrelated_worktrees": true
+  }
+}

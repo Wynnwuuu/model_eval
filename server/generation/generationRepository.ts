@@ -47,6 +47,15 @@ type GenerationJobRow = {
   execution_error_json: Record<string, any> | null;
   created_at: Date;
   updated_at: Date;
+  logical_status?: DatasetGenerationJob['status'];
+  logical_total?: number;
+  logical_succeeded?: number;
+  logical_failed?: number;
+  logical_skipped?: number;
+  logical_writeback_status?: DatasetGenerationJob['writebackStatus'];
+  family_updated_at?: Date;
+  physical_batch_count?: number;
+  full_count?: number;
 };
 
 type GenerationJobItemRow = {
@@ -114,13 +123,13 @@ const mapJob = (row: GenerationJobRow): DatasetGenerationJob => {
     seedPolicyVersion: controls.seedPolicyVersion,
     fixedSeed: controls.fixedSeed,
     seedColumn: controls.seedColumn,
-    status: row.status,
-    total: row.total,
-    succeeded: row.succeeded,
+    status: row.logical_status || row.status,
+    total: Number(row.logical_total ?? row.total),
+    succeeded: Number(row.logical_succeeded ?? row.succeeded),
     cancelRequested: row.cancel_requested,
-    writebackStatus: row.writeback_status,
+    writebackStatus: row.logical_writeback_status || row.writeback_status,
     writebackDatasetVersion: row.writeback_dataset_version || undefined,
-    failed: row.failed,
+    failed: Number(row.logical_failed ?? row.failed),
     createdByUid: controls.createdByUid,
     createdBy: row.creator_name || controls.createdBy,
     statusCounts,
@@ -128,8 +137,11 @@ const mapJob = (row: GenerationJobRow): DatasetGenerationJob => {
     queueReason: statusCounts.unresolved > 0 ? 'needs_attention'
       : statusCounts.pending > 0 ? 'waiting_for_capacity' : undefined,
     retryOfJobId: row.retry_of_job_id || undefined,
+    rootBatchId: row.id,
+    physicalBatchCount: Number(row.physical_batch_count || 1),
+    skipped: Number(row.logical_skipped || 0),
     createdAt: toTimestamp(row.created_at) || Date.now(),
-    updatedAt: toTimestamp(row.updated_at) || Date.now(),
+    updatedAt: toTimestamp(row.family_updated_at || row.updated_at) || Date.now(),
   };
 };
 
@@ -182,72 +194,161 @@ export const listGenerationJobs = async (params: GenerationJobListParams) => {
   const requestedLimit = Number(params.limit ?? 20);
   const page = Number.isInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1;
   const limit = Number.isInteger(requestedLimit) && requestedLimit > 0 ? Math.min(100, requestedLimit) : 20;
-  const result = await dbPool.query<GenerationJobRow & { total_count: number }>(
+  const offset = (page - 1) * limit;
+  const result = await dbPool.query<GenerationJobRow>(
     `
-      SELECT
-        job.*,
-        dataset.name AS dataset_name,
-        COALESCE(creator.display_name, creator.email) AS creator_name,
-        stats.*,
-        count(*) OVER()::int AS total_count
-      FROM generation_jobs job
-      JOIN datasets dataset ON dataset.id = job.dataset_id
-      LEFT JOIN users creator ON creator.id = job.created_by
-      LEFT JOIN LATERAL (
+      WITH RECURSIVE filtered_roots AS (
+        SELECT job.id
+        FROM generation_jobs job
+        JOIN datasets dataset ON dataset.id = job.dataset_id
+        LEFT JOIN users creator ON creator.id = job.created_by
+        WHERE dataset.organization_id = $1
+          AND job.retry_of_job_id IS NULL
+          AND ($2::text IS NULL OR job.dataset_id = $2)
+          AND (
+            $3::text IS NULL
+            OR job.model_config_json->>'modelName' ILIKE '%' || $3 || '%'
+            OR job.model_config_json->>'displayName' ILIKE '%' || $3 || '%'
+          )
+          AND (
+            $4::text IS NULL
+            OR job.created_by = $4
+            OR creator.display_name ILIKE '%' || $4 || '%'
+            OR creator.email ILIKE '%' || $4 || '%'
+          )
+      ), family_ids AS (
+        SELECT id AS root_id, id AS job_id
+        FROM filtered_roots
+        UNION ALL
+        SELECT family.root_id, child.id
+        FROM family_ids family
+        JOIN generation_jobs child ON child.retry_of_job_id = family.job_id
+      ), ranked_items AS (
         SELECT
-          count(*) FILTER (WHERE item.status = 'pending')::int AS pending_count,
-          count(*) FILTER (WHERE item.status = 'submitting')::int AS submitting_count,
-          count(*) FILTER (WHERE item.status = 'submitted')::int AS submitted_count,
-          count(*) FILTER (WHERE item.status = 'processing')::int AS processing_count,
-          count(*) FILTER (WHERE item.status = 'archiving')::int AS archiving_count,
-          count(*) FILTER (WHERE item.status = 'succeeded')::int AS succeeded_count,
-          count(*) FILTER (WHERE item.status = 'failed')::int AS failed_count,
-          count(*) FILTER (WHERE item.status = 'reconciling')::int AS reconciling_count,
-          count(*) FILTER (WHERE item.status = 'submission_unknown')::int AS submission_unknown_count,
-          count(*) FILTER (WHERE item.status = 'cancelled')::int AS cancelled_count,
+          family.root_id,
+          item.*,
+          row_number() OVER (
+            PARTITION BY family.root_id, COALESCE(item.stable_dataset_item_id, item.id)
+            ORDER BY item.created_at DESC, item.id DESC
+          ) AS latest_rank
+        FROM family_ids family
+        JOIN generation_job_items item ON item.job_id = family.job_id
+      ), latest_item_stats AS (
+        SELECT
+          root_id,
+          count(*)::int AS logical_total,
+          count(*) FILTER (WHERE status = 'pending')::int AS pending_count,
+          count(*) FILTER (WHERE status = 'submitting')::int AS submitting_count,
+          count(*) FILTER (WHERE status = 'submitted')::int AS submitted_count,
+          count(*) FILTER (WHERE status IN ('processing', 'running'))::int AS processing_count,
+          count(*) FILTER (WHERE status = 'reconciling')::int AS reconciling_count,
+          count(*) FILTER (WHERE status = 'archiving')::int AS archiving_count,
+          count(*) FILTER (WHERE status IN ('succeeded', 'completed'))::int AS succeeded_count,
           count(*) FILTER (
-            WHERE item.status IN ('failed', 'submission_unknown')
-              AND COALESCE(item.resolution_status, 'open') = 'open'
+            WHERE status = 'failed' AND resolution_status IS DISTINCT FROM 'skipped'
+          )::int AS failed_count,
+          count(*) FILTER (
+            WHERE status = 'submission_unknown' AND resolution_status IS DISTINCT FROM 'skipped'
+          )::int AS submission_unknown_count,
+          count(*) FILTER (
+            WHERE status = 'cancelled' AND resolution_status IS DISTINCT FROM 'skipped'
+          )::int AS cancelled_count,
+          count(*) FILTER (WHERE resolution_status = 'skipped')::int AS logical_skipped,
+          count(*) FILTER (
+            WHERE status IN ('failed', 'submission_unknown')
+              AND COALESCE(resolution_status, 'open') NOT IN ('skipped', 'retrying', 'resolved')
           )::int AS unresolved_count
-        FROM generation_job_items item
-        WHERE item.job_id = job.id
-      ) stats ON true
-      WHERE dataset.organization_id = $1
-        AND ($2::text IS NULL OR job.dataset_id = $2)
-        AND ($3::text IS NULL OR job.status = $3)
-        AND (
-          $4::text IS NULL
-          OR job.model_config_json->>'modelName' ILIKE '%' || $4 || '%'
-          OR job.model_config_json->>'displayName' ILIKE '%' || $4 || '%'
-        )
-        AND (
-          $5::text IS NULL
-          OR job.created_by = $5
-          OR creator.display_name ILIKE '%' || $5 || '%'
-          OR creator.email ILIKE '%' || $5 || '%'
-        )
+        FROM ranked_items
+        WHERE latest_rank = 1
+        GROUP BY root_id
+      ), family_job_stats AS (
+        SELECT
+          family.root_id,
+          count(*)::int AS physical_batch_count,
+          max(job.updated_at) AS family_updated_at,
+          CASE
+            WHEN bool_or(job.writeback_status = 'conflict') THEN 'conflict'
+            WHEN bool_or(job.writeback_status = 'failed') THEN 'failed'
+            WHEN bool_and(job.writeback_status = 'completed') THEN 'completed'
+            ELSE 'pending'
+          END AS logical_writeback_status
+        FROM family_ids family
+        JOIN generation_jobs job ON job.id = family.job_id
+        GROUP BY family.root_id
+      ), summaries AS (
+        SELECT
+          job.*,
+          dataset.name AS dataset_name,
+          COALESCE(creator.display_name, creator.email) AS creator_name,
+          COALESCE(stats.logical_total, job.total, 0)::int AS logical_total,
+          COALESCE(stats.succeeded_count, 0)::int AS logical_succeeded,
+          (COALESCE(stats.failed_count, 0) + COALESCE(stats.submission_unknown_count, 0))::int AS logical_failed,
+          COALESCE(stats.logical_skipped, 0)::int AS logical_skipped,
+          COALESCE(stats.pending_count, 0)::int AS pending_count,
+          COALESCE(stats.submitting_count, 0)::int AS submitting_count,
+          COALESCE(stats.submitted_count, 0)::int AS submitted_count,
+          COALESCE(stats.processing_count, 0)::int AS processing_count,
+          COALESCE(stats.reconciling_count, 0)::int AS reconciling_count,
+          COALESCE(stats.archiving_count, 0)::int AS archiving_count,
+          COALESCE(stats.succeeded_count, 0)::int AS succeeded_count,
+          COALESCE(stats.failed_count, 0)::int AS failed_count,
+          COALESCE(stats.submission_unknown_count, 0)::int AS submission_unknown_count,
+          COALESCE(stats.cancelled_count, 0)::int AS cancelled_count,
+          COALESCE(stats.unresolved_count, 0)::int AS unresolved_count,
+          family.physical_batch_count,
+          family.family_updated_at,
+          family.logical_writeback_status,
+          CASE
+            WHEN family.logical_writeback_status = 'conflict' THEN 'writeback_conflict'
+            WHEN COALESCE(stats.submitting_count, 0)
+               + COALESCE(stats.submitted_count, 0)
+               + COALESCE(stats.processing_count, 0)
+               + COALESCE(stats.reconciling_count, 0)
+               + COALESCE(stats.archiving_count, 0) > 0 THEN 'running'
+            WHEN COALESCE(stats.pending_count, 0) > 0 THEN 'queued'
+            WHEN COALESCE(stats.logical_total, 0) > 0
+             AND COALESCE(stats.succeeded_count, 0) = COALESCE(stats.logical_total, 0) THEN 'completed'
+            WHEN COALESCE(stats.succeeded_count, 0) > 0 OR COALESCE(stats.logical_skipped, 0) > 0 THEN 'partial'
+            WHEN COALESCE(stats.failed_count, 0) + COALESCE(stats.submission_unknown_count, 0) > 0 THEN 'failed'
+            WHEN COALESCE(stats.cancelled_count, 0) > 0 THEN 'cancelled'
+            ELSE job.status
+          END AS logical_status
+        FROM filtered_roots roots
+        JOIN generation_jobs job ON job.id = roots.id
+        JOIN datasets dataset ON dataset.id = job.dataset_id
+        LEFT JOIN users creator ON creator.id = job.created_by
+        LEFT JOIN latest_item_stats stats ON stats.root_id = job.id
+        JOIN family_job_stats family ON family.root_id = job.id
+      )
+      SELECT summaries.*, count(*) OVER()::int AS full_count
+      FROM summaries
+      WHERE ($5::text IS NULL OR summaries.logical_status = $5)
       ORDER BY
         CASE
-          WHEN job.status IN ('queued', 'running') OR stats.unresolved_count > 0 THEN 0
+          WHEN summaries.logical_status IN ('queued', 'running') OR summaries.unresolved_count > 0 THEN 0
           ELSE 1
         END,
-        job.updated_at DESC,
-        job.created_at DESC
+        summaries.family_updated_at DESC,
+        summaries.created_at DESC
       LIMIT $6 OFFSET $7
     `,
     [
       params.organizationId,
       params.datasetId || null,
-      params.status || null,
       params.model || null,
       params.createdBy || null,
+      params.status || null,
       limit,
-      (page - 1) * limit,
+      offset,
     ],
   );
+  if (!result.rows.length && page > 1) {
+    const firstPage = await listGenerationJobs({ ...params, page: 1, limit: 1 });
+    return { jobs: [], total: firstPage.total, page, limit };
+  }
   return {
     jobs: result.rows.map(mapJob),
-    total: Number(result.rows[0]?.total_count || 0),
+    total: Number(result.rows[0]?.full_count || 0),
     page,
     limit,
   };
