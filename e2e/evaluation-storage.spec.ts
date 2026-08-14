@@ -285,10 +285,17 @@ test.describe.serial('evaluation client storage', () => {
   });
 
   test('missing task keeps the application shell and shows an explicit state', async ({ page }) => {
+    const consoleErrors: string[] = [];
+    page.on('console', message => {
+      if (message.type() === 'error') consoleErrors.push(message.text());
+    });
     await page.goto(`/tasks/${runId}-missing/evaluate`);
     await expect(page.getByText('MANUEVAL', { exact: true })).toBeVisible();
     await expect(page.getByRole('heading', { name: '评测物料不存在或已删除' })).toBeVisible();
+    await expect(page.getByRole('button', { name: '重试' })).toBeVisible();
     await expect(page.getByRole('button', { name: '返回评测物料' })).toBeVisible();
+    expect(consoleErrors.some(message => message.includes('Failed to load task from route'))).toBe(false);
+    expect(consoleErrors.filter(message => !message.includes('status of 404'))).toEqual([]);
   });
 
   test('a transient task-load failure remains inside the shell and can be retried', async ({ page }) => {

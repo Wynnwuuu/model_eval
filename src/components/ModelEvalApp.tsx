@@ -417,9 +417,12 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
       } catch (error: any) {
         if (abortController.signal.aborted) return;
         if (!cancelled) {
-          console.error('Failed to load task from route', error);
+          const errorKind = error instanceof TaskEvaluationLoadError ? error.code : 'unknown';
+          if (errorKind !== 'not_found') {
+            console.error('Failed to load task from route', error);
+          }
           setRouteTaskError(error?.message || '加载评测物料失败。');
-          setRouteTaskErrorKind(error instanceof TaskEvaluationLoadError ? error.code : 'unknown');
+          setRouteTaskErrorKind(errorKind);
         }
       } finally {
         if (!cancelled) setRouteTaskLoading(false);
@@ -929,15 +932,13 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
             </h1>
             <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">{routeTaskError}</p>
             <div className="mt-6 flex gap-3">
-              {routeTaskErrorKind !== 'not_found' && (
-                <button
-                  type="button"
-                  onClick={() => setRouteTaskLoadAttempt(attempt => attempt + 1)}
-                  className="btn-primary flex-1"
-                >
-                  重试
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => setRouteTaskLoadAttempt(attempt => attempt + 1)}
+                className="btn-primary flex-1"
+              >
+                重试
+              </button>
               <button type="button" onClick={() => navigate('tasks')} className="btn-secondary flex-1">返回评测物料</button>
             </div>
           </div>
