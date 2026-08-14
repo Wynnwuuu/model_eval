@@ -47,6 +47,7 @@ jobs:
       API_PORT: 8787
       CORS_ORIGIN: http://localhost:3000
       API_BASE_URL: http://localhost:8787
+      E2E_BASE_URL: http://localhost:3000
       VITE_USE_API_BACKEND: "true"
       VITE_API_BASE_URL: http://localhost:8787
 
