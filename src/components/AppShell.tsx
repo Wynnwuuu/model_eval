@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { safeGetStorageItem, safeSetStorageItem } from '../safeBrowserStorage';
 import {
   BarChart3,
   ChevronDown,
@@ -26,7 +27,7 @@ const APP_SHELL_LAYOUT_STORAGE_KEY = 'manueval_app_shell_layout_v1';
 const readStoredSidebarWidth = () => {
   try {
     return parseAppShellLayoutPreference(
-      window.localStorage.getItem(APP_SHELL_LAYOUT_STORAGE_KEY),
+      safeGetStorageItem(window.localStorage, APP_SHELL_LAYOUT_STORAGE_KEY, { report: false }).value || null,
     ).sidebarWidth;
   } catch {
     return APP_SIDEBAR_WIDTH.defaultValue;
@@ -238,11 +239,7 @@ const AppShell: React.FC<AppShellProps> = ({
   }, []);
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(APP_SHELL_LAYOUT_STORAGE_KEY, JSON.stringify({ sidebarWidth }));
-    } catch {
-      // Layout preferences must never block the application shell.
-    }
+    safeSetStorageItem(window.localStorage, APP_SHELL_LAYOUT_STORAGE_KEY, JSON.stringify({ sidebarWidth }));
   }, [sidebarWidth]);
 
   useEffect(() => {

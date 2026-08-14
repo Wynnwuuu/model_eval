@@ -1,0 +1,15 @@
+{
+  "feature": "evaluation-storage-root-fix",
+  "status": "release_validation",
+  "requirements": [
+    { "id": "storage-boundary", "status": "completed" },
+    { "id": "lossless-migration", "status": "completed" },
+    { "id": "server-task-source-of-truth", "status": "completed" },
+    { "id": "offline-session-recovery", "status": "completed" },
+    { "id": "arena-checkpoint-recovery", "status": "completed" },
+    { "id": "lazy-history-storage", "status": "completed" },
+    { "id": "task-route-isolation", "status": "completed" },
+    { "id": "browser-regression", "status": "completed" },
+    { "id": "release-validation", "status": "pending" }
+  ]
+}

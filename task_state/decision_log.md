@@ -443,3 +443,17 @@ New evaluation materials store the final selected dataset item IDs in `datasetBi
 Selection intent is independent from eligibility. Changing result columns or output type may temporarily exclude a selected case without deleting its intent; restoring valid outputs makes it eligible again. A case is persisted only when it is both selected and valid at creation.
 
 Task model identity comes only from mapped output columns. The removed manual Model A/Model B controls were a legacy fallback that was overwritten on every current dataset/upload path and could contradict the actual media columns.
+# 2026-08-14: Evaluation storage root fix
+
+- The blank evaluation route is caused by uncaught `QuotaExceededError` from full-session and full-history `localStorage` writes in `ModelEvalApp`, not by the recent project-detail loader changes.
+- Shared tasks use PostgreSQL/API data as the business source of truth. They must not duplicate complete items and votes in browser storage.
+- Legacy storage is migrated to IndexedDB only after raw backup, normalized copy, readback verification, and key-specific cleanup. A failed migration retains the legacy key.
+- Sampled Arena persists only one validated pending assignment checkpoint. Offline sessions retain full local recovery with revision-protected writes.
+- A real Chromium quota regression is required because render-only and Node tests cannot detect an exception thrown from a browser effect.
+
+## 2026-08-14: Server-backed evaluation state is never a browser-storage dependency
+
+- PostgreSQL task data and current-user votes are the only business source of truth for server-backed evaluation routes.
+- Browser persistence is limited to offline sessions, history records, and one unsubmitted sampled-Arena assignment. Complete online `items + votes` payloads must not be serialized locally.
+- Legacy localStorage cleanup is allowed only after the raw backup and converted records pass readback verification. Raw backups survive successful migration until the user explicitly clears local history.
+- Playwright local runs must set `E2E_BASE_URL`; results from another local port are invalid and must not be reported.

@@ -1,5 +1,12 @@
 import { localDb, localUser } from './localPlatform';
 import { API_BASE_URL } from './runtimeConfig';
+import {
+  AuthStorageError,
+  safeGetStorageItem,
+  safeRemoveStorageItem,
+  safeSetStorageItem,
+  setRequiredAuthStorageItems,
+} from './safeBrowserStorage';
 
 export const shouldUseCloudAuth = (import.meta.env.VITE_AUTH_MODE || '').toLowerCase() === 'feishu';
 
@@ -41,12 +48,12 @@ const toAppUser = (user: ApiUser): AppUser => ({
 
 const readStoredUser = (): AppUser | null => {
   if (!shouldUseCloudAuth) return localUser;
-  const raw = localStorage.getItem(USER_KEY);
+  const raw = safeGetStorageItem(localStorage, USER_KEY, { kind: 'auth' }).value;
   if (!raw) return null;
   try {
     return toAppUser(JSON.parse(raw));
   } catch {
-    localStorage.removeItem(USER_KEY);
+    safeRemoveStorageItem(localStorage, USER_KEY, { kind: 'auth' });
     return null;
   }
 };
@@ -78,21 +85,23 @@ const requestAuthJson = async <T>(path: string, init: RequestInit = {}): Promise
 };
 
 const storeSession = (accessToken: string, user: ApiUser) => {
-  localStorage.setItem(TOKEN_KEY, accessToken);
-  localStorage.setItem(USER_KEY, JSON.stringify(user));
+  setRequiredAuthStorageItems(localStorage, [
+    [TOKEN_KEY, accessToken],
+    [USER_KEY, JSON.stringify(user)],
+  ]);
   notify(toAppUser(user));
 };
 
-export const getAuthToken = () => localStorage.getItem(TOKEN_KEY);
+export const getAuthToken = () => safeGetStorageItem(localStorage, TOKEN_KEY, { kind: 'auth' }).value || null;
 
 export const getCurrentUserDisplayName = () => {
   const user = auth.currentUser;
-  return user?.displayName || user?.email || localStorage.getItem('eval_username') || 'Anonymous';
+  return user?.displayName || user?.email || safeGetStorageItem(localStorage, 'eval_username', { report: false }).value || 'Anonymous';
 };
 
 export const getCurrentReviewerIdentity = () => {
   const user = auth.currentUser;
-  const displayName = user?.displayName || user?.email || localStorage.getItem('eval_username') || 'Anonymous';
+  const displayName = user?.displayName || user?.email || safeGetStorageItem(localStorage, 'eval_username', { report: false }).value || 'Anonymous';
   const email = user?.email || '';
   return {
     id: user?.uid || email || displayName,
@@ -115,12 +124,14 @@ export const refreshCurrentUser = async () => {
     const payload = await requestAuthJson<{ user: ApiUser }>('/api/auth/user/me', {
       headers: { Authorization: `Bearer ${token}` },
     });
-    localStorage.setItem(USER_KEY, JSON.stringify(payload.user));
+    const stored = safeSetStorageItem(localStorage, USER_KEY, JSON.stringify(payload.user), { kind: 'auth' });
     const user = toAppUser(payload.user);
     notify(user);
+    if (!stored.ok) throw new AuthStorageError(stored.issue!);
     return user;
   } catch (error) {
     console.error('Failed to refresh auth user', error);
+    if (error instanceof AuthStorageError) return auth.currentUser;
     await logout();
     return null;
   }
@@ -146,7 +157,7 @@ export const auth = {
 export const signInWithFeishu = async () => {
   const currentPath = `${window.location.pathname}${window.location.search}`;
   if (currentPath && currentPath !== '/login' && currentPath !== '/feishu-callback') {
-    sessionStorage.setItem('redirectAfterLogin', currentPath);
+    safeSetStorageItem(sessionStorage, 'redirectAfterLogin', currentPath);
   }
   const payload = await requestAuthJson<{ authorizationUrl: string }>('/api/auth/feishu/login-url');
   window.location.href = payload.authorizationUrl;
@@ -164,8 +175,8 @@ export const completeFeishuLogin = async (code: string) => {
 export const signInWithGoogle = signInWithFeishu;
 
 export const logout = async () => {
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(USER_KEY);
+  safeRemoveStorageItem(localStorage, TOKEN_KEY, { kind: 'auth' });
+  safeRemoveStorageItem(localStorage, USER_KEY, { kind: 'auth' });
   notify(shouldUseCloudAuth ? null : localUser);
 };
 

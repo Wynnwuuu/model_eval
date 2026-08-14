@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { safeGetStorageItem, safeSetStorageItem } from '../safeBrowserStorage';
 import { Play, Info, AlertTriangle, Download, FileSpreadsheet, Command, PieChart, User, RotateCcw, ArrowRight, History } from 'lucide-react';
 import Papa from 'papaparse';
 import { EvaluationItem, EvaluationProject } from '../types';
@@ -31,7 +32,7 @@ const SetupScreen: React.FC<SetupScreenProps> = ({
 
   useEffect(() => {
     // Try to pre-fill name from local storage
-    const savedName = localStorage.getItem('eval_username');
+    const savedName = safeGetStorageItem(localStorage, 'eval_username', { report: false }).value;
     if (savedName) setUserName(savedName);
   }, []);
 
@@ -234,7 +235,7 @@ const SetupScreen: React.FC<SetupScreenProps> = ({
     const finalName = userName.trim() || "Anonymous";
 
     // Save name for next time
-    localStorage.setItem('eval_username', finalName);
+    safeSetStorageItem(localStorage, 'eval_username', finalName);
     onStart(items, finalName, modelNames);
   };
 

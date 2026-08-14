@@ -1,3 +1,5 @@
+import { safeGetStorageItem, safeSetStorageItem } from './safeBrowserStorage';
+
 export const LOCAL_PLATFORM_STORAGE_KEY = 'evaltrack_local_platform_v1';
 
 export const localUser = {
@@ -138,7 +140,7 @@ function readState(): LocalPlatformState {
     return ensureStateShape(null);
   }
 
-  const raw = window.localStorage.getItem(LOCAL_PLATFORM_STORAGE_KEY);
+  const raw = safeGetStorageItem(window.localStorage, LOCAL_PLATFORM_STORAGE_KEY, { report: false }).value;
   if (!raw) return ensureStateShape(null);
 
   try {
@@ -151,7 +153,7 @@ function readState(): LocalPlatformState {
 
 function writeState(state: LocalPlatformState) {
   if (typeof window === 'undefined' || !window.localStorage) return;
-  window.localStorage.setItem(LOCAL_PLATFORM_STORAGE_KEY, JSON.stringify(state));
+  safeSetStorageItem(window.localStorage, LOCAL_PLATFORM_STORAGE_KEY, JSON.stringify(state));
 }
 
 function getCollection(state: LocalPlatformState, collectionPath: string[]) {

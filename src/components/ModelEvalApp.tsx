@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import SetupScreen from './SetupScreen';
 import VotingScreen from './VotingScreen';
 import ArenaRankVotingScreen from './ArenaRankVotingScreen';
@@ -15,7 +15,7 @@ import TemplateListPage from '../pages/templates/TemplateListPage';
 import TaskListPage from '../pages/tasks/TaskListPage';
 import InsightDashboardPage from '../pages/insights/InsightDashboardPage';
 import HistoryPage from '../pages/history/HistoryPage';
-import { AppRoute, EvalParadigm, EvaluationConfig, EvaluationItem, HistorySession, RankingEntry, RouteContext, TaskVoteGroup, VoteRecord, VoteType, EvaluationProject } from '../types';
+import { AppRoute, EvalParadigm, EvaluationConfig, EvaluationItem, HistorySession, HistorySessionSummary, RankingEntry, RouteContext, TaskVoteGroup, VoteRecord, VoteType, EvaluationProject } from '../types';
 import { isTaskVoteGroupForReviewer } from '../taskResults';
 import { auth, getCurrentReviewerIdentity, getCurrentUserDisplayName, signInWithGoogle, logout, shouldUseCloudAuth } from '../auth';
 import { getDefaultEvaluationConfig, getMethodFromParadigm, getParadigmFromMethod, isPairwiseMethod, isPreviewMethod, isRankMethod, isScoreMethod } from '../evaluationMethods';
@@ -23,9 +23,17 @@ import { saveTaskUserVotes, loadTaskEvaluation, loadTaskVoteGroups } from '../fe
 import { createVoteItemSnapshot } from '../taskItemSnapshot';
 import { applyArenaAssignmentToItem, assignArenaBattle, buildArenaSessionItems } from '../arenaSampling';
 import { RouteContent, RouteErrorBoundary } from './RouteErrorBoundary';
-
-const STORAGE_KEY = 'modeleval_session';
-const HISTORY_KEY = 'modeleval_history';
+import {
+  buildPendingArenaCheckpoint,
+  createEvaluationClientStore,
+  migrateLegacyEvaluationStorage,
+  resolveEvaluationPersistenceMode,
+  validatePendingArenaCheckpoint,
+  type LegacyEvaluationSession,
+} from '../evaluationClientStore';
+import { subscribeBrowserStorageIssues, type BrowserStorageIssue } from '../safeBrowserStorage';
+import { USE_SHARED_DATA_SOURCE } from '../runtimeConfig';
+import { TaskEvaluationLoadError } from '../features/tasks/loadTaskEvaluation';
 
 interface ModelEvalAppProps {
   initialRoute?: AppRoute;
@@ -52,12 +60,15 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
   const [user, setUser] = useState(null);
   
   // History State
-  const [history, setHistory] = useState<HistorySession[]>([]);
+  const [history, setHistory] = useState<HistorySessionSummary[]>([]);
   const [activeProject, setActiveProject] = useState<EvaluationProject | null>(null);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [taskBuilderMode, setTaskBuilderMode] = useState<'create' | 'list'>('create');
   const [routeTaskLoading, setRouteTaskLoading] = useState(false);
   const [routeTaskError, setRouteTaskError] = useState<string | null>(null);
+  const [routeTaskErrorKind, setRouteTaskErrorKind] = useState<TaskEvaluationLoadError['code'] | null>(null);
+  const [hydratedTaskId, setHydratedTaskId] = useState<string | null>(null);
+  const [routeTaskLoadAttempt, setRouteTaskLoadAttempt] = useState(0);
   const [allUserVoteGroups, setAllUserVoteGroups] = useState<TaskVoteGroup[]>([]);
   const [teamVotesLoading, setTeamVotesLoading] = useState(false);
   const [teamVotesError, setTeamVotesError] = useState<string | null>(null);
@@ -65,6 +76,17 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
   const [voteSaveError, setVoteSaveError] = useState<string | null>(null);
   const [resyncLoading, setResyncLoading] = useState(false);
   const [resyncError, setResyncError] = useState<string | null>(null);
+  const [storageIssue, setStorageIssue] = useState<BrowserStorageIssue | null>(null);
+  const [clientStorageWarning, setClientStorageWarning] = useState<string | null>(null);
+  const clientStoreRef = useRef<ReturnType<typeof createEvaluationClientStore> | null>(null);
+  if (!clientStoreRef.current) clientStoreRef.current = createEvaluationClientStore();
+  const clientStore = clientStoreRef.current;
+  const offlineWriteRef = useRef<{ sessionId: string; revision: number; chain: Promise<void> }>({
+    sessionId: '',
+    revision: 0,
+    chain: Promise.resolve(),
+  });
+  const loadedRouteTaskIdRef = useRef<string | null>(null);
 
   // Confirm Modal State
   const [confirmConfig, setConfirmConfig] = useState<{
@@ -187,64 +209,144 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     }
   }, [initialContext]);
 
-  // Load History on Mount
+  useEffect(() => subscribeBrowserStorageIssues(setStorageIssue), []);
+
+  // Migrate legacy localStorage before reading the new client stores. Migration
+  // is deliberately independent from task hydration so an IndexedDB failure
+  // can never block a server-backed evaluation route.
   useEffect(() => {
-    const savedHistory = localStorage.getItem(HISTORY_KEY);
-    if (savedHistory) {
+    let cancelled = false;
+    const initializeClientStorage = async () => {
       try {
-        setHistory(JSON.parse(savedHistory));
-      } catch (e) {
-        console.error("Failed to parse history");
+        const migration = await migrateLegacyEvaluationStorage({
+          legacyStorage: window.localStorage,
+          store: clientStore,
+          reviewerId: getCurrentReviewerIdentity().id,
+        });
+        if (cancelled) return;
+        if (migration.failures.length > 0) {
+          setClientStorageWarning(`有 ${migration.failures.length} 项旧本地数据未能完成迁移，原数据仍保留在浏览器中。`);
+        }
+        const [summaries, latestOfflineSession] = await Promise.all([
+          clientStore.listHistorySummaries(),
+          clientStore.getLatestOfflineSession(),
+        ]);
+        if (cancelled) return;
+        setHistory(summaries);
+        setHasSavedSession(Boolean(latestOfflineSession));
+      } catch (error: any) {
+        if (!cancelled) {
+          console.warn('Evaluation client storage is unavailable', error);
+          setClientStorageWarning(
+            USE_SHARED_DATA_SOURCE
+              ? '本地恢复存储暂不可用；线上任务仍会从服务端正常读取和保存。'
+              : '本地恢复存储暂不可用；刷新页面可能无法恢复当前离线进度。',
+          );
+        }
       }
-    }
-  }, []);
+    };
+    void initializeClientStorage();
+    return () => {
+      cancelled = true;
+    };
+  }, [clientStore]);
 
-  // Check for saved session on load
+  // Only offline or unbacked sessions persist complete items. The queue and
+  // revision check prevent a slow older write from replacing newer progress.
   useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      setHasSavedSession(true);
+    const persistence = resolveEvaluationPersistenceMode({
+      sharedDataSource: USE_SHARED_DATA_SOURCE,
+      taskId: activeTaskId,
+      sampledArena: isSampledArena,
+    });
+    if (!persistence.persistOfflineSession || currentRoute !== 'voting' || items.length === 0 || !sessionId) return;
+    if (offlineWriteRef.current.sessionId !== sessionId) {
+      offlineWriteRef.current = { sessionId, revision: 0, chain: Promise.resolve() };
     }
-  }, [currentRoute]);
+    const revision = ++offlineWriteRef.current.revision;
+    const session: LegacyEvaluationSession = {
+      items,
+      votes,
+      currentIndex,
+      userName,
+      modelNames,
+      taskModels,
+      taskParadigm,
+      taskEvaluationConfig,
+      activeTaskId,
+      timestamp: Date.now(),
+      sessionId,
+    };
+    offlineWriteRef.current.chain = offlineWriteRef.current.chain
+      .catch(() => undefined)
+      .then(async () => {
+        await clientStore.saveOfflineSession({ id: sessionId, revision, updatedAt: Date.now(), session });
+        setHasSavedSession(true);
+      })
+      .catch((error: any) => {
+        console.warn('Failed to save offline evaluation progress', error);
+        setClientStorageWarning('当前离线评测进度无法保存；请在刷新页面前完成本轮评测。');
+      });
+  }, [activeTaskId, clientStore, currentIndex, currentRoute, isSampledArena, items, modelNames, sessionId, taskEvaluationConfig, taskModels, taskParadigm, userName, votes]);
 
-  // Auto-save current progress
+  // Shared sampled Arena stores only the current unsubmitted assignment.
   useEffect(() => {
-    if (currentRoute === 'voting' && items.length > 0) {
-      const sessionData = {
-        items,
-        votes,
-        currentIndex,
-        userName,
-        modelNames,
-        taskModels,
-        taskParadigm,
-        taskEvaluationConfig,
-        activeTaskId,
-        timestamp: Date.now(),
-        sessionId // Persist the ID
-      };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(sessionData));
+    if (!activeTaskId || !isSampledArena) return;
+    const reviewerId = getCurrentReviewerIdentity().id || userName;
+    const persistence = resolveEvaluationPersistenceMode({
+      sharedDataSource: USE_SHARED_DATA_SOURCE,
+      taskId: activeTaskId,
+      sampledArena: true,
+    });
+    if (!persistence.persistArenaCheckpoint) return;
+    if (currentRoute !== 'voting' || !items[currentIndex]) {
+      if (currentRoute === 'results' || currentRoute === 'insights') {
+        void clientStore.deleteTaskCheckpoint(activeTaskId, reviewerId).catch(error => {
+          console.warn('Failed to clear Arena checkpoint', error);
+        });
+      }
+      return;
     }
-  }, [items, votes, currentIndex, currentRoute, userName, modelNames, taskModels, taskParadigm, taskEvaluationConfig, sessionId, activeTaskId]);
+    const checkpoint = buildPendingArenaCheckpoint({
+      taskId: activeTaskId,
+      reviewerId,
+      submittedVoteCount: votes.length,
+      sessionId,
+      item: items[currentIndex],
+    });
+    if (!checkpoint) return;
+    void clientStore.saveTaskCheckpoint(checkpoint).catch((error: any) => {
+      console.warn('Failed to save Arena checkpoint', error);
+      setClientStorageWarning('当前 Arena 配对无法在刷新后恢复，请先完成当前 case。');
+    });
+  }, [activeTaskId, clientStore, currentIndex, currentRoute, isSampledArena, items, sessionId, userName, votes.length]);
 
   useEffect(() => {
     const taskId = routeContext.taskId;
     const shouldHydrateTask = currentRoute === 'voting' && !!taskId;
     if (!shouldHydrateTask) return;
-    if (activeTaskId === taskId && items.length > 0) return;
+    if (loadedRouteTaskIdRef.current === taskId && hydratedTaskId === taskId) return;
 
     let cancelled = false;
-
+    const abortController = new AbortController();
     const hydrateTaskFromRoute = async () => {
+      loadedRouteTaskIdRef.current = null;
       setRouteTaskLoading(true);
       setRouteTaskError(null);
+      setRouteTaskErrorKind(null);
+      setHydratedTaskId(null);
+      setItems([]);
+      setVotes([]);
+      setCurrentIndex(0);
+      setAllUserVoteGroups([]);
+      setActiveTaskId(null);
 
       try {
-        const loaded = await loadTaskEvaluation(taskId);
+        const loaded = await loadTaskEvaluation(taskId, { signal: abortController.signal });
 
         if (cancelled) return;
 
-        if (loaded.project && !activeProject) {
+        if (loaded.project) {
           setActiveProject(loaded.project);
         }
         const loadedIsSampledArena = isPairwiseMethod(loaded.evaluationConfig)
@@ -269,27 +371,30 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
         let restoredSessionId = '';
         if (loadedIsSampledArena && arenaSession && currentRoute === 'voting') {
           try {
-            const savedSession = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
-            const savedCurrentItem = savedSession?.items?.[savedSession.currentIndex] as EvaluationItem | undefined;
             const expectedCurrentItem = hydratedItems[arenaSession.currentIndex];
-            const savedOriginalId = savedCurrentItem?.pairContext?.originalItemId || savedCurrentItem?.originalItemId || savedCurrentItem?.id;
-            const expectedOriginalId = expectedCurrentItem?.originalItemId || expectedCurrentItem?.id;
-            if (
-              savedSession?.activeTaskId === loaded.task.id
-              && savedSession?.votes?.length === loaded.votes.length
-              && savedCurrentItem?.pairContext?.assignmentId
-              && savedOriginalId === expectedOriginalId
-            ) {
+            const schedulerVersion = loaded.evaluationConfig.arenaSampling?.schedulerVersion || 'arena_v1';
+            const checkpoint = await clientStore.getTaskCheckpoint(loaded.task.id, reviewerId);
+            if (checkpoint && expectedCurrentItem && validatePendingArenaCheckpoint(checkpoint, {
+              taskId: loaded.task.id,
+              reviewerId,
+              submittedVoteCount: loaded.votes.length,
+              schedulerVersion,
+              item: expectedCurrentItem,
+            })) {
               hydratedItems = hydratedItems.map((item, index) =>
-                index === arenaSession.currentIndex ? savedCurrentItem : item
+                index === arenaSession.currentIndex ? applyArenaAssignmentToItem(item, checkpoint.assignment) : item
               );
               hydratedCurrentIndex = arenaSession.currentIndex;
-              restoredSessionId = savedSession.sessionId || '';
+              restoredSessionId = checkpoint.sessionId;
+            } else if (checkpoint) {
+              await clientStore.deleteTaskCheckpoint(loaded.task.id, reviewerId);
             }
           } catch (error) {
             console.warn('Failed to restore pending Arena assignment', error);
+            setClientStorageWarning('未能恢复上一次未提交的 Arena 配对，已按服务端进度重新分配。');
           }
         }
+        if (cancelled) return;
         setItems(hydratedItems);
         setVotes(loaded.votes);
         setAllUserVoteGroups(loaded.allUserVoteGroups || []);
@@ -302,27 +407,32 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
         setTaskEvaluationConfig(loaded.evaluationConfig);
         setActiveTaskId(loaded.task.id);
         setSessionId(restoredSessionId || `session-${loaded.task.id}-${Date.now()}`);
+        loadedRouteTaskIdRef.current = loaded.task.id;
+        setHydratedTaskId(loaded.task.id);
         setVoteSaveError(null);
         setResyncError(null);
         if (loadedIsSampledArena && arenaSession?.remainingCount === 0 && currentRoute === 'voting') {
           openTaskResults(loaded.task.id, loaded.project?.id);
         }
       } catch (error: any) {
+        if (abortController.signal.aborted) return;
         if (!cancelled) {
           console.error('Failed to load task from route', error);
           setRouteTaskError(error?.message || '加载评测物料失败。');
+          setRouteTaskErrorKind(error instanceof TaskEvaluationLoadError ? error.code : 'unknown');
         }
       } finally {
         if (!cancelled) setRouteTaskLoading(false);
       }
     };
 
-    hydrateTaskFromRoute();
+    void hydrateTaskFromRoute();
 
     return () => {
       cancelled = true;
+      abortController.abort();
     };
-  }, [activeProject, activeTaskId, currentRoute, items.length, routeContext.taskId]);
+  }, [clientStore, currentRoute, hydratedTaskId, routeContext.taskId, routeTaskLoadAttempt]);
 
   // Save to History when session is complete (moved to results)
   const saveToHistory = (completedVotes: VoteRecord[]) => {
@@ -330,6 +440,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
 
     const newEntry: HistorySession = {
       id: sessionId,
+      taskId: activeTaskId || undefined,
       timestamp: Date.now(),
       userName: userName || 'Anonymous',
       modelNames,
@@ -340,40 +451,57 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
       votes: completedVotes
     };
 
-    setHistory(prev => {
-      // Avoid duplicates: if session ID exists, update it, otherwise push new
-      const exists = prev.find(h => h.id === sessionId);
-      const updated = exists 
-        ? prev.map(h => h.id === sessionId ? newEntry : h)
-        : [...prev, newEntry];
-      
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
-      return updated;
+    void clientStore.saveHistorySession(newEntry)
+      .then(summary => {
+        setHistory(previous => {
+          const withoutCurrent = previous.filter(entry => entry.id !== summary.id);
+          return [summary, ...withoutCurrent].sort((left, right) => right.timestamp - left.timestamp);
+        });
+      })
+      .catch((error: any) => {
+        console.warn('Failed to save evaluation history', error);
+        setClientStorageWarning(
+          activeTaskId
+            ? '评测结果已保存到服务端，但本地历史记录写入失败。'
+            : '本地评测结果无法写入历史记录，请先不要关闭当前结果页。',
+        );
+      });
+    const persistence = resolveEvaluationPersistenceMode({
+      sharedDataSource: USE_SHARED_DATA_SOURCE,
+      taskId: activeTaskId,
+      sampledArena: isSampledArena,
     });
+    if (persistence.persistOfflineSession) {
+      void clientStore.deleteOfflineSession(sessionId).then(() => setHasSavedSession(false)).catch(() => undefined);
+    }
   };
 
-  const resumeSession = () => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        const data = JSON.parse(saved);
-        setItems(data.items);
-        setVotes(data.votes);
-        setCurrentIndex(data.currentIndex);
-        setUserName(data.userName || '');
-        if (data.modelNames) setModelNames(data.modelNames);
-        if (data.taskModels) setTaskModels(data.taskModels);
-        if (data.taskParadigm) setTaskParadigm(data.taskParadigm);
-        if (data.taskEvaluationConfig) {
-          setTaskEvaluationConfig(data.taskEvaluationConfig);
-        } else if (data.taskParadigm) {
-          setTaskEvaluationConfig(getDefaultEvaluationConfig(getMethodFromParadigm(data.taskParadigm)));
-        }
-        setSessionId(data.sessionId || `session-${Date.now()}`); // Ensure ID exists
-        goToRoute('voting');
-      } catch (e) {
-        console.error("Failed to parse saved session");
+  const resumeSession = async () => {
+    try {
+      const saved = await clientStore.getLatestOfflineSession();
+      if (!saved) {
+        setHasSavedSession(false);
+        return;
       }
+      const data = saved.session;
+      setItems(data.items);
+      setVotes(data.votes);
+      setCurrentIndex(data.currentIndex);
+      setUserName(data.userName || '');
+      if (data.modelNames) setModelNames(data.modelNames);
+      if (data.taskModels) setTaskModels(data.taskModels);
+      if (data.taskParadigm) setTaskParadigm(data.taskParadigm);
+      if (data.taskEvaluationConfig) {
+        setTaskEvaluationConfig(data.taskEvaluationConfig);
+      } else if (data.taskParadigm) {
+        setTaskEvaluationConfig(getDefaultEvaluationConfig(getMethodFromParadigm(data.taskParadigm)));
+      }
+      setActiveTaskId(data.activeTaskId || null);
+      setSessionId(data.sessionId || `session-${Date.now()}`);
+      goToRoute('voting');
+    } catch (error: any) {
+      console.warn('Failed to resume offline session', error);
+      setClientStorageWarning('无法读取已保存的离线评测进度。原迁移备份不会被删除。');
     }
   };
 
@@ -383,8 +511,10 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
       title: '放弃当前评测进度',
       message: '确定要清除当前保存的评测会话吗？清除后无法恢复。',
       onConfirm: () => {
-        localStorage.removeItem(STORAGE_KEY);
-        setHasSavedSession(false);
+        void clientStore.getLatestOfflineSession()
+          .then(saved => saved ? clientStore.deleteOfflineSession(saved.id) : undefined)
+          .then(() => setHasSavedSession(false))
+          .catch((error: any) => setClientStorageWarning(error?.message || '无法清除本地评测进度。'));
       }
     });
   };
@@ -425,6 +555,8 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     setTaskParadigm(getParadigmFromMethod(nextConfig.method));
     setTaskEvaluationConfig(nextConfig);
     setActiveTaskId(taskId || null);
+    loadedRouteTaskIdRef.current = taskId || null;
+    setHydratedTaskId(taskId || null);
     setAllUserVoteGroups([]);
     setTeamVotesError(null);
     setTeamVotesLoading(false);
@@ -658,7 +790,14 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
         setTeamVotesLoading(false);
         setVoteSaveError(null);
         setResyncError(null);
-        localStorage.removeItem(STORAGE_KEY);
+        loadedRouteTaskIdRef.current = null;
+        setHydratedTaskId(null);
+        const completedSessionId = sessionId;
+        if (completedSessionId) {
+          void clientStore.deleteOfflineSession(completedSessionId).catch(error => {
+            console.warn('Failed to clear offline session', error);
+          });
+        }
         setHasSavedSession(false);
       }
     });
@@ -709,8 +848,9 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
       title: '删除所有历史记录',
       message: '确定删除所有历史记录吗？此操作无法撤销。',
       onConfirm: () => {
-        localStorage.removeItem(HISTORY_KEY);
-        setHistory([]);
+        void clientStore.clearHistoryAndMigrationBackups()
+          .then(() => setHistory([]))
+          .catch((error: any) => setClientStorageWarning(error?.message || '无法清除本地历史。'));
       }
     });
   };
@@ -721,9 +861,9 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
       title: '删除会话',
       message: '确定删除此会话吗？',
       onConfirm: () => {
-        const updated = history.filter(h => h.id !== id);
-        setHistory(updated);
-        localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
+        void clientStore.deleteHistorySession(id)
+          .then(() => setHistory(previous => previous.filter(entry => entry.id !== id)))
+          .catch((error: any) => setClientStorageWarning(error?.message || '无法删除这条本地历史。'));
       }
     });
   };
@@ -763,7 +903,12 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
       );
     }
 
-    if (currentRoute === 'voting' && routeContext.taskId && routeTaskLoading) {
+    if (
+      currentRoute === 'voting'
+      && routeContext.taskId
+      && !routeTaskError
+      && (routeTaskLoading || hydratedTaskId !== routeContext.taskId)
+    ) {
       return (
         <div className="flex min-h-[calc(100vh-64px)] items-center justify-center px-4">
           <div className="w-full max-w-md rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-panel)] p-8 text-center">
@@ -779,9 +924,22 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
       return (
         <div className="flex min-h-[calc(100vh-64px)] items-center justify-center px-4">
           <div className="w-full max-w-md rounded-lg border border-red-500/30 bg-[var(--surface-panel)] p-8 text-center">
-            <h1 className="text-xl font-semibold text-white">评测物料加载失败</h1>
+            <h1 className="text-xl font-semibold text-white">
+              {routeTaskErrorKind === 'not_found' ? '评测物料不存在或已删除' : '评测物料加载失败'}
+            </h1>
             <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">{routeTaskError}</p>
-            <button onClick={() => navigate('tasks')} className="btn-primary mt-6 w-full">返回评测物料</button>
+            <div className="mt-6 flex gap-3">
+              {routeTaskErrorKind !== 'not_found' && (
+                <button
+                  type="button"
+                  onClick={() => setRouteTaskLoadAttempt(attempt => attempt + 1)}
+                  className="btn-primary flex-1"
+                >
+                  重试
+                </button>
+              )}
+              <button type="button" onClick={() => navigate('tasks')} className="btn-secondary flex-1">返回评测物料</button>
+            </div>
           </div>
         </div>
       );
@@ -943,6 +1101,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
             onGoToDashboard={() => navigate('overview')}
             onClearHistory={clearHistory}
             onDeleteSession={deleteSession}
+            onLoadSession={(id) => clientStore.getHistoryDetail(id)}
           />
         </div>
       );
@@ -1084,6 +1243,33 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
         ? (routeContext.projectId && activeProject?.id === routeContext.projectId ? activeProject.name : undefined)
         : activeProject?.name}
     >
+      {(storageIssue || clientStorageWarning) && (
+        <div className="mx-auto mt-4 max-w-6xl border border-amber-400/35 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <strong className="font-semibold">本地恢复提示</strong>
+              <p className="mt-1 text-amber-100/85">{storageIssue?.message || clientStorageWarning}</p>
+              {storageIssue?.technicalMessage && (
+                <details className="mt-2 text-xs text-amber-100/65">
+                  <summary className="cursor-pointer">技术信息</summary>
+                  <div className="mt-1 break-words">{storageIssue.technicalMessage}</div>
+                </details>
+              )}
+            </div>
+            <button
+              type="button"
+              className="flex h-9 w-9 shrink-0 items-center justify-center border border-amber-200/20 text-lg text-amber-100 hover:bg-amber-200/10"
+              aria-label="关闭本地恢复提示"
+              onClick={() => {
+                setStorageIssue(null);
+                setClientStorageWarning(null);
+              }}
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
       <RouteErrorBoundary
         resetKey={`${currentRoute}:${routeContext.projectId || routeContext.taskId || routeContext.datasetId || ''}`}
         routeLabel={currentRoute === 'projects' ? '项目页面' : undefined}

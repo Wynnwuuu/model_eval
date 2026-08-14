@@ -27,9 +27,20 @@ export interface LoadedTaskEvaluation {
   evaluationConfig: ReturnType<typeof normalizeEvaluationConfig>;
 }
 
-export async function loadTaskVoteGroups(taskId: string): Promise<TaskVoteGroup[]> {
+export class TaskEvaluationLoadError extends Error {
+  constructor(
+    public readonly code: 'not_found' | 'forbidden' | 'empty' | 'network' | 'unknown',
+    message: string,
+    public readonly status?: number,
+  ) {
+    super(message);
+    this.name = 'TaskEvaluationLoadError';
+  }
+}
+
+export async function loadTaskVoteGroups(taskId: string, signal?: AbortSignal): Promise<TaskVoteGroup[]> {
   if (USE_API_BACKEND) {
-    const response = await fetch(`${API_BASE_URL}/api/tasks/${taskId}/votes`, { headers: getApiAuthHeaders() });
+    const response = await fetch(`${API_BASE_URL}/api/tasks/${taskId}/votes`, { headers: getApiAuthHeaders(), signal });
     if (!response.ok) throw new Error('无法读取全员投票结果');
     return ((await response.json()) as { userVotes: TaskVoteGroup[] }).userVotes || [];
   }
@@ -45,16 +56,29 @@ export async function loadTaskVoteGroups(taskId: string): Promise<TaskVoteGroup[
   return voteGroups;
 }
 
-async function loadCurrentUserVotes(taskId: string, reviewer: ReturnType<typeof getCurrentReviewerIdentity>) {
+async function loadCurrentUserVotes(taskId: string, reviewer: ReturnType<typeof getCurrentReviewerIdentity>, signal?: AbortSignal) {
   if (!USE_API_BACKEND) return [];
-  const response = await fetch(`${API_BASE_URL}/api/tasks/${taskId}/my-votes`, { headers: getApiAuthHeaders() });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}/api/tasks/${taskId}/my-votes`, { headers: getApiAuthHeaders(), signal });
+  } catch (error) {
+    throw new TaskEvaluationLoadError('network', error instanceof Error ? error.message : '网络连接失败');
+  }
   if (response.ok) {
     return ((await response.json()) as { votes: VoteRecord[] }).votes || [];
   }
 
+  if (response.status === 403) {
+    throw new TaskEvaluationLoadError('forbidden', '你没有权限读取这份评测物料的投票进度。', 403);
+  }
+  if (response.status !== 404) {
+    throw new TaskEvaluationLoadError('unknown', `评测进度加载失败（${response.status}）。`, response.status);
+  }
+
+  // Compatibility for deployments created before the reviewer-identity route.
   const legacyKeys = [reviewer.id, reviewer.email, reviewer.displayName].filter(Boolean);
   for (const key of legacyKeys) {
-    const legacyResponse = await fetch(`${API_BASE_URL}/api/tasks/${taskId}/votes/${encodeURIComponent(key)}`, { headers: getApiAuthHeaders() });
+    const legacyResponse = await fetch(`${API_BASE_URL}/api/tasks/${taskId}/votes/${encodeURIComponent(key)}`, { headers: getApiAuthHeaders(), signal });
     if (legacyResponse.ok) {
       const legacyVotes = ((await legacyResponse.json()) as { votes: VoteRecord[] }).votes || [];
       if (legacyVotes.length > 0) return legacyVotes;
@@ -63,25 +87,34 @@ async function loadCurrentUserVotes(taskId: string, reviewer: ReturnType<typeof 
   return [];
 }
 
-export async function loadTaskEvaluation(taskId: string): Promise<LoadedTaskEvaluation> {
+export async function loadTaskEvaluation(taskId: string, options: { signal?: AbortSignal } = {}): Promise<LoadedTaskEvaluation> {
   let task: EvalTask;
   let template: EvalTemplate | undefined;
   let project: EvaluationProject | undefined;
 
   if (USE_API_BACKEND) {
-    const taskResponse = await fetch(`${API_BASE_URL}/api/tasks/${taskId}`, { headers: getApiAuthHeaders() });
-    if (!taskResponse.ok) throw new Error('未找到这份评测物料。');
+    let taskResponse: Response;
+    try {
+      taskResponse = await fetch(`${API_BASE_URL}/api/tasks/${taskId}`, { headers: getApiAuthHeaders(), signal: options.signal });
+    } catch (error) {
+      throw new TaskEvaluationLoadError('network', error instanceof Error ? error.message : '网络连接失败');
+    }
+    if (!taskResponse.ok) {
+      if (taskResponse.status === 404) throw new TaskEvaluationLoadError('not_found', '评测物料不存在或已删除。', 404);
+      if (taskResponse.status === 403) throw new TaskEvaluationLoadError('forbidden', '你没有权限查看这份评测物料。', 403);
+      throw new TaskEvaluationLoadError('unknown', `评测物料加载失败（${taskResponse.status}）。`, taskResponse.status);
+    }
     task = ((await taskResponse.json()) as { task: EvalTask }).task;
 
     if (task.templateId) {
-      const templateResponse = await fetch(`${API_BASE_URL}/api/templates/${task.templateId}`, { headers: getApiAuthHeaders() });
+      const templateResponse = await fetch(`${API_BASE_URL}/api/templates/${task.templateId}`, { headers: getApiAuthHeaders(), signal: options.signal });
       if (templateResponse.ok) {
         template = ((await templateResponse.json()) as { template: EvalTemplate }).template;
       }
     }
 
     if (task.projectId) {
-      const projectResponse = await fetch(`${API_BASE_URL}/api/projects/${task.projectId}`, { headers: getApiAuthHeaders() });
+      const projectResponse = await fetch(`${API_BASE_URL}/api/projects/${task.projectId}`, { headers: getApiAuthHeaders(), signal: options.signal });
       if (projectResponse.ok) {
         project = ((await projectResponse.json()) as { project: EvaluationProject }).project;
       }
@@ -89,7 +122,7 @@ export async function loadTaskEvaluation(taskId: string): Promise<LoadedTaskEval
   } else {
     const taskSnapshot = await getDoc(doc(db, 'evalTasks', taskId));
     if (!snapshotExists(taskSnapshot)) {
-      throw new Error('未找到这份评测物料。');
+      throw new TaskEvaluationLoadError('not_found', '评测物料不存在或已删除。', 404);
     }
 
     task = { id: taskSnapshot.id, ...taskSnapshot.data() } as EvalTask;
@@ -117,10 +150,10 @@ export async function loadTaskEvaluation(taskId: string): Promise<LoadedTaskEval
     { id: 'model-b', name: 'Model B' }
   ];
 
-  const items = await loadTaskItems(task, { updateTotalItems: true });
+  const items = await loadTaskItems(task, { updateTotalItems: true, signal: options.signal });
 
   if (items.length === 0) {
-    throw new Error('这份评测物料没有可执行的 case 数据。');
+    throw new TaskEvaluationLoadError('empty', '这份评测物料没有可执行的 case 数据。');
   }
 
   const reviewer = getCurrentReviewerIdentity();
@@ -128,33 +161,33 @@ export async function loadTaskEvaluation(taskId: string): Promise<LoadedTaskEval
   let votes: VoteRecord[] = [];
   let allUserVoteGroups: TaskVoteGroup[] = [];
   let allUserVoteError: string | undefined;
-  try {
-    if (USE_API_BACKEND) {
-      votes = await loadCurrentUserVotes(task.id, reviewer);
-      try {
-        allUserVoteGroups = await loadTaskVoteGroups(task.id);
-      } catch (error: any) {
-        console.error('Failed to hydrate all task votes', error);
-        allUserVoteError = error?.message || '无法读取全员汇总结果';
-      }
-      return {
-        task,
-        project,
-        items,
-        votes,
-        userName,
-        allUserVoteGroups,
-        allUserVoteError,
-        modelNames: {
-          a: models[0]?.name || 'Model A',
-          b: models[1]?.name || 'Model B'
-        },
-        models,
-        paradigm,
-        evaluationConfig
-      };
+  if (USE_API_BACKEND) {
+    votes = await loadCurrentUserVotes(task.id, reviewer, options.signal);
+    try {
+      allUserVoteGroups = await loadTaskVoteGroups(task.id, options.signal);
+    } catch (error: any) {
+      console.error('Failed to hydrate all task votes', error);
+      allUserVoteError = error?.message || '无法读取全员汇总结果';
     }
+    return {
+      task,
+      project,
+      items,
+      votes,
+      userName,
+      allUserVoteGroups,
+      allUserVoteError,
+      modelNames: {
+        a: models[0]?.name || 'Model A',
+        b: models[1]?.name || 'Model B'
+      },
+      models,
+      paradigm,
+      evaluationConfig
+    };
+  }
 
+  try {
     const voteSnapshot = await getDoc(doc(db, 'evalTasks', task.id, 'userVotes', userName));
     if (snapshotExists(voteSnapshot)) {
       votes = voteSnapshot.data().votes || [];

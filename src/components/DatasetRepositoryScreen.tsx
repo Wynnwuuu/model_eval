@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { safeGetStorageItem, safeSetStorageItem } from '../safeBrowserStorage';
 import { createPortal } from 'react-dom';
 import {
   AlertTriangle,
@@ -278,7 +279,7 @@ type DatasetColumnVisibilityStore = Record<string, DatasetColumnVisibilityOverri
 
 const readStoredColumnVisibility = (): DatasetColumnVisibilityStore => {
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(DATASET_COLUMN_VISIBILITY_STORAGE_KEY) || '{}');
+    const parsed = JSON.parse(safeGetStorageItem(window.localStorage, DATASET_COLUMN_VISIBILITY_STORAGE_KEY, { report: false }).value || '{}');
     return parsed && typeof parsed === 'object' ? parsed : {};
   } catch {
     return {};
@@ -287,7 +288,7 @@ const readStoredColumnVisibility = (): DatasetColumnVisibilityStore => {
 
 const writeStoredColumnVisibility = (store: DatasetColumnVisibilityStore) => {
   try {
-    window.localStorage.setItem(DATASET_COLUMN_VISIBILITY_STORAGE_KEY, JSON.stringify(store));
+    safeSetStorageItem(window.localStorage, DATASET_COLUMN_VISIBILITY_STORAGE_KEY, JSON.stringify(store));
   } catch {
     // Column visibility is a convenience preference; storage failures must not block the repository.
   }
@@ -311,7 +312,7 @@ const TABLE_COLUMN_GROUPS: Array<{
 
 const readStoredPreviewSize = (): DatasetPreviewSize => {
   try {
-    const value = window.localStorage.getItem(PREVIEW_SIZE_STORAGE_KEY) as DatasetPreviewSize | null;
+    const value = safeGetStorageItem(window.localStorage, PREVIEW_SIZE_STORAGE_KEY, { report: false }).value as DatasetPreviewSize | null;
     return PREVIEW_SIZE_OPTIONS.some(option => option.key === value) ? value as DatasetPreviewSize : 'medium';
   } catch {
     return 'medium';
@@ -321,7 +322,7 @@ const readStoredPreviewSize = (): DatasetPreviewSize => {
 const readStoredLayoutWidths = (): DatasetRepositoryLayoutPreference => {
   try {
     return parseDatasetRepositoryLayoutPreference(
-      window.localStorage.getItem(DATASET_LAYOUT_STORAGE_KEY),
+      safeGetStorageItem(window.localStorage, DATASET_LAYOUT_STORAGE_KEY, { report: false }).value || null,
     );
   } catch {
     return parseDatasetRepositoryLayoutPreference(null);
@@ -331,7 +332,7 @@ const readStoredLayoutWidths = (): DatasetRepositoryLayoutPreference => {
 const readStoredColumnWidths = (): DatasetColumnWidthStore => {
   try {
     return parseDatasetColumnWidthStore(
-      window.localStorage.getItem(DATASET_COLUMN_WIDTH_STORAGE_KEY),
+      safeGetStorageItem(window.localStorage, DATASET_COLUMN_WIDTH_STORAGE_KEY, { report: false }).value || null,
     );
   } catch {
     return {};
@@ -949,7 +950,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(PREVIEW_SIZE_STORAGE_KEY, previewSize);
+      safeSetStorageItem(window.localStorage, PREVIEW_SIZE_STORAGE_KEY, previewSize);
     } catch {
       // Local UI preference only; ignore storage failures.
     }
@@ -957,7 +958,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(DATASET_LAYOUT_STORAGE_KEY, JSON.stringify(layoutWidths));
+      safeSetStorageItem(window.localStorage, DATASET_LAYOUT_STORAGE_KEY, JSON.stringify(layoutWidths));
     } catch {
       // Local UI preference only; ignore storage failures.
     }
@@ -965,7 +966,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(DATASET_COLUMN_WIDTH_STORAGE_KEY, JSON.stringify(columnWidthsByDataset));
+      safeSetStorageItem(window.localStorage, DATASET_COLUMN_WIDTH_STORAGE_KEY, JSON.stringify(columnWidthsByDataset));
     } catch {
       // Column widths are local view preferences; storage failures are non-blocking.
     }

@@ -109,3 +109,9 @@ No schema migration, Aion change, OSS activation, or paid generation was used. A
 New generation preflights default to a VidMuse MCP mapping mode and compile standard video/image fields into the existing Aion unified API. Assisted mapping remains available and historical snapshots remain compatible. Structured JSON datasets, per-case mixed modes, model-profile constraints, prompt-token validation, explicit keyframe fallback, compiler audit, and final request preview are implemented without a database migration or Worker/writeback changes.
 
 All non-database generation, dataset, Arena, TypeScript, production-build, and desktop/mobile browser gates pass. Docker/PostgreSQL was unavailable for the final database/API rerun; this feature does not change persistence, queue, or route behavior. No paid generation was submitted.
+# 2026-08-14: Evaluation storage root fix
+
+- Active branch: `codex/project-blank-fix`, clean baseline `c93a71b` before implementation.
+- Root cause: `ModelEvalApp` writes complete `items + votes` into `modeleval_session` on each progress change and complete history arrays into `modeleval_history`; quota exceptions escape React effects and remove the route UI.
+- Approved fix: versioned IndexedDB migration with raw backups, server-source shared tasks, minimal Arena checkpoints, revisioned offline sessions, per-session history, route isolation, and real Chromium quota coverage.
+- Do not revert project commits `2beaa03` or `c93a71b`. Do not restore legacy whole-session writes in a rollback.

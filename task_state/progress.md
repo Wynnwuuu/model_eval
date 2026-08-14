@@ -800,3 +800,21 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 
 - Passed `test:evaluation-reference-media`, `test:arena`, TypeScript, frontend build, server build, and `local:check`.
 - Browser-validated a mixed image/audio/video case on desktop and `390x844`: all three references rendered in source order, audio/video remained paused with metadata preload, the strip wrapped without horizontal overflow, and image/video fullscreen navigation skipped audio and did not trigger voting shortcuts.
+## 2026-08-14: Evaluation client storage root fix
+
+### Implemented
+
+- Removed the legacy full `items + votes` localStorage writers. Server-backed evaluations now rehydrate task data and current-user votes from the API, and vote-read failures are visible instead of being treated as zero progress.
+- Added versioned IndexedDB stores for raw migration backups, offline sessions, history summaries/details, and one sampled-Arena pending checkpoint.
+- Added copy, readback verification, and cleanup migration semantics. Corrupt input, quota failures, interrupted cleanup, and concurrent tabs retain recoverable source data without duplicate history records.
+- Added revisioned offline writes, exact Arena checkpoint validation, task-ID route isolation, abortable stale requests, explicit 404/network states, and non-fatal browser-storage warnings.
+- Added safe preference/auth storage boundaries. Auth token and user writes roll back on a partial quota failure.
+- Added a real Chromium/PostgreSQL/API/Vite CI gate and `docs/evaluation-client-storage-migration.md`.
+
+### Validation completed locally
+
+- Storage unit tests passed for a 188-case rich fixture, quota errors, corrupt JSON, copy/readback/cleanup failures, interrupted migration resume, concurrent tabs, byte-equivalent CSV, out-of-order offline writes, Arena checkpoint invalidation, and auth rollback.
+- Nine Chromium checks passed against the isolated worktree URL: near-quota migration and vote reload, missing task, transient network retry, stale task cancellation, IndexedDB unavailability, offline recovery, lazy history CSV, exact sampled-Arena recovery, and MOS/Rubric/Arena-rank/Preview server progress reload.
+- Generation/MCP, generation PostgreSQL, dataset synchronization/import/clone/delete/filter/table projection, versioned sync PostgreSQL, structured evaluation audit, Arena, rank ties, insights, page metadata, layout, project contract, and API smoke tests passed.
+- TypeScript, server build, and frontend production build passed. No paid generation request was executed.
+- A previous local browser run used the wrong environment variable and opened an unrelated port 3000 app; that result was discarded. All browser results listed above use `E2E_BASE_URL=http://127.0.0.1:3003` and the current isolated worktree.

@@ -5,6 +5,9 @@ dist-server/
 coverage/
 .DS_Store
 *.log
+test-results/
+playwright-report/
+output/playwright/
 task_state/base-audit/
 .env*
 !.env.example

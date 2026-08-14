@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { completeFeishuLogin } from '../auth';
+import { safeGetStorageItem, safeRemoveStorageItem } from '../safeBrowserStorage';
 
 export const FeishuCallbackScreen: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -20,8 +21,8 @@ export const FeishuCallbackScreen: React.FC = () => {
 
     completeFeishuLogin(code)
       .then(() => {
-        const redirectTo = sessionStorage.getItem('redirectAfterLogin') || '/';
-        sessionStorage.removeItem('redirectAfterLogin');
+        const redirectTo = safeGetStorageItem(sessionStorage, 'redirectAfterLogin', { report: false }).value || '/';
+        safeRemoveStorageItem(sessionStorage, 'redirectAfterLogin', { report: false });
         navigate(redirectTo, { replace: true });
       })
       .catch(err => {

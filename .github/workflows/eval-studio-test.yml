@@ -11,8 +11,10 @@ on:
       - "src/**"
       - "server/**"
       - "scripts/**"
+      - "e2e/**"
       - "package.json"
       - "package-lock.json"
+      - "playwright.config.ts"
       - "tsconfig*.json"
       - "vite.config.ts"
       - "Dockerfile"
@@ -71,6 +73,8 @@ jobs:
 
       - run: npm run test:projects
 
+      - run: npm run test:evaluation-storage
+
       - run: npm run build
 
       - run: npm run server:build
@@ -98,6 +102,34 @@ jobs:
           exit 1
 
       - run: npm run test:api:smoke
+
+      - name: Install Chromium for browser regression
+        run: npx playwright install --with-deps chromium
+
+      - name: Start Vite
+        run: |
+          npm run dev > /tmp/eval-studio-web.log 2>&1 &
+          echo $! > /tmp/eval-studio-web.pid
+
+      - name: Wait for Vite
+        run: |
+          for i in {1..30}; do
+            if curl -fsS http://localhost:3000; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/eval-studio-web.log
+          exit 1
+
+      - run: npm run test:e2e:evaluation-storage
+
+      - name: Stop Vite
+        if: always()
+        run: |
+          if [ -f /tmp/eval-studio-web.pid ]; then
+            kill "$(cat /tmp/eval-studio-web.pid)" || true
+          fi
 
       - name: Stop API
         if: always()

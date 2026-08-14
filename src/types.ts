@@ -276,6 +276,7 @@ export interface VotingStats {
 
 export interface HistorySession {
   id: string; // Unique session ID
+  taskId?: string;
   timestamp: number;
   userName: string;
   modelNames: { a: string; b: string };
@@ -284,6 +285,40 @@ export interface HistorySession {
   evaluationConfig?: EvaluationConfig;
   items: EvaluationItem[];
   votes: VoteRecord[];
+}
+
+export interface HistorySessionSummary {
+  id: string;
+  taskId?: string;
+  timestamp: number;
+  userName: string;
+  modelNames: { a: string; b: string };
+  models?: { id: string; name: string }[];
+  paradigm?: EvalParadigm;
+  evaluationConfig?: EvaluationConfig;
+  itemCount: number;
+  voteCount: number;
+  skippedCount: number;
+  stats: VotingStats;
+  rankSummary?: {
+    leadingModelNames: string[];
+    normalizedScore: number;
+    tieRate: number;
+  };
+}
+
+export interface PendingArenaCheckpointV1 {
+  id: string;
+  version: 1;
+  taskId: string;
+  reviewerId: string;
+  itemId: string;
+  originalItemId: string;
+  assignment: ArenaBattleAssignment;
+  submittedVoteCount: number;
+  schedulerVersion: string;
+  sessionId: string;
+  updatedAt: number;
 }
 
 // For the analysis screen

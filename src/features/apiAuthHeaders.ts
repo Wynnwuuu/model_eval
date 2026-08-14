@@ -1,7 +1,8 @@
 import { auth } from '../auth';
+import { safeGetStorageItem } from '../safeBrowserStorage';
 
 export const getApiAuthHeaders = () => {
-  const token = localStorage.getItem('token');
+  const token = safeGetStorageItem(localStorage, 'token', { kind: 'auth' }).value;
   if (token) {
     return {
       Authorization: `Bearer ${token}`,
