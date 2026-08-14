@@ -1,0 +1,53 @@
+{
+  "feature": "single-material-insights",
+  "updatedAt": "2026-08-14",
+  "status": "implemented",
+  "requirements": [
+    {
+      "id": "one-material-boundary",
+      "description": "结果洞察每次只统计用户明确选择的一份评测物料，不自动合并任务",
+      "status": "complete"
+    },
+    {
+      "id": "reviewer-scope",
+      "description": "在同一页面切换全员汇总与我的结果，并同步更新全部统计、明细、证据和导出",
+      "status": "complete"
+    },
+    {
+      "id": "unified-entry",
+      "description": "任务卡片、评测完成页和兼容任务结果路由统一进入项目结果洞察并预选物料",
+      "status": "complete"
+    },
+    {
+      "id": "project-entry-selection",
+      "description": "项目级入口不默认选择物料，用户必须明确选择",
+      "status": "complete"
+    },
+    {
+      "id": "legacy-links",
+      "description": "旧 group 链接清除隐式分组参数，旧 task results/insights 链接兼容到统一页面",
+      "status": "complete"
+    },
+    {
+      "id": "stable-current-reviewer",
+      "description": "我的结果按稳定 userId/email 过滤，不以显示名推断身份",
+      "status": "complete"
+    }
+  ],
+  "validation": {
+    "passed": [
+      "npm.cmd run test:insight-links",
+      "npm.cmd run test:insights-summary",
+      "npm.cmd run test:task-results",
+      "npm.cmd run test:page-metadata",
+      "npm.cmd run lint",
+      "npm.cmd run build",
+      "npm.cmd run server:build",
+      "git diff --check",
+      "desktop and mobile browser layout checks"
+    ],
+    "blocked": [
+      "npm.cmd run local:start: Docker Desktop was not running, so PostgreSQL/API smoke could not start"
+    ]
+  }
+}

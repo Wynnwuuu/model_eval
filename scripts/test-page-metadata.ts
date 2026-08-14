@@ -50,7 +50,11 @@ assert.equal(metadata('/tasks/task-1/evaluate', { taskName: '双模型盲测' })
 assert.equal(metadata('/tasks/task-1/results', { taskName: '双模型盲测' }).title, '双模型盲测 · 评测结果 · Manueval');
 assert.equal(metadata('/tasks/task-1/insights', { taskName: '双模型盲测' }).title, '双模型盲测 · 评测结果 · Manueval');
 assert.equal(getCanonicalPagePath('/tasks/task-1/insights', new URLSearchParams('status=completed')), '/tasks/task-1/results');
-assert.equal(getCanonicalPagePath('/projects/project-1/insights', new URLSearchParams('scope=group:arena')), '/projects/project-1/insights?scope=group%3Aarena');
+assert.equal(getCanonicalPagePath('/projects/project-1/insights', new URLSearchParams('scope=group:arena')), '/projects/project-1/insights');
+assert.equal(
+  getCanonicalPagePath('/projects/project-1/insights', new URLSearchParams('scope=material:task-1&reviewer=mine&status=active')),
+  '/projects/project-1/insights?scope=material%3Atask-1&reviewer=mine',
+);
 assert.equal(metadata('/templates/template-1', { templateName: '视频质量 Rubric' }).title, '视频质量 Rubric · Rubric · Manueval');
 assert.equal(metadata('/history').title, '历史 · Manueval');
 assert.equal(metadata('/login').title, '登录 · Manueval');

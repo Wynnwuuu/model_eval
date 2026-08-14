@@ -54,8 +54,8 @@ const buildRoutePath = (route: AppRoute, context: RouteContext = {}) => {
     case 'insights':
       if (context.projectId) return buildInsightPath({
         projectId: context.projectId,
-        statusFilter: context.materialStatusFilter || 'all',
         scope: context.insightScope,
+        reviewerScope: context.insightReviewerScope,
       });
       if (context.taskId || context.materialId) return buildTaskResultsPath(context.taskId || context.materialId || '');
       return withSearch('/insights');
@@ -85,6 +85,7 @@ const withSearchContext = (context: RouteContext, searchParams: URLSearchParams)
     ...context,
     projectId,
     insightScope: insightState.scope || context.insightScope,
+    insightReviewerScope: insightState.reviewerScope,
     taskDatasetId,
     generationBatchId,
     taskModelColumns: taskModelColumns.length ? taskModelColumns : context.taskModelColumns,

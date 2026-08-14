@@ -1,40 +1,37 @@
-export type InsightStatusFilter = 'all' | 'draft' | 'active' | 'completed';
+export type ReviewerScope = 'all' | 'mine';
 
 export interface InsightDeepLinkState {
   projectId: string;
-  statusFilter?: InsightStatusFilter;
   scope?: string;
+  reviewerScope?: ReviewerScope;
 }
-
-const isStatusFilter = (value: string | null): value is Exclude<InsightStatusFilter, 'all'> =>
-  value === 'draft' || value === 'active' || value === 'completed';
 
 export const normalizeInsightScope = (value?: string | null) => {
   const scope = String(value || '').trim();
-  return scope.startsWith('group:') || scope.startsWith('material:') ? scope : undefined;
+  return scope.startsWith('material:') && scope.length > 'material:'.length ? scope : undefined;
 };
 
 export const parseInsightSearchParams = (searchParams: URLSearchParams) => ({
-  statusFilter: isStatusFilter(searchParams.get('status')) ? searchParams.get('status') as Exclude<InsightStatusFilter, 'all'> : 'all' as const,
+  reviewerScope: searchParams.get('reviewer') === 'mine' ? 'mine' as const : 'all' as const,
   ...(normalizeInsightScope(searchParams.get('scope')) ? { scope: normalizeInsightScope(searchParams.get('scope')) } : {}),
 });
 
 export const appendInsightSearchParams = (
   searchParams: URLSearchParams,
-  state: Pick<InsightDeepLinkState, 'statusFilter' | 'scope'>,
+  state: Pick<InsightDeepLinkState, 'scope' | 'reviewerScope'>,
 ) => {
-  if (state.statusFilter && state.statusFilter !== 'all') {
-    searchParams.set('status', state.statusFilter);
-  }
   const scope = normalizeInsightScope(state.scope);
   if (scope) {
     searchParams.set('scope', scope);
   }
+  if (state.reviewerScope === 'mine') {
+    searchParams.set('reviewer', 'mine');
+  }
   return searchParams;
 };
 
-export const buildInsightPath = ({ projectId, statusFilter = 'all', scope }: InsightDeepLinkState) => {
-  const searchParams = appendInsightSearchParams(new URLSearchParams(), { statusFilter, scope });
+export const buildInsightPath = ({ projectId, scope, reviewerScope = 'all' }: InsightDeepLinkState) => {
+  const searchParams = appendInsightSearchParams(new URLSearchParams(), { scope, reviewerScope });
   const suffix = searchParams.toString();
   const path = `/projects/${encodeURIComponent(projectId)}/insights`;
   return suffix ? `${path}?${suffix}` : path;

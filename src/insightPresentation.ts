@@ -24,7 +24,6 @@ import type {
 } from './types';
 import { withTaskVoteGroupReviewer } from './taskResults';
 
-export type AnalysisScopeMode = 'comparable-group' | 'single-task';
 export type InsightTone = 'neutral' | 'accent' | 'success' | 'warning';
 
 export interface InsightMetricDetail {
@@ -64,13 +63,13 @@ export interface InsightTopSummary {
   metrics: InsightTopMetric[];
 }
 
-export interface ProjectResultGroupDigest {
+export interface ProjectTaskDigest {
   id: string;
+  taskId: string;
+  taskName: string;
   label: string;
   method: EvaluationMethod;
   methodLabel: string;
-  taskIds: string[];
-  taskCount: number;
   phase: 'pending' | 'in-progress' | 'completed';
   leaderLabel: string;
   headline: string;
@@ -382,25 +381,7 @@ export const buildPairwiseTopSummary = (bundle: PairwiseInsightBundle, totalItem
   };
 };
 
-const prefixVote = (taskId: string, vote: VoteRecord): VoteRecord => ({
-  ...vote,
-  itemId: `${taskId}::${vote.itemId}`,
-  pairContext: vote.pairContext ? {
-    ...vote.pairContext,
-    originalItemId: `${taskId}::${vote.pairContext.originalItemId || vote.itemId}`,
-    assignmentId: vote.pairContext.assignmentId ? `${taskId}::${vote.pairContext.assignmentId}` : undefined,
-  } : undefined,
-});
-
-export const getComparableTaskSignature = (task: EvalTask, template?: EvalTemplate) => {
-  const config = normalizeEvaluationConfig(task, template);
-  const modelSignature = (task.models || []).map(model => `${model.id}:${model.name}`).join('|');
-  return `${config.method}::${task.outputType || 'unknown'}::${modelSignature}`;
-};
-
-export const getAnalysisScopeStorageKey = (projectId: string) => `manueval:analysis-scope:${projectId}`;
-
-export const buildProjectResultGroupDigests = ({
+export const buildProjectTaskDigests = ({
   tasks,
   voteGroupsByTask,
   templates = [],
@@ -408,28 +389,17 @@ export const buildProjectResultGroupDigests = ({
   tasks: EvalTask[];
   voteGroupsByTask: Map<string, TaskVoteGroup[]>;
   templates?: EvalTemplate[];
-}): ProjectResultGroupDigest[] => {
-  const grouped = new Map<string, EvalTask[]>();
-  tasks.forEach(task => {
+}): ProjectTaskDigest[] => tasks.map(task => {
     const template = templates.find(candidate => candidate.id === task.templateId);
-    const signature = getComparableTaskSignature(task, template);
-    grouped.set(signature, [...(grouped.get(signature) || []), task]);
-  });
-
-  return Array.from(grouped.entries()).map(([id, groupTasks]) => {
-    const firstTask = groupTasks[0];
-    const template = templates.find(candidate => candidate.id === firstTask.templateId);
-    const config = normalizeEvaluationConfig(firstTask, template);
-    const models = firstTask.models?.length ? firstTask.models : [
+    const config = normalizeEvaluationConfig(task, template);
+    const models = task.models?.length ? task.models : [
       { id: 'model-a', name: 'Model A' },
       { id: 'model-b', name: 'Model B' },
     ];
-    const votes = groupTasks.flatMap(task =>
-      (voteGroupsByTask.get(task.id) || []).flatMap(group =>
-        withTaskVoteGroupReviewer(group).map(vote => prefixVote(task.id, vote)),
-      ),
+    const votes = (voteGroupsByTask.get(task.id) || []).flatMap(group =>
+      withTaskVoteGroupReviewer(group),
     );
-    const totalItemCount = groupTasks.reduce((sum, task) => sum + (task.totalItems || 0), 0);
+    const totalItemCount = task.totalItems || 0;
     let top: InsightTopSummary;
     let validRecordCount = 0;
     let evaluatedItemCount = 0;
@@ -465,9 +435,9 @@ export const buildProjectResultGroupDigests = ({
       voterCount = bundle.summary.voterCount;
     }
 
-    const phase: ProjectResultGroupDigest['phase'] = groupTasks.every(task => task.status === 'completed')
+    const phase: ProjectTaskDigest['phase'] = task.status === 'completed'
       ? 'completed'
-      : validRecordCount > 0 || groupTasks.some(task => task.status === 'active')
+      : validRecordCount > 0 || task.status === 'active'
         ? 'in-progress'
         : 'pending';
     const leaderLabel = config.method === 'rank_order'
@@ -476,15 +446,15 @@ export const buildProjectResultGroupDigests = ({
         ? ''
         : top.headline.replace(/ 当前领先$| 当前评分最高$/, '');
 
-    const visualization: ProjectResultGroupDigest['visualization'] = config.method === 'ab_preference' ? 'stacked' : 'bars';
+    const visualization: ProjectTaskDigest['visualization'] = config.method === 'ab_preference' ? 'stacked' : 'bars';
 
     return {
-      id,
-      label: `${getEvaluationMethodShortLabel(config.method)} · ${models.map(model => model.name).join(' / ') || '未命名模型组'}`,
+      id: task.id,
+      taskId: task.id,
+      taskName: task.name,
+      label: `${task.name} · ${getEvaluationMethodShortLabel(config.method)} · ${models.map(model => model.name).join(' / ') || '未命名模型组'}`,
       method: config.method,
       methodLabel: getEvaluationMethodShortLabel(config.method),
-      taskIds: groupTasks.map(task => task.id),
-      taskCount: groupTasks.length,
       phase,
       leaderLabel,
       headline: top.headline,
@@ -497,5 +467,4 @@ export const buildProjectResultGroupDigests = ({
       visualization,
       segments: top.distribution?.segments || [],
     };
-  }).sort((left, right) => right.validRecordCount - left.validRecordCount || right.taskCount - left.taskCount || left.label.localeCompare(right.label));
-};
+  }).sort((left, right) => right.validRecordCount - left.validRecordCount || left.label.localeCompare(right.label));

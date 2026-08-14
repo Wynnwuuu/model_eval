@@ -3,7 +3,6 @@ import {
   buildTaskResultsPath,
   countUniqueReviewers,
   getLegacyTaskInsightsRedirect,
-  getTaskResultTargetId,
   getTaskResultEntryState,
   getVoteReviewerKey,
   hasSubmittedTaskResults,
@@ -36,11 +35,6 @@ assert.deepEqual(
   },
 );
 assert.equal(getLegacyTaskInsightsRedirect('/projects/project-1/insights', new URLSearchParams()), null);
-assert.equal(getTaskResultTargetId(['task-a'], ''), 'task-a');
-assert.equal(getTaskResultTargetId(['task-a', 'task-b'], 'task-b'), 'task-b');
-assert.equal(getTaskResultTargetId(['task-a', 'task-b'], 'task-outside'), 'task-a');
-assert.equal(getTaskResultTargetId([], 'task-a'), undefined);
-
 assert.equal(hasSubmittedTaskResults(task({})), false);
 assert.equal(hasSubmittedTaskResults(task({ reviewer: 0 })), false);
 assert.equal(hasSubmittedTaskResults(task({ reviewer: 1 })), true);

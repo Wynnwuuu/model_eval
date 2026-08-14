@@ -10,8 +10,8 @@ import { subscribeDatasets } from '../features/datasets/api';
 import { subscribeTemplates } from '../features/templates/api';
 import { createProject, deleteProject, getProject, subscribeProjects, updateProject, updateProjectSteps } from '../features/projects/api';
 import {
-  ProjectResultGroupDigest,
-  buildProjectResultGroupDigests,
+  ProjectTaskDigest,
+  buildProjectTaskDigests,
 } from '../insightPresentation';
 
 interface DashboardScreenProps {
@@ -25,7 +25,7 @@ interface DashboardScreenProps {
   onGoToTaskBuilder: (project: EvaluationProject, mode?: 'create' | 'list') => void;
 }
 
-const resultSegmentClass: Record<ProjectResultGroupDigest['segments'][number]['color'], string> = {
+const resultSegmentClass: Record<ProjectTaskDigest['segments'][number]['color'], string> = {
   'model-a': 'bg-sky-400',
   'model-b': 'bg-violet-400',
   tie: 'bg-slate-500',
@@ -34,7 +34,7 @@ const resultSegmentClass: Record<ProjectResultGroupDigest['segments'][number]['c
   neutral: 'bg-slate-500',
 };
 
-const resultPhaseLabel = (phase: ProjectResultGroupDigest['phase']) => {
+const resultPhaseLabel = (phase: ProjectTaskDigest['phase']) => {
   if (phase === 'completed') return '评测已完成';
   if (phase === 'in-progress') return '评测进行中，结果可能变化';
   return '尚未产生有效结果';
@@ -116,11 +116,11 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
   const [templates, setTemplates] = useState<any[]>([]);
   const [isEditingLink, setIsEditingLink] = useState(false);
   const [tempLink, setTempLink] = useState('');
-  const [projectResultDigests, setProjectResultDigests] = useState<ProjectResultGroupDigest[]>([]);
+  const [projectResultDigests, setProjectResultDigests] = useState<ProjectTaskDigest[]>([]);
   const [loadingResultDigests, setLoadingResultDigests] = useState(false);
   const [resultDigestError, setResultDigestError] = useState('');
-  const [expandedResultGroupId, setExpandedResultGroupId] = useState('');
-  const activeResultDigest = projectResultDigests.find(digest => digest.id === expandedResultGroupId) || projectResultDigests[0];
+  const [expandedResultTaskId, setExpandedResultTaskId] = useState('');
+  const activeResultDigest = projectResultDigests.find(digest => digest.taskId === expandedResultTaskId);
   const projectDetailId = initialProjectId || initialProject?.id || '';
 
   const selectProject = (project: EvaluationProject | null) => {
@@ -171,13 +171,13 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
           failedCount += 1;
         }
       });
-      const digests = buildProjectResultGroupDigests({
+      const digests = buildProjectTaskDigests({
         tasks: projectTasks,
         voteGroupsByTask,
         templates,
       });
       setProjectResultDigests(digests);
-      setExpandedResultGroupId(current => digests.some(digest => digest.id === current) ? current : digests[0]?.id || '');
+      setExpandedResultTaskId(current => digests.some(digest => digest.taskId === current) ? current : '');
       setResultDigestError(failedCount > 0 ? `${failedCount} 份评测物料的结果暂时无法刷新。` : '');
       setLoadingResultDigests(false);
     });
@@ -805,24 +805,24 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
                               {projectResultDigests.length > 0 ? (
                                 <div className="mb-5 space-y-2.5">
                                   {projectResultDigests.map(digest => {
-                                    const expanded = digest.id === expandedResultGroupId;
+                                    const expanded = digest.taskId === expandedResultTaskId;
                                     const segmentTotal = digest.segments.reduce((sum, segment) => sum + segment.value, 0);
                                     const maxSegment = Math.max(0, ...digest.segments.map(segment => segment.value));
                                     return (
-                                      <section key={digest.id} className={`border bg-[#0d1014] transition-colors ${expanded ? 'border-amber-400/45' : 'border-white/10'}`}>
+                                      <section key={digest.taskId} className={`border bg-[#0d1014] transition-colors ${expanded ? 'border-amber-400/45' : 'border-white/10'}`}>
                                         <button
                                           type="button"
                                           aria-expanded={expanded}
                                           onClick={(event) => {
                                             event.stopPropagation();
-                                            setExpandedResultGroupId(expanded ? '' : digest.id);
+                                            setExpandedResultTaskId(expanded ? '' : digest.taskId);
                                           }}
                                           className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left hover:bg-white/[0.035]"
                                         >
                                           <div className="min-w-0">
                                             <div className="truncate text-sm font-semibold text-slate-100">{digest.label}</div>
                                             <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
-                                              <span>{digest.taskCount} 份可比物料</span>
+                                              <span>{digest.methodLabel}</span>
                                               <span>{digest.validRecordCount > 0 ? digest.headline : '尚无有效评测结果'}</span>
                                             </div>
                                           </div>
@@ -896,7 +896,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
                                               </>
                                             ) : (
                                               <div className="py-2 text-sm text-slate-400">
-                                                已创建 {digest.taskCount} 份评测物料，完成第一条有效评测后将在这里显示结果快照。
+                                                这份评测物料尚无有效结果，完成第一条评测后将在这里显示结果快照。
                                               </div>
                                             )}
 
@@ -932,7 +932,7 @@ export const DashboardScreen: React.FC<DashboardScreenProps> = ({ initialProject
                                 <button 
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    onGoToAnalysis(selectedProject, activeResultDigest ? `group:${activeResultDigest.id}` : undefined);
+                                    onGoToAnalysis(selectedProject, activeResultDigest ? `material:${activeResultDigest.taskId}` : undefined);
                                   }}
                                   className="btn-primary w-fit"
                                 >

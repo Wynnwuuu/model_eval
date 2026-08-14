@@ -2,10 +2,9 @@ import assert from 'node:assert/strict';
 import {
   buildAbTopSummary,
   buildPairwiseTopSummary,
-  buildProjectResultGroupDigests,
+  buildProjectTaskDigests,
   buildRankTopSummary,
   buildScoreTopSummary,
-  getAnalysisScopeStorageKey,
 } from '../src/insightPresentation';
 import { buildAbInsights, buildRankInsights } from '../src/analysisInsights';
 import { buildPairwiseInsights, buildScoreInsights } from '../src/scoringInsights';
@@ -68,20 +67,25 @@ const abGroups = new Map<string, TaskVoteGroup[]>([
   }]],
 ]);
 
-const digests = buildProjectResultGroupDigests({
+const digests = buildProjectTaskDigests({
   tasks: [abTaskA, abTaskB, scoreTask],
   voteGroupsByTask: abGroups,
 });
 
-assert.equal(digests.length, 2, 'different evaluation methods must not be merged');
-assert.equal(digests[0].taskIds.length, 2, 'comparable A/B tasks should be merged');
-assert.equal(digests[0].validRecordCount, 4);
-assert.equal(digests[0].evaluatedItemCount, 4, 'same case ids from different tasks must remain independent');
-assert.equal(digests[0].leaderLabel, 'Seedance 2.0 Pro');
-assert.equal(digests[0].phase, 'in-progress', 'a mixed active/completed group remains in progress');
-assert.equal(digests[1].method, 'direct_score');
-assert.equal(digests[1].leaderLabel, 'Seedance 2.0 Pro');
-assert.equal(getAnalysisScopeStorageKey('project-1'), 'manueval:analysis-scope:project-1');
+assert.equal(digests.length, 3, 'each evaluation material must keep an independent digest');
+const abADigest = digests.find(digest => digest.taskId === 'ab-a');
+const abBDigest = digests.find(digest => digest.taskId === 'ab-b');
+const scoreDigest = digests.find(digest => digest.taskId === 'score');
+assert(abADigest);
+assert(abBDigest);
+assert(scoreDigest);
+assert.equal(abADigest.validRecordCount, 2);
+assert.equal(abADigest.evaluatedItemCount, 2);
+assert.equal(abADigest.phase, 'in-progress');
+assert.equal(abBDigest.validRecordCount, 2, 'votes from another task must never be merged');
+assert.equal(abBDigest.phase, 'completed');
+assert.equal(scoreDigest.method, 'direct_score');
+assert.equal(scoreDigest.leaderLabel, 'Seedance 2.0 Pro');
 
 const abVotes: VoteRecord[] = [
   { itemId: 'case-1', vote: 'B', timestamp: 1, user: 'one' },

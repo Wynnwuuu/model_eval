@@ -428,6 +428,14 @@ Reference media is derived at render time from task inputs plus the existing sav
 Only explicit media fields and URLs already recorded as references qualify. Prompt, description, note, caption, and nested element text fields are excluded even when they contain web links. Candidate/model outputs are never inspected by the resolver.
 
 All reference images, videos, and audio are visible in a wrapping strip. Per-item source labels are intentionally accessibility-only because imported labels are frequently inaccurate. The fullscreen sequence contains images and videos only; audio remains in its native inline control. Reference loading never participates in candidate readiness or blocks vote submission.
+
+## 2026-08-14: Result insights have one material and one reviewer boundary
+
+The normal unit of analysis is exactly one `EvalTask`. Result insights never infer that two tasks are comparable and never concatenate their cases or votes. Cross-task comparison is deferred to a future explicit multi-task report where alignment, weighting, and comparability can be reviewed by the user.
+
+The selected material and reviewer range are independent boundaries. `all` uses every valid reviewer record in the selected task; `mine` filters that same task by stable user ID or email before running the unchanged statistics. Display names are not identity. Summary metrics, charts, dimensions, case evidence, detail tables, and exports must all derive from the same scoped vote collection.
+
+Project-level entry does not choose a material implicitly. Task-level entry may preselect its own task. Legacy `group:*` URLs are tolerated only as navigation compatibility and must not recreate automatic grouping.
 # 2026-08-13: Evaluation materials freeze case identity, not case content
 
 New evaluation materials store the final selected dataset item IDs in `datasetBinding.includedDatasetItemIds`. Filters are construction-time presentation state and are not persisted as dynamic queries. Later dataset additions therefore cannot silently expand a task, while updates and same-ID restoration for selected cases continue through versioned dataset synchronization.

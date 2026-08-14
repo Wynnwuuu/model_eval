@@ -1,5 +1,14 @@
 # Arena Implementation Progress
 
+## 2026-08-14: Single-material result insights
+
+- Removed implicit comparable-task grouping and the merged/single-task analysis scope. Result insights now load exactly one explicitly selected evaluation material.
+- Added an in-page reviewer boundary switch for all reviewers versus the current account. The same filtered vote set drives summaries, charts, case details, evidence, dimensions, and exports.
+- Unified task-card, evaluation-completion, task-results, and legacy task-insights entry points on the project insight page with the corresponding material preselected. Project-level entry intentionally starts with no material selected.
+- Project result snapshots are now one row per evaluation material, so votes and cases from different tasks cannot be merged accidentally.
+- Old `group:*` deep links are normalized without restoring task grouping. Material and reviewer scope remain URL-addressable.
+- Focused routing, summary, task-result, metadata, lint, frontend build, server build, diff, and desktop/mobile browser checks pass. Full local PostgreSQL/API startup remains blocked only because Docker Desktop is stopped; the offline Vite site is available at `http://localhost:3000/`.
+
 ## 2026-08-13: Evaluation material case selection
 
 - Added case-ID and dimension cascading filters plus explicit replace/add/remove/current-row selection for dataset, CSV/TSV, and pasted-table task sources.

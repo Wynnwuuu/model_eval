@@ -248,6 +248,7 @@ export interface RouteContext {
   materialId?: string;
   materialStatusFilter?: 'draft' | 'active' | 'completed';
   insightScope?: string;
+  insightReviewerScope?: 'all' | 'mine';
   datasetId?: string;
   generationBatchId?: string;
   generationView?: 'tasks' | 'new';

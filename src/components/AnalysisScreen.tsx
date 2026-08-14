@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Upload, FileText, BarChart3, Users, AlertCircle, PlusCircle, Download, ArrowRight, Database, Loader2, ExternalLink, Layers, ListFilter } from 'lucide-react';
+import { Upload, FileText, BarChart3, Users, AlertCircle, PlusCircle, Download, ArrowRight, Database, Loader2, ExternalLink } from 'lucide-react';
 import { AggregatedResult, EvalParadigm, EvaluationConfig, EvalTask, EvalTemplate, EvaluationItem, EvaluationProject, ModelOutput, RankingEntry, TaskVoteGroup, VoteRecord, VoteType } from '../types';
 import { ArenaRankPromptItem, calculateArenaRankCaseSummaries, calculateArenaRankModelStats, formatConsensusRanking, formatRanking, getArenaRankModelOutputUrl, getModelOutputsForItem, getRankingTieSummary, isArenaRankVote, normalizeRanking, resolveEvaluationItemPrompt, sortRanking, validateRanking } from '../rankingUtils';
 import { VIDEO_EXTENSIONS } from '../constants';
-import { db, handlePersistenceError } from '../auth';
-import { collection, getDocs, query, orderBy } from '../datastore';
+import { db, getCurrentReviewerIdentity, handlePersistenceError } from '../auth';
+import { collection, getDocs } from '../datastore';
 import ArenaRankVideoPreviewList from './ArenaRankVideoPreviewList';
 import MediaRenderer from './MediaRenderer';
 import DimensionChips from './DimensionChips';
@@ -16,30 +16,24 @@ import Papa from 'papaparse';
 import { getDefaultEvaluationConfig, getParadigmFromMethod, isPairwiseMethod, isScoreMethod, normalizeEvaluationConfig } from '../evaluationMethods';
 import { subscribeProjects } from '../features/projects/api';
 import { subscribeTemplates } from '../features/templates/api';
-import { loadTaskItems, loadTaskVotes, USE_TASK_API_BACKEND } from '../features/tasks/api';
+import { loadMyTaskVotes, loadTaskItems, loadTaskVotes, USE_TASK_API_BACKEND } from '../features/tasks/api';
 import { subscribeTasks } from '../features/tasks/api';
 import { getVoteAuditCsvValues, VOTE_AUDIT_CSV_HEADERS } from '../taskItemSnapshot';
-import {
-  AnalysisScopeMode,
-  getAnalysisScopeStorageKey,
-  getComparableTaskSignature,
-} from '../insightPresentation';
-import { buildInsightPath, normalizeInsightScope } from '../insightDeepLink';
+import { buildInsightPath, normalizeInsightScope, ReviewerScope } from '../insightDeepLink';
 import {
   getTaskVoteGroupReviewerKey,
-  getTaskResultTargetId,
   getVoteReviewerKey,
+  isTaskVoteGroupForReviewer,
   withTaskVoteGroupReviewer,
 } from '../taskResults';
 
 interface AnalysisScreenProps {
   onBack: () => void;
   onGoToDashboard?: () => void;
-  onOpenTaskResults?: (taskId: string) => void;
   initialProjectId?: string;
   initialMaterialId?: string;
-  initialStatusFilter?: EvalTask['status'];
   initialScope?: string;
+  initialReviewerScope?: ReviewerScope;
 }
 
 const normalizeCsvHeader = (value: string) => value.trim().toLowerCase().replace(/\s+/g, '').replace(/-/g, '_');
@@ -379,11 +373,10 @@ const UNASSIGNED_PROJECT_ID = '__unassigned_project__';
 const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   onBack,
   onGoToDashboard,
-  onOpenTaskResults,
   initialProjectId,
   initialMaterialId,
-  initialStatusFilter,
   initialScope,
+  initialReviewerScope = 'all',
 }) => {
   const location = useLocation();
   const navigateTo = useNavigate();
@@ -395,13 +388,11 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   const [tasks, setTasks] = useState<EvalTask[]>([]);
   const [templates, setTemplates] = useState<EvalTemplate[]>([]);
   const [projects, setProjects] = useState<EvaluationProject[]>([]);
-  const [loadingTasks, setLoadingTasks] = useState(false);
-  const [selectedTaskId, setSelectedTaskId] = useState<string>('');
+  const [loadingTasks, setLoadingTasks] = useState(true);
   const [selectedProjectId, setSelectedProjectId] = useState<string>(initialProjectId || '');
   const initialRouteScope = normalizeInsightScope(initialScope) || (initialMaterialId ? `material:${initialMaterialId}` : '');
-  const [selectedMaterialScope, setSelectedMaterialScope] = useState<string>(initialRouteScope);
-  const [analysisScopeMode, setAnalysisScopeMode] = useState<AnalysisScopeMode>(initialRouteScope.startsWith('material:') ? 'single-task' : 'comparable-group');
-  const [statusFilter, setStatusFilter] = useState<EvalTask['status'] | 'all'>(initialStatusFilter || 'all');
+  const [selectedMaterialId, setSelectedMaterialId] = useState<string>(initialRouteScope.replace(/^material:/, ''));
+  const [reviewerScope, setReviewerScope] = useState<ReviewerScope>(initialReviewerScope);
   const [loadedScopeKey, setLoadedScopeKey] = useState('');
   const [loadingResults, setLoadingResults] = useState(false);
   const [isDownloadingTemplate, setIsDownloadingTemplate] = useState(false);
@@ -417,8 +408,8 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   const [archivedVoteRows, setArchivedVoteRows] = useState<ArchivedVoteRow[]>([]);
   const [showInsights, setShowInsights] = useState(true);
   const previousInitialProjectId = useRef(initialProjectId);
-  const previousInitialStatusFilter = useRef(initialStatusFilter);
   const previousInitialScope = useRef(initialScope);
+  const previousInitialReviewerScope = useRef(initialReviewerScope);
 
   useEffect(() => {
     setLoadingTasks(true);
@@ -441,45 +432,28 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     if (previousInitialProjectId.current === initialProjectId) return;
     previousInitialProjectId.current = initialProjectId;
     setSelectedProjectId(initialProjectId || '');
-    setSelectedMaterialScope('');
+    setSelectedMaterialId('');
     setLoadedScopeKey('');
   }, [initialProjectId]);
-
-  useEffect(() => {
-    if (previousInitialStatusFilter.current === initialStatusFilter) return;
-    previousInitialStatusFilter.current = initialStatusFilter;
-    setStatusFilter(initialStatusFilter || 'all');
-    setLoadedScopeKey('');
-  }, [initialStatusFilter]);
 
   useEffect(() => {
     if (previousInitialScope.current === initialScope) return;
     previousInitialScope.current = initialScope;
     const nextScope = normalizeInsightScope(initialScope) || '';
-    setSelectedMaterialScope(nextScope);
-    setAnalysisScopeMode(nextScope.startsWith('material:') ? 'single-task' : 'comparable-group');
+    setSelectedMaterialId(nextScope.replace(/^material:/, ''));
     setLoadedScopeKey('');
   }, [initialScope]);
+
+  useEffect(() => {
+    if (previousInitialReviewerScope.current === initialReviewerScope) return;
+    previousInitialReviewerScope.current = initialReviewerScope;
+    setReviewerScope(initialReviewerScope);
+    setLoadedScopeKey('');
+  }, [initialReviewerScope]);
 
   const getMaterialEvaluationConfig = (task?: EvalTask): EvaluationConfig => {
     const template = templates.find(item => item.id === task?.templateId);
     return normalizeEvaluationConfig(task, template);
-  };
-
-  const getMaterialParadigm = (task?: EvalTask): EvalParadigm => {
-    const config = getMaterialEvaluationConfig(task);
-    return getParadigmFromMethod(config.method);
-  };
-
-  const getMaterialSignature = (task: EvalTask) => {
-    const template = templates.find(item => item.id === task.templateId);
-    return getComparableTaskSignature(task, template);
-  };
-
-  const getMaterialGroupLabel = (task: EvalTask) => {
-    const paradigm = getMaterialParadigm(task);
-    const modelNames = (task.models || []).map(model => model.name).filter(Boolean).join(' / ');
-    return `${paradigm} · ${modelNames || '未命名模型组'}`;
   };
 
   const projectOptions = useMemo(() => {
@@ -506,40 +480,12 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
       ? tasks.filter(task => !task.projectId)
       : tasks.filter(task => task.projectId === selectedProjectId);
 
-    return statusFilter === 'all'
-      ? scoped
-      : scoped.filter(task => task.status === statusFilter);
-  }, [selectedProjectId, statusFilter, tasks]);
-
-  const materialGroups = useMemo(() => {
-    const groups = new Map<string, { key: string; label: string; tasks: EvalTask[] }>();
-    projectMaterials.forEach(task => {
-      const key = getMaterialSignature(task);
-      const existing = groups.get(key) || { key, label: getMaterialGroupLabel(task), tasks: [] };
-      existing.tasks.push(task);
-      groups.set(key, existing);
-    });
-
-    return Array.from(groups.values())
-      .sort((a, b) => b.tasks.length - a.tasks.length || a.label.localeCompare(b.label));
-  }, [projectMaterials, templates]);
-
-  const selectedMaterialIds = useMemo(() => {
-    if (!selectedMaterialScope) return [];
-    if (selectedMaterialScope.startsWith('material:')) {
-      const materialId = selectedMaterialScope.replace('material:', '');
-      return projectMaterials.some(task => task.id === materialId) ? [materialId] : [];
-    }
-    if (selectedMaterialScope.startsWith('group:')) {
-      const groupKey = selectedMaterialScope.replace('group:', '');
-      return materialGroups.find(group => group.key === groupKey)?.tasks.map(task => task.id) || [];
-    }
-    return [];
-  }, [materialGroups, projectMaterials, selectedMaterialScope]);
+    return scoped.sort((left, right) => right.createdAt - left.createdAt || left.name.localeCompare(right.name));
+  }, [selectedProjectId, tasks]);
 
   const selectedProjectName = selectedProjectId === UNASSIGNED_PROJECT_ID
     ? '未归属项目'
-    : projects.find(project => project.id === selectedProjectId)?.name || '项目汇总洞察';
+    : projects.find(project => project.id === selectedProjectId)?.name || '未命名项目';
 
   useEffect(() => {
     if (loadingTasks || selectedProjectId || projectOptions.length === 0) return;
@@ -553,70 +499,29 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   }, [initialMaterialId, initialProjectId, initialScope, loadingTasks, projectOptions, selectedProjectId, tasks]);
 
   useEffect(() => {
-    if (!selectedProjectId) return;
-    const urlScope = normalizeInsightScope(initialScope);
-    const materialOption = initialMaterialId && projectMaterials.some(task => task.id === initialMaterialId)
-      ? `material:${initialMaterialId}`
-      : '';
-    let storedScope = '';
-    if (!urlScope && !materialOption) {
-      try {
-        storedScope = window.localStorage.getItem(getAnalysisScopeStorageKey(selectedProjectId)) || '';
-      } catch {
-        storedScope = '';
-      }
-    }
-    const storedIsValid = storedScope.startsWith('material:')
-      ? projectMaterials.some(task => task.id === storedScope.replace('material:', ''))
-      : storedScope.startsWith('group:') && materialGroups.some(group => `group:${group.key}` === storedScope);
-    const requestedScope = urlScope || materialOption;
-    const requestedIsValid = requestedScope?.startsWith('material:')
-      ? projectMaterials.some(task => task.id === requestedScope.replace('material:', ''))
-      : Boolean(requestedScope && materialGroups.some(group => `group:${group.key}` === requestedScope));
-    const defaultScope = (requestedIsValid ? requestedScope : '')
-      || (storedIsValid ? storedScope : '')
-      || (materialGroups[0] ? `group:${materialGroups[0].key}` : '')
-      || (projectMaterials[0] ? `material:${projectMaterials[0].id}` : '');
-    if (!defaultScope) {
-      setSelectedMaterialScope('');
+    if (loadingTasks || !selectedProjectId) return;
+    const linkedMaterialId = normalizeInsightScope(initialScope)?.replace(/^material:/, '') || initialMaterialId || '';
+    if (linkedMaterialId && projectMaterials.some(task => task.id === linkedMaterialId)) {
+      if (selectedMaterialId !== linkedMaterialId) setSelectedMaterialId(linkedMaterialId);
       return;
     }
-    const isValidScope = selectedMaterialScope.startsWith('material:')
-      ? projectMaterials.some(task => task.id === selectedMaterialScope.replace('material:', ''))
-      : materialGroups.some(group => `group:${group.key}` === selectedMaterialScope);
-    if (!isValidScope) {
-      setSelectedMaterialScope(defaultScope);
-      setAnalysisScopeMode(defaultScope.startsWith('material:') ? 'single-task' : 'comparable-group');
-    } else {
-      setAnalysisScopeMode(selectedMaterialScope.startsWith('material:') ? 'single-task' : 'comparable-group');
+    if (selectedMaterialId && !projectMaterials.some(task => task.id === selectedMaterialId)) {
+      setSelectedMaterialId('');
+      setLoadedScopeKey('');
     }
-  }, [initialMaterialId, initialScope, materialGroups, projectMaterials, selectedMaterialScope, selectedProjectId]);
-
-  useEffect(() => {
-    if (!selectedProjectId || !selectedMaterialScope) return;
-    try {
-      window.localStorage.setItem(getAnalysisScopeStorageKey(selectedProjectId), selectedMaterialScope);
-    } catch {
-      // Storage can be unavailable in privacy-restricted browsers.
-    }
-  }, [selectedMaterialScope, selectedProjectId]);
+  }, [initialMaterialId, initialScope, loadingTasks, projectMaterials, selectedMaterialId, selectedProjectId]);
 
   useEffect(() => {
     if (!selectedProjectId) return;
     const nextPath = buildInsightPath({
       projectId: selectedProjectId,
-      statusFilter,
-      scope: normalizeInsightScope(selectedMaterialScope),
+      scope: selectedMaterialId ? `material:${selectedMaterialId}` : undefined,
+      reviewerScope,
     });
     if (nextPath !== `${location.pathname}${location.search}`) {
       navigateTo(nextPath, { replace: true });
     }
-  }, [location.pathname, location.search, navigateTo, selectedMaterialScope, selectedProjectId, statusFilter]);
-
-  useEffect(() => {
-    if (selectedTaskId && selectedMaterialIds.includes(selectedTaskId)) return;
-    setSelectedTaskId(selectedMaterialIds[0] || '');
-  }, [selectedMaterialIds, selectedTaskId]);
+  }, [location.pathname, location.search, navigateTo, reviewerScope, selectedMaterialId, selectedProjectId]);
 
   const loadMaterialResult = async (materialId: string): Promise<ImportedMaterialResult> => {
     const selectedTask = tasks.find(task => task.id === materialId);
@@ -626,7 +531,23 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
 
     const selectedEvaluationConfig = getMaterialEvaluationConfig(selectedTask);
     const selectedParadigm = getParadigmFromMethod(selectedEvaluationConfig.method);
-    const userVoteGroups = USE_TASK_API_BACKEND ? await loadTaskVotes(materialId) : null;
+    const reviewer = getCurrentReviewerIdentity();
+    let voteGroups: TaskVoteGroup[];
+    if (USE_TASK_API_BACKEND && reviewerScope === 'mine') {
+      const myVotes = await loadMyTaskVotes(materialId);
+      voteGroups = [{
+        user: reviewer.displayName,
+        displayName: reviewer.displayName,
+        userId: reviewer.id,
+        email: reviewer.email,
+        votes: myVotes,
+      }];
+    } else {
+      const loadedVoteGroups = await loadTaskVotes(materialId);
+      voteGroups = reviewerScope === 'mine'
+        ? loadedVoteGroups.filter(group => isTaskVoteGroupForReviewer(group, reviewer))
+        : loadedVoteGroups;
+    }
     const taskModelNames = getTaskModelNames(selectedTask);
     const taskModelList = selectedTask.models?.length ? selectedTask.models : [
       { id: 'model-a', name: taskModelNames.a },
@@ -648,23 +569,11 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         type: normalizeOutputMediaType(selectedTask.outputType, [item.modelA_Url, item.modelB_Url, ...modelOutputs.map(output => output.url)])
       } as EvaluationItem;
     });
-    const voteGroups: TaskVoteGroup[] = (userVoteGroups || []).map(group => ({
+    voteGroups = voteGroups.map(group => ({
       ...group,
       votes: [...(group.votes || [])],
       archivedVotes: [...(group.archivedVotes || [])],
     }));
-    if (!USE_TASK_API_BACKEND) {
-      const votesRef = collection(db, 'evalTasks', materialId, 'userVotes');
-      const snapshot = await getDocs(votesRef);
-      snapshot.forEach(docSnap => {
-        const data = docSnap.data();
-        voteGroups.push({
-          user: docSnap.id,
-          votes: data.votes || [],
-          archivedVotes: data.archivedVotes || [],
-        });
-      });
-    }
     const reviewerAwareVoteGroups = voteGroups.map(group => {
       const reviewerKey = getTaskVoteGroupReviewerKey(group);
       const displayName = group.displayName || group.user || group.email || 'Anonymous';
@@ -824,61 +733,41 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     };
   };
 
-  const hasAnalyzableMaterialResult = (result: ImportedMaterialResult) => {
-    if (result.archivedVoteRows.length > 0) return true;
-    if (result.paradigm === 'Arena-rank') return result.rankVotes.length > 0;
-    if (isScoreMethod(result.evaluationConfig) || isPairwiseMethod(result.evaluationConfig)) {
-      return result.methodVotes.length > 0;
-    }
-    return result.aggregatedData.some(item => item.votes.A + item.votes.B + item.votes.Tie > 0);
-  };
-
-  const applyImportedMaterialResults = (results: ImportedMaterialResult[]) => {
+  const resetAnalysisResult = () => {
     setAggregatedData([]);
     setRankVotes([]);
     setRankItems([]);
     setAnalysisItems([]);
     setAnalysisVoteRows([]);
-    setArchivedVoteRows(results.flatMap(result => result.archivedVoteRows));
+    setArchivedVoteRows([]);
     setMethodVotes([]);
     setAnalysisModelList([]);
     setAnalysisEvaluationConfig(null);
     setAnalysisMode(null);
+    setUniqueVoters(new Set());
+    setUniqueReviewerCount(0);
+  };
 
-    if (results.length === 0) {
-      setArchivedVoteRows([]);
-      setError('请先选择一个统计口径。');
+  const applyImportedMaterialResult = (result?: ImportedMaterialResult) => {
+    resetAnalysisResult();
+    if (!result) {
       return;
     }
 
-    const paradigms = new Set(results.map(result => result.paradigm));
-    if (paradigms.size > 1) {
-      setError('当前统计口径包含不同评测范式，请切换到“合并可比结果”中的其他分组，或改为“查看单次任务”。');
-      return;
-    }
-
-    const selectedParadigm = results[0].paradigm;
-    const selectedConfig = results[0].evaluationConfig;
-    const voters = new Set<string>();
-    const reviewerKeys = new Set<string>();
-    results.forEach(result => result.voters.forEach(voter => voters.add(voter)));
-    results.forEach(result => result.reviewerKeys.forEach(key => reviewerKeys.add(key)));
+    setArchivedVoteRows(result.archivedVoteRows);
+    const selectedParadigm = result.paradigm;
+    const selectedConfig = result.evaluationConfig;
+    const voters = result.voters;
+    const reviewerKeys = result.reviewerKeys;
 
     if (isScoreMethod(selectedConfig) || isPairwiseMethod(selectedConfig)) {
-      const itemsById = new Map<string, EvaluationItem>();
-      const modelMap = new Map<string, { id: string; name: string }>();
-      results.forEach(result => {
-        result.analysisItems.forEach(item => upsertAnalysisItem(itemsById, item));
-        result.modelList.forEach(model => modelMap.set(model.id, model));
-      });
-      const mergedMethodVotes = results.flatMap(result => result.methodVotes);
-      if (mergedMethodVotes.length === 0) {
-        setError('所选评测任务暂无可分析的评分/对战结果。');
+      if (result.methodVotes.length === 0) {
+        setError(reviewerScope === 'mine' ? '你尚未在这份评测物料中提交有效结果。' : '这份评测物料暂无可分析的评分或对战结果。');
       } else {
-        setAnalysisItems(Array.from(itemsById.values()));
-        setMethodVotes(mergedMethodVotes);
-        setAnalysisModelList(Array.from(modelMap.values()));
-        setAnalysisModels(results[0].modelNames);
+        setAnalysisItems(result.analysisItems);
+        setMethodVotes(result.methodVotes);
+        setAnalysisModelList(result.modelList);
+        setAnalysisModels(result.modelNames);
         setAnalysisEvaluationConfig(selectedConfig);
         setUniqueVoters(voters);
         setUniqueReviewerCount(reviewerKeys.size || voters.size);
@@ -888,34 +777,12 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     }
 
     if (selectedParadigm === 'Arena-rank') {
-      const rankItemsById = new Map<string, ArenaRankPromptItem>();
-      results.forEach(result => {
-        result.rankItems.forEach(item => {
-          const existing = rankItemsById.get(item.id);
-          if (!existing) {
-            rankItemsById.set(item.id, item);
-            return;
-          }
-          rankItemsById.set(item.id, {
-            ...existing,
-            prompt: existing.prompt || item.prompt,
-            dimensionValues: { ...(item.dimensionValues || {}), ...(existing.dimensionValues || {}) },
-            modelOutputs: mergeModelOutputs(existing.modelOutputs, item.modelOutputs) as ModelOutput[]
-          });
-        });
-      });
-
-      const mergedRankVotes = results.flatMap(result => result.rankVotes);
-      if (mergedRankVotes.length === 0) {
-        setError('所选评测任务暂无排名结果。');
+      if (result.rankVotes.length === 0) {
+        setError(reviewerScope === 'mine' ? '你尚未在这份评测物料中提交有效结果。' : '这份评测物料暂无排名结果。');
       } else {
-        setRankVotes(mergedRankVotes);
-        setRankItems(Array.from(rankItemsById.values()));
-        setAggregatedData([]);
-        setAnalysisItems([]);
-        setAnalysisVoteRows([]);
-        setMethodVotes([]);
-        setAnalysisModelList(results[0].modelList);
+        setRankVotes(result.rankVotes);
+        setRankItems(result.rankItems);
+        setAnalysisModelList(result.modelList);
         setAnalysisEvaluationConfig(selectedConfig);
         setAnalysisModels(DEFAULT_ANALYSIS_MODELS);
         setUniqueVoters(voters);
@@ -925,89 +792,52 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
       return;
     }
 
-    const aggregatedById = new Map<string, AggregatedResult>();
-    const itemsById = new Map<string, EvaluationItem>();
-    const voteRows = results.flatMap(result => result.voteRows);
-
-    results.forEach(result => {
-      result.analysisItems.forEach(item => upsertAnalysisItem(itemsById, item));
-      result.aggregatedData.forEach(item => {
-        const existing = aggregatedById.get(item.itemId);
-        if (!existing) {
-          aggregatedById.set(item.itemId, {
-            ...item,
-            votes: { ...item.votes },
-            voters: [...item.voters],
-            reviewerKeys: [...(item.reviewerKeys || [])],
-          });
-          return;
-        }
-
-        existing.votes.A += item.votes.A;
-        existing.votes.B += item.votes.B;
-        existing.votes.Tie += item.votes.Tie;
-        existing.voters = Array.from(new Set([...existing.voters, ...item.voters]));
-        existing.reviewerKeys = Array.from(new Set([...(existing.reviewerKeys || []), ...(item.reviewerKeys || [])]));
-        existing.prompt = existing.prompt || item.prompt;
-        existing.dimensionValues = existing.dimensionValues || item.dimensionValues;
-      });
-    });
-
-    const mergedAggregatedData = Array.from(aggregatedById.values());
-    if (mergedAggregatedData.length === 0 || mergedAggregatedData.every(item => item.votes.A + item.votes.B + item.votes.Tie === 0)) {
-      setError('所选评测任务暂无评测结果。');
+    if (result.aggregatedData.length === 0 || result.aggregatedData.every(item => item.votes.A + item.votes.B + item.votes.Tie === 0)) {
+      setError(reviewerScope === 'mine' ? '你尚未在这份评测物料中提交有效结果。' : '这份评测物料暂无评测结果。');
     } else {
-      setAggregatedData(mergedAggregatedData);
-      setRankVotes([]);
-      setRankItems([]);
-      setAnalysisItems(Array.from(itemsById.values()));
-      setAnalysisModels(results[0].modelNames);
-      setAnalysisModelList(results[0].modelList);
+      setAggregatedData(result.aggregatedData);
+      setAnalysisItems(result.analysisItems);
+      setAnalysisModels(result.modelNames);
+      setAnalysisModelList(result.modelList);
       setAnalysisEvaluationConfig(selectedConfig);
-      setAnalysisVoteRows(voteRows);
-      setMethodVotes([]);
+      setAnalysisVoteRows(result.voteRows);
       setUniqueVoters(voters);
       setUniqueReviewerCount(reviewerKeys.size || voters.size);
       setAnalysisMode(selectedParadigm);
     }
   };
 
-  const handleImportFromPlatform = async (materialIds: string[] = selectedMaterialIds) => {
-    if (materialIds.length === 0) return;
+  const handleImportFromPlatform = async (materialId: string = selectedMaterialId) => {
+    if (!materialId) return;
     setLoadingResults(true);
     setError(null);
     try {
-      const loadedResults = await Promise.all(materialIds.map(materialId => loadMaterialResult(materialId)));
-      const shouldSkipEmptyMaterials = statusFilter === 'all' && materialIds.length > 1;
-      const results = shouldSkipEmptyMaterials
-        ? loadedResults.filter(hasAnalyzableMaterialResult)
-        : loadedResults;
-
-      if (shouldSkipEmptyMaterials && results.length === 0) {
-        applyImportedMaterialResults([]);
-        setError('当前统计口径下还没有可分析结果。默认已包含全部状态；可切换到“查看单次任务”确认具体状态，或完成评测后再刷新洞察。');
-        setLoadedScopeKey(`${selectedProjectId}|${statusFilter}|${selectedMaterialScope}|${materialIds.join('|')}`);
-        return;
-      }
-
-      applyImportedMaterialResults(results);
+      const result = await loadMaterialResult(materialId);
+      applyImportedMaterialResult(result);
       setTotalFiles(0);
-      setSelectedTaskId(results[0]?.task.id || materialIds[0] || '');
       setShowInsights(true);
-      setLoadedScopeKey(`${selectedProjectId}|${statusFilter}|${selectedMaterialScope}|${materialIds.join('|')}`);
+      setLoadedScopeKey(`${selectedProjectId}|${materialId}|${reviewerScope}`);
     } catch (err: any) {
-      handlePersistenceError(err, 'list', `evalTasks/${materialIds.join(',')}/userVotes`);
+      resetAnalysisResult();
+      setError(err?.message || '读取评测结果失败，请稍后重试。');
+      handlePersistenceError(err, 'list', `evalTasks/${materialId}/userVotes`);
     } finally {
       setLoadingResults(false);
     }
   };
 
   useEffect(() => {
-    if (loadingTasks || selectedMaterialIds.length === 0) return;
-    const scopeKey = `${selectedProjectId}|${statusFilter}|${selectedMaterialScope}|${selectedMaterialIds.join('|')}`;
+    if (loadingTasks) return;
+    if (!selectedMaterialId) {
+      resetAnalysisResult();
+      setError(null);
+      setLoadedScopeKey('');
+      return;
+    }
+    const scopeKey = `${selectedProjectId}|${selectedMaterialId}|${reviewerScope}`;
     if (loadedScopeKey === scopeKey) return;
-    handleImportFromPlatform(selectedMaterialIds);
-  }, [loadedScopeKey, loadingTasks, selectedMaterialIds, selectedMaterialScope, selectedProjectId, statusFilter]);
+    handleImportFromPlatform(selectedMaterialId);
+  }, [loadedScopeKey, loadingTasks, reviewerScope, selectedMaterialId, selectedProjectId]);
 
   const parseRankingRow = (row: any, keys: string[], expectedModels: Array<{ id: string; name: string }> = []): RankingEntry[] => {
     const aliases = new Map<string, { id: string; name: string }>();
@@ -1076,7 +906,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     const newPairwiseModels = new Map<string, { id: string; name: string }>();
     const newRankItemsById = new Map<string, ArenaRankPromptItem>();
     const voters = new Set<string>();
-    const selectedTask = tasks.find(task => task.id === selectedTaskId);
+    const selectedTask = tasks.find(task => task.id === selectedMaterialId);
     let importedModelNames: AnalysisModelNames = getTaskModelNames(selectedTask);
     let hasResolvedModelNames = Boolean(selectedTask?.models?.length);
 
@@ -1334,7 +1164,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   };
 
   const downloadTemplate = async () => {
-    if (!selectedTaskId) {
+    if (!selectedMaterialId) {
       setError("请先选择一份评测物料，然后再下载对应的数据模板。");
       return;
     }
@@ -1343,7 +1173,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     setError(null);
 
     try {
-      const selectedTask = tasks.find(t => t.id === selectedTaskId);
+      const selectedTask = tasks.find(t => t.id === selectedMaterialId);
       if (!selectedTask) {
         setError("未找到这份评测物料。");
         setIsDownloadingTemplate(false);
@@ -1400,14 +1230,14 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
       const link = document.createElement('a');
       link.setAttribute('href', url);
       
-      const taskName = tasks.find(t => t.id === selectedTaskId)?.name || 'task';
+      const taskName = tasks.find(t => t.id === selectedMaterialId)?.name || 'task';
       link.setAttribute('download', `${taskName}_template.csv`);
       
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
     } catch (err: any) {
-      handlePersistenceError(err, 'list', `evalTasks/${selectedTaskId}/items`);
+      handlePersistenceError(err, 'list', `evalTasks/${selectedMaterialId}/items`);
     } finally {
       setIsDownloadingTemplate(false);
     }
@@ -1442,64 +1272,22 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   const rankDimensionSummaries = calculateRankDimensionSummaries(rankVotes, rankItems as any);
   const modelAName = analysisModels.a || DEFAULT_ANALYSIS_MODELS.a;
   const modelBName = analysisModels.b || DEFAULT_ANALYSIS_MODELS.b;
-  const selectedMaterialsLabel = selectedMaterialIds.length
-    ? analysisScopeMode === 'comparable-group'
-      ? `合并 ${selectedMaterialIds.length} 个可比任务`
-      : '仅汇总 1 个任务'
-    : '尚未选择统计对象';
-  const selectedResultTasks = selectedMaterialIds
-    .map(materialId => tasks.find(task => task.id === materialId))
-    .filter((task): task is EvalTask => Boolean(task));
-  const taskResultTargetId = getTaskResultTargetId(selectedResultTasks.map(task => task.id), selectedTaskId);
-  const taskResultTarget = selectedResultTasks.find(task => task.id === taskResultTargetId);
+  const selectedMaterial = projectMaterials.find(task => task.id === selectedMaterialId);
+  const reviewerScopeLabel = reviewerScope === 'mine' ? '我的结果' : '全员汇总';
+  const insightSubtitle = selectedMaterial
+    ? `${selectedProjectName} · ${selectedMaterial.name} · ${reviewerScopeLabel}`
+    : `${selectedProjectName} · 请选择评测物料`;
 
   const insightControls = (
     <div className="glass-panel p-4">
-      <div className="mb-4 flex flex-col gap-3 border border-sky-400/20 bg-sky-400/[0.045] px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex min-w-0 items-start gap-3">
-          <Users size={18} className="mt-0.5 shrink-0 text-sky-300" />
-          <div>
-            <div className="text-sm font-semibold text-slate-100">当前页面是项目汇总洞察</div>
-            <p className="mt-1 text-xs leading-5 text-slate-400">
-              这里汇总所选任务的全部评委数据。要分别查看当前账号的“我的结果”和同一任务的“全员汇总”，请打开任务级结果页。
-            </p>
-          </div>
-        </div>
-        {onOpenTaskResults && taskResultTarget && (
-          <div className="flex w-full min-w-0 flex-col gap-2 sm:flex-row sm:items-center lg:w-auto lg:shrink-0">
-            {selectedResultTasks.length > 1 && (
-              <select
-                value={taskResultTarget.id}
-                onChange={event => setSelectedTaskId(event.target.value)}
-                className="glass-input w-full min-w-0 px-3 py-2 text-xs sm:max-w-64"
-                aria-label="选择要查看个人与全员结果的任务"
-              >
-                {selectedResultTasks.map(task => (
-                  <option key={task.id} value={task.id}>{task.name}</option>
-                ))}
-              </select>
-            )}
-            <button
-              type="button"
-              onClick={() => onOpenTaskResults(taskResultTarget.id)}
-              className="inline-flex min-h-10 max-w-full items-center justify-center gap-2 whitespace-normal border border-amber-400 bg-amber-400 px-3 py-2 text-center text-xs font-bold leading-5 text-black transition-colors hover:bg-amber-300"
-            >
-              打开任务结果（我的 / 全员）
-              <ArrowRight size={14} />
-            </button>
-          </div>
-        )}
-      </div>
-
-      <div className="grid gap-3 lg:grid-cols-[minmax(220px,0.8fr)_160px_minmax(360px,1.4fr)_auto] lg:items-end">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(220px,0.8fr)_minmax(320px,1.25fr)_minmax(205px,auto)_auto] xl:items-end">
         <label className="block">
           <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]">选择项目</span>
           <select
             value={selectedProjectId}
             onChange={(event) => {
               setSelectedProjectId(event.target.value);
-              setSelectedMaterialScope('');
-              setAnalysisScopeMode('comparable-group');
+              setSelectedMaterialId('');
               setLoadedScopeKey('');
             }}
             className="glass-input w-full px-3 py-2 text-sm"
@@ -1513,97 +1301,58 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         </label>
 
         <label className="block">
-          <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]">物料状态</span>
+          <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]">评测物料</span>
           <select
-            value={statusFilter}
+            value={selectedMaterialId}
             onChange={(event) => {
-              setStatusFilter(event.target.value as EvalTask['status'] | 'all');
-              setSelectedMaterialScope('');
+              setSelectedMaterialId(event.target.value);
               setLoadedScopeKey('');
             }}
-            className="glass-input w-full px-3 py-2 text-sm"
+            className="glass-input w-full min-w-0 px-3 py-2 text-sm"
+            disabled={projectMaterials.length === 0}
+            aria-label="选择一份评测物料"
           >
-            <option value="all">全部状态</option>
-            <option value="completed">已完成</option>
-            <option value="active">进行中</option>
-            <option value="draft">草稿</option>
+            <option value="">请选择评测物料</option>
+            {projectMaterials.map(material => (
+              <option key={material.id} value={material.id}>
+                {material.name} · {taskStatusLabel(material.status)}
+              </option>
+            ))}
           </select>
         </label>
 
         <div className="block">
-          <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]">统计口径</span>
-          <div className="grid gap-2 sm:grid-cols-[auto_minmax(0,1fr)]">
-            <div className="inline-flex border border-white/10 bg-black/30 p-0.5" role="group" aria-label="统计口径模式">
+          <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.14em] text-[var(--text-muted)]">评委范围</span>
+          <div className="inline-flex h-10 border border-white/10 bg-black/30 p-0.5" role="group" aria-label="选择评委范围">
+            {([
+              { value: 'all' as const, label: '全员汇总' },
+              { value: 'mine' as const, label: '我的结果' },
+            ]).map(option => (
               <button
+                key={option.value}
                 type="button"
-                aria-pressed={analysisScopeMode === 'comparable-group'}
+                aria-pressed={reviewerScope === option.value}
                 onClick={() => {
-                  setAnalysisScopeMode('comparable-group');
-                  setSelectedMaterialScope(materialGroups[0] ? `group:${materialGroups[0].key}` : '');
+                  setReviewerScope(option.value);
                   setLoadedScopeKey('');
                 }}
-                disabled={materialGroups.length === 0}
-                className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold transition-colors ${analysisScopeMode === 'comparable-group' ? 'bg-amber-400 text-black' : 'text-slate-300 hover:bg-white/5'} disabled:opacity-40`}
+                className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold transition-colors ${reviewerScope === option.value ? 'bg-amber-400 text-black' : 'text-slate-300 hover:bg-white/5'}`}
               >
-                <Layers size={13} /> 合并可比结果
+                <Users size={13} /> {option.label}
               </button>
-              <button
-                type="button"
-                aria-pressed={analysisScopeMode === 'single-task'}
-                onClick={() => {
-                  setAnalysisScopeMode('single-task');
-                  setSelectedMaterialScope(projectMaterials[0] ? `material:${projectMaterials[0].id}` : '');
-                  setLoadedScopeKey('');
-                }}
-                disabled={projectMaterials.length === 0}
-                className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold transition-colors ${analysisScopeMode === 'single-task' ? 'bg-amber-400 text-black' : 'text-slate-300 hover:bg-white/5'} disabled:opacity-40`}
-              >
-                <FileText size={13} /> 单任务汇总
-              </button>
-            </div>
-            <select
-              value={selectedMaterialScope}
-              onChange={(event) => {
-                setSelectedMaterialScope(event.target.value);
-                setLoadedScopeKey('');
-              }}
-              className="glass-input min-w-0 px-3 py-2 text-sm"
-              disabled={projectMaterials.length === 0}
-              aria-label={analysisScopeMode === 'comparable-group' ? '选择可比结果组' : '选择单次任务'}
-            >
-              {analysisScopeMode === 'comparable-group' ? materialGroups.map(group => (
-                <option key={group.key} value={`group:${group.key}`}>
-                  {group.label} · 合并 {group.tasks.length} 个任务
-                </option>
-              )) : projectMaterials.map(material => (
-                <option key={material.id} value={`material:${material.id}`}>
-                  {material.name} · {taskStatusLabel(material.status)}
-                </option>
-              ))}
-            </select>
+            ))}
           </div>
         </div>
 
         <button
           type="button"
-          onClick={() => handleImportFromPlatform(selectedMaterialIds)}
-          disabled={selectedMaterialIds.length === 0 || loadingResults}
+          onClick={() => handleImportFromPlatform(selectedMaterialId)}
+          disabled={!selectedMaterialId || loadingResults}
           className="btn-primary h-10 disabled:opacity-50"
         >
           {loadingResults ? <Loader2 size={16} className="animate-spin" /> : <BarChart3 size={16} />}
           刷新洞察
         </button>
-      </div>
-
-      <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-[var(--text-muted)]">
-        <span className="inline-flex items-center gap-1"><Layers size={13} /> {selectedProjectName}</span>
-        <span>{selectedMaterialsLabel}</span>
-        <span className="inline-flex items-center gap-1.5 text-slate-300">
-          <ListFilter size={13} className="text-amber-400" />
-          {analysisScopeMode === 'comparable-group'
-            ? '仅合并评测方式、产物类型和模型组合一致的任务。'
-            : '只汇总所选任务的全部评委数据；个人结果请打开任务级结果页。'}
-        </span>
       </div>
     </div>
   );
@@ -1924,8 +1673,8 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     return (
       <ScoreInsightsScreen
         mode={isPairwiseMethod(analysisEvaluationConfig) ? 'pairwise' : 'score'}
-        title={`${selectedProjectName} · ${isPairwiseMethod(analysisEvaluationConfig) ? 'Pairwise 对战洞察' : '评分洞察'}`}
-        description={`当前统计口径：${selectedMaterialsLabel}。该视图按评测方式展示对应统计，避免把评分、排序和偏好投票混在一起。`}
+        title="结果洞察"
+        description={insightSubtitle}
         controls={insightControls}
         items={analysisItems}
         votes={methodVotes}
@@ -1941,8 +1690,8 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     return (
       <ResultsInsightsScreen
         mode={isArenaRankAnalysis ? 'rank' : 'ab'}
-        title={`${selectedProjectName} · 项目汇总洞察`}
-        description={`当前统计口径：${selectedMaterialsLabel}。默认合并评测方式、产物类型和模型组合一致的任务，帮助你从项目角度观察模型表现、维度差异和低共识样例。`}
+        title="结果洞察"
+        description={insightSubtitle}
         controls={insightControls}
         items={isArenaRankAnalysis ? rankItems as any : analysisItems}
         votes={isArenaRankAnalysis ? rankVotes : []}
@@ -1958,22 +1707,24 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
 
   return (
     <div className="max-w-6xl mx-auto p-6 animate-in fade-in duration-500">
-      <div className="flex items-center justify-between mb-8 relative">
-        {onGoToDashboard && (
-          <button 
-            onClick={onGoToDashboard}
-            className="absolute left-0 top-0 glass-panel glass-panel-hover text-slate-300 px-4 py-2 rounded-lg font-medium text-sm flex items-center gap-2 transition-colors border border-white/10"
-          >
-            <ArrowRight className="rotate-180" size={16} /> 返回大盘
-          </button>
-        )}
-        <div className={onGoToDashboard ? "ml-32" : ""}>
-          <h1 className="text-3xl font-bold text-slate-100">结果洞察</h1>
-          <p className="text-slate-400">先选择项目和统计口径，再查看项目级统计、图表和 case 证据。</p>
+      <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start">
+          {onGoToDashboard && (
+            <button
+              onClick={onGoToDashboard}
+              className="glass-panel glass-panel-hover flex w-fit shrink-0 items-center gap-2 rounded-lg border border-white/10 px-4 py-2 text-sm font-medium text-slate-300 transition-colors"
+            >
+              <ArrowRight className="rotate-180" size={16} /> 返回大盘
+            </button>
+          )}
+          <div className="min-w-0">
+            <h1 className="text-3xl font-bold text-slate-100">结果洞察</h1>
+            <p className="mt-1 text-slate-400">选择一份评测物料，并在全员汇总与我的结果之间切换。</p>
+          </div>
         </div>
-        <button 
+        <button
           onClick={onBack}
-          className="flex items-center gap-2 bg-black/40 hover:bg-white/5 text-white px-5 py-2.5 rounded-xl font-medium text-sm shadow-md transition-all transform hover:-translate-y-0.5"
+          className="flex w-fit shrink-0 items-center gap-2 rounded-xl bg-black/40 px-5 py-2.5 text-sm font-medium text-white shadow-md transition-all hover:-translate-y-0.5 hover:bg-white/5"
         >
           去参与评测
         </button>
@@ -2009,29 +1760,17 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
             </div>
             <h3 className="text-xl font-semibold text-slate-100 mb-2">载入平台结果</h3>
             <p className="text-slate-400 mb-6 max-w-sm mx-auto text-sm">
-              从当前项目和所选统计口径读取所有成员的评测结果，生成项目汇总洞察。
+              {selectedMaterial
+                ? `读取“${selectedMaterial.name}”的${reviewerScopeLabel}。`
+                : '请先在上方选择一份评测物料。'}
             </p>
             
             <div className="w-full max-w-xs space-y-3">
-              <select 
-                value={selectedTaskId}
-                onChange={(e) => setSelectedTaskId(e.target.value)}
-                className="w-full px-4 py-2 glass-input rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-sm"
-                disabled={loadingTasks}
-              >
-                <option value="">选择单次评测任务...</option>
-                {projectMaterials.map(task => (
-                  <option key={task.id} value={task.id}>
-                    {task.name} ({taskStatusLabel(task.status)})
-                  </option>
-                ))}
-              </select>
-              
               <button 
-                onClick={() => handleImportFromPlatform(selectedTaskId ? [selectedTaskId] : selectedMaterialIds)}
-                disabled={(!selectedTaskId && selectedMaterialIds.length === 0) || loadingResults}
+                onClick={() => handleImportFromPlatform(selectedMaterialId)}
+                disabled={!selectedMaterialId || loadingResults}
                 className={`w-full py-3 rounded-xl font-semibold shadow-lg transition-all transform hover:scale-105 flex items-center justify-center gap-2 ${
-                  (!selectedTaskId && selectedMaterialIds.length === 0) || loadingResults
+                  !selectedMaterialId || loadingResults
                     ? 'bg-white/10 text-slate-500 cursor-not-allowed shadow-none' 
                     : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20'
                 }`}
@@ -2066,21 +1805,21 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
             <div className="text-slate-400 mb-8 max-w-sm mx-auto text-sm text-left space-y-2 bg-white/5 p-4 rounded-xl border border-white/10">
               <p><strong>1.</strong> 在“评测物料”中创建可执行评测配置并分配给成员。</p>
               <p><strong>2.</strong> 成员在“参与评测”页面完成投票或排序。</p>
-              <p><strong>3.</strong> 物料完成后，在上方选择项目和物料范围即可载入平台结果。</p>
+              <p><strong>3.</strong> 在上方选择具体评测物料，再选择查看全员汇总或我的结果。</p>
               <p><strong>4.</strong> 外部自动化结果可通过中间的 CSV 上传导入。</p>
             </div>
             <div className="flex gap-3">
               <button 
                 onClick={downloadTemplate} 
-                disabled={!selectedTaskId || isDownloadingTemplate}
+                disabled={!selectedMaterialId || isDownloadingTemplate}
                 className={`flex items-center gap-2 px-6 py-3 rounded-xl font-semibold transition-colors border ${
-                  selectedTaskId 
+                  selectedMaterialId
                     ? 'bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border-indigo-500/20' 
                     : 'bg-white/5 text-slate-500 border-white/10 cursor-not-allowed'
                 }`}
               >
                 {isDownloadingTemplate ? <Loader2 size={18} className="animate-spin" /> : <Download size={18} />}
-                {isDownloadingTemplate ? '生成中...' : (selectedTaskId ? '下载数据模板' : '请先选择评测物料')}
+                {isDownloadingTemplate ? '生成中...' : (selectedMaterialId ? '下载数据模板' : '请先选择评测物料')}
               </button>
             </div>
           </div>

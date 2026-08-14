@@ -7,15 +7,6 @@ const cleanIdentity = (value?: string) => String(value || '').trim();
 export const buildTaskResultsPath = (taskId: string) =>
   `/tasks/${encodeURIComponent(taskId)}/results`;
 
-export const getTaskResultTargetId = (
-  taskIds: string[],
-  selectedTaskId?: string,
-): string | undefined => {
-  const uniqueTaskIds = Array.from(new Set(taskIds.map(cleanIdentity).filter(Boolean)));
-  const selected = cleanIdentity(selectedTaskId);
-  return selected && uniqueTaskIds.includes(selected) ? selected : uniqueTaskIds[0];
-};
-
 export const getLegacyTaskInsightsRedirect = (
   pathname: string,
   _searchParams?: URLSearchParams,

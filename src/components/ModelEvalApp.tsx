@@ -93,6 +93,23 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     onRouteChange?.(route, nextContext);
   };
 
+  const openTaskResults = (taskId?: string | null, projectId?: string) => {
+    if (!taskId) {
+      goToRoute('results');
+      return;
+    }
+    const resolvedProjectId = projectId || activeProject?.id || routeContext.projectId;
+    const context: RouteContext = {
+      projectId: resolvedProjectId,
+      taskId,
+      materialId: taskId,
+      insightScope: `material:${taskId}`,
+      insightReviewerScope: 'all',
+      source: 'task',
+    };
+    goToRoute(resolvedProjectId ? 'insights' : 'results', context);
+  };
+
   const mergeCurrentUserVoteGroup = (groups: TaskVoteGroup[], nextVotes: VoteRecord[], nextUserName = userName) => {
     const reviewer = getCurrentReviewerIdentity();
     const userKey = reviewer.id || nextUserName || 'Anonymous';
@@ -143,10 +160,10 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
   const formatSaveError = (error: any) => error?.message || '投票保存失败，请检查网络后重试。本次选择尚未写入共享结果。';
 
   useEffect(() => {
-    if (currentRoute === 'results' && activeTaskId) {
+    if (currentRoute === 'results' && !routeContext.taskId && activeTaskId) {
       void refreshAllTaskVotes(activeTaskId);
     }
-  }, [activeTaskId, currentRoute]);
+  }, [activeTaskId, currentRoute, routeContext.taskId]);
 
   useEffect(() => {
     const unsubscribe = auth.onAuthStateChanged(user => {
@@ -212,7 +229,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
 
   useEffect(() => {
     const taskId = routeContext.taskId;
-    const shouldHydrateTask = (currentRoute === 'voting' || currentRoute === 'results') && !!taskId;
+    const shouldHydrateTask = currentRoute === 'voting' && !!taskId;
     if (!shouldHydrateTask) return;
     if (activeTaskId === taskId && items.length > 0) return;
 
@@ -288,7 +305,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
         setVoteSaveError(null);
         setResyncError(null);
         if (loadedIsSampledArena && arenaSession?.remainingCount === 0 && currentRoute === 'voting') {
-          goToRoute('results', { taskId: loaded.task.id, source: 'task' });
+          openTaskResults(loaded.task.id, loaded.project?.id);
         }
       } catch (error: any) {
         if (!cancelled) {
@@ -424,7 +441,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
       setVotes(nextVotes);
       if (sampledArenaSession ? sampledArenaSession.remainingCount === 0 : nextVotes.length >= parsedItems.length) {
         setCurrentIndex(Math.max(sessionItems.length - 1, 0));
-        goToRoute('results', taskId ? { taskId } : {});
+        openTaskResults(taskId);
       } else {
         setCurrentIndex(sampledArenaSession?.currentIndex ?? nextVotes.length);
         goToRoute('voting', taskId ? { taskId } : {});
@@ -512,7 +529,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
         if (activeTaskId) {
           void refreshAllTaskVotes(activeTaskId);
         }
-        goToRoute('results', activeTaskId ? { taskId: activeTaskId } : routeContext);
+        openTaskResults(activeTaskId);
       }
     } catch (error: any) {
       setVoteSaveError(formatSaveError(error));
@@ -651,7 +668,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     if (votes.length > 0) {
       const finish = () => {
         saveToHistory(votes);
-        goToRoute('results', activeTaskId ? { taskId: activeTaskId } : routeContext);
+        openTaskResults(activeTaskId);
       };
       if (isSampledArena) {
         setConfirmConfig({
@@ -746,7 +763,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
       );
     }
 
-    if ((currentRoute === 'voting' || currentRoute === 'results') && routeContext.taskId && routeTaskLoading) {
+    if (currentRoute === 'voting' && routeContext.taskId && routeTaskLoading) {
       return (
         <div className="flex min-h-[calc(100vh-64px)] items-center justify-center px-4">
           <div className="w-full max-w-md rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-panel)] p-8 text-center">
@@ -758,7 +775,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
       );
     }
 
-    if ((currentRoute === 'voting' || currentRoute === 'results') && routeContext.taskId && routeTaskError) {
+    if (currentRoute === 'voting' && routeContext.taskId && routeTaskError) {
       return (
         <div className="flex min-h-[calc(100vh-64px)] items-center justify-center px-4">
           <div className="w-full max-w-md rounded-lg border border-red-500/30 bg-[var(--surface-panel)] p-8 text-center">
@@ -777,7 +794,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
           onGoToDatasets={() => navigate('datasets')}
           onGoToTasks={(statusFilter) => navigate('tasks', { materialStatusFilter: statusFilter })}
           onOpenTask={(taskId) => navigate('tasks', { taskId, materialId: taskId, source: 'task', taskBuilderMode: 'list' })}
-          onGoToInsights={(statusFilter) => navigate('insights', { materialStatusFilter: statusFilter })}
+          onGoToInsights={() => navigate('insights')}
           onGoToGeneration={(batchId) => navigate('generation', { generationBatchId: batchId })}
         />
       );
@@ -872,7 +889,14 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
             onBack={() => routeContext.projectId ? navigate('projects', { projectId: routeContext.projectId, source: 'dashboard' }) : navigate('overview')}
             onClearProjectScope={routeContext.projectId ? () => navigate('tasks', { taskBuilderMode: 'list' }) : undefined}
             onEvaluateTask={(task) => navigate('voting', { taskId: task.id, materialId: task.id, source: 'task' })}
-            onOpenResults={(task) => navigate('results', { taskId: task.id, materialId: task.id, source: 'task' })}
+            onOpenResults={(task) => navigate('insights', {
+              projectId: task.projectId,
+              taskId: task.id,
+              materialId: task.id,
+              insightScope: `material:${task.id}`,
+              insightReviewerScope: 'all',
+              source: 'task',
+            })}
           />
         </div>
       );
@@ -901,11 +925,10 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
           <InsightDashboardPage
             onBack={() => navigate('evaluation')}
             onGoToDashboard={() => navigate('overview')}
-            onOpenTaskResults={(taskId) => navigate('results', { taskId, materialId: taskId, source: 'task' })}
             initialProjectId={routeContext.projectId}
             initialMaterialId={routeContext.materialId || routeContext.taskId}
-            initialStatusFilter={routeContext.materialStatusFilter}
             initialScope={routeContext.insightScope}
+            initialReviewerScope={routeContext.insightReviewerScope}
           />
         </div>
       );
@@ -999,6 +1022,20 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     }
 
     if (currentRoute === 'results') {
+      if (routeContext.taskId) {
+        return (
+          <div className="py-6">
+            <InsightDashboardPage
+              onBack={() => navigate('tasks', { projectId: routeContext.projectId, taskBuilderMode: 'list' })}
+              onGoToDashboard={() => navigate('overview')}
+              initialProjectId={routeContext.projectId}
+              initialMaterialId={routeContext.taskId}
+              initialScope={`material:${routeContext.taskId}`}
+              initialReviewerScope={routeContext.insightReviewerScope}
+            />
+          </div>
+        );
+      }
       return (
         <div className="py-6">
           <ResultsScreen

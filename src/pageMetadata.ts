@@ -75,6 +75,18 @@ export const getCanonicalPagePath = (
   const path = pathname.replace(/\/+$/, '') || '/';
   const legacyTaskInsights = path.match(/^\/tasks\/([^/]+)\/insights$/);
   if (legacyTaskInsights) return `/tasks/${legacyTaskInsights[1]}/results`;
+  if (/^\/projects\/[^/]+\/insights$/.test(path)) {
+    const normalizedSearch = new URLSearchParams();
+    const scope = searchParams.get('scope')?.trim() || '';
+    if (scope.startsWith('material:') && scope.length > 'material:'.length) {
+      normalizedSearch.set('scope', scope);
+    }
+    if (searchParams.get('reviewer') === 'mine') {
+      normalizedSearch.set('reviewer', 'mine');
+    }
+    const normalized = normalizedSearch.toString();
+    return `${path}${normalized ? `?${normalized}` : ''}`;
+  }
   const search = searchParams.toString();
   return `${path}${search ? `?${search}` : ''}`;
 };
