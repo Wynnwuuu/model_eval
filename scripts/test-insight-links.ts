@@ -21,11 +21,12 @@ const taskPath = buildInsightPath({
   projectId: 'project-1',
   scope: 'material:task-9',
   reviewerScope: 'mine',
+  source: 'task',
 });
-assert.equal(taskPath, '/projects/project-1/insights?scope=material%3Atask-9&reviewer=mine');
+assert.equal(taskPath, '/projects/project-1/insights?scope=material%3Atask-9&reviewer=mine&source=task');
 assert.deepEqual(
   parseInsightSearchParams(new URL(taskPath, 'https://eval.example.com').searchParams),
-  { reviewerScope: 'mine', scope: 'material:task-9' },
+  { reviewerScope: 'mine', scope: 'material:task-9', source: 'task' },
 );
 
 assert.deepEqual(

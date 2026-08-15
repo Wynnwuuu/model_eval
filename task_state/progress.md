@@ -818,3 +818,13 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Generation/MCP, generation PostgreSQL, dataset synchronization/import/clone/delete/filter/table projection, versioned sync PostgreSQL, structured evaluation audit, Arena, rank ties, insights, page metadata, layout, project contract, and API smoke tests passed.
 - TypeScript, server build, and frontend production build passed. No paid generation request was executed.
 - A previous local browser run used the wrong environment variable and opened an unrelated port 3000 app; that result was discarded. All browser results listed above use `E2E_BASE_URL=http://127.0.0.1:3003` and the current isolated worktree.
+
+# 结果洞察单页合并与卡死修复（2026-08-14）
+
+- 状态：已完成。
+- 删除 `showInsights` 双页面与伪返回入口；项目、任务和离线结果统一进入一页洞察，顶部返回操作按实际来源返回。
+- A/B、Arena-rank、评分/Rubric 和 Pairwise 共用逐 case 证据模型；核心结论与全部模型产物直接展示，逐评委原始记录在 case 内按需展开。
+- 媒体仅在接近视口后加入全局 6 路初始化队列；离屏暂停播放器释放资源，播放中媒体保持挂载，单个媒体失败不影响整页。
+- items 与 votes 并行读取，切换物料、评委范围或刷新时取消旧请求，并通过请求序号拒绝过期响应。
+- 专项回归、统计与路由测试、TypeScript、前后端构建、API smoke 和本地连通检查全部通过。
+- 浏览器验证桌面与 390x844 窄屏无横向溢出；视口外媒体不请求，滚入后加载、离开后释放，原始评审记录展开正常。

@@ -1,24 +1,22 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
   Brain,
   Download,
-  ExternalLink,
   FileJson,
   FileText,
 } from 'lucide-react';
 import { AggregatedResult, EvaluationItem, VoteRecord, VoteType } from '../types';
 import {
-  AbCaseInsight,
   AbInsightBundle,
   InsightBundle,
   InsightModelNames,
   PairwiseComparisonStat,
-  RankCaseInsight,
   RawAbVoteRow,
   buildAbInsights,
   buildEvidenceJson,
+  buildInsightCaseCsv,
   buildInsightDimensionCsv,
   buildInsightSummaryCsv,
   buildRankPairwiseCsv,
@@ -28,9 +26,10 @@ import {
   formatPercent,
 } from '../analysisInsights';
 import { getDimensionEntries, formatDimensionValues } from '../dimensionUtils';
-import MediaRenderer from './MediaRenderer';
 import InsightTopSummaryPanel from './InsightTopSummaryPanel';
 import { buildAbTopSummary, buildRankTopSummary } from '../insightPresentation';
+import { buildCaseEvidenceViewModels } from '../caseEvidence';
+import CaseEvidenceGallery from './CaseEvidenceGallery';
 
 type InsightItem = Partial<EvaluationItem> & { id: string; originalData?: Record<string, any> };
 
@@ -46,8 +45,9 @@ interface ResultsInsightsScreenProps {
   modelNames?: InsightModelNames;
   models?: { id: string; name: string }[];
   skippedCount?: number;
-  onBack?: () => void;
-  backLabel?: string;
+  returnAction?: { label: string; onClick: () => void };
+  additionalActions?: React.ReactNode;
+  notices?: React.ReactNode;
 }
 
 type CaseFilter =
@@ -470,146 +470,6 @@ const DimensionTable: React.FC<{ bundle: InsightBundle; onSelect: (key: string, 
   </section>
 );
 
-const EvidenceMediaStrip: React.FC<{ caseItem: AbCaseInsight | RankCaseInsight }> = ({ caseItem }) => {
-  const baseOutputs = caseItem.representativeOutputs.length
-    ? caseItem.representativeOutputs
-    : 'modelA' in caseItem
-      ? [caseItem.modelA, caseItem.modelB].filter(output => output.url)
-      : [];
-  const rankCase = 'consensusRanking' in caseItem ? caseItem : null;
-  const outputs = rankCase
-    ? [...baseOutputs].sort((a, b) => {
-        const aIndex = rankCase.consensusRanking.findIndex(model => model.modelId === a.modelId || model.modelName === a.modelName);
-        const bIndex = rankCase.consensusRanking.findIndex(model => model.modelId === b.modelId || model.modelName === b.modelName);
-        return (aIndex < 0 ? Number.MAX_SAFE_INTEGER : aIndex) - (bIndex < 0 ? Number.MAX_SAFE_INTEGER : bIndex);
-      })
-    : baseOutputs;
-
-  if (!outputs.length) {
-    return <div className="rounded-lg border border-white/10 bg-black/20 p-4 text-center text-xs text-slate-500">暂无可预览产物链接</div>;
-  }
-
-  return (
-    <div
-      className="grid gap-4"
-      style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 360px), 1fr))' }}
-    >
-      {outputs.map(output => {
-        const model = rankCase?.consensusRanking.find(candidate => candidate.modelId === output.modelId || candidate.modelName === output.modelName);
-        const rank = model && rankCase
-          ? rankCase.consensusRanking.findIndex(candidate => Math.abs(candidate.normalizedScore - model.normalizedScore) < 1e-9) + 1
-          : null;
-        const tiedAtRank = model && rankCase
-          ? rankCase.consensusRanking.filter(candidate => Math.abs(candidate.normalizedScore - model.normalizedScore) < 1e-9).length > 1
-          : false;
-        return (
-        <div key={`${caseItem.itemId}-${output.modelId}-${output.modelName}`} className={`min-w-0 overflow-hidden rounded-xl border bg-white/5 ${tiedAtRank ? 'border-amber-400/35' : 'border-white/10'}`}>
-          <div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2.5">
-            <div className="flex min-w-0 items-center gap-2">
-              {rank && <span className="shrink-0 bg-amber-400/15 px-1.5 py-0.5 font-mono text-[10px] font-bold text-amber-200">{tiedAtRank ? `并列 #${rank}` : `#${rank}`}</span>}
-              <span className="truncate text-sm font-semibold text-slate-100" title={output.modelName}>{output.modelName}</span>
-            </div>
-            {output.url && (
-              <a href={output.url} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-white" title="打开产物链接">
-                <ExternalLink size={15} />
-              </a>
-            )}
-          </div>
-          <div
-            className="w-full bg-black/40"
-            style={{ height: 'clamp(220px, 28vw, 460px)' }}
-          >
-            <MediaRenderer
-              url={output.url}
-              isActive={false}
-              forceType={caseItem.mediaType === 'video' || caseItem.mediaType === 'image' || caseItem.mediaType === 'audio' ? caseItem.mediaType : undefined}
-              videoPreload="metadata"
-              className="rounded-none border-0 shadow-none"
-            />
-          </div>
-        </div>
-      );})}
-    </div>
-  );
-};
-
-const EvidenceGallery: React.FC<{
-  cases: Array<AbCaseInsight | RankCaseInsight>;
-  filterLabel: string;
-}> = ({ cases, filterLabel }) => (
-  <section className="rounded-xl border border-white/10 bg-white/5">
-    <div className="flex items-center justify-between border-b border-white/10 p-4">
-      <div>
-        <h3 className="text-sm font-semibold text-slate-100">Case 证据与代表性产物</h3>
-        <p className="text-xs text-slate-500">{filterLabel} / 当前显示 {cases.length} 个 case</p>
-      </div>
-    </div>
-    <div className="p-4">
-      {cases.length ? (
-        <div className="space-y-4">
-          {cases.map(item => (
-            <article key={item.itemId} className="rounded-xl border border-white/10 bg-black/20 p-4 lg:p-5">
-              <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="font-mono text-xs text-amber-300">{item.itemId}</div>
-                  <div className="mt-1 max-w-3xl whitespace-pre-wrap break-words text-sm text-slate-200">{item.prompt || '-'}</div>
-                  {getDimensionEntries(item.dimensionValues).length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {getDimensionEntries(item.dimensionValues).map(([key, value]) => (
-                        <span key={`${key}-${value}`} className="rounded-full bg-white/10 px-2 py-1 text-[11px] text-slate-300">{key}: {value}</span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <div className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-right text-xs text-slate-300">
-                  {'winnerLabel' in item ? (
-                    <>
-                      <div>胜出模型：<span className="font-semibold text-slate-100">{item.winnerLabel}</span></div>
-                      <div>共识度：{formatPercent(item.agreementRate, 0)}</div>
-                      <div className="mt-1 text-slate-500">{item.modelA.modelName}: {item.votes.A} / {item.modelB.modelName}: {item.votes.B} / 平局: {item.votes.Tie}</div>
-                    </>
-                  ) : (
-                    <>
-                      <div>共识领先：<span className="font-semibold text-slate-100">{item.consensusLeaders.join(' = ') || '-'}</span></div>
-                      <div>关系一致率：{formatPercent(item.relationAgreement, 0)}</div>
-                      <div>区分度：{formatPercent(item.distinctionRate, 0)} / tau-b：{formatNumber(item.kendallTau, 2)}</div>
-                      <div className="mt-1 text-slate-500">含并列票 {item.tieBallots} / 全部并列 {item.allTieBallots}</div>
-                    </>
-                  )}
-                </div>
-              </div>
-
-              <EvidenceMediaStrip caseItem={item} />
-
-              <div className="mt-4 grid gap-3 lg:grid-cols-2">
-                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
-                  <div className="mb-2 text-xs font-semibold text-slate-400">人工评审记录</div>
-                  <div className="max-h-28 space-y-1 overflow-y-auto text-xs text-slate-300">
-                    {item.humanVotes.length ? item.humanVotes.map((vote, index) => (
-                      <div key={`${vote.user}-${vote.timestamp}-${index}`} className="flex justify-between gap-3">
-                        <span className="truncate">{vote.user}</span>
-                        <span className="shrink-0 text-slate-100">{vote.voteLabel}</span>
-                      </div>
-                    )) : <span className="text-slate-500">当前数据源没有逐条投票明细</span>}
-                  </div>
-                </div>
-                <div className="rounded-lg border border-dashed border-white/15 bg-white/5 p-3">
-                  <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-slate-400">
-                    <Brain size={14} /> AI judge rationale
-                  </div>
-                  <p className="text-xs text-slate-500">占位：未来接入 AI judge 后，这里会绑定该 case 的判定理由、置信度和引用证据。</p>
-                </div>
-              </div>
-            </article>
-          ))}
-        </div>
-      ) : (
-        <div className="flex h-48 items-center justify-center text-sm text-slate-500">当前筛选下没有 case</div>
-      )}
-    </div>
-  </section>
-);
-
 const getFilterLabel = (filter: CaseFilter, bundle: InsightBundle) => {
   if (filter.type === 'all') return '全部 case';
   if (filter.type === 'lowConsensus') return '低共识 / 高分歧 case';
@@ -682,10 +542,12 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
   modelNames,
   models = [],
   skippedCount = 0,
-  onBack,
-  backLabel = '返回结果明细'
+  returnAction,
+  additionalActions,
+  notices,
 }) => {
   const [filter, setFilter] = useState<CaseFilter>({ type: 'all' });
+  const galleryRef = useRef<HTMLElement>(null);
   const bundle = useMemo<InsightBundle>(() => {
     if (mode === 'rank') {
       return buildRankInsights({ items: items as any, votes, models });
@@ -698,10 +560,21 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
       : buildRankTopSummary(bundle, items.length),
     [bundle, items.length],
   );
+  const evidenceCases = useMemo(
+    () => buildCaseEvidenceViewModels({ bundle, items, votes }),
+    [bundle, items, votes],
+  );
 
   const filteredCases = filterCases(bundle, filter);
+  const filteredCaseIds = new Set(filteredCases.map(item => item.itemId));
+  const filteredEvidenceCases = evidenceCases.filter(item => filteredCaseIds.has(item.itemId));
+  const selectFilter = (nextFilter: CaseFilter) => {
+    setFilter(nextFilter);
+    window.requestAnimationFrame(() => galleryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  };
   const dateTag = new Date().toISOString().slice(0, 10);
   const exportSummary = () => downloadTextFile(`insights_summary_${bundle.mode}_${dateTag}.csv`, buildInsightSummaryCsv(bundle), 'text/csv;charset=utf-8;');
+  const exportCases = () => downloadTextFile(`insights_cases_${bundle.mode}_${dateTag}.csv`, buildInsightCaseCsv(bundle), 'text/csv;charset=utf-8;');
   const exportDimensions = () => downloadTextFile(`insights_dimensions_${bundle.mode}_${dateTag}.csv`, buildInsightDimensionCsv(bundle), 'text/csv;charset=utf-8;');
   const exportEvidence = () => downloadTextFile(`case_evidence_${bundle.mode}_${dateTag}.json`, buildEvidenceJson(bundle), 'application/json;charset=utf-8;');
   const exportHtml = () => downloadTextFile(`insights_snapshot_${bundle.mode}_${dateTag}.html`, buildHtmlSnapshot(bundle), 'text/html;charset=utf-8;');
@@ -715,9 +588,9 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
     <div className="mx-auto max-w-7xl space-y-6 p-6 animate-in fade-in duration-500">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          {onBack && (
-            <button onClick={onBack} className="mb-4 inline-flex items-center gap-2 rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm font-medium text-slate-300 hover:bg-white/10">
-              <ArrowLeft size={16} /> {backLabel}
+          {returnAction && (
+            <button onClick={returnAction.onClick} className="mb-4 inline-flex items-center gap-2 rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm font-medium text-slate-300 hover:bg-white/10">
+              <ArrowLeft size={16} /> {returnAction.label}
             </button>
           )}
           <h1 className="text-3xl font-bold text-slate-100">{title || '结果洞察'}</h1>
@@ -729,6 +602,9 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
         <div className="flex flex-wrap justify-end gap-2">
           <button onClick={exportSummary} className="inline-flex items-center gap-2 rounded-lg bg-black/40 px-3 py-2 text-xs font-medium text-white hover:bg-white/10">
             <Download size={14} /> 汇总 CSV
+          </button>
+          <button onClick={exportCases} className="inline-flex items-center gap-2 rounded-lg bg-black/40 px-3 py-2 text-xs font-medium text-white hover:bg-white/10">
+            <Download size={14} /> Case CSV
           </button>
           <button onClick={exportDimensions} className="inline-flex items-center gap-2 rounded-lg bg-black/40 px-3 py-2 text-xs font-medium text-white hover:bg-white/10">
             <Download size={14} /> 维度 CSV
@@ -744,10 +620,12 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
           <button onClick={exportHtml} className="inline-flex items-center gap-2 rounded-lg bg-black/40 px-3 py-2 text-xs font-medium text-white hover:bg-white/10">
             <FileText size={14} /> HTML 快照
           </button>
+          {additionalActions}
         </div>
       </div>
 
       {controls}
+      {notices}
 
       {skippedCount > 0 && (
         <div className="border border-white/10 border-l-2 border-l-amber-400 bg-[#12171d] px-4 py-3 text-sm text-slate-300">
@@ -771,26 +649,26 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
       />
 
       <div className="flex flex-wrap gap-1 border-b border-white/10 pb-3" role="group" aria-label="Case 结果筛选">
-        <button onClick={() => setFilter({ type: 'all' })} aria-pressed={filter.type === 'all'} className={`border px-3 py-2 text-xs font-semibold transition-colors ${filter.type === 'all' ? 'border-amber-400 bg-amber-400 text-black' : 'border-white/10 bg-[#12171d] text-slate-300 hover:border-white/25'}`}>全部 case</button>
-        <button onClick={() => setFilter({ type: 'lowConsensus' })} aria-pressed={filter.type === 'lowConsensus'} className={`border px-3 py-2 text-xs font-semibold transition-colors ${filter.type === 'lowConsensus' ? 'border-amber-400 bg-amber-400 text-black' : 'border-white/10 bg-[#12171d] text-slate-300 hover:border-white/25'}`}>低共识 / 高分歧</button>
+        <button onClick={() => selectFilter({ type: 'all' })} aria-pressed={filter.type === 'all'} className={`border px-3 py-2 text-xs font-semibold transition-colors ${filter.type === 'all' ? 'border-amber-400 bg-amber-400 text-black' : 'border-white/10 bg-[#12171d] text-slate-300 hover:border-white/25'}`}>全部 case</button>
+        <button onClick={() => selectFilter({ type: 'lowConsensus' })} aria-pressed={filter.type === 'lowConsensus'} className={`border px-3 py-2 text-xs font-semibold transition-colors ${filter.type === 'lowConsensus' ? 'border-amber-400 bg-amber-400 text-black' : 'border-white/10 bg-[#12171d] text-slate-300 hover:border-white/25'}`}>低共识 / 高分歧</button>
         {bundle.mode === 'rank' && (
           <>
-            <button onClick={() => setFilter({ type: 'lowDistinction' })} aria-pressed={filter.type === 'lowDistinction'} className={`border px-3 py-2 text-xs font-semibold transition-colors ${filter.type === 'lowDistinction' ? 'border-amber-400 bg-amber-400 text-black' : 'border-white/10 bg-[#12171d] text-slate-300 hover:border-white/25'}`}>低区分</button>
-            <button onClick={() => setFilter({ type: 'hasTie' })} aria-pressed={filter.type === 'hasTie'} className={`border px-3 py-2 text-xs font-semibold transition-colors ${filter.type === 'hasTie' ? 'border-amber-400 bg-amber-400 text-black' : 'border-white/10 bg-[#12171d] text-slate-300 hover:border-white/25'}`}>含并列</button>
+            <button onClick={() => selectFilter({ type: 'lowDistinction' })} aria-pressed={filter.type === 'lowDistinction'} className={`border px-3 py-2 text-xs font-semibold transition-colors ${filter.type === 'lowDistinction' ? 'border-amber-400 bg-amber-400 text-black' : 'border-white/10 bg-[#12171d] text-slate-300 hover:border-white/25'}`}>低区分</button>
+            <button onClick={() => selectFilter({ type: 'hasTie' })} aria-pressed={filter.type === 'hasTie'} className={`border px-3 py-2 text-xs font-semibold transition-colors ${filter.type === 'hasTie' ? 'border-amber-400 bg-amber-400 text-black' : 'border-white/10 bg-[#12171d] text-slate-300 hover:border-white/25'}`}>含并列</button>
           </>
         )}
         {bundle.mode === 'ab' && (
           <>
-            <button onClick={() => setFilter({ type: 'winner', winner: 'A' })} aria-pressed={filter.type === 'winner' && filter.winner === 'A'} className={`border px-3 py-2 text-xs font-semibold transition-colors ${filter.type === 'winner' && filter.winner === 'A' ? 'border-sky-400 bg-sky-400 text-black' : 'border-white/10 bg-[#12171d] text-slate-300 hover:border-sky-400/50'}`}>看 {bundle.models.a} 胜</button>
-            <button onClick={() => setFilter({ type: 'winner', winner: 'B' })} aria-pressed={filter.type === 'winner' && filter.winner === 'B'} className={`border px-3 py-2 text-xs font-semibold transition-colors ${filter.type === 'winner' && filter.winner === 'B' ? 'border-violet-400 bg-violet-400 text-black' : 'border-white/10 bg-[#12171d] text-slate-300 hover:border-violet-400/50'}`}>看 {bundle.models.b} 胜</button>
-            <button onClick={() => setFilter({ type: 'winner', winner: 'Tie' })} aria-pressed={filter.type === 'winner' && filter.winner === 'Tie'} className={`border px-3 py-2 text-xs font-semibold transition-colors ${filter.type === 'winner' && filter.winner === 'Tie' ? 'border-slate-400 bg-slate-300 text-black' : 'border-white/10 bg-[#12171d] text-slate-300 hover:border-white/25'}`}>看平局</button>
+            <button onClick={() => selectFilter({ type: 'winner', winner: 'A' })} aria-pressed={filter.type === 'winner' && filter.winner === 'A'} className={`border px-3 py-2 text-xs font-semibold transition-colors ${filter.type === 'winner' && filter.winner === 'A' ? 'border-sky-400 bg-sky-400 text-black' : 'border-white/10 bg-[#12171d] text-slate-300 hover:border-sky-400/50'}`}>看 {bundle.models.a} 胜</button>
+            <button onClick={() => selectFilter({ type: 'winner', winner: 'B' })} aria-pressed={filter.type === 'winner' && filter.winner === 'B'} className={`border px-3 py-2 text-xs font-semibold transition-colors ${filter.type === 'winner' && filter.winner === 'B' ? 'border-violet-400 bg-violet-400 text-black' : 'border-white/10 bg-[#12171d] text-slate-300 hover:border-violet-400/50'}`}>看 {bundle.models.b} 胜</button>
+            <button onClick={() => selectFilter({ type: 'winner', winner: 'Tie' })} aria-pressed={filter.type === 'winner' && filter.winner === 'Tie'} className={`border px-3 py-2 text-xs font-semibold transition-colors ${filter.type === 'winner' && filter.winner === 'Tie' ? 'border-slate-400 bg-slate-300 text-black' : 'border-white/10 bg-[#12171d] text-slate-300 hover:border-white/25'}`}>看平局</button>
           </>
         )}
       </div>
 
-      {bundle.mode === 'ab' ? <AbCharts bundle={bundle} setFilter={setFilter} /> : <RankCharts bundle={bundle} setFilter={setFilter} />}
-      <DimensionTable bundle={bundle} onSelect={(key, value) => setFilter({ type: 'dimension', key, value })} />
-      <EvidenceGallery cases={filteredCases as any} filterLabel={getFilterLabel(filter, bundle)} />
+      {bundle.mode === 'ab' ? <AbCharts bundle={bundle} setFilter={selectFilter} /> : <RankCharts bundle={bundle} setFilter={selectFilter} />}
+      <DimensionTable bundle={bundle} onSelect={(key, value) => selectFilter({ type: 'dimension', key, value })} />
+      <CaseEvidenceGallery sectionRef={galleryRef} cases={filteredEvidenceCases} filterLabel={getFilterLabel(filter, bundle)} />
       <AiReportPlaceholder />
     </div>
   );

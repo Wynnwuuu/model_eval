@@ -1083,11 +1083,16 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
         <div className="py-6">
           <InsightDashboardPage
             onBack={() => navigate('evaluation')}
-            onGoToDashboard={() => navigate('overview')}
+            returnAction={routeContext.source === 'task'
+              ? { label: '返回评测物料', onClick: () => navigate('tasks', { projectId: routeContext.projectId, taskBuilderMode: 'list' }) }
+              : routeContext.projectId
+                ? { label: '返回项目', onClick: () => navigate('projects', { projectId: routeContext.projectId, source: 'dashboard' }) }
+                : { label: '返回大盘', onClick: () => navigate('overview') }}
             initialProjectId={routeContext.projectId}
             initialMaterialId={routeContext.materialId || routeContext.taskId}
             initialScope={routeContext.insightScope}
             initialReviewerScope={routeContext.insightReviewerScope}
+            source={routeContext.source === 'task' ? 'task' : 'dashboard'}
           />
         </div>
       );
@@ -1187,11 +1192,12 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
           <div className="py-6">
             <InsightDashboardPage
               onBack={() => navigate('tasks', { projectId: routeContext.projectId, taskBuilderMode: 'list' })}
-              onGoToDashboard={() => navigate('overview')}
+              returnAction={{ label: '返回评测物料', onClick: () => navigate('tasks', { projectId: routeContext.projectId, taskBuilderMode: 'list' }) }}
               initialProjectId={routeContext.projectId}
               initialMaterialId={routeContext.taskId}
               initialScope={`material:${routeContext.taskId}`}
               initialReviewerScope={routeContext.insightReviewerScope}
+              source="task"
             />
           </div>
         );

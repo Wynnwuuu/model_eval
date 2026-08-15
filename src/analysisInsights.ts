@@ -348,8 +348,6 @@ export const getAbModelOutputs = (
   };
 };
 
-const getTimestamp = (value?: number) => (Number.isFinite(value) && value ? value as number : Date.now());
-
 const buildKrippendorffAlphaNominal = (rows: RawAbVoteRow[]) => {
   const validRows = rows.filter(row => row.vote);
   if (validRows.length < 2) return null;
@@ -382,24 +380,6 @@ const buildKrippendorffAlphaNominal = (rows: RawAbVoteRow[]) => {
   if (expectedDisagreement <= 0) return null;
 
   return 1 - (observedDisagreements / observedPairs) / expectedDisagreement;
-};
-
-const buildAbTrend = (rows: RawAbVoteRow[]) => {
-  const sortedRows = [...rows]
-    .filter(row => row.vote)
-    .sort((a, b) => getTimestamp(a.timestamp) - getTimestamp(b.timestamp));
-  const counts: Record<VoteType, number> = { A: 0, B: 0, Tie: 0 };
-  return sortedRows.map(row => {
-    counts[row.vote] += 1;
-    const total = counts.A + counts.B + counts.Tie;
-    return {
-      timestamp: getTimestamp(row.timestamp),
-      aShare: safeDivide(counts.A, total),
-      bShare: safeDivide(counts.B, total),
-      tieRate: safeDivide(counts.Tie, total),
-      totalVotes: total
-    };
-  });
 };
 
 const normalizeAggregatedCases = (
@@ -586,7 +566,7 @@ export const buildAbInsights = ({
     },
     cases: cases.sort((a, b) => a.itemId.localeCompare(b.itemId)),
     dimensions,
-    trend: buildAbTrend(rows)
+    trend: []
   };
 };
 
@@ -657,20 +637,6 @@ const buildPairwiseStats = (votes: VoteRecord[], models: { id: string; name: str
     confidenceInterval: wilsonInterval(pair.aWins, pair.decisiveTotal),
     pValue: pair.decisiveTotal ? binomialSignTestTwoSided(pair.aWins, pair.bWins) : null
   }));
-};
-
-const buildRankTrend = (votes: VoteRecord[]) => {
-  const sorted = [...votes].filter(isArenaRankVote).sort((a, b) => getTimestamp(a.timestamp) - getTimestamp(b.timestamp));
-  const running: VoteRecord[] = [];
-  return sorted.map(vote => {
-    running.push(vote);
-    const leader = calculateArenaRankModelStats(running)[0];
-    return {
-      timestamp: getTimestamp(vote.timestamp),
-      leaderScore: (leader?.normalizedScore || 0) * 100,
-      totalRankings: running.length
-    };
-  });
 };
 
 export const buildRankInsights = ({
@@ -786,7 +752,7 @@ export const buildRankInsights = ({
     cases: cases.sort((a, b) => a.itemId.localeCompare(b.itemId)),
     dimensions,
     pairwise: buildPairwiseStats(rankVotes, modelList),
-    trend: buildRankTrend(rankVotes)
+    trend: []
   };
 };
 
@@ -885,6 +851,100 @@ export const buildInsightSummaryCsv = (bundle: InsightBundle) => {
       ['KrippendorffAlpha', bundle.summary.krippendorffAlpha ?? ''],
       ['SmallSample', bundle.summary.smallSample ? 'yes' : 'no']
     ]
+  );
+};
+
+export const buildInsightCaseCsv = (bundle: InsightBundle) => {
+  const dimensionKeys = Array.from(new Set(bundle.cases.flatMap(item =>
+    getDimensionEntries(item.dimensionValues).map(([key]) => key)
+  ))).sort((left, right) => left.localeCompare(right));
+  const dimensionHeaders = dimensionKeys.map(key => `Dimension_${key}`);
+
+  if (bundle.mode === 'rank') {
+    const maxRankCount = Math.max(0, ...bundle.cases.map(item => item.consensusRanking.length));
+    const rankHeaders = Array.from({ length: maxRankCount }, (_, index) => `rank_${index + 1}`);
+    const mediaHeaders = Array.from({ length: maxRankCount }, (_, index) => `排名${index + 1}视频链接`);
+    return rowsToCsv(
+      [
+        'ItemID',
+        'Prompt',
+        ...dimensionHeaders,
+        'VoterCount',
+        'ConsensusLeaders',
+        'RelationAgreement',
+        'KendallTauB',
+        'DistinctionRate',
+        'TieBallots',
+        'AllTieBallots',
+        ...rankHeaders,
+        ...mediaHeaders,
+        'ranking_json',
+      ],
+      bundle.cases.map(item => {
+        const outputs = new Map(item.representativeOutputs.map(output => [output.modelId, output.url]));
+        return [
+          item.itemId,
+          item.prompt,
+          ...dimensionKeys.map(key => item.dimensionValues[key] || ''),
+          item.voterCount,
+          item.consensusLeaders.join(' = '),
+          item.relationAgreement ?? '',
+          item.kendallTau ?? '',
+          item.distinctionRate,
+          item.tieBallots,
+          item.allTieBallots,
+          ...rankHeaders.map((_, index) => item.consensusRanking[index]?.modelName || ''),
+          ...mediaHeaders.map((_, index) => {
+            const model = item.consensusRanking[index];
+            return model ? outputs.get(model.modelId) || '' : '';
+          }),
+          JSON.stringify(item.consensusRanking),
+        ];
+      }),
+    );
+  }
+
+  return rowsToCsv(
+    [
+      'ItemID',
+      'Prompt',
+      ...dimensionHeaders,
+      'ModelA_Name',
+      'ModelA_URL',
+      'ModelB_Name',
+      'ModelB_URL',
+      'ReferenceURLs',
+      'Votes_A',
+      'Votes_B',
+      'Votes_Tie',
+      'TotalVotes',
+      'VoterCount',
+      'Winner',
+      'WinnerSide',
+      'AgreementRate',
+      'MarginVotes',
+      'MarginRate',
+    ],
+    bundle.cases.map(item => [
+      item.itemId,
+      item.prompt,
+      ...dimensionKeys.map(key => item.dimensionValues[key] || ''),
+      item.modelA.modelName,
+      item.modelA.url,
+      item.modelB.modelName,
+      item.modelB.url,
+      item.referenceUrls.join(' | '),
+      item.votes.A,
+      item.votes.B,
+      item.votes.Tie,
+      item.votes.A + item.votes.B + item.votes.Tie,
+      item.voterCount,
+      item.winnerLabel,
+      item.winnerSide,
+      item.agreementRate,
+      item.marginVotes,
+      item.marginRate,
+    ]),
   );
 };
 

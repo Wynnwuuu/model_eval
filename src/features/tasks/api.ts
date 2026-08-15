@@ -100,16 +100,17 @@ export async function loadTaskUserVotes(taskId: string, userName: string) {
   return response.votes;
 }
 
-export async function loadMyTaskVotes(taskId: string) {
+export async function loadMyTaskVotes(taskId: string, signal?: AbortSignal) {
   if (!USE_TASK_API_BACKEND) return [];
-  const response = await requestTaskJson<{ votes: VoteRecord[] }>(`/api/tasks/${taskId}/my-votes`);
+  const response = await requestTaskJson<{ votes: VoteRecord[] }>(`/api/tasks/${taskId}/my-votes`, { signal });
   return response.votes;
 }
 
-export async function loadTaskVotes(taskId: string) {
+export async function loadTaskVotes(taskId: string, signal?: AbortSignal) {
   if (!USE_TASK_API_BACKEND) return loadTaskVoteGroups(taskId);
   const response = await requestTaskJson<{ userVotes: TaskVoteGroup[] }>(
-    `/api/tasks/${taskId}/votes`
+    `/api/tasks/${taskId}/votes`,
+    { signal },
   );
   return response.userVotes as TaskVoteGroup[];
 }

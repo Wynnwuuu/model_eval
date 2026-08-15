@@ -4,12 +4,13 @@ import { VIDEO_EXTENSIONS } from '../constants';
 import { resolveMediaPlaybackCandidates } from '../mediaProxy';
 import { resolvePlaybackUrl } from '../mediaUrlUtils';
 
-interface MediaRendererProps {
+export interface MediaRendererProps {
   url: string;
   label?: string;
   isActive: boolean;
   className?: string;
   onLoadStatusChange?: (isLoaded: boolean) => void;
+  onPlaybackStateChange?: (isPlaying: boolean) => void;
   forceType?: 'image' | 'video' | 'audio' | string;
   videoPreload?: 'none' | 'metadata' | 'auto';
   compact?: boolean;
@@ -77,6 +78,7 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
   isActive,
   className = '',
   onLoadStatusChange,
+  onPlaybackStateChange,
   forceType,
   videoPreload = 'auto',
   compact = false,
@@ -376,6 +378,9 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
             onCanPlay={() => handleLoad(mediaRequestKey)}
             onCanPlayThrough={() => handleLoad(mediaRequestKey)}
             onPlaying={() => handleLoad(mediaRequestKey)}
+            onPlay={() => onPlaybackStateChange?.(true)}
+            onPause={() => onPlaybackStateChange?.(false)}
+            onEnded={() => onPlaybackStateChange?.(false)}
             onError={() => handleError(mediaRequestKey)}
             onKeyDown={(event) => event.stopPropagation()}
           />
@@ -396,6 +401,9 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
               onCanPlay={() => handleLoad(mediaRequestKey)}
               onCanPlayThrough={() => handleLoad(mediaRequestKey)}
               onPlaying={() => handleLoad(mediaRequestKey)}
+              onPlay={() => onPlaybackStateChange?.(true)}
+              onPause={() => onPlaybackStateChange?.(false)}
+              onEnded={() => onPlaybackStateChange?.(false)}
               onError={() => handleError(mediaRequestKey)}
               onKeyDown={(event) => event.stopPropagation()}
             />

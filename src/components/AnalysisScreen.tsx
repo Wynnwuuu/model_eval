@@ -1,17 +1,14 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Upload, FileText, BarChart3, Users, AlertCircle, PlusCircle, Download, ArrowRight, Database, Loader2, ExternalLink } from 'lucide-react';
+import { Upload, FileText, BarChart3, Users, AlertCircle, Download, ArrowRight, Database, Loader2 } from 'lucide-react';
 import { AggregatedResult, EvalParadigm, EvaluationConfig, EvalTask, EvalTemplate, EvaluationItem, EvaluationProject, ModelOutput, RankingEntry, TaskVoteGroup, VoteRecord, VoteType } from '../types';
-import { ArenaRankPromptItem, calculateArenaRankCaseSummaries, calculateArenaRankModelStats, formatConsensusRanking, formatRanking, getArenaRankModelOutputUrl, getModelOutputsForItem, getRankingTieSummary, isArenaRankVote, normalizeRanking, resolveEvaluationItemPrompt, sortRanking, validateRanking } from '../rankingUtils';
+import { ArenaRankPromptItem, formatRanking, getArenaRankModelOutputUrl, getModelOutputsForItem, getRankingTieSummary, isArenaRankVote, normalizeRanking, resolveEvaluationItemPrompt, sortRanking, validateRanking } from '../rankingUtils';
 import { VIDEO_EXTENSIONS } from '../constants';
 import { db, getCurrentReviewerIdentity, handlePersistenceError } from '../auth';
 import { collection, getDocs } from '../datastore';
-import ArenaRankVideoPreviewList from './ArenaRankVideoPreviewList';
-import MediaRenderer from './MediaRenderer';
-import DimensionChips from './DimensionChips';
 import ResultsInsightsScreen from './ResultsInsightsScreen';
 import ScoreInsightsScreen from './ScoreInsightsScreen';
-import { calculateRankDimensionSummaries, calculateVoteDimensionSummaries, getDimensionColumnsForCsv, getDimensionCsvValues, getDimensionValuesForItem, getDimensionValuesFromRecord } from '../dimensionUtils';
+import { getDimensionColumnsForCsv, getDimensionCsvValues, getDimensionValuesForItem, getDimensionValuesFromRecord } from '../dimensionUtils';
 import Papa from 'papaparse';
 import { getDefaultEvaluationConfig, getParadigmFromMethod, isPairwiseMethod, isScoreMethod, normalizeEvaluationConfig } from '../evaluationMethods';
 import { subscribeProjects } from '../features/projects/api';
@@ -26,10 +23,12 @@ import {
   isTaskVoteGroupForReviewer,
   withTaskVoteGroupReviewer,
 } from '../taskResults';
+import { LatestRequestGate } from '../latestRequestGate';
 
 interface AnalysisScreenProps {
   onBack: () => void;
-  onGoToDashboard?: () => void;
+  returnAction?: { label: string; onClick: () => void };
+  source?: 'dashboard' | 'task';
   initialProjectId?: string;
   initialMaterialId?: string;
   initialScope?: string;
@@ -70,8 +69,6 @@ interface ImportedMaterialResult {
   rankItems: ArenaRankPromptItem[];
   methodVotes: VoteRecord[];
   archivedVoteRows: ArchivedVoteRow[];
-  voters: Set<string>;
-  reviewerKeys: Set<string>;
 }
 
 interface ArchivedVoteRow {
@@ -288,25 +285,11 @@ const upsertAnalysisItem = (itemsById: Map<string, EvaluationItem>, incoming: Ev
   });
 };
 
-const getWinnerSide = (votes: AggregatedResult['votes']): VoteType => {
-  const maxVotes = Math.max(votes.A, votes.B, votes.Tie);
-  const winners = [
-    votes.A === maxVotes ? 'A' : null,
-    votes.B === maxVotes ? 'B' : null,
-    votes.Tie === maxVotes ? 'Tie' : null
-  ].filter(Boolean);
-
-  return winners.length === 1 && winners[0] !== 'Tie' ? winners[0] as VoteType : 'Tie';
-};
-
 const getWinnerLabel = (winner: VoteType, modelNames: AnalysisModelNames) => {
   if (winner === 'A') return modelNames.a;
   if (winner === 'B') return modelNames.b;
   return '平局';
 };
-
-const formatRatio = (numerator: number, denominator: number) =>
-  denominator > 0 ? (numerator / denominator).toFixed(4) : '';
 
 const getCaseModelOutputs = (item: EvaluationItem | undefined, modelNames: AnalysisModelNames) => {
   if (!item) {
@@ -330,49 +313,12 @@ const getCaseModelOutputs = (item: EvaluationItem | undefined, modelNames: Analy
   };
 };
 
-const AnalysisMediaPreview: React.FC<{
-  url: string;
-  mediaType?: EvaluationItem['type'];
-  label: string;
-}> = ({ url, mediaType, label }) => (
-  <div className="w-[184px] overflow-hidden rounded-lg border border-white/10 bg-white/5">
-    <div className="flex items-center justify-between gap-2 px-2.5 py-2 border-b border-white/10">
-      <span className="truncate text-xs font-semibold text-slate-200" title={label}>{label}</span>
-      {url && (
-        <a
-          href={url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-slate-400 hover:text-white transition-colors"
-          title="打开媒体链接"
-        >
-          <ExternalLink size={13} />
-        </a>
-      )}
-    </div>
-    <div className="h-[104px] bg-black/30">
-      {url ? (
-        <MediaRenderer
-          url={url}
-          isActive={false}
-          forceType={mediaType === 'video' || mediaType === 'image' ? mediaType : undefined}
-          videoPreload="metadata"
-          className="rounded-none border-0 shadow-none"
-        />
-      ) : (
-        <div className="h-full w-full flex items-center justify-center px-3 text-center text-xs text-slate-500">
-          暂无媒体链接
-        </div>
-      )}
-    </div>
-  </div>
-);
-
 const UNASSIGNED_PROJECT_ID = '__unassigned_project__';
 
 const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   onBack,
-  onGoToDashboard,
+  returnAction,
+  source,
   initialProjectId,
   initialMaterialId,
   initialScope,
@@ -381,9 +327,6 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   const location = useLocation();
   const navigateTo = useNavigate();
   const [aggregatedData, setAggregatedData] = useState<AggregatedResult[]>([]);
-  const [totalFiles, setTotalFiles] = useState(0);
-  const [uniqueVoters, setUniqueVoters] = useState<Set<string>>(new Set());
-  const [uniqueReviewerCount, setUniqueReviewerCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [tasks, setTasks] = useState<EvalTask[]>([]);
   const [templates, setTemplates] = useState<EvalTemplate[]>([]);
@@ -406,7 +349,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   const [methodVotes, setMethodVotes] = useState<VoteRecord[]>([]);
   const [analysisVoteRows, setAnalysisVoteRows] = useState<AnalysisVoteRow[]>([]);
   const [archivedVoteRows, setArchivedVoteRows] = useState<ArchivedVoteRow[]>([]);
-  const [showInsights, setShowInsights] = useState(true);
+  const resultRequestGateRef = useRef(new LatestRequestGate());
   const previousInitialProjectId = useRef(initialProjectId);
   const previousInitialScope = useRef(initialScope);
   const previousInitialReviewerScope = useRef(initialReviewerScope);
@@ -432,9 +375,10 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     if (previousInitialProjectId.current === initialProjectId) return;
     previousInitialProjectId.current = initialProjectId;
     setSelectedProjectId(initialProjectId || '');
-    setSelectedMaterialId('');
+    const linkedMaterialId = normalizeInsightScope(initialScope)?.replace(/^material:/, '') || initialMaterialId || '';
+    setSelectedMaterialId(linkedMaterialId);
     setLoadedScopeKey('');
-  }, [initialProjectId]);
+  }, [initialMaterialId, initialProjectId, initialScope]);
 
   useEffect(() => {
     if (previousInitialScope.current === initialScope) return;
@@ -517,13 +461,14 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
       projectId: selectedProjectId,
       scope: selectedMaterialId ? `material:${selectedMaterialId}` : undefined,
       reviewerScope,
+      source,
     });
     if (nextPath !== `${location.pathname}${location.search}`) {
       navigateTo(nextPath, { replace: true });
     }
-  }, [location.pathname, location.search, navigateTo, reviewerScope, selectedMaterialId, selectedProjectId]);
+  }, [location.pathname, location.search, navigateTo, reviewerScope, selectedMaterialId, selectedProjectId, source]);
 
-  const loadMaterialResult = async (materialId: string): Promise<ImportedMaterialResult> => {
+  const loadMaterialResult = async (materialId: string, signal?: AbortSignal): Promise<ImportedMaterialResult> => {
     const selectedTask = tasks.find(task => task.id === materialId);
     if (!selectedTask) {
       throw new Error('未找到评测物料。');
@@ -532,33 +477,30 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     const selectedEvaluationConfig = getMaterialEvaluationConfig(selectedTask);
     const selectedParadigm = getParadigmFromMethod(selectedEvaluationConfig.method);
     const reviewer = getCurrentReviewerIdentity();
-    let voteGroups: TaskVoteGroup[];
-    if (USE_TASK_API_BACKEND && reviewerScope === 'mine') {
-      const myVotes = await loadMyTaskVotes(materialId);
-      voteGroups = [{
-        user: reviewer.displayName,
-        displayName: reviewer.displayName,
-        userId: reviewer.id,
-        email: reviewer.email,
-        votes: myVotes,
-      }];
-    } else {
-      const loadedVoteGroups = await loadTaskVotes(materialId);
-      voteGroups = reviewerScope === 'mine'
-        ? loadedVoteGroups.filter(group => isTaskVoteGroupForReviewer(group, reviewer))
-        : loadedVoteGroups;
-    }
+    const voteGroupsPromise: Promise<TaskVoteGroup[]> = USE_TASK_API_BACKEND && reviewerScope === 'mine'
+      ? loadMyTaskVotes(materialId, signal).then(myVotes => [{
+          user: reviewer.displayName,
+          displayName: reviewer.displayName,
+          userId: reviewer.id,
+          email: reviewer.email,
+          votes: myVotes,
+        }])
+      : loadTaskVotes(materialId, signal).then(loadedVoteGroups => reviewerScope === 'mine'
+          ? loadedVoteGroups.filter(group => isTaskVoteGroupForReviewer(group, reviewer))
+          : loadedVoteGroups);
     const taskModelNames = getTaskModelNames(selectedTask);
     const taskModelList = selectedTask.models?.length ? selectedTask.models : [
       { id: 'model-a', name: taskModelNames.a },
       { id: 'model-b', name: taskModelNames.b }
     ];
-    const sourceItems = USE_TASK_API_BACKEND
-      ? await loadTaskItems(selectedTask)
-      : (await getDocs(collection(db, 'evalTasks', materialId, 'items'))).docs.map(docSnap => ({
-        id: docSnap.id,
-        ...docSnap.data()
-      } as EvaluationItem));
+    const sourceItemsPromise = USE_TASK_API_BACKEND
+      ? loadTaskItems(selectedTask, { signal })
+      : getDocs(collection(db, 'evalTasks', materialId, 'items')).then(snapshot => snapshot.docs.map(docSnap => ({
+          id: docSnap.id,
+          ...docSnap.data()
+        } as EvaluationItem)));
+    let [voteGroups, sourceItems] = await Promise.all([voteGroupsPromise, sourceItemsPromise]);
+    if (signal?.aborted) throw new DOMException('Result load aborted.', 'AbortError');
     const importedAnalysisItems = sourceItems.map(item => {
       const modelOutputs = getModelOutputsForItem(item, taskModelList);
       return {
@@ -598,16 +540,12 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
 
     if (selectedParadigm === 'Arena-rank') {
       const importedRankVotes: VoteRecord[] = [];
-      const voters = new Set<string>();
-      const reviewerKeys = new Set<string>();
 
       reviewerAwareVoteGroups.forEach(({ votes: userVotes }) => {
 
         userVotes.forEach((v: VoteRecord) => {
           if (!v.itemId || !isArenaRankVote(v)) return;
           importedRankVotes.push(v);
-          voters.add(v.user || 'Anonymous');
-          reviewerKeys.add(getVoteReviewerKey(v));
         });
       });
 
@@ -623,16 +561,12 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         rankVotes: importedRankVotes,
         rankItems: importedAnalysisItems as ArenaRankPromptItem[],
         methodVotes: [],
-        archivedVoteRows,
-        voters,
-        reviewerKeys
+        archivedVoteRows
       };
     }
 
     if (isScoreMethod(selectedEvaluationConfig) || isPairwiseMethod(selectedEvaluationConfig)) {
       const importedMethodVotes: VoteRecord[] = [];
-      const voters = new Set<string>();
-      const reviewerKeys = new Set<string>();
 
       reviewerAwareVoteGroups.forEach(({ votes: userVotes }) => {
 
@@ -641,8 +575,6 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
           if (isScoreMethod(selectedEvaluationConfig) && !v.rubricResponses) return;
           if (isPairwiseMethod(selectedEvaluationConfig) && !v.pairContext) return;
           importedMethodVotes.push({ ...v, method: v.method || selectedEvaluationConfig.method });
-          voters.add(v.user || 'Anonymous');
-          reviewerKeys.add(getVoteReviewerKey(v));
         });
       });
 
@@ -658,9 +590,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         rankVotes: [],
         rankItems: [],
         methodVotes: importedMethodVotes,
-        archivedVoteRows,
-        voters,
-        reviewerKeys
+        archivedVoteRows
       };
     }
 
@@ -727,9 +657,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
       rankVotes: [],
       rankItems: [],
       methodVotes: [],
-      archivedVoteRows,
-      voters,
-      reviewerKeys
+      archivedVoteRows
     };
   };
 
@@ -744,8 +672,6 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     setAnalysisModelList([]);
     setAnalysisEvaluationConfig(null);
     setAnalysisMode(null);
-    setUniqueVoters(new Set());
-    setUniqueReviewerCount(0);
   };
 
   const applyImportedMaterialResult = (result?: ImportedMaterialResult) => {
@@ -757,8 +683,6 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     setArchivedVoteRows(result.archivedVoteRows);
     const selectedParadigm = result.paradigm;
     const selectedConfig = result.evaluationConfig;
-    const voters = result.voters;
-    const reviewerKeys = result.reviewerKeys;
 
     if (isScoreMethod(selectedConfig) || isPairwiseMethod(selectedConfig)) {
       if (result.methodVotes.length === 0) {
@@ -769,8 +693,6 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         setAnalysisModelList(result.modelList);
         setAnalysisModels(result.modelNames);
         setAnalysisEvaluationConfig(selectedConfig);
-        setUniqueVoters(voters);
-        setUniqueReviewerCount(reviewerKeys.size || voters.size);
         setAnalysisMode(selectedParadigm);
       }
       return;
@@ -785,8 +707,6 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         setAnalysisModelList(result.modelList);
         setAnalysisEvaluationConfig(selectedConfig);
         setAnalysisModels(DEFAULT_ANALYSIS_MODELS);
-        setUniqueVoters(voters);
-        setUniqueReviewerCount(reviewerKeys.size || voters.size);
         setAnalysisMode('Arena-rank');
       }
       return;
@@ -801,35 +721,40 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
       setAnalysisModelList(result.modelList);
       setAnalysisEvaluationConfig(selectedConfig);
       setAnalysisVoteRows(result.voteRows);
-      setUniqueVoters(voters);
-      setUniqueReviewerCount(reviewerKeys.size || voters.size);
       setAnalysisMode(selectedParadigm);
     }
   };
 
   const handleImportFromPlatform = async (materialId: string = selectedMaterialId) => {
     if (!materialId) return;
+    const request = resultRequestGateRef.current.begin();
+    const scopeKey = `${selectedProjectId}|${materialId}|${reviewerScope}`;
     setLoadingResults(true);
     setError(null);
     try {
-      const result = await loadMaterialResult(materialId);
+      const result = await loadMaterialResult(materialId, request.controller.signal);
+      if (!resultRequestGateRef.current.isCurrent(request)) return;
       applyImportedMaterialResult(result);
-      setTotalFiles(0);
-      setShowInsights(true);
-      setLoadedScopeKey(`${selectedProjectId}|${materialId}|${reviewerScope}`);
+      setLoadedScopeKey(scopeKey);
     } catch (err: any) {
+      if (!resultRequestGateRef.current.isCurrent(request) || err?.name === 'AbortError') return;
       resetAnalysisResult();
       setError(err?.message || '读取评测结果失败，请稍后重试。');
       handlePersistenceError(err, 'list', `evalTasks/${materialId}/userVotes`);
     } finally {
-      setLoadingResults(false);
+      if (resultRequestGateRef.current.isCurrent(request)) {
+        resultRequestGateRef.current.finish(request);
+        setLoadingResults(false);
+      }
     }
   };
 
   useEffect(() => {
     if (loadingTasks) return;
     if (!selectedMaterialId) {
+      resultRequestGateRef.current.cancel();
       resetAnalysisResult();
+      setLoadingResults(false);
       setError(null);
       setLoadedScopeKey('');
       return;
@@ -838,6 +763,10 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     if (loadedScopeKey === scopeKey) return;
     handleImportFromPlatform(selectedMaterialId);
   }, [loadedScopeKey, loadingTasks, reviewerScope, selectedMaterialId, selectedProjectId]);
+
+  useEffect(() => () => {
+    resultRequestGateRef.current.cancel();
+  }, []);
 
   const parseRankingRow = (row: any, keys: string[], expectedModels: Array<{ id: string; name: string }> = []): RankingEntry[] => {
     const aliases = new Map<string, { id: string; name: string }>();
@@ -897,7 +826,6 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    setTotalFiles(files.length);
     const newAggregated: Record<string, AggregatedResult> = {};
     const newAnalysisItemsById = new Map<string, EvaluationItem>();
     const newAnalysisVoteRows: AnalysisVoteRow[] = [];
@@ -1114,8 +1042,6 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
               setAnalysisItems([]);
               setAnalysisVoteRows([]);
               setAnalysisModels(DEFAULT_ANALYSIS_MODELS);
-              setUniqueVoters(voters);
-              setUniqueReviewerCount(voters.size);
               setAnalysisMode('Arena-rank');
               setMethodVotes([]);
             } else if (pairwiseRowsFound > 0) {
@@ -1135,12 +1061,9 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
               setAnalysisVoteRows([]);
               setRankVotes([]);
               setRankItems([]);
-              setUniqueVoters(voters);
-              setUniqueReviewerCount(voters.size);
               setAnalysisMode('Pairwise');
             } else if (validRowsFound === 0) {
               setError("未能从上传的文件中识别出有效的投票结果。请确保 CSV 文件包含 'Item ID' 和 'Winner' 列。");
-              setTotalFiles(0);
             } else {
               setAggregatedData(Object.values(newAggregated));
               setRankVotes([]);
@@ -1149,8 +1072,6 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
               setAnalysisModels(importedModelNames);
               setAnalysisVoteRows(newAnalysisVoteRows);
               setMethodVotes([]);
-              setUniqueVoters(voters);
-              setUniqueReviewerCount(voters.size);
               setAnalysisMode('Arena');
             }
           }
@@ -1243,35 +1164,10 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     }
   };
 
-  // Calculate totals
-  const totalVotes = aggregatedData.reduce((acc, curr) => acc + curr.votes.A + curr.votes.B + curr.votes.Tie, 0);
-  const totalA = aggregatedData.reduce((acc, curr) => acc + curr.votes.A, 0);
-  const totalB = aggregatedData.reduce((acc, curr) => acc + curr.votes.B, 0);
-  const totalTie = aggregatedData.reduce((acc, curr) => acc + curr.votes.Tie, 0);
-
-  const percentA = totalVotes ? Math.round((totalA / totalVotes) * 100) : 0;
-  const percentB = totalVotes ? Math.round((totalB / totalVotes) * 100) : 0;
   const isArenaRankAnalysis = analysisMode === 'Arena-rank';
-  const rankModelStats = calculateArenaRankModelStats(rankVotes);
-  const rankCaseSummaries = calculateArenaRankCaseSummaries(rankVotes, rankItems);
-  const rankTieSummaries = rankVotes.map(vote => getRankingTieSummary(vote.ranking));
-  const leadingRankModels = rankModelStats.length
-    ? rankModelStats.filter(model => Math.abs(model.normalizedScore - rankModelStats[0].normalizedScore) < 1e-9)
-    : [];
-  const averageRankRelationAgreement = (() => {
-    const values = rankCaseSummaries.map(item => item.relationAgreement).filter((value): value is number => value !== null);
-    return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
-  })();
-  const averageRankDistinction = rankCaseSummaries.length
-    ? rankCaseSummaries.reduce((sum, item) => sum + item.distinctionRate, 0) / rankCaseSummaries.length
-    : 0;
   const analysisItemsById = new Map<string, EvaluationItem>(analysisItems.map(item => [item.id, item] as [string, EvaluationItem]));
   const analysisDimensionColumns = getDimensionColumnsForCsv(analysisItems);
   const rankDimensionColumns = getDimensionColumnsForCsv(rankItems as any);
-  const voteDimensionSummaries = calculateVoteDimensionSummaries(aggregatedData);
-  const rankDimensionSummaries = calculateRankDimensionSummaries(rankVotes, rankItems as any);
-  const modelAName = analysisModels.a || DEFAULT_ANALYSIS_MODELS.a;
-  const modelBName = analysisModels.b || DEFAULT_ANALYSIS_MODELS.b;
   const selectedMaterial = projectMaterials.find(task => task.id === selectedMaterialId);
   const reviewerScopeLabel = reviewerScope === 'mine' ? '我的结果' : '全员汇总';
   const insightSubtitle = selectedMaterial
@@ -1358,135 +1254,6 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   );
 
   const escapeCsvField = (value: any) => `"${String(value ?? '').replace(/"/g, '""')}"`;
-
-  const downloadAnalysisCsv = () => {
-    let csvContent = '';
-
-    if (isArenaRankAnalysis) {
-      const maxSummaryRankCount = Math.max(0, ...rankCaseSummaries.map(item => item.ranking.length));
-      const rankVideoHeaders = Array.from({ length: maxSummaryRankCount }, (_, idx) => `排名${idx + 1}视频链接`);
-      const headers = [
-        'ItemID',
-        'Prompt',
-        ...rankDimensionColumns.map(col => col.header),
-        'Voters',
-        'ConsensusRanking',
-        'RelationAgreement',
-        'KendallTauB',
-        'DistinctionRate',
-        'TieBallots',
-        'AllTieBallots',
-        ...rankVideoHeaders,
-        'ModelStats'
-      ];
-      const rows = rankCaseSummaries.map(item => {
-        const sourceItem = rankItems.find(candidate => candidate.id === item.itemId);
-        const dimensionValues = getDimensionValuesForItem(sourceItem as any);
-        const rankVideoValues = rankVideoHeaders.map((_, index) => {
-          const entry = item.ranking[index];
-          return entry ? getArenaRankModelOutputUrl(sourceItem, entry) : '';
-        });
-
-        return [
-          item.itemId,
-          item.prompt || '',
-          ...getDimensionCsvValues(dimensionValues, rankDimensionColumns.map(col => col.key)),
-          item.voterCount,
-          formatConsensusRanking(item.ranking),
-          item.relationAgreement ?? '',
-          item.kendallTauB ?? '',
-          item.distinctionRate,
-          item.tieBallots,
-          item.allTieBallots,
-          ...rankVideoValues,
-          item.ranking.map(entry => `${entry.modelName}: normalized=${entry.normalizedScore.toFixed(4)}, score=${entry.totalScore.toFixed(4)}, avgMidRank=${entry.averageRank.toFixed(4)}, outrightFirst=${entry.outrightFirstCount}, coFirst=${entry.coFirstCount}, firstCredit=${entry.firstPlaceCredit.toFixed(4)}, tieRate=${entry.tieRate.toFixed(4)}, ranked=${entry.rankedCount}`).join(' | ')
-        ].map(escapeCsvField).join(',');
-      });
-      csvContent = [headers.join(','), ...rows].join('\n');
-    } else {
-      const headers = [
-        'ItemID',
-        'Prompt',
-        ...analysisDimensionColumns.map(col => col.header),
-        'ModelA_Name',
-        'ModelA_URL',
-        'ModelB_Name',
-        'ModelB_URL',
-        'ReferenceURLs',
-        'Votes_A',
-        'Votes_B',
-        'Votes_Tie',
-        'TotalVotes',
-        'NonTieVotes',
-        'VoterCount',
-        'Voters',
-        'A_WinRate',
-        'B_WinRate',
-        'TieRate',
-        'NonTie_A_Share',
-        'NonTie_B_Share',
-        'Winner',
-        'WinnerSide',
-        'WinnerVotes',
-        'WinnerRate',
-        'AgreementRate',
-        'MarginVotes',
-        'MarginRate',
-        'NetPreference_A_minus_B'
-      ];
-      const rows = aggregatedData.map(item => {
-        const sourceItem = analysisItemsById.get(item.itemId);
-        const outputs = getCaseModelOutputs(sourceItem, analysisModels);
-        const dimensionValues = { ...(item.dimensionValues || {}), ...getDimensionValuesForItem(sourceItem as any) };
-        const itemTotal = item.votes.A + item.votes.B + item.votes.Tie;
-        const nonTieVotes = item.votes.A + item.votes.B;
-        const winnerSide = getWinnerSide(item.votes);
-        const winnerVotes = winnerSide === 'A' ? item.votes.A : winnerSide === 'B' ? item.votes.B : Math.max(item.votes.A, item.votes.B, item.votes.Tie);
-        const maxVotes = Math.max(item.votes.A, item.votes.B, item.votes.Tie);
-
-        return [
-          item.itemId,
-          item.prompt || resolveEvaluationItemPrompt(sourceItem),
-          ...getDimensionCsvValues(dimensionValues, analysisDimensionColumns.map(col => col.key)),
-          outputs.a.modelName,
-          outputs.a.url,
-          outputs.b.modelName,
-          outputs.b.url,
-          sourceItem?.referenceUrls?.join(' | ') || '',
-          item.votes.A,
-          item.votes.B,
-          item.votes.Tie,
-          itemTotal,
-          nonTieVotes,
-          new Set(item.reviewerKeys?.length ? item.reviewerKeys : item.voters).size,
-          Array.from(new Set(item.voters)).join(' | '),
-          formatRatio(item.votes.A, itemTotal),
-          formatRatio(item.votes.B, itemTotal),
-          formatRatio(item.votes.Tie, itemTotal),
-          formatRatio(item.votes.A, nonTieVotes),
-          formatRatio(item.votes.B, nonTieVotes),
-          getWinnerLabel(winnerSide, { a: outputs.a.modelName, b: outputs.b.modelName }),
-          winnerSide,
-          winnerVotes,
-          formatRatio(winnerVotes, itemTotal),
-          formatRatio(maxVotes, itemTotal),
-          Math.abs(item.votes.A - item.votes.B),
-          formatRatio(Math.abs(item.votes.A - item.votes.B), itemTotal),
-          formatRatio(item.votes.A - item.votes.B, nonTieVotes)
-        ].map(escapeCsvField).join(',');
-      });
-      csvContent = [headers.join(','), ...rows].join('\n');
-    }
-
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', `${isArenaRankAnalysis ? 'arena_rank' : 'arena'}_analysis_${new Date().toISOString().slice(0,10)}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
 
   const downloadRawVotesCsv = () => {
     if (isArenaRankAnalysis) {
@@ -1623,53 +1390,57 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     URL.revokeObjectURL(url);
   };
 
-  const downloadDimensionAnalysisCsv = () => {
-    const isRank = isArenaRankAnalysis;
-    const headers = isRank
-      ? ['Dimension', 'Value', 'ItemCount', 'RankingRecords', 'LeadingModels', 'RelationAgreement', 'KendallTauB', 'DistinctionRate', 'TieBallotRate', 'AllTieBallotRate', 'ModelStats']
-      : ['Dimension', 'Value', 'ItemCount', 'TotalVotes', 'Votes_A', 'Votes_B', 'Votes_Tie', 'Winner', 'AgreementRate', 'MarginRate'];
+  const resultReturnAction = returnAction || { label: '返回评测物料', onClick: onBack };
+  const resultNotices = (
+    <>
+      {error && (
+        <div className="flex items-start gap-3 border border-red-400/30 border-l-2 border-l-red-400 bg-[#151116] px-4 py-3 text-sm text-red-100">
+          <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
+      {archivedVoteRows.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 border border-amber-400/30 bg-[#17150f] px-4 py-3 text-sm text-amber-100">
+          <div>
+            <div className="font-semibold">已保留 {archivedVoteRows.length} 条归档评审证据</div>
+            <div className="mt-1 text-xs text-amber-100/65">归档记录不参与当前统计，可单独下载评测时快照、归档原因和版本信息。</div>
+          </div>
+          <button type="button" onClick={downloadArchivedVotesCsv} className="btn-secondary inline-flex items-center gap-2 px-3 py-2 text-xs">
+            <Download size={14} /> 归档审计 CSV
+          </button>
+        </div>
+      )}
+    </>
+  );
+  const resultActions = (
+    <>
+      {(isArenaRankAnalysis || (aggregatedData.length > 0 && methodVotes.length === 0)) && (
+        <button
+          type="button"
+          onClick={downloadRawVotesCsv}
+          disabled={isArenaRankAnalysis ? rankVotes.length === 0 : analysisVoteRows.length === 0}
+          className="btn-secondary inline-flex items-center gap-2 px-3 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <Download size={14} /> 原始{isArenaRankAnalysis ? '排名' : '投票'} CSV
+        </button>
+      )}
+      <label className="btn-secondary inline-flex cursor-pointer items-center gap-2 px-3 py-2 text-xs">
+        <Upload size={14} /> 追加外部 CSV
+        <input type="file" multiple accept=".csv" className="hidden" onChange={handleFileUpload} />
+      </label>
+      <button
+        type="button"
+        onClick={downloadTemplate}
+        disabled={!selectedMaterialId || isDownloadingTemplate}
+        className="btn-secondary inline-flex items-center gap-2 px-3 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        {isDownloadingTemplate ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
+        数据模板
+      </button>
+    </>
+  );
 
-    const rows = isRank
-      ? rankDimensionSummaries.map(summary => [
-          summary.dimensionKey,
-          summary.dimensionValue,
-          summary.itemCount,
-          summary.rankingRecords,
-          summary.modelStats.length
-            ? summary.modelStats.filter(stat => Math.abs(stat.normalizedScore - summary.modelStats[0].normalizedScore) < 1e-9).map(stat => stat.modelName).join(' = ')
-            : '',
-          summary.relationAgreement ?? '',
-          summary.kendallTauB ?? '',
-          summary.distinctionRate,
-          summary.tieBallotRate,
-          summary.allTieBallotRate,
-          summary.modelStats.map(stat => `${stat.modelName}: normalized=${stat.normalizedScore.toFixed(4)}, score=${stat.totalScore.toFixed(4)}, avgMidRank=${stat.averageRank.toFixed(4)}, outrightFirst=${stat.outrightFirstCount}, coFirst=${stat.coFirstCount}, firstCredit=${stat.firstPlaceCredit.toFixed(4)}, tieRate=${stat.tieRate.toFixed(4)}`).join(' | ')
-        ].map(escapeCsvField).join(','))
-      : voteDimensionSummaries.map(summary => [
-          summary.dimensionKey,
-          summary.dimensionValue,
-          summary.itemCount,
-          summary.totalVotes,
-          summary.votes.A,
-          summary.votes.B,
-          summary.votes.Tie,
-          getWinnerLabel(summary.winner, analysisModels),
-          summary.agreementRate.toFixed(4),
-          summary.marginRate.toFixed(4)
-        ].map(escapeCsvField).join(','));
-
-    const csvContent = [headers.join(','), ...rows].join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', `${isRank ? 'arena_rank_dimension_analysis' : 'arena_dimension_analysis'}_${new Date().toISOString().slice(0,10)}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  if (methodVotes.length > 0 && showInsights && analysisEvaluationConfig && (isScoreMethod(analysisEvaluationConfig) || isPairwiseMethod(analysisEvaluationConfig))) {
+  if (methodVotes.length > 0 && analysisEvaluationConfig && (isScoreMethod(analysisEvaluationConfig) || isPairwiseMethod(analysisEvaluationConfig))) {
     return (
       <ScoreInsightsScreen
         mode={isPairwiseMethod(analysisEvaluationConfig) ? 'pairwise' : 'score'}
@@ -1680,13 +1451,14 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         votes={methodVotes}
         models={analysisModelList.length ? analysisModelList : []}
         config={analysisEvaluationConfig}
-        onBack={() => setShowInsights(false)}
-        backLabel="展开评分明细与原始记录"
+        returnAction={resultReturnAction}
+        additionalActions={resultActions}
+        notices={resultNotices}
       />
     );
   }
 
-  if ((aggregatedData.length > 0 || rankVotes.length > 0) && showInsights) {
+  if (aggregatedData.length > 0 || rankVotes.length > 0) {
     return (
       <ResultsInsightsScreen
         mode={isArenaRankAnalysis ? 'rank' : 'ab'}
@@ -1698,549 +1470,71 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         aggregatedData={isArenaRankAnalysis ? [] : aggregatedData}
         rawVoteRows={isArenaRankAnalysis ? [] : analysisVoteRows}
         modelNames={analysisModels}
-        models={rankModelStats.map(stat => ({ id: stat.modelId, name: stat.modelName }))}
-        onBack={() => setShowInsights(false)}
-        backLabel={isArenaRankAnalysis ? '展开逐 case 明细与原始记录' : '展开项目共识明细与原始记录'}
+        models={analysisModelList}
+        returnAction={resultReturnAction}
+        additionalActions={resultActions}
+        notices={resultNotices}
       />
     );
   };
 
   return (
-    <div className="max-w-6xl mx-auto p-6 animate-in fade-in duration-500">
-      <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start">
-          {onGoToDashboard && (
+    <div className="mx-auto max-w-[1480px] space-y-6 px-4 py-6 sm:px-6">
+      <header className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          {resultReturnAction && (
             <button
-              onClick={onGoToDashboard}
-              className="glass-panel glass-panel-hover flex w-fit shrink-0 items-center gap-2 rounded-lg border border-white/10 px-4 py-2 text-sm font-medium text-slate-300 transition-colors"
+              type="button"
+              onClick={resultReturnAction.onClick}
+              className="btn-secondary mb-4 inline-flex items-center gap-2 px-4 py-2 text-sm"
             >
-              <ArrowRight className="rotate-180" size={16} /> 返回大盘
+              <ArrowRight className="rotate-180" size={16} />
+              {resultReturnAction.label}
             </button>
           )}
-          <div className="min-w-0">
-            <h1 className="text-3xl font-bold text-slate-100">结果洞察</h1>
-            <p className="mt-1 text-slate-400">选择一份评测物料，并在全员汇总与我的结果之间切换。</p>
-          </div>
+          <h1 className="text-3xl font-bold text-slate-100">结果洞察</h1>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">{insightSubtitle}</p>
         </div>
-        <button
-          onClick={onBack}
-          className="flex w-fit shrink-0 items-center gap-2 rounded-xl bg-black/40 px-5 py-2.5 text-sm font-medium text-white shadow-md transition-all hover:-translate-y-0.5 hover:bg-white/5"
-        >
+        <button type="button" onClick={onBack} className="btn-secondary w-fit px-5 py-2.5 text-sm">
           去参与评测
         </button>
-      </div>
+      </header>
 
       {error && (
-        <div className="mb-8 p-4 bg-red-50 border border-red-200 rounded-xl text-red-600 flex items-start gap-3">
-          <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+        <div className="flex items-start gap-3 border border-red-400/30 bg-red-950/30 p-4 text-red-200">
+          <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
           <p className="text-sm font-medium">{error}</p>
         </div>
       )}
 
-      <div className="mb-6">{insightControls}</div>
+      {insightControls}
+      {resultNotices}
 
-      {archivedVoteRows.length > 0 && (
-        <div className="mb-6 flex flex-wrap items-center justify-between gap-3 border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
-          <div>
-            <div className="font-semibold">已保留 {archivedVoteRows.length} 条归档评审证据</div>
-            <div className="mt-1 text-xs text-amber-100/70">归档票不参与当前统计，可单独下载评测时快照、当前版本与归档原因。</div>
+      <section className="glass-panel min-h-[280px] p-8">
+        {loadingResults ? (
+          <div className="flex min-h-[210px] flex-col items-center justify-center gap-3 text-slate-300">
+            <Loader2 className="h-7 w-7 animate-spin text-amber-300" />
+            <p className="text-sm">正在加载评测结果与 case 证据...</p>
           </div>
-          <button type="button" onClick={downloadArchivedVotesCsv} className="btn-secondary inline-flex items-center gap-2 px-3 py-2 text-xs">
-            <Download size={14} /> 导出归档审计 CSV
-          </button>
-        </div>
-      )}
-
-      {aggregatedData.length === 0 && rankVotes.length === 0 ? (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {/* Import from Platform Card */}
-          <div className="glass-panel rounded-2xl p-8 flex flex-col items-center justify-center text-center shadow-sm hover:shadow-md transition-shadow">
-            <div className="w-16 h-16 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
-              <Database size={32} />
-            </div>
-            <h3 className="text-xl font-semibold text-slate-100 mb-2">载入平台结果</h3>
-            <p className="text-slate-400 mb-6 max-w-sm mx-auto text-sm">
-              {selectedMaterial
-                ? `读取“${selectedMaterial.name}”的${reviewerScopeLabel}。`
-                : '请先在上方选择一份评测物料。'}
+        ) : !selectedMaterialId ? (
+          <div className="flex min-h-[210px] flex-col items-center justify-center text-center">
+            <Database className="mb-4 h-9 w-9 text-slate-500" />
+            <h2 className="text-lg font-bold text-slate-100">请选择一份评测物料</h2>
+            <p className="mt-2 max-w-xl text-sm leading-6 text-slate-400">
+              选择后会在当前页面展示统计结论、图表、维度分析、逐 case 结果与原始评审记录。
             </p>
-            
-            <div className="w-full max-w-xs space-y-3">
-              <button 
-                onClick={() => handleImportFromPlatform(selectedMaterialId)}
-                disabled={!selectedMaterialId || loadingResults}
-                className={`w-full py-3 rounded-xl font-semibold shadow-lg transition-all transform hover:scale-105 flex items-center justify-center gap-2 ${
-                  !selectedMaterialId || loadingResults
-                    ? 'bg-white/10 text-slate-500 cursor-not-allowed shadow-none' 
-                    : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/20'
-                }`}
-              >
-                {loadingResults ? <Loader2 size={18} className="animate-spin" /> : <Database size={18} />}
-                {loadingResults ? '载入中...' : '载入结果'}
-              </button>
-              </div>
-            </div>
-
-          {/* Upload Results Card */}
-          <div className="glass-panel border-2 border-dashed border-white/20 rounded-2xl p-8 text-center hover:border-blue-400 transition-colors flex flex-col justify-center">
-            <div className="w-16 h-16 bg-blue-500/10 text-blue-400 border border-blue-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
-              <Upload size={32} />
-            </div>
-            <h3 className="text-xl font-semibold text-slate-100 mb-2">手动导入外部结果</h3>
-            <p className="text-slate-400 mb-6 max-w-sm mx-auto text-sm">
-              对于外部通过自动化模式跑出来的结果，或者离线收集的数据，可以通过上传 CSV 文件进行汇总。
+          </div>
+        ) : (
+          <div className="flex min-h-[210px] flex-col items-center justify-center text-center">
+            <FileText className="mb-4 h-9 w-9 text-slate-500" />
+            <h2 className="text-lg font-bold text-slate-100">当前范围暂无有效结果</h2>
+            <p className="mt-2 max-w-xl text-sm leading-6 text-slate-400">
+              可以切换评委范围、刷新洞察，或追加外部 CSV。跳过记录不会进入有效统计。
             </p>
-            <label className="inline-flex cursor-pointer bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-xl font-semibold shadow-lg shadow-blue-600/20 transition-all transform hover:scale-105 mx-auto">
-              <input type="file" multiple accept=".csv" className="hidden" onChange={handleFileUpload} />
-              选择文件
-            </label>
+            <div className="mt-5 flex flex-wrap justify-center gap-2">{resultActions}</div>
           </div>
-
-          {/* Start New Task Card */}
-          <div className="glass-panel rounded-2xl p-8 flex flex-col items-center justify-center text-center shadow-sm">
-            <div className="w-16 h-16 bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
-              <PlusCircle size={32} />
-            </div>
-            <h3 className="text-xl font-semibold text-slate-100 mb-2">如何形成多人评测结果？</h3>
-            <div className="text-slate-400 mb-8 max-w-sm mx-auto text-sm text-left space-y-2 bg-white/5 p-4 rounded-xl border border-white/10">
-              <p><strong>1.</strong> 在“评测物料”中创建可执行评测配置并分配给成员。</p>
-              <p><strong>2.</strong> 成员在“参与评测”页面完成投票或排序。</p>
-              <p><strong>3.</strong> 在上方选择具体评测物料，再选择查看全员汇总或我的结果。</p>
-              <p><strong>4.</strong> 外部自动化结果可通过中间的 CSV 上传导入。</p>
-            </div>
-            <div className="flex gap-3">
-              <button 
-                onClick={downloadTemplate} 
-                disabled={!selectedMaterialId || isDownloadingTemplate}
-                className={`flex items-center gap-2 px-6 py-3 rounded-xl font-semibold transition-colors border ${
-                  selectedMaterialId
-                    ? 'bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border-indigo-500/20' 
-                    : 'bg-white/5 text-slate-500 border-white/10 cursor-not-allowed'
-                }`}
-              >
-                {isDownloadingTemplate ? <Loader2 size={18} className="animate-spin" /> : <Download size={18} />}
-                {isDownloadingTemplate ? '生成中...' : (selectedMaterialId ? '下载数据模板' : '请先选择评测物料')}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : methodVotes.length > 0 && analysisEvaluationConfig ? (
-        <div className="space-y-8">
-          <div className="glass-panel rounded-xl shadow-lg overflow-hidden">
-            <div className="p-6 border-b border-white/10 bg-white/5 flex justify-between items-center">
-              <h3 className="font-semibold text-slate-200">
-                {isPairwiseMethod(analysisEvaluationConfig) ? 'Pairwise 原始对战记录' : '评分原始记录'}
-              </h3>
-              <button onClick={() => setShowInsights(true)} className="flex items-center gap-2 px-4 py-2 bg-blue-600/20 hover:bg-blue-600/30 text-blue-200 border border-blue-500/20 rounded-lg text-sm font-medium">
-                <BarChart3 size={16} /> 结果洞察
-              </button>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead className="bg-white/5">
-                  <tr>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">ItemID</th>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">评委</th>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">方式</th>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">记录</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {methodVotes.map((vote, index) => (
-                    <tr key={`${vote.itemId}-${vote.timestamp}-${index}`} className="border-b border-white/10 hover:bg-white/5">
-                      <td className="p-4 text-sm font-mono text-slate-300">{vote.itemId}</td>
-                      <td className="p-4 text-sm text-slate-300">{vote.user || '-'}</td>
-                      <td className="p-4 text-sm text-slate-300">{isPairwiseMethod(analysisEvaluationConfig) ? 'Pairwise' : 'Score'}</td>
-                      <td className="p-4 text-xs text-slate-300 min-w-[360px]">
-                        {isPairwiseMethod(analysisEvaluationConfig)
-                          ? `${vote.pairContext?.modelAName || 'A'} / ${vote.pairContext?.modelBName || 'B'} -> ${vote.vote || vote.choice || '-'}`
-                          : Object.values(vote.rubricResponses || {}).map((response: any) => `${response.modelName}: ${Object.values(response.scores || {}).join('/')}`).join(' | ')}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      ) : isArenaRankAnalysis ? (
-        <div className="space-y-8">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <div className="glass-panel p-4 rounded-xl shadow-sm">
-              <div className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-1">参与者</div>
-              <div className="flex items-center gap-2 text-2xl font-bold text-slate-100">
-                <Users className="text-purple-500" />
-                {uniqueReviewerCount}
-              </div>
-              <div className="text-xs text-slate-400 truncate mt-1">{Array.from(uniqueVoters).join(', ')}</div>
-            </div>
-            <div className="glass-panel p-4 rounded-xl shadow-sm">
-              <div className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-1">排名记录</div>
-              <div className="flex items-center gap-2 text-2xl font-bold text-slate-100">
-                <FileText className="text-blue-500" />
-                {rankVotes.length}
-              </div>
-            </div>
-            <div className="glass-panel p-4 rounded-xl shadow-sm">
-              <div className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-1">领先模型</div>
-              <div className="flex items-center gap-2 text-2xl font-bold text-slate-100">
-                <BarChart3 className="text-amber-500" />
-                <span className="truncate text-base" title={leadingRankModels.map(model => model.modelName).join(' = ')}>{leadingRankModels.map(model => model.modelName).join(' = ') || '-'}</span>
-              </div>
-            </div>
-            <div className="glass-panel p-4 rounded-xl shadow-sm">
-              <div className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-1">一致率 / 区分度</div>
-              <div className="flex items-center gap-2 text-2xl font-bold text-slate-100">
-                <BarChart3 className="text-emerald-500" />
-                {averageRankRelationAgreement === null ? '-' : `${(averageRankRelationAgreement * 100).toFixed(0)}%`} / {(averageRankDistinction * 100).toFixed(0)}%
-              </div>
-              <div className="mt-1 text-xs text-slate-400">含并列票 {rankTieSummaries.filter(summary => summary.hasTie).length} / 全部并列 {rankTieSummaries.filter(summary => summary.allTied).length}</div>
-            </div>
-          </div>
-
-          <div className="glass-panel rounded-xl shadow-lg overflow-hidden">
-            <div className="p-6 border-b border-white/10 bg-white/5 flex justify-between items-center">
-              <h3 className="font-semibold text-slate-200">模型总积分榜</h3>
-              <div className="flex flex-wrap items-center justify-end gap-2">
-                <button onClick={() => setShowInsights(true)} className="flex items-center gap-2 px-4 py-2 bg-blue-600/20 hover:bg-blue-600/30 text-blue-200 border border-blue-500/20 rounded-lg text-sm font-medium">
-                  <BarChart3 size={16} /> 结果洞察
-                </button>
-              <button onClick={downloadAnalysisCsv} className="flex items-center gap-2 px-4 py-2 bg-black/40 glass-panel-hover text-white rounded-lg text-sm font-medium">
-                <Download size={16} /> 导出分析 CSV
-              </button>
-              <button onClick={downloadRawVotesCsv} className="flex items-center gap-2 px-4 py-2 bg-black/40 glass-panel-hover text-white rounded-lg text-sm font-medium">
-                <Download size={16} /> 导出原始排名 CSV
-              </button>
-              </div>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead className="bg-white/5">
-                  <tr>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">排名</th>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">模型</th>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">归一化 Borda</th>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">原始 Borda</th>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">平均 mid-rank</th>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">独占 / 并列第一</th>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">第一名份额</th>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">并列参与率</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rankModelStats.map((model) => {
-                    const consensusRank = rankModelStats.findIndex(candidate => Math.abs(candidate.normalizedScore - model.normalizedScore) < 1e-9) + 1;
-                    const tied = rankModelStats.filter(candidate => Math.abs(candidate.normalizedScore - model.normalizedScore) < 1e-9).length > 1;
-                    return (
-                    <tr key={model.modelId} className="border-b border-white/10 hover:bg-white/5">
-                      <td className="p-4 text-sm font-mono text-amber-300">{tied ? `并列 #${consensusRank}` : `#${consensusRank}`}</td>
-                      <td className="p-4 text-sm font-bold text-slate-200">{model.modelName}</td>
-                      <td className="p-4 text-sm text-slate-200">{(model.normalizedScore * 100).toFixed(1)}%</td>
-                      <td className="p-4 text-sm text-slate-200">{model.totalScore.toFixed(2)}</td>
-                      <td className="p-4 text-sm text-slate-200">{model.averageRank.toFixed(2)}</td>
-                      <td className="p-4 text-sm text-slate-200">{model.outrightFirstCount} / {model.coFirstCount}</td>
-                      <td className="p-4 text-sm text-slate-200">{model.firstPlaceCredit.toFixed(2)}</td>
-                      <td className="p-4 text-sm text-slate-200">{(model.tieRate * 100).toFixed(1)}%</td>
-                    </tr>
-                  );})}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {rankDimensionSummaries.length > 0 && (
-            <div className="glass-panel rounded-xl shadow-lg overflow-hidden">
-              <div className="p-6 border-b border-white/10 bg-white/5 flex justify-between items-center">
-                <h3 className="font-semibold text-slate-200">按评测维度聚合</h3>
-                <button onClick={downloadDimensionAnalysisCsv} className="flex items-center gap-2 px-4 py-2 bg-black/40 glass-panel-hover text-white rounded-lg text-sm font-medium">
-                  <Download size={16} /> 导出维度 CSV
-                </button>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead className="bg-white/5">
-                    <tr>
-                      <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">维度</th>
-                      <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">取值</th>
-                      <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">Case 数</th>
-                      <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">排名记录</th>
-                      <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">领先模型</th>
-                      <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">关系一致率</th>
-                      <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">区分度 / 并列票</th>
-                      <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">模型统计</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rankDimensionSummaries.map(summary => (
-                      <tr key={`${summary.dimensionKey}-${summary.dimensionValue}`} className="border-b border-white/10 hover:bg-white/5">
-                        <td className="p-4 text-sm text-slate-200">{summary.dimensionKey}</td>
-                        <td className="p-4 text-sm text-slate-200">{summary.dimensionValue}</td>
-                        <td className="p-4 text-sm text-slate-200">{summary.itemCount}</td>
-                        <td className="p-4 text-sm text-slate-200">{summary.rankingRecords}</td>
-                        <td className="p-4 text-sm font-semibold text-amber-300">
-                          {summary.modelStats.length ? summary.modelStats.filter(stat => Math.abs(stat.normalizedScore - summary.modelStats[0].normalizedScore) < 1e-9).map(stat => stat.modelName).join(' = ') : '-'}
-                        </td>
-                        <td className="p-4 text-sm text-slate-200">{summary.relationAgreement === null ? '-' : `${(summary.relationAgreement * 100).toFixed(0)}%`}</td>
-                        <td className="p-4 text-sm text-slate-200">{(summary.distinctionRate * 100).toFixed(0)}% / {(summary.tieBallotRate * 100).toFixed(0)}%</td>
-                        <td className="p-4 text-xs text-slate-300 min-w-[280px]">
-                          {summary.modelStats.map(stat => `${stat.modelName}: normalized=${(stat.normalizedScore * 100).toFixed(1)}, score=${stat.totalScore.toFixed(2)}, mid-rank=${stat.averageRank.toFixed(2)}, outright/co-first=${stat.outrightFirstCount}/${stat.coFirstCount}`).join(' | ')}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          <div className="glass-panel rounded-xl shadow-lg overflow-hidden">
-            <div className="p-6 border-b border-white/10 bg-white/5 flex justify-between items-center">
-              <h3 className="font-semibold text-slate-200">逐 case 共识排名</h3>
-              <label className="text-xs font-medium text-blue-400 cursor-pointer hover:underline">
-                <input type="file" multiple accept=".csv" className="hidden" onChange={handleFileUpload} />
-                + 添加更多文件
-              </label>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead className="bg-white/5">
-                  <tr>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">项目 ID</th>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">Prompt</th>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">评测维度</th>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">参与人数</th>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">一致率 / 区分度</th>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">共识排名</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rankCaseSummaries.map((item) => {
-                    const sourceItem = rankItems.find(candidate => candidate.id === item.itemId);
-
-                    return (
-                      <tr key={item.itemId} className="border-b border-white/10 hover:bg-white/5">
-                        <td className="p-4 text-sm text-slate-300 font-mono">{item.itemId}</td>
-                        <td className="p-4 text-sm text-slate-300 min-w-[260px] max-w-md whitespace-pre-wrap break-words">{item.prompt || '-'}</td>
-                        <td className="p-4 min-w-[220px]">
-                          <DimensionChips values={getDimensionValuesForItem(sourceItem as any)} label="" />
-                        </td>
-                        <td className="p-4 text-sm text-slate-200">{item.voterCount}</td>
-                        <td className="p-4 text-xs text-slate-300 min-w-[150px]">
-                          <div>{item.relationAgreement === null ? '一致率 -' : `一致率 ${(item.relationAgreement * 100).toFixed(0)}%`}</div>
-                          <div>区分度 {(item.distinctionRate * 100).toFixed(0)}%</div>
-                          <div className="text-slate-500">并列票 {item.tieBallots} / 全并列 {item.allTieBallots}</div>
-                        </td>
-                        <td className="p-4">
-                          <ArenaRankVideoPreviewList
-                            entries={item.ranking.map((entry) => {
-                              const consensusRank = item.ranking.findIndex(candidate => Math.abs(candidate.normalizedScore - entry.normalizedScore) < 1e-9) + 1;
-                              const tied = item.ranking.filter(candidate => Math.abs(candidate.normalizedScore - entry.normalizedScore) < 1e-9).length > 1;
-                              return ({
-                              id: entry.modelId,
-                              modelName: entry.modelName,
-                              rankLabel: tied ? `并列 #${consensusRank}` : `#${consensusRank}`,
-                              metaLabel: `Borda ${(entry.normalizedScore * 100).toFixed(1)} / mid-rank ${entry.averageRank.toFixed(2)}`,
-                              videoUrl: getArenaRankModelOutputUrl(sourceItem, entry)
-                            });})}
-                          />
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      ) : (
-        <div className="space-y-8">
-          
-          {/* Top Stats */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <div className="glass-panel p-4 rounded-xl shadow-sm">
-              <div className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-1">参与者</div>
-              <div className="flex items-center gap-2 text-2xl font-bold text-slate-100">
-                <Users className="text-purple-500" />
-                {uniqueReviewerCount}
-              </div>
-              <div className="text-xs text-slate-400 truncate mt-1">
-                {Array.from(uniqueVoters).join(', ')}
-              </div>
-            </div>
-            <div className="glass-panel p-4 rounded-xl shadow-sm">
-              <div className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-1">总评测数</div>
-              <div className="flex items-center gap-2 text-2xl font-bold text-slate-100">
-                <FileText className="text-blue-500" />
-                {totalVotes}
-              </div>
-            </div>
-            <div className="glass-panel p-4 rounded-xl shadow-sm">
-              <div className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-1 truncate" title={`${modelAName} 获胜`}>
-                {modelAName} 获胜
-              </div>
-              <div className="flex items-center gap-2 text-2xl font-bold text-slate-100">
-                <BarChart3 className="text-green-500" />
-                {percentA}%
-              </div>
-            </div>
-            <div className="glass-panel p-4 rounded-xl shadow-sm">
-              <div className="text-slate-400 text-xs font-bold uppercase tracking-wider mb-1 truncate" title={`${modelBName} 获胜`}>
-                {modelBName} 获胜
-              </div>
-              <div className="flex items-center gap-2 text-2xl font-bold text-slate-100">
-                <BarChart3 className="text-indigo-500" />
-                {percentB}%
-              </div>
-            </div>
-          </div>
-
-          {voteDimensionSummaries.length > 0 && (
-            <div className="glass-panel rounded-xl shadow-lg overflow-hidden">
-              <div className="p-6 border-b border-white/10 bg-white/5 flex justify-between items-center">
-                <h3 className="font-semibold text-slate-200">按评测维度聚合</h3>
-                <button onClick={downloadDimensionAnalysisCsv} className="flex items-center gap-2 px-4 py-2 bg-black/40 glass-panel-hover text-white rounded-lg text-sm font-medium">
-                  <Download size={16} /> 导出维度 CSV
-                </button>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead className="bg-white/5">
-                    <tr>
-                      <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">维度</th>
-                      <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">取值</th>
-                      <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">Case 数</th>
-                      <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">总票数</th>
-                      <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">投票分布</th>
-                      <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">获胜者</th>
-                      <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">共识度</th>
-                      <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">Margin</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {voteDimensionSummaries.map(summary => (
-                      <tr key={`${summary.dimensionKey}-${summary.dimensionValue}`} className="border-b border-white/10 hover:bg-white/5">
-                        <td className="p-4 text-sm text-slate-200">{summary.dimensionKey}</td>
-                        <td className="p-4 text-sm text-slate-200">{summary.dimensionValue}</td>
-                        <td className="p-4 text-sm text-slate-200">{summary.itemCount}</td>
-                        <td className="p-4 text-sm text-slate-200">{summary.totalVotes}</td>
-                        <td className="p-4 text-xs text-slate-300 min-w-[220px]">
-                          {modelAName}: {summary.votes.A} | {modelBName}: {summary.votes.B} | 平局: {summary.votes.Tie}
-                        </td>
-                        <td className="p-4 text-sm font-semibold text-slate-100">{getWinnerLabel(summary.winner, analysisModels)}</td>
-                        <td className="p-4 text-sm text-slate-200">{Math.round(summary.agreementRate * 100)}%</td>
-                        <td className="p-4 text-sm text-slate-200">{Math.round(summary.marginRate * 100)}%</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* Breakdown Table */}
-          <div className="glass-panel rounded-xl shadow-lg overflow-hidden">
-            <div className="p-6 border-b border-white/10 bg-white/5 flex justify-between items-center">
-              <h3 className="font-semibold text-slate-200">项目共识</h3>
-              <div className="flex flex-wrap items-center justify-end gap-2">
-                <button onClick={() => setShowInsights(true)} className="flex items-center gap-2 px-3 py-2 bg-blue-600/20 hover:bg-blue-600/30 text-blue-200 border border-blue-500/20 rounded-lg text-xs font-medium">
-                  <BarChart3 size={14} /> 结果洞察
-                </button>
-                <button onClick={downloadAnalysisCsv} className="flex items-center gap-2 px-3 py-2 bg-black/40 glass-panel-hover text-white rounded-lg text-xs font-medium">
-                  <Download size={14} /> 导出汇总 CSV
-                </button>
-                <button
-                  onClick={downloadRawVotesCsv}
-                  disabled={analysisVoteRows.length === 0}
-                  title={analysisVoteRows.length === 0 ? '当前数据源没有逐条投票明细' : '导出逐条投票明细'}
-                  className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium ${
-                    analysisVoteRows.length === 0
-                      ? 'bg-white/5 text-slate-500 cursor-not-allowed'
-                      : 'bg-black/40 glass-panel-hover text-white'
-                  }`}
-                >
-                  <Download size={14} /> 导出原始投票 CSV
-                </button>
-                <label className="text-xs font-medium text-blue-400 cursor-pointer hover:underline px-2">
-                  <input type="file" multiple accept=".csv" className="hidden" onChange={handleFileUpload} />
-                  + 添加更多文件
-                </label>
-              </div>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead className="bg-white/5">
-                  <tr>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">项目 ID</th>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10 min-w-[260px]">Prompt</th>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10 min-w-[220px]">评测维度</th>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10 min-w-[240px]">投票分布</th>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">共识度</th>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10">获胜者</th>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10 min-w-[216px]" title={modelAName}>{modelAName}</th>
-                    <th className="p-4 text-xs font-semibold text-slate-400 uppercase border-b border-white/10 min-w-[216px]" title={modelBName}>{modelBName}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {aggregatedData.map((item, i) => {
-                    const sourceItem = analysisItemsById.get(item.itemId);
-                    const outputs = getCaseModelOutputs(sourceItem, analysisModels);
-                    const dimensionValues = { ...(item.dimensionValues || {}), ...getDimensionValuesForItem(sourceItem as any) };
-                    const itemTotal = item.votes.A + item.votes.B + item.votes.Tie;
-                    const itemWin = getWinnerSide(item.votes);
-                    const maxVotes = Math.max(item.votes.A, item.votes.B, item.votes.Tie);
-                    const agreement = Math.round((maxVotes / itemTotal) * 100);
-                    const prompt = item.prompt || resolveEvaluationItemPrompt(sourceItem);
-                    
-                    return (
-                      <tr key={i} className="border-b border-white/10 hover:bg-white/5">
-                        <td className="p-4 text-sm text-slate-300 font-mono">{item.itemId}</td>
-                        <td className="p-4 text-sm text-slate-300 whitespace-pre-wrap break-words max-w-md">{prompt || '-'}</td>
-                        <td className="p-4 min-w-[220px]">
-                          <DimensionChips values={dimensionValues} label="" />
-                        </td>
-                        <td className="p-4">
-                          <div className="flex h-2 rounded-full overflow-hidden bg-white/10 w-full max-w-[220px]">
-                            <div className="bg-blue-500" style={{ width: `${(item.votes.A / itemTotal) * 100}%` }} title={`${outputs.a.modelName}: ${item.votes.A}`} />
-                            <div className="bg-slate-500" style={{ width: `${(item.votes.Tie / itemTotal) * 100}%` }} title={`Tie: ${item.votes.Tie}`} />
-                            <div className="bg-indigo-500" style={{ width: `${(item.votes.B / itemTotal) * 100}%` }} title={`${outputs.b.modelName}: ${item.votes.B}`} />
-                          </div>
-                          <div className="mt-1 grid grid-cols-2 gap-2 text-[10px] text-slate-400 max-w-[220px]">
-                            <span className="truncate" title={outputs.a.modelName}>{outputs.a.modelName}: {item.votes.A}</span>
-                            <span className="truncate text-right" title={outputs.b.modelName}>{outputs.b.modelName}: {item.votes.B}</span>
-                            <span className="col-span-2 text-center">平局: {item.votes.Tie}</span>
-                          </div>
-                        </td>
-                        <td className="p-4">
-                           <span className={`px-2 py-1 rounded text-xs font-medium ${agreement < 60 ? 'bg-orange-500/10 text-orange-400' : 'bg-green-500/10 text-green-400'}`}>
-                             {agreement}% 一致
-                           </span>
-                        </td>
-                        <td className="p-4 font-bold text-sm text-slate-200 min-w-[140px]" title={getWinnerLabel(itemWin, { a: outputs.a.modelName, b: outputs.b.modelName })}>
-                          {getWinnerLabel(itemWin, { a: outputs.a.modelName, b: outputs.b.modelName })}
-                        </td>
-                        <td className="p-4">
-                          <AnalysisMediaPreview
-                            url={outputs.a.url}
-                            mediaType={sourceItem?.type}
-                            label={outputs.a.modelName}
-                          />
-                        </td>
-                        <td className="p-4">
-                          <AnalysisMediaPreview
-                            url={outputs.b.url}
-                            mediaType={sourceItem?.type}
-                            label={outputs.b.modelName}
-                          />
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
+        )}
+      </section>
     </div>
   );
 };

@@ -457,3 +457,11 @@ Task model identity comes only from mapped output columns. The removed manual Mo
 - Browser persistence is limited to offline sessions, history records, and one unsubmitted sampled-Arena assignment. Complete online `items + votes` payloads must not be serialized locally.
 - Legacy localStorage cleanup is allowed only after the raw backup and converted records pass readback verification. Raw backups survive successful migration until the user explicitly clears local history.
 - Playwright local runs must set `E2E_BASE_URL`; results from another local port are invalid and must not be reported.
+
+# 2026-08-14：结果洞察统一为单页工作区
+
+- 删除 `showInsights` 和伪返回按钮；结果页只保留一个内容架构。
+- 逐 case 证据画廊是主内容，不分页、不隐藏核心结论；逐评委原始记录在 case 内展开。
+- 媒体采用视口懒加载和全局 6 路初始化调度，离屏暂停媒体可卸载，播放中媒体保持挂载。
+- 统计 bundle 在内容组件内仅构建一次；父级只负责选择、加载、错误与路由上下文。
+- 物料和评委范围切换必须取消旧请求，并用请求序号防止不可取消的旧响应覆盖新页面。

@@ -21,7 +21,10 @@ interface LoadTaskItemsOptions {
 
 export async function loadTaskItems(task: EvalTask, options: LoadTaskItemsOptions = {}) {
   if (USE_API_BACKEND) {
-    const response = await fetch(`${API_BASE_URL}/api/tasks/${task.id}/items`, { headers: getApiAuthHeaders(), signal: options.signal });
+    const response = await fetch(`${API_BASE_URL}/api/tasks/${task.id}/items`, {
+      headers: getApiAuthHeaders(),
+      signal: options.signal,
+    });
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({}));
       throw new Error(errorBody.error?.message || errorBody.error || `加载任务用例失败: ${response.status}`);

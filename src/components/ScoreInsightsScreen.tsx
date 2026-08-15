@@ -15,10 +15,10 @@ import {
   buildScoreSummaryCsv
 } from '../scoringInsights';
 import { formatNumber, formatPercent } from '../analysisInsights';
-import MediaRenderer from './MediaRenderer';
-import DimensionChips from './DimensionChips';
 import InsightTopSummaryPanel from './InsightTopSummaryPanel';
 import { buildPairwiseTopSummary, buildScoreTopSummary } from '../insightPresentation';
+import { buildCaseEvidenceViewModels } from '../caseEvidence';
+import CaseEvidenceGallery from './CaseEvidenceGallery';
 
 interface ScoreInsightsScreenProps {
   mode: 'score' | 'pairwise';
@@ -30,8 +30,9 @@ interface ScoreInsightsScreenProps {
   models: { id: string; name: string }[];
   config?: EvaluationConfig;
   skippedCount?: number;
-  onBack?: () => void;
-  backLabel?: string;
+  returnAction?: { label: string; onClick: () => void };
+  additionalActions?: React.ReactNode;
+  notices?: React.ReactNode;
 }
 
 const downloadTextFile = (filename: string, content: string, mimeType = 'text/csv;charset=utf-8;') => {
@@ -51,18 +52,6 @@ const Meter: React.FC<{ value: number; className?: string }> = ({ value, classNa
     <div className={`h-full ${className}`} style={{ width: `${Math.max(0, Math.min(100, value * 100))}%` }} />
   </div>
 );
-
-const MiniMedia: React.FC<{ url?: string; type?: EvaluationItem['type']; label: string }> = ({ url, type, label }) => {
-  if (!url) return <div className="flex h-28 items-center justify-center border border-white/10 bg-black/30 text-xs text-slate-500">暂无预览</div>;
-  if (type === 'text' || type === 'unknown') {
-    return <div className="h-28 overflow-auto border border-white/10 bg-black/30 p-3 text-xs text-slate-300 whitespace-pre-wrap">{url}</div>;
-  }
-  return (
-    <div className="h-28 overflow-hidden border border-white/10 bg-black/40 p-1">
-      <MediaRenderer url={url} label={label} isActive={false} forceType={type && type !== 'unknown' ? type : undefined} videoPreload="metadata" />
-    </div>
-  );
-};
 
 const ScoreLeaderboard: React.FC<{ bundle: ScoreInsightBundle }> = ({ bundle }) => {
   const maxScore = Math.max(...bundle.models.map(model => model.averageScore), 1);
@@ -136,43 +125,6 @@ const ScoreDimensionPanel: React.FC<{ bundle: ScoreInsightBundle }> = ({ bundle 
     ) : (
       <div className="flex h-36 items-center justify-center text-sm text-slate-500">当前评分配置没有可聚合的评分维度。</div>
     )}
-  </section>
-);
-
-const ScoreCaseGallery: React.FC<{ bundle: ScoreInsightBundle; items: Array<Partial<EvaluationItem> & { id: string }> }> = ({ bundle, items }) => (
-  <section className="glass-panel overflow-hidden">
-    <div className="border-b border-white/10 p-4">
-      <h2 className="text-lg font-bold text-slate-100">Case 证据画廊</h2>
-      <p className="mt-1 text-xs text-slate-500">展示每个 case 的模型产物、综合分和评审理由。</p>
-    </div>
-    <div className="grid gap-4 p-4 xl:grid-cols-2">
-      {bundle.cases.map(item => (
-        <article key={item.itemId} className="border border-white/10 bg-white/5 p-4">
-          <div className="mb-3 flex items-start justify-between gap-3">
-            <div>
-              <div className="font-mono text-xs text-amber-300">{item.itemId}</div>
-              <div className="mt-1 line-clamp-3 text-sm text-slate-300">{item.prompt || '-'}</div>
-            </div>
-            <DimensionChips values={item.dimensionValues} label="" />
-          </div>
-          <div className="grid gap-3 md:grid-cols-2">
-            {item.modelScores.map(model => (
-              <div key={model.modelId} className="border border-white/10 bg-black/20 p-3">
-                <MiniMedia url={model.outputUrl} type={items.find(candidate => candidate.id === item.itemId)?.type as any} label={model.modelName} />
-                <div className="mt-2 flex items-center justify-between gap-2">
-                  <span className="truncate text-sm font-bold text-slate-100">{model.modelName}</span>
-                  <span className="font-mono text-sm text-amber-300">{formatNumber(model.weightedScore, 2)}</span>
-                </div>
-                <div className="mt-1 text-xs text-slate-400">平均分 {formatNumber(model.averageScore, 2)} / 评分数 {model.responseCount}</div>
-                {model.reasons.length > 0 && (
-                  <div className="mt-2 line-clamp-2 text-xs text-slate-400">{model.reasons.join(' / ')}</div>
-                )}
-              </div>
-            ))}
-          </div>
-        </article>
-      ))}
-    </div>
   </section>
 );
 
@@ -374,45 +326,6 @@ const ArenaDimensionTable: React.FC<{ bundle: PairwiseInsightBundle }> = ({ bund
   );
 };
 
-const PairwiseCaseTable: React.FC<{ bundle: PairwiseInsightBundle }> = ({ bundle }) => (
-  <section className="glass-panel overflow-hidden">
-    <div className="border-b border-white/10 p-4">
-      <h2 className="text-lg font-bold text-slate-100">逐 case 对战明细</h2>
-    </div>
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[820px] text-left">
-        <thead className="bg-white/5 text-xs uppercase text-slate-400">
-          <tr>
-            <th className="p-4">Case</th>
-            <th className="p-4">Prompt</th>
-            <th className="p-4">对战模型</th>
-            <th className="p-4">产物证据</th>
-            <th className="p-4">票数</th>
-            <th className="p-4">胜出模型</th>
-          </tr>
-        </thead>
-        <tbody>
-          {bundle.cases.map(item => (
-            <tr key={item.itemId} className="border-t border-white/10 hover:bg-white/5">
-              <td className="p-4 font-mono text-xs text-slate-300">{item.originalItemId}</td>
-              <td className="p-4 min-w-[260px] whitespace-pre-wrap text-sm text-slate-300">{item.prompt || '-'}</td>
-              <td className="p-4 text-sm text-slate-200">{item.modelAName} vs {item.modelBName}</td>
-              <td className="p-4">
-                <div className="grid min-w-[300px] grid-cols-2 gap-2">
-                  <MiniMedia url={item.representativeOutputs.find(output => output.modelName === item.modelAName)?.url} label={item.modelAName} />
-                  <MiniMedia url={item.representativeOutputs.find(output => output.modelName === item.modelBName)?.url} label={item.modelBName} />
-                </div>
-              </td>
-              <td className="p-4 text-sm text-slate-300">{item.modelAName}: {item.votes.A} / 平局: {item.votes.Tie} / {item.modelBName}: {item.votes.B}</td>
-              <td className="p-4 text-sm font-bold text-amber-300">{item.winner || '-'}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  </section>
-);
-
 const AiReportPlaceholder: React.FC = () => (
   <section className="rounded-xl border border-dashed border-purple-400/30 bg-purple-500/5 p-5">
     <div className="mb-2 flex items-center gap-2 text-purple-200">
@@ -433,8 +346,9 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
   models,
   config,
   skippedCount = 0,
-  onBack,
-  backLabel = '返回明细'
+  returnAction,
+  additionalActions,
+  notices,
 }) => {
   const dateTag = new Date().toISOString().slice(0, 10);
   const scoreBundle = useMemo(() => {
@@ -454,15 +368,23 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
     () => pairwiseBundle ? buildPairwiseTopSummary(pairwiseBundle, items.length) : null,
     [items.length, pairwiseBundle],
   );
+  const scoreEvidence = useMemo(
+    () => scoreBundle ? buildCaseEvidenceViewModels({ bundle: scoreBundle, items, votes }) : [],
+    [items, scoreBundle, votes],
+  );
+  const pairwiseEvidence = useMemo(
+    () => pairwiseBundle ? buildCaseEvidenceViewModels({ bundle: pairwiseBundle, items, votes }) : [],
+    [items, pairwiseBundle, votes],
+  );
 
   if (mode === 'score' && scoreBundle) {
     return (
       <div className="space-y-6 p-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            {onBack && (
-              <button onClick={onBack} className="mb-4 inline-flex items-center gap-2 text-sm font-medium text-slate-300 hover:text-white">
-                <ArrowLeft size={16} /> {backLabel}
+            {returnAction && (
+              <button onClick={returnAction.onClick} className="mb-4 inline-flex items-center gap-2 text-sm font-medium text-slate-300 hover:text-white">
+                <ArrowLeft size={16} /> {returnAction.label}
               </button>
             )}
             <h1 className="text-3xl font-black text-slate-100">{title || scoreBundle.title}</h1>
@@ -475,10 +397,12 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
             <button onClick={() => downloadTextFile(`score_cases_${dateTag}.csv`, buildScoreCaseCsv(scoreBundle))} className="btn-secondary">
               <Download size={16} /> 导出 case 明细
             </button>
+            {additionalActions}
           </div>
         </div>
 
         {controls}
+        {notices}
 
         {skippedCount > 0 && (
           <div className="border border-white/10 border-l-2 border-l-amber-400 bg-[#12171d] px-4 py-3 text-sm text-slate-300">
@@ -505,7 +429,7 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
           <ScoreDimensionPanel bundle={scoreBundle} />
         </div>
 
-        <ScoreCaseGallery bundle={scoreBundle} items={items} />
+        <CaseEvidenceGallery cases={scoreEvidence} />
         <AiReportPlaceholder />
       </div>
     );
@@ -516,9 +440,9 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
       <div className="space-y-6 p-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            {onBack && (
-              <button onClick={onBack} className="mb-4 inline-flex items-center gap-2 text-sm font-medium text-slate-300 hover:text-white">
-                <ArrowLeft size={16} /> {backLabel}
+            {returnAction && (
+              <button onClick={returnAction.onClick} className="mb-4 inline-flex items-center gap-2 text-sm font-medium text-slate-300 hover:text-white">
+                <ArrowLeft size={16} /> {returnAction.label}
               </button>
             )}
             <h1 className="text-3xl font-black text-slate-100">{title || 'Pairwise 对战洞察'}</h1>
@@ -542,10 +466,12 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
                 <Download size={16} /> 导出维度统计
               </button>
             )}
+            {additionalActions}
           </div>
         </div>
 
         {controls}
+        {notices}
 
         {skippedCount > 0 && (
           <div className="border border-white/10 border-l-2 border-l-amber-400 bg-[#12171d] px-4 py-3 text-sm text-slate-300">
@@ -573,7 +499,7 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
 
         <ArenaCoverageMatrix bundle={pairwiseBundle} />
         <ArenaDimensionTable bundle={pairwiseBundle} />
-        <PairwiseCaseTable bundle={pairwiseBundle} />
+        <CaseEvidenceGallery cases={pairwiseEvidence} />
         <AiReportPlaceholder />
       </div>
     );
