@@ -1,0 +1,20 @@
+{
+  "feature": "per-case-model-reveal-and-feedback",
+  "baseline": "40dddc7d2d7000f563f536310bd8445dd16b344f",
+  "branch": "codex/model-feedback-reveal",
+  "status": "complete",
+  "requirements": [
+    { "id": "feedback-all-formal-modes", "status": "complete" },
+    { "id": "save-before-reveal", "status": "complete" },
+    { "id": "post-submit-feedback-edit", "status": "complete" },
+    { "id": "skip-without-reveal", "status": "complete" },
+    { "id": "ordinary-revote-after-reveal", "status": "complete" },
+    { "id": "model-feedback-insight-summary", "status": "complete" },
+    { "id": "case-evidence-feedback", "status": "complete" },
+    { "id": "no-schema-or-api-change", "status": "complete" }
+  ],
+  "validation": {
+    "first_gate": "Add deterministic model-feedback tests and a failing Arena-rank reveal Playwright regression before implementation.",
+    "final_gate": "Passed all package test scripts, lint, frontend/server builds, isolated PostgreSQL API smoke, 24-test Chromium E2E, mobile overflow check, and git diff check."
+  }
+}

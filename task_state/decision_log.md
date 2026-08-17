@@ -1,5 +1,13 @@
 # Arena Decision Log
 
+## 2026-08-17: Reveal only after durable case submission and reuse model responses
+
+Formal evaluations use a two-phase case flow. The first action persists the decision and current per-model notes before any real model name appears. A successful save keeps the current case mounted in a revealed review phase; the original submit control becomes `下一题`, which saves again only when notes changed. A failed first save never reveals identity, and skipped cases neither reveal nor collect model feedback.
+
+Per-model notes reuse the existing `rubricResponses` wire shape and PostgreSQL `rubric_responses_json`. Comparison and rank votes populate only each model response's `reason`; score and rubric votes retain scores, answers, and reason. This avoids a migration and keeps legacy score reasons readable. The user explicitly accepts ordinary unmarked re-evaluation after identity reveal, even though such revisions are no longer methodologically blind.
+
+Benchmark Preview and skipped cases explicitly opt out of the reveal phase. Reveal is an explicit save-call option rather than a default, preventing non-formal or future save paths from accidentally remaining on the current case. Model feedback aggregation uses the logical original case ID when available, so repeated Pairwise assignments do not inflate case coverage.
+
 ## 2026-08-11: Separate failure-flow validation from accepted-capacity validation
 
 Immediate Aion rejection cannot prove provider in-flight capacity, so failure-flow evidence and accepted-capacity evidence must be reported separately. The live run used immutable retry/new-batch audit trails and distinct output columns; it never overwrote an existing result or automatically retried an ambiguous or paid failure.

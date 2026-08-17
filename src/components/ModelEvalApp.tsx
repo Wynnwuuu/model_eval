@@ -34,6 +34,12 @@ import {
 import { subscribeBrowserStorageIssues, type BrowserStorageIssue } from '../safeBrowserStorage';
 import { USE_SHARED_DATA_SOURCE } from '../runtimeConfig';
 import { TaskEvaluationLoadError } from '../features/tasks/loadTaskEvaluation';
+import {
+  applyModelFeedbackToVote,
+  hasModelFeedbackChanged,
+  resolveModelFeedbackCandidates,
+  type ModelFeedbackDraft,
+} from '../modelFeedback';
 
 interface ModelEvalAppProps {
   initialRoute?: AppRoute;
@@ -74,6 +80,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
   const [teamVotesError, setTeamVotesError] = useState<string | null>(null);
   const [voteSaving, setVoteSaving] = useState(false);
   const [voteSaveError, setVoteSaveError] = useState<string | null>(null);
+  const [casePhase, setCasePhase] = useState<'evaluating' | 'revealed'>('evaluating');
   const [resyncLoading, setResyncLoading] = useState(false);
   const [resyncError, setResyncError] = useState<string | null>(null);
   const [storageIssue, setStorageIssue] = useState<BrowserStorageIssue | null>(null);
@@ -180,6 +187,10 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
   };
 
   const formatSaveError = (error: any) => error?.message || '投票保存失败，请检查网络后重试。本次选择尚未写入共享结果。';
+
+  useEffect(() => {
+    setCasePhase('evaluating');
+  }, [currentIndex, sessionId]);
 
   useEffect(() => {
     if (currentRoute === 'results' && !routeContext.taskId && activeTaskId) {
@@ -620,10 +631,43 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     }
   };
 
-  const commitVoteRecord = async (votePayload: Partial<VoteRecord>) => {
+  const advanceFromSubmittedVote = (updatedVotes: VoteRecord[]) => {
+    setCasePhase('evaluating');
+    if (currentIndex < items.length - 1) {
+      if (isSampledArena && !items[currentIndex + 1]?.pairContext) {
+        const nextItem = items[currentIndex + 1];
+        const assignment = assignArenaBattle({
+          taskId: activeTaskId || 'local-arena',
+          reviewerId: getCurrentReviewerIdentity().id || userName,
+          item: nextItem,
+          models: taskModels,
+          votes: getSchedulingVotes(updatedVotes),
+          config: taskEvaluationConfig.arenaSampling || {},
+        });
+        if (assignment) {
+          setItems(previous => previous.map((item, index) =>
+            index === currentIndex + 1 ? applyArenaAssignmentToItem(item, assignment) : item
+          ));
+        }
+      }
+      setCurrentIndex(previous => previous + 1);
+      return;
+    }
+
+    saveToHistory(updatedVotes);
+    if (activeTaskId) {
+      void refreshAllTaskVotes(activeTaskId);
+    }
+    openTaskResults(activeTaskId);
+  };
+
+  const commitVoteRecord = async (
+    votePayload: Partial<VoteRecord>,
+    options: { feedback?: ModelFeedbackDraft; reveal?: boolean } = {},
+  ) => {
     if (voteSaving) return;
     const currentItem = items[currentIndex];
-    const newVote: VoteRecord = {
+    const baseVote: VoteRecord = {
       itemId: currentItem.id,
       itemSnapshot: createVoteItemSnapshot(currentItem),
       method: taskEvaluationConfig.method,
@@ -631,6 +675,8 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
       user: userName,
       ...votePayload
     };
+    const candidates = resolveModelFeedbackCandidates(currentItem, taskModels, baseVote.method || taskEvaluationConfig.method);
+    const newVote = applyModelFeedbackToVote(baseVote, candidates, options.feedback || {});
 
     const updatedVotes = [...votes, newVote];
     setVoteSaving(true);
@@ -640,31 +686,10 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
       await persistVoteProgress(updatedVotes, updatedVotes.length);
       setVotes(updatedVotes);
       setAllUserVoteGroups(prev => mergeCurrentUserVoteGroup(prev, updatedVotes));
-
-      if (currentIndex < items.length - 1) {
-        if (isSampledArena && !items[currentIndex + 1]?.pairContext) {
-          const nextItem = items[currentIndex + 1];
-          const assignment = assignArenaBattle({
-            taskId: activeTaskId || 'local-arena',
-            reviewerId: getCurrentReviewerIdentity().id || userName,
-            item: nextItem,
-            models: taskModels,
-            votes: getSchedulingVotes(updatedVotes),
-            config: taskEvaluationConfig.arenaSampling || {},
-          });
-          if (assignment) {
-            setItems(previous => previous.map((item, index) =>
-              index === currentIndex + 1 ? applyArenaAssignmentToItem(item, assignment) : item
-            ));
-          }
-        }
-        setCurrentIndex(prev => prev + 1);
+      if (options.reveal === true) {
+        setCasePhase('revealed');
       } else {
-        saveToHistory(updatedVotes);
-        if (activeTaskId) {
-          void refreshAllTaskVotes(activeTaskId);
-        }
-        openTaskResults(activeTaskId);
+        advanceFromSubmittedVote(updatedVotes);
       }
     } catch (error: any) {
       setVoteSaveError(formatSaveError(error));
@@ -673,24 +698,24 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     }
   };
 
-  const handleVote = async (vote: VoteType) => {
+  const handleVote = async (vote: VoteType, feedback: ModelFeedbackDraft) => {
     const currentItem = items[currentIndex] as any;
     await commitVoteRecord({
       vote,
       choice: vote,
       pairContext: currentItem.pairContext
-    });
+    }, { feedback, reveal: true });
   };
 
-  const handleRankVote = async (ranking: RankingEntry[]) => {
+  const handleRankVote = async (ranking: RankingEntry[], feedback: ModelFeedbackDraft) => {
     await commitVoteRecord({
       method: 'rank_order',
       ranking
-    });
+    }, { feedback, reveal: true });
   };
 
-  const handleScoreVote = async (votePayload: Partial<VoteRecord>) => {
-    await commitVoteRecord(votePayload);
+  const handleScoreVote = async (votePayload: Partial<VoteRecord>, feedback: ModelFeedbackDraft) => {
+    await commitVoteRecord(votePayload, { feedback, reveal: true });
   };
 
   const handleSkipItem = async () => {
@@ -698,7 +723,76 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     await commitVoteRecord({
       choice: 'skipped',
       pairContext: currentItem?.pairContext
-    });
+    }, { reveal: false });
+  };
+
+  const handleContinueAfterReveal = async (feedback: ModelFeedbackDraft) => {
+    if (voteSaving) return;
+    const currentItem = items[currentIndex];
+    let voteIndex = -1;
+    for (let index = votes.length - 1; index >= 0; index -= 1) {
+      if (votes[index].itemId === currentItem?.id) {
+        voteIndex = index;
+        break;
+      }
+    }
+    if (voteIndex < 0) {
+      setVoteSaveError('当前 case 的已保存记录不存在，请重新提交评测。');
+      setCasePhase('evaluating');
+      return;
+    }
+
+    const currentVote = votes[voteIndex];
+    const candidates = resolveModelFeedbackCandidates(currentItem, taskModels, currentVote.method || taskEvaluationConfig.method);
+    let updatedVotes = votes;
+    if (hasModelFeedbackChanged(currentVote, feedback)) {
+      const updatedVote = applyModelFeedbackToVote(currentVote, candidates, feedback);
+      updatedVotes = votes.map((vote, index) => index === voteIndex ? updatedVote : vote);
+      setVoteSaving(true);
+      setVoteSaveError(null);
+      try {
+        await persistVoteProgress(updatedVotes, updatedVotes.length);
+        setVotes(updatedVotes);
+        setAllUserVoteGroups(previous => mergeCurrentUserVoteGroup(previous, updatedVotes));
+      } catch (error: any) {
+        setVoteSaveError(formatSaveError(error));
+        return;
+      } finally {
+        setVoteSaving(false);
+      }
+    }
+
+    advanceFromSubmittedVote(updatedVotes);
+  };
+
+  const handleRevoteCurrent = async () => {
+    if (voteSaving) return;
+    const currentItem = items[currentIndex];
+    let voteIndex = -1;
+    for (let index = votes.length - 1; index >= 0; index -= 1) {
+      if (votes[index].itemId === currentItem?.id) {
+        voteIndex = index;
+        break;
+      }
+    }
+    if (voteIndex < 0) {
+      setCasePhase('evaluating');
+      return;
+    }
+
+    const updatedVotes = votes.filter((_vote, index) => index !== voteIndex);
+    setVoteSaving(true);
+    setVoteSaveError(null);
+    try {
+      await persistVoteProgress(updatedVotes, updatedVotes.length);
+      setVotes(updatedVotes);
+      setAllUserVoteGroups(previous => mergeCurrentUserVoteGroup(previous, updatedVotes));
+      setCasePhase('evaluating');
+    } catch (error: any) {
+      setVoteSaveError(formatSaveError(error));
+    } finally {
+      setVoteSaving(false);
+    }
   };
 
   const handlePreviewComment = async (comment: string) => {
@@ -706,14 +800,14 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
       method: 'benchmark_preview',
       choice: 'previewed',
       reason: comment.trim()
-    });
+    }, { reveal: false });
   };
 
   const handlePreviewSkip = async () => {
     await commitVoteRecord({
       method: 'benchmark_preview',
       choice: 'skipped'
-    });
+    }, { reveal: false });
   };
 
   const handleGoBack = async () => {
@@ -1139,12 +1233,15 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
           totalItems={items.length}
           models={taskModels}
           config={taskEvaluationConfig}
+          isRevealed={casePhase === 'revealed'}
+          isLastItem={currentIndex === items.length - 1}
           onVote={handleScoreVote}
-          onSkip={handleSkipItem}
+          onNext={handleContinueAfterReveal}
+          onRevote={handleRevoteCurrent}
+          onSkip={casePhase === 'evaluating' ? handleSkipItem : undefined}
           onEnd={handleEndSessionEarly}
           onBack={() => navigate('overview')}
-          onGoBack={currentIndex > 0 ? handleGoBack : undefined}
-          allowTie={taskEvaluationConfig.tiePolicy !== 'disallow'}
+          onGoBack={casePhase === 'evaluating' && currentIndex > 0 ? handleGoBack : undefined}
         />
       );
     }
@@ -1156,11 +1253,18 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
           nextItem={items[currentIndex + 1]}
           currentIndex={currentIndex}
           totalItems={items.length}
+          models={taskModels}
+          blind={taskEvaluationConfig.blind !== false}
+          isRevealed={casePhase === 'revealed'}
+          isLastItem={currentIndex === items.length - 1}
           onVote={handleVote}
-          onSkip={handleSkipItem}
+          onNext={handleContinueAfterReveal}
+          onRevote={handleRevoteCurrent}
+          onSkip={casePhase === 'evaluating' ? handleSkipItem : undefined}
           onEnd={handleEndSessionEarly}
           onBack={() => navigate('overview')}
-          onGoBack={currentIndex > 0 ? handleGoBack : undefined}
+          onGoBack={casePhase === 'evaluating' && currentIndex > 0 ? handleGoBack : undefined}
+          allowTie={taskEvaluationConfig.tiePolicy !== 'disallow'}
           arenaProgress={isSampledArena ? {
             contributed: arenaValidVoteCount,
             suggested: arenaSuggestedBattleCount,
@@ -1178,11 +1282,16 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
           currentIndex={currentIndex}
           totalItems={items.length}
           models={taskModels}
+          blind={taskEvaluationConfig.blind !== false}
+          isRevealed={casePhase === 'revealed'}
+          isLastItem={currentIndex === items.length - 1}
           onVote={handleRankVote}
-          onSkip={handleSkipItem}
+          onNext={handleContinueAfterReveal}
+          onRevote={handleRevoteCurrent}
+          onSkip={casePhase === 'evaluating' ? handleSkipItem : undefined}
           onEnd={handleEndSessionEarly}
           onBack={() => navigate('overview')}
-          onGoBack={currentIndex > 0 ? handleGoBack : undefined}
+          onGoBack={casePhase === 'evaluating' && currentIndex > 0 ? handleGoBack : undefined}
         />
       );
     }

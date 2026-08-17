@@ -3,6 +3,7 @@ import { formatNumber, formatPercent } from './analysisInsights';
 import type { PairwiseInsightBundle, ScoreInsightBundle } from './scoringInsights';
 import type { EvaluationItem, ModelOutput, VoteRecord } from './types';
 import { getVoteReviewerKey } from './taskResults';
+import { getVoteModelFeedbackDetails } from './modelFeedback';
 
 export type CaseEvidenceMethod = 'ab' | 'rank' | 'score' | 'pairwise';
 
@@ -73,16 +74,24 @@ const sortEvidence = (rows: CaseEvidenceViewModel[]) => rows.sort((left, right) 
 const toHumanReviews = (
   itemId: string,
   humanVotes: Array<{ user: string; voteLabel: string; timestamp?: number }>,
-): CaseReviewRecord[] => humanVotes.map((vote, index) => ({
-  id: `${itemId}-${vote.timestamp || index}-${index}`,
-  reviewer: vote.user || '匿名评委',
-  reviewerKey: vote.user || `anonymous-${index}`,
-  timestamp: vote.timestamp,
-  summary: vote.voteLabel,
-  details: [],
-}));
+  votes: VoteRecord[],
+): CaseReviewRecord[] => humanVotes.map((vote, index) => {
+  const sourceVote = votes.find(candidate =>
+    candidate.itemId === itemId
+    && candidate.timestamp === vote.timestamp
+    && (!vote.user || candidate.user === vote.user)
+  ) || votes.find(candidate => candidate.itemId === itemId && candidate.timestamp === vote.timestamp);
+  return {
+    id: `${itemId}-${vote.timestamp || index}-${index}`,
+    reviewer: vote.user || '匿名评委',
+    reviewerKey: sourceVote ? getVoteReviewerKey(sourceVote) : vote.user || `anonymous-${index}`,
+    timestamp: vote.timestamp,
+    summary: vote.voteLabel,
+    details: getVoteModelFeedbackDetails(sourceVote),
+  };
+});
 
-const buildAbEvidence = (bundle: AbInsightBundle, lookup: Map<string, InsightItem>, orderLookup: Map<string, number>) =>
+const buildAbEvidence = (bundle: AbInsightBundle, lookup: Map<string, InsightItem>, orderLookup: Map<string, number>, votes: VoteRecord[]) =>
   bundle.cases.map(caseItem => {
     const sourceItem = lookup.get(caseItem.itemId);
     return {
@@ -102,11 +111,11 @@ const buildAbEvidence = (bundle: AbInsightBundle, lookup: Map<string, InsightIte
       ],
       outputs: [caseItem.modelA, caseItem.modelB],
       referenceUrls: caseItem.referenceUrls,
-      reviews: toHumanReviews(caseItem.itemId, caseItem.humanVotes),
+      reviews: toHumanReviews(caseItem.itemId, caseItem.humanVotes, votes),
     };
   });
 
-const buildRankEvidence = (bundle: RankInsightBundle, lookup: Map<string, InsightItem>, orderLookup: Map<string, number>) =>
+const buildRankEvidence = (bundle: RankInsightBundle, lookup: Map<string, InsightItem>, orderLookup: Map<string, number>, votes: VoteRecord[]) =>
   bundle.cases.map(caseItem => {
     const sourceItem = lookup.get(caseItem.itemId);
     const outputLookup = new Map(caseItem.representativeOutputs.flatMap(output => [
@@ -146,7 +155,7 @@ const buildRankEvidence = (bundle: RankInsightBundle, lookup: Map<string, Insigh
       ],
       outputs,
       referenceUrls: caseItem.referenceUrls,
-      reviews: toHumanReviews(caseItem.itemId, caseItem.humanVotes),
+      reviews: toHumanReviews(caseItem.itemId, caseItem.humanVotes, votes),
     };
   });
 
@@ -223,24 +232,35 @@ const buildPairwiseEvidence = (
   bundle: PairwiseInsightBundle,
   lookup: Map<string, InsightItem>,
   orderLookup: Map<string, number>,
+  votes: VoteRecord[],
 ) => bundle.cases.map(caseItem => {
   const sourceItem = lookup.get(caseItem.originalItemId) || lookup.get(caseItem.itemId);
   const matchupKey = caseItem.itemId.slice(caseItem.itemId.indexOf('::') + 2);
   const reviews = bundle.battles
     .filter(battle => battle.originalItemId === caseItem.originalItemId
       && [battle.modelAId, battle.modelBId].sort().join('__') === matchupKey)
-    .map((battle, index) => ({
-      id: battle.assignmentId || `${battle.itemId}-${battle.timestamp}-${index}`,
-      reviewer: battle.user || '匿名评委',
-      reviewerKey: battle.reviewerKey || battle.user || `anonymous-${index}`,
-      timestamp: battle.timestamp,
-      summary: battle.vote === 'Tie' ? '选择 平局' : `选择 ${battle.winnerModelName}`,
-      details: [
-        battle.samplingPhase ? `采样阶段：${battle.samplingPhase}` : '',
-        Number.isFinite(battle.samplingProbability) ? `采样概率：${formatPercent(battle.samplingProbability, 1)}` : '',
-        Number.isFinite(battle.analysisWeight) ? `分析权重：${formatNumber(battle.analysisWeight, 3)}` : '',
-      ].filter(Boolean),
-    }));
+    .map((battle, index) => {
+      const sourceVote = votes.find(vote =>
+        Boolean(battle.assignmentId) && vote.pairContext?.assignmentId === battle.assignmentId
+      ) || votes.find(vote =>
+        vote.itemId === battle.itemId
+        && vote.timestamp === battle.timestamp
+        && (!battle.reviewerKey || getVoteReviewerKey(vote) === battle.reviewerKey)
+      );
+      return {
+        id: battle.assignmentId || `${battle.itemId}-${battle.timestamp}-${index}`,
+        reviewer: battle.user || '匿名评委',
+        reviewerKey: battle.reviewerKey || battle.user || `anonymous-${index}`,
+        timestamp: battle.timestamp,
+        summary: battle.vote === 'Tie' ? '选择 平局' : `选择 ${battle.winnerModelName}`,
+        details: [
+          battle.samplingPhase ? `采样阶段：${battle.samplingPhase}` : '',
+          Number.isFinite(battle.samplingProbability) ? `采样概率：${formatPercent(battle.samplingProbability, 1)}` : '',
+          Number.isFinite(battle.analysisWeight) ? `分析权重：${formatNumber(battle.analysisWeight, 3)}` : '',
+          ...getVoteModelFeedbackDetails(sourceVote),
+        ].filter(Boolean),
+      };
+    });
   return {
     method: 'pairwise' as const,
     itemId: caseItem.itemId,
@@ -284,11 +304,11 @@ export const buildCaseEvidenceViewModels = ({
 }): CaseEvidenceViewModel[] => {
   const { lookup, orderLookup } = buildItemLookup(items);
   const rows = bundle.mode === 'ab'
-    ? buildAbEvidence(bundle, lookup, orderLookup)
+    ? buildAbEvidence(bundle, lookup, orderLookup, votes)
     : bundle.mode === 'rank'
-      ? buildRankEvidence(bundle, lookup, orderLookup)
+      ? buildRankEvidence(bundle, lookup, orderLookup, votes)
       : bundle.mode === 'score'
         ? buildScoreEvidence(bundle, lookup, orderLookup, votes)
-        : buildPairwiseEvidence(bundle, lookup, orderLookup);
+        : buildPairwiseEvidence(bundle, lookup, orderLookup, votes);
   return sortEvidence(rows);
 };

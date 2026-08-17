@@ -19,6 +19,7 @@ import InsightTopSummaryPanel from './InsightTopSummaryPanel';
 import { buildPairwiseTopSummary, buildScoreTopSummary } from '../insightPresentation';
 import { buildCaseEvidenceViewModels } from '../caseEvidence';
 import CaseEvidenceGallery from './CaseEvidenceGallery';
+import ModelFeedbackSummaryPanel from './ModelFeedbackSummaryPanel';
 
 interface ScoreInsightsScreenProps {
   mode: 'score' | 'pairwise';
@@ -429,6 +430,7 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
           <ScoreDimensionPanel bundle={scoreBundle} />
         </div>
 
+        <ModelFeedbackSummaryPanel votes={votes} models={models} />
         <CaseEvidenceGallery cases={scoreEvidence} />
         <AiReportPlaceholder />
       </div>
@@ -499,6 +501,7 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
 
         <ArenaCoverageMatrix bundle={pairwiseBundle} />
         <ArenaDimensionTable bundle={pairwiseBundle} />
+        <ModelFeedbackSummaryPanel votes={votes} models={models} />
         <CaseEvidenceGallery cases={pairwiseEvidence} />
         <AiReportPlaceholder />
       </div>

@@ -11,6 +11,7 @@ const modeTaskIds = {
   rubric: `${runId}-rubric`,
   rank: `${runId}-rank`,
   preview: `${runId}-preview`,
+  feedback: `${runId}-feedback`,
 };
 const authHeaders = {
   'X-User-Id': 'local-user',
@@ -213,6 +214,7 @@ test.describe.serial('evaluation client storage', () => {
       { id: modeTaskIds.rubric, evaluationConfig: { method: 'rubric_score' }, models: [{ id: 'model-a', name: 'Model A' }, { id: 'model-b', name: 'Model B' }] },
       { id: modeTaskIds.rank, evaluationConfig: { method: 'rank_order' }, models: [{ id: 'model-a', name: 'Model A' }, { id: 'model-b', name: 'Model B' }, { id: 'model-c', name: 'Model C' }] },
       { id: modeTaskIds.preview, evaluationConfig: { method: 'benchmark_preview' }, models: [{ id: 'model-a', name: 'Model A' }, { id: 'model-b', name: 'Model B' }] },
+      { id: modeTaskIds.feedback, evaluationConfig: { method: 'rank_order', blind: true }, models: [{ id: 'model-a', name: 'Model A' }, { id: 'model-b', name: 'Model B' }, { id: 'model-c', name: 'Model C' }] },
     ];
     for (const mode of modeConfigs) {
       await jsonRequest(api, '/api/tasks', 'POST', {
@@ -225,7 +227,7 @@ test.describe.serial('evaluation client storage', () => {
           evaluationConfig: mode.evaluationConfig,
           models: mode.models,
           dimensionColumns: [],
-          outputType: 'video',
+          outputType: mode.id === modeTaskIds.feedback ? 'image' : 'video',
           inputType: 'text',
           assignees: ['local@eval.test'],
           progress: {},
@@ -236,7 +238,20 @@ test.describe.serial('evaluation client storage', () => {
           creatorName: 'Local Tester',
           createdAt: Date.now(),
         },
-        items: taskItems.slice(20, 22).map((item, index) => ({ ...item, id: `${mode.id}-item-${index}` })),
+        items: taskItems.slice(20, 22).map((item, index) => mode.id === modeTaskIds.feedback
+          ? {
+              ...item,
+              id: `${mode.id}-item-${index}`,
+              type: 'image',
+              modelA_Url: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="32" height="32"%3E%3Crect width="32" height="32" fill="red"/%3E%3C/svg%3E',
+              modelB_Url: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="32" height="32"%3E%3Crect width="32" height="32" fill="green"/%3E%3C/svg%3E',
+              modelOutputs: mode.models.map((model, modelIndex) => ({
+                modelId: model.id,
+                modelName: model.name,
+                url: `data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="32" height="32"%3E%3Crect width="32" height="32" fill="${['red', 'green', 'blue'][modelIndex]}"/%3E%3C/svg%3E`,
+              })),
+            }
+          : { ...item, id: `${mode.id}-item-${index}` }),
       });
     }
   });
@@ -395,6 +410,43 @@ test.describe.serial('evaluation client storage', () => {
     expect(after.assignment.rightModelId).toBe(before.assignment.rightModelId);
     expect(after.assignment.modelAUrl).toBe(before.assignment.modelAUrl);
     expect(after.assignment.modelBUrl).toBe(before.assignment.modelBUrl);
+  });
+
+  test('vote save failures do not reveal identities or allow a failed feedback update to advance', async ({ page }) => {
+    let putAttempt = 0;
+    await page.route(`**/api/tasks/${modeTaskIds.feedback}/my-votes`, async route => {
+      if (route.request().method() !== 'PUT') {
+        await route.continue();
+        return;
+      }
+      putAttempt += 1;
+      if (putAttempt === 2) {
+        await route.continue();
+        return;
+      }
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { message: putAttempt === 1 ? 'initial feedback save failed' : 'revealed feedback save failed' } }),
+      });
+    });
+
+    await page.goto(`/tasks/${modeTaskIds.feedback}/evaluate`);
+    await expect(page.getByText('Arena-rank', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText('Model A', { exact: true })).toHaveCount(0);
+    await page.getByLabel(/评价与备注/).first().fill('initial note');
+    await page.getByRole('button', { name: '提交排名', exact: true }).click();
+    await expect(page.getByText('initial feedback save failed', { exact: true })).toBeVisible();
+    await expect(page.getByText('Model A', { exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '提交排名', exact: true })).toBeVisible();
+
+    await page.getByRole('button', { name: '提交排名', exact: true }).click();
+    await expect(page.getByText('本 case 已保存，模型身份已揭示')).toBeVisible();
+    await page.getByLabel(/评价与备注/).first().fill('edited after reveal');
+    await page.getByRole('button', { name: '下一题', exact: true }).click();
+    await expect(page.getByText('revealed feedback save failed', { exact: true })).toBeVisible();
+    await expect(page.getByText('1 / 2', { exact: true }).first()).toBeVisible();
+    await expect(page.getByRole('button', { name: '下一题', exact: true })).toBeVisible();
   });
 
   test('MOS, Rubric, Arena-rank and Preview restore server progress after refresh', async ({ page }) => {

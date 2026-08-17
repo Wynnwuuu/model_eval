@@ -1,5 +1,11 @@
 # Arena And Arena-rank Handoff
 
+## Current work: per-case model reveal and per-model feedback
+
+Implementation and full local validation are complete on `codex/model-feedback-reveal`, based on `main@40dddc7`. Formal A/B, Pairwise, Arena-rank, MOS, and Rubric flows now reveal actual model names only after the first durable save, retain editable per-model notes before and after submit, and use the original submit slot for `下一题` / `查看结果`. Skip and Benchmark Preview remain direct-advance paths. Ordinary re-evaluation is preserved.
+
+Persistence reuses `rubricResponses` / `rubric_responses_json`; no migration, public API, dependency, or external service was added. Insights include a model feedback summary above case evidence and raw per-case reviewer records include corresponding notes. All deterministic and database `test:*` scripts, lint, frontend/server builds, enhanced PostgreSQL API smoke, 24 Chromium E2E tests, mobile overflow verification, and diff checks pass against an isolated disposable PostgreSQL container.
+
 ## Current work: evaluation material case selection
 
 Implementation and local verification are complete on the current worktree. `TaskBuilderScreen` now exposes a bounded case-scope table with case-ID/dimension filters, explicit selection actions, invalid-output diagnostics, and first-selected-case preview. `task.models` derives only from selected output columns; the legacy manual Model A/Model B editor is removed.

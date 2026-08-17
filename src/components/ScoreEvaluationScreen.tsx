@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, CheckCircle2, ChevronDown, ChevronUp, Cloud, Save, SkipForward, Star } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, ChevronDown, ChevronUp, Cloud, RotateCcw, Save, SkipForward, Star } from 'lucide-react';
 import { EvalDimension, EvaluationConfig, EvaluationItem, VoteRecord } from '../types';
 import { getModelOutputsForItem, resolveEvaluationItemPrompt } from '../rankingUtils';
 import { getDimensionValuesForItem, hasDimensionValues } from '../dimensionUtils';
@@ -7,6 +7,8 @@ import { normalizeDimensions } from '../evaluationMethods';
 import MediaRenderer from './MediaRenderer';
 import DimensionChips from './DimensionChips';
 import EvaluationReferenceMediaStrip from './EvaluationReferenceMediaStrip';
+import ModelFeedbackEditor from './ModelFeedbackEditor';
+import type { ModelFeedbackDraft } from '../modelFeedback';
 
 interface ScoreEvaluationScreenProps {
   item: EvaluationItem;
@@ -14,7 +16,11 @@ interface ScoreEvaluationScreenProps {
   totalItems: number;
   models: { id: string; name: string }[];
   config: EvaluationConfig;
-  onVote: (vote: Partial<VoteRecord>) => void;
+  isRevealed?: boolean;
+  isLastItem?: boolean;
+  onVote: (vote: Partial<VoteRecord>, feedback: ModelFeedbackDraft) => void;
+  onNext?: (feedback: ModelFeedbackDraft) => void;
+  onRevote?: () => void;
   onEnd: () => void;
   onBack?: () => void;
   onGoBack?: () => void;
@@ -36,7 +42,8 @@ const ScoreButtons: React.FC<{
   dimension: EvalDimension;
   value?: number;
   onChange: (value: number) => void;
-}> = ({ dimension, value, onChange }) => {
+  disabled?: boolean;
+}> = ({ dimension, value, onChange, disabled = false }) => {
   const scale = dimension.scale?.length
     ? dimension.scale
     : [1, 2, 3, 4, 5].map(score => ({ value: score, label: String(score) }));
@@ -48,6 +55,7 @@ const ScoreButtons: React.FC<{
           key={level.value}
           type="button"
           onClick={() => onChange(level.value)}
+          disabled={disabled}
           className={`flex min-w-10 items-center justify-center gap-1 border px-3 py-2 text-sm font-black transition-colors ${
             value === level.value
               ? 'border-[var(--accent)] bg-[var(--accent)] text-black'
@@ -69,7 +77,11 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
   totalItems,
   models,
   config,
+  isRevealed = false,
+  isLastItem = false,
   onVote,
+  onNext,
+  onRevote,
   onEnd,
   onBack,
   onGoBack,
@@ -177,6 +189,10 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
   });
   const canSubmit = isComplete && (allMediaLoaded || mediaWaitTimedOut);
 
+  const getFeedbackDraft = (): ModelFeedbackDraft => Object.fromEntries(
+    outputs.map(output => [output.modelId, draft[output.modelId]?.reason || ''])
+  );
+
   const submit = () => {
     if (!isComplete) return;
     onVote({
@@ -198,7 +214,7 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
         .map(output => draft[output.modelId]?.reason?.trim())
         .filter(Boolean)
         .join(' | ')
-    });
+    }, getFeedbackDraft());
   };
 
   return (
@@ -217,12 +233,12 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
           </div>
         </div>
         <div className="flex items-center gap-4">
-          {onGoBack && (
+          {onGoBack && !isRevealed && (
             <button onClick={onGoBack} className="border-l border-white/10 pl-4 text-sm font-medium text-slate-200 transition-colors hover:text-white">
               上一题
             </button>
           )}
-          {onSkip && (
+          {onSkip && !isRevealed && (
             <button onClick={onSkip} className="border-l border-white/10 pl-4 text-sm font-medium text-amber-200 transition-colors hover:text-amber-100">
               <span className="inline-flex items-center gap-1.5"><SkipForward size={15} /> 跳过本题</span>
             </button>
@@ -232,9 +248,11 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
               返回大盘
             </button>
           )}
-          <button onClick={onEnd} className="border-l border-white/10 pl-4 text-sm font-medium text-slate-200 transition-colors hover:text-white">
-            提前结束
-          </button>
+          {!isRevealed && (
+            <button onClick={onEnd} className="border-l border-white/10 pl-4 text-sm font-medium text-slate-200 transition-colors hover:text-white">
+              提前结束
+            </button>
+          )}
         </div>
       </div>
 
@@ -271,7 +289,9 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
                 <div className="ark-rank-head flex items-center justify-between px-3 py-2">
                   <div className="text-sm font-black">
                     候选 {index + 1}
-                    <span className="ml-2 font-mono text-xs opacity-65">{config.blind ? '盲测中' : output.modelName}</span>
+                    <span className="ml-2 font-mono text-xs opacity-65">
+                      {config.blind !== false && !isRevealed ? '盲测中' : output.modelName}
+                    </span>
                   </div>
                 </div>
                 <div className="min-h-[260px] overflow-hidden bg-black/55 p-1">
@@ -290,6 +310,13 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
                     />
                   )}
                 </div>
+                <ModelFeedbackEditor
+                  modelId={output.modelId}
+                  optionLabel={`候选 ${index + 1}`}
+                  value={current.reason}
+                  required={config.requireReason}
+                  onChange={(value) => updateReason(output.modelId, value)}
+                />
                 <div className="flex-1 space-y-4 overflow-auto p-4">
                   {scoreDimensions.map(dimension => (
                     <div key={dimension.id} className="border border-white/10 bg-white/5 p-3">
@@ -304,6 +331,7 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
                         dimension={dimension}
                         value={current.scores[dimension.id]}
                         onChange={(value) => updateScore(output.modelId, dimension.id, value)}
+                        disabled={isRevealed}
                       />
                     </div>
                   ))}
@@ -322,6 +350,7 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
                               key={option}
                               type="button"
                               onClick={() => updateAnswer(output.modelId, dimension.id, option)}
+                              disabled={isRevealed}
                               className={`border px-3 py-2 text-sm font-semibold ${
                                 current.answers[dimension.id] === option
                                   ? 'border-[var(--accent)] bg-[var(--accent)] text-black'
@@ -336,6 +365,7 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
                         <textarea
                           value={current.answers[dimension.id] || ''}
                           onChange={(event) => updateAnswer(output.modelId, dimension.id, event.target.value)}
+                          disabled={isRevealed}
                           className="glass-input min-h-20 w-full px-3 py-2 text-sm"
                           placeholder="记录观察依据、失败模式或改进建议"
                         />
@@ -343,17 +373,6 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
                     </div>
                   ))}
 
-                  <div className="border border-white/10 bg-white/5 p-3">
-                    <label className="mb-2 block text-sm font-bold text-slate-100">
-                      评审理由 {config.requireReason && <span className="text-amber-300">*</span>}
-                    </label>
-                    <textarea
-                      value={current.reason}
-                      onChange={(event) => updateReason(output.modelId, event.target.value)}
-                      className="glass-input min-h-20 w-full px-3 py-2 text-sm"
-                      placeholder="可选：写下支持该评分的具体证据"
-                    />
-                  </div>
                 </div>
               </section>
             );
@@ -363,18 +382,33 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
 
       <div className="ark-operation-header flex shrink-0 items-center justify-between px-6 py-3">
         <div className="text-xs text-slate-300">
-          {mediaWaitTimedOut && !allMediaLoaded ? '\u5a92\u4f53\u4ecd\u5728\u52a0\u8f7d\u3002\u8bf7\u4f18\u5148\u7b49\u5f85\u753b\u9762\u51fa\u73b0\uff1b\u5982\u957f\u65f6\u95f4\u65e0\u54cd\u5e94\uff0c\u53ef\u6253\u5f00\u539f\u94fe\u63a5\u6838\u5bf9\u6216\u8df3\u8fc7\u672c\u9898\u3002' : isComplete ? '\u8bc4\u5206\u5df2\u5b8c\u6210\uff0c\u53ef\u4ee5\u63d0\u4ea4\u5f53\u524d case\u3002' : '\u8bf7\u5b8c\u6210\u5fc5\u586b\u8bc4\u5206\u9879\u3002'}
+          {isRevealed
+            ? `本题结论已保存，已揭示实际模型。${isLastItem ? '可补充备注后查看结果。' : '可补充备注后进入下一题。'}`
+            : mediaWaitTimedOut && !allMediaLoaded ? '\u5a92\u4f53\u4ecd\u5728\u52a0\u8f7d\u3002\u8bf7\u4f18\u5148\u7b49\u5f85\u753b\u9762\u51fa\u73b0\uff1b\u5982\u957f\u65f6\u95f4\u65e0\u54cd\u5e94\uff0c\u53ef\u6253\u5f00\u539f\u94fe\u63a5\u6838\u5bf9\u6216\u8df3\u8fc7\u672c\u9898\u3002' : isComplete ? '\u8bc4\u5206\u5df2\u5b8c\u6210\uff0c\u53ef\u4ee5\u63d0\u4ea4\u5f53\u524d case\u3002' : '\u8bf7\u5b8c\u6210\u5fc5\u586b\u8bc4\u5206\u9879\u3002'}
         </div>
-        <button
-          onClick={submit}
-          disabled={!canSubmit}
-          className={`flex items-center gap-2 px-5 py-2.5 font-black ${
-            canSubmit ? 'btn-primary' : 'cursor-not-allowed border border-white/10 bg-white/10 text-slate-400'
-          }`}
-        >
-          {canSubmit ? <Save size={18} /> : <ArrowLeft size={18} />}
-          {canSubmit ? '\u63d0\u4ea4\u8bc4\u5206' : '\u5a92\u4f53\u52a0\u8f7d\u4e2d...'}
-        </button>
+        <div className="flex items-center gap-3">
+          {isRevealed && onRevote && (
+            <button type="button" onClick={onRevote} className="inline-flex items-center gap-2 border border-white/15 px-4 py-2.5 text-sm font-bold text-slate-200 hover:border-amber-300/60 hover:text-amber-200">
+              <RotateCcw size={16} /> 重新评本题
+            </button>
+          )}
+          <button
+            onClick={isRevealed ? () => onNext?.(getFeedbackDraft()) : submit}
+            disabled={!isRevealed && !canSubmit}
+            className={`flex items-center gap-2 px-5 py-2.5 font-black ${
+              (isRevealed || canSubmit) ? 'btn-primary' : 'cursor-not-allowed border border-white/10 bg-white/10 text-slate-400'
+            }`}
+          >
+            {isRevealed || canSubmit ? <Save size={18} /> : <ArrowLeft size={18} />}
+            {isRevealed
+              ? (isLastItem ? '查看结果' : '下一题')
+              : canSubmit
+                ? '\u63d0\u4ea4\u8bc4\u5206'
+                : !isComplete
+                  ? '请完成必填评分'
+                  : '\u5a92\u4f53\u52a0\u8f7d\u4e2d...'}
+          </button>
+        </div>
       </div>
     </div>
   );

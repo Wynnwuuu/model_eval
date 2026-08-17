@@ -1,5 +1,5 @@
-import React, { useEffect, useCallback, useRef, useState } from 'react';
-import { CheckCircle2, ChevronDown, ChevronUp, Cloud, Equal, ThumbsUp, Shuffle, SkipForward } from 'lucide-react';
+import React, { useEffect, useCallback, useMemo, useRef, useState } from 'react';
+import { CheckCircle2, ChevronDown, ChevronUp, Cloud, Equal, ThumbsUp, Shuffle, SkipForward, RotateCcw } from 'lucide-react';
 import { EvaluationItem, VoteType } from '../types';
 import MediaRenderer from './MediaRenderer';
 import { KEYBOARD_SHORTCUTS, VIDEO_EXTENSIONS } from '../constants';
@@ -8,13 +8,21 @@ import DimensionChips from './DimensionChips';
 import { getDimensionValuesForItem, hasDimensionValues } from '../dimensionUtils';
 import { getEvaluationReferenceInputKeys, resolveEvaluationReferenceMedia } from '../evaluationReferenceMedia';
 import EvaluationReferenceMediaStrip from './EvaluationReferenceMediaStrip';
+import ModelFeedbackEditor from './ModelFeedbackEditor';
+import { resolveModelFeedbackCandidates, type ModelFeedbackDraft } from '../modelFeedback';
 
 interface VotingScreenProps {
   item: EvaluationItem;
   nextItem?: EvaluationItem;
   currentIndex: number;
   totalItems: number;
-  onVote: (vote: VoteType) => void;
+  models?: { id: string; name: string }[];
+  blind?: boolean;
+  isRevealed?: boolean;
+  isLastItem?: boolean;
+  onVote: (vote: VoteType, feedback: ModelFeedbackDraft) => void;
+  onNext?: (feedback: ModelFeedbackDraft) => void;
+  onRevote?: () => void;
   onEnd: () => void;
   onBack?: () => void;
   onGoBack?: () => void;
@@ -34,7 +42,13 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
   nextItem,
   currentIndex,
   totalItems,
+  models = [],
+  blind = true,
+  isRevealed = false,
+  isLastItem = false,
   onVote,
+  onNext,
+  onRevote,
   onEnd,
   onBack,
   onGoBack,
@@ -45,6 +59,7 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
   const [showFullPrompt, setShowFullPrompt] = useState(false);
   const [referenceViewerOpen, setReferenceViewerOpen] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
+  const [feedbackDraft, setFeedbackDraft] = useState<ModelFeedbackDraft>({});
 
   const [leftLoaded, setLeftLoaded] = useState(false);
   const [rightLoaded, setRightLoaded] = useState(false);
@@ -64,14 +79,20 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
     ? Math.min(100, (arenaProgress.contributed / Math.max(arenaProgress.suggested, 1)) * 100)
     : (currentIndex / totalItems) * 100;
   const isSwapped = item.isSwapped ?? false;
+  const feedbackCandidates = useMemo(
+    () => resolveModelFeedbackCandidates(item, models, item.pairContext ? 'pairwise' : 'ab_preference'),
+    [item, models],
+  );
+  const candidateA = feedbackCandidates[0] || { modelId: 'model-a', modelName: 'Model A', url: item.modelA_Url };
+  const candidateB = feedbackCandidates[1] || { modelId: 'model-b', modelName: 'Model B', url: item.modelB_Url };
 
   const leftData = isSwapped
-    ? { url: item.modelB_Url, voteVal: 'B' as VoteType }
-    : { url: item.modelA_Url, voteVal: 'A' as VoteType };
+    ? { url: item.modelB_Url, voteVal: 'B' as VoteType, candidate: candidateB }
+    : { url: item.modelA_Url, voteVal: 'A' as VoteType, candidate: candidateA };
 
   const rightData = isSwapped
-    ? { url: item.modelA_Url, voteVal: 'A' as VoteType }
-    : { url: item.modelB_Url, voteVal: 'B' as VoteType };
+    ? { url: item.modelA_Url, voteVal: 'A' as VoteType, candidate: candidateA }
+    : { url: item.modelB_Url, voteVal: 'B' as VoteType, candidate: candidateB };
   const mediaCycleKey = [currentIndex, item.id, item.type, leftData.url, rightData.url].join('|');
   const mediaCycleKeyRef = useRef(mediaCycleKey);
   mediaCycleKeyRef.current = mediaCycleKey;
@@ -93,12 +114,12 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
 
     if (referenceViewerOpen) return;
 
-    if (canVote) {
-      if (KEYBOARD_SHORTCUTS.A.includes(key)) onVote(leftData.voteVal);
-      else if (KEYBOARD_SHORTCUTS.B.includes(key)) onVote(rightData.voteVal);
-      else if (allowTie && KEYBOARD_SHORTCUTS.TIE.includes(key)) onVote('Tie');
+    if (canVote && !isRevealed) {
+      if (KEYBOARD_SHORTCUTS.A.includes(key)) onVote(leftData.voteVal, feedbackDraft);
+      else if (KEYBOARD_SHORTCUTS.B.includes(key)) onVote(rightData.voteVal, feedbackDraft);
+      else if (allowTie && KEYBOARD_SHORTCUTS.TIE.includes(key)) onVote('Tie', feedbackDraft);
     }
-  }, [onVote, referenceViewerOpen, leftData.voteVal, rightData.voteVal, canVote, allowTie]);
+  }, [onVote, referenceViewerOpen, leftData.voteVal, rightData.voteVal, canVote, allowTie, isRevealed, feedbackDraft]);
 
   useEffect(() => {
     window.addEventListener('keydown', handleKeyPress);
@@ -160,6 +181,7 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
     setLeftLoaded(false);
     setRightLoaded(false);
     setMediaWaitTimedOut(false);
+    setFeedbackDraft({});
 
     setJustSaved(true);
     const timer = setTimeout(() => setJustSaved(false), 2000);
@@ -202,12 +224,12 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
             <span className="flex items-center gap-1"><kbd className="bg-white/10 border border-white/10 px-1.5 py-0.5 text-slate-200">Enter</kbd> 平局</span>
             <span className="flex items-center gap-1"><kbd className="bg-white/10 border border-white/10 px-1.5 py-0.5 text-slate-200">2</kbd> 投右侧</span>
           </div>
-          {onGoBack && (
+          {onGoBack && !isRevealed && (
             <button onClick={onGoBack} className="border-l border-white/10 pl-4 text-sm font-medium text-slate-200 transition-colors hover:text-white">
               上一题
             </button>
           )}
-          {onSkip && (
+          {onSkip && !isRevealed && (
             <button onClick={onSkip} className="border-l border-white/10 pl-4 text-sm font-medium text-amber-200 transition-colors hover:text-amber-100">
               <span className="inline-flex items-center gap-1.5"><SkipForward size={15} /> 跳过本题</span>
             </button>
@@ -217,7 +239,7 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
               返回大盘
             </button>
           )}
-          {(!arenaProgress || arenaProgress.contributed > 0) && (
+          {!isRevealed && (!arenaProgress || arenaProgress.contributed > 0) && (
             <button
               onClick={onEnd}
               className={`border-l border-white/10 pl-4 text-sm font-medium transition-colors ${arenaProgress?.reached ? 'text-amber-300 hover:text-amber-100' : 'text-slate-200 hover:text-white'}`}
@@ -277,6 +299,10 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
           <EvaluationReferenceMediaStrip item={item} onViewerOpenChange={setReferenceViewerOpen} />
           <div className="flex h-full min-h-[560px] flex-col gap-4 p-4 md:gap-6 md:p-6 lg:flex-row">
             <div className="ark-vote-card flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden transition-colors hover:border-[var(--accent-cold)]">
+              <div className="ark-rank-head flex items-center justify-between gap-3 px-3 py-2 text-sm font-black">
+                <span>选项 1</span>
+                {(!blind || isRevealed) && <span className="truncate font-mono text-xs opacity-70">{leftData.candidate.modelName}</span>}
+              </div>
               <div className="relative min-h-0 flex-1 overflow-hidden bg-black/55 p-1">
                 <MediaRenderer
                   key={`left-${mediaCycleKey}`}
@@ -287,16 +313,26 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
                   forceType={item.type}
                 />
               </div>
-              <button
-                onClick={() => onVote(leftData.voteVal)}
-                disabled={!canVote}
-                className={`ark-vote-action shrink-0 p-4 font-black flex items-center justify-center gap-2 transition-all ${
-                  canVote ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'
-                }`}
-              >
-                <ThumbsUp className="h-5 w-5" />
-                {canVote ? '投给选项 1（左侧）' : '等待媒体...'}
-              </button>
+              <ModelFeedbackEditor
+                modelId={leftData.candidate.modelId}
+                optionLabel="选项 1"
+                value={feedbackDraft[leftData.candidate.modelId] || ''}
+                onChange={value => setFeedbackDraft(previous => ({ ...previous, [leftData.candidate.modelId]: value }))}
+              />
+              {isRevealed ? (
+                <div className="ark-vote-action shrink-0 p-4 text-center text-sm font-bold text-emerald-100">本 case 评测结论已保存</div>
+              ) : (
+                <button
+                  onClick={() => onVote(leftData.voteVal, feedbackDraft)}
+                  disabled={!canVote}
+                  className={`ark-vote-action shrink-0 p-4 font-black flex items-center justify-center gap-2 transition-all ${
+                    canVote ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'
+                  }`}
+                >
+                  <ThumbsUp className="h-5 w-5" />
+                  {canVote ? '投给选项 1（左侧）' : '等待媒体...'}
+                </button>
+              )}
             </div>
 
             <div className="flex w-full shrink-0 flex-row items-center justify-center gap-4 lg:w-16 lg:flex-col">
@@ -304,10 +340,10 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
                 <Shuffle size={14} className="text-slate-200" />
               </div>
 
-              {allowTie && (
+              {allowTie && !isRevealed && (
                 <>
                   <button
-                    onClick={() => onVote('Tie')}
+                    onClick={() => onVote('Tie', feedbackDraft)}
                     disabled={!canVote}
                     className={`flex h-12 w-12 items-center justify-center rounded-full border-2 shadow-md shadow-black/20 transition-all ${
                       canVote
@@ -324,6 +360,10 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
             </div>
 
             <div className="ark-vote-card flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden transition-colors hover:border-[var(--accent)]">
+              <div className="ark-rank-head flex items-center justify-between gap-3 px-3 py-2 text-sm font-black">
+                <span>选项 2</span>
+                {(!blind || isRevealed) && <span className="truncate font-mono text-xs opacity-70">{rightData.candidate.modelName}</span>}
+              </div>
               <div className="relative min-h-0 flex-1 overflow-hidden bg-black/55 p-1">
                 <MediaRenderer
                   key={`right-${mediaCycleKey}`}
@@ -334,16 +374,26 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
                   forceType={item.type}
                 />
               </div>
-              <button
-                onClick={() => onVote(rightData.voteVal)}
-                disabled={!canVote}
-                className={`ark-vote-action shrink-0 p-4 font-black flex items-center justify-center gap-2 transition-all ${
-                  canVote ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'
-                }`}
-              >
-                <ThumbsUp className="h-5 w-5" />
-                {canVote ? '投给选项 2（右侧）' : '等待媒体...'}
-              </button>
+              <ModelFeedbackEditor
+                modelId={rightData.candidate.modelId}
+                optionLabel="选项 2"
+                value={feedbackDraft[rightData.candidate.modelId] || ''}
+                onChange={value => setFeedbackDraft(previous => ({ ...previous, [rightData.candidate.modelId]: value }))}
+              />
+              {isRevealed ? (
+                <div className="ark-vote-action shrink-0 p-4 text-center text-sm font-bold text-emerald-100">本 case 评测结论已保存</div>
+              ) : (
+                <button
+                  onClick={() => onVote(rightData.voteVal, feedbackDraft)}
+                  disabled={!canVote}
+                  className={`ark-vote-action shrink-0 p-4 font-black flex items-center justify-center gap-2 transition-all ${
+                    canVote ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'
+                  }`}
+                >
+                  <ThumbsUp className="h-5 w-5" />
+                  {canVote ? '投给选项 2（右侧）' : '等待媒体...'}
+                </button>
+              )}
             </div>
           </div>
           {mediaWaitTimedOut && !allMediaLoaded && (
@@ -353,6 +403,25 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
           )}
         </div>
       </div>
+
+      {isRevealed && (
+        <div className="ark-operation-header flex shrink-0 items-center justify-between gap-4 px-6 py-3">
+          <div className="text-sm text-emerald-200">
+            <span className="font-semibold">本 case 已保存，模型身份已揭示</span>
+            <span className="ml-2 text-xs text-slate-400">可继续修改备注。</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {onRevote && (
+              <button type="button" onClick={onRevote} className="btn-secondary inline-flex items-center gap-2 px-3 py-2 text-xs">
+                <RotateCcw size={14} /> 重新评本题
+              </button>
+            )}
+            <button type="button" onClick={() => onNext?.(feedbackDraft)} className="btn-primary px-5 py-2.5 font-black">
+              {isLastItem ? '查看结果' : '下一题'}
+            </button>
+          </div>
+        </div>
+      )}
 
     </div>
   );

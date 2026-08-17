@@ -1,5 +1,14 @@
 # Arena Implementation Progress
 
+## 2026-08-17: Per-case model reveal and per-model feedback (complete)
+
+- Baseline is clean `main@40dddc7` in worktree `codex/model-feedback-reveal`.
+- Approved scope covers A/B, Pairwise, Arena-rank, MOS, and Rubric for text/image/video/audio; Benchmark Preview is unchanged.
+- A/B, Pairwise, Arena-rank, MOS, and Rubric now save the conclusion first, reveal actual model names in place after success, keep per-model notes editable, and advance only from `下一题` / `查看结果`; skip and Benchmark Preview retain direct advance without reveal.
+- Notes reuse `VoteRecord.rubricResponses` / `rubric_responses_json`; score answers and scores survive note edits, the 1000-character limit is enforced in UI and normalization, and no migration, API, dependency, or external summarization service was added.
+- Result insights now show a reviewer-scope-aware, case-filter-independent model feedback summary and attach matching model notes to raw per-case reviewer records.
+- Validation passed: all package `test:*` scripts, lint, frontend/server builds, isolated PostgreSQL migrations and database tests, enhanced API smoke, 24 Chromium E2E tests, explicit mobile overflow assertion, and `git diff --check`.
+
 ## 2026-08-14: Single-material result insights
 
 - Removed implicit comparable-task grouping and the merged/single-task analysis scope. Result insights now load exactly one explicitly selected evaluation material.

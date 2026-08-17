@@ -1466,7 +1466,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         description={insightSubtitle}
         controls={insightControls}
         items={isArenaRankAnalysis ? rankItems as any : analysisItems}
-        votes={isArenaRankAnalysis ? rankVotes : []}
+        votes={isArenaRankAnalysis ? rankVotes : analysisVoteRows.flatMap(row => row.auditVote ? [row.auditVote] : [])}
         aggregatedData={isArenaRankAnalysis ? [] : aggregatedData}
         rawVoteRows={isArenaRankAnalysis ? [] : analysisVoteRows}
         modelNames={analysisModels}

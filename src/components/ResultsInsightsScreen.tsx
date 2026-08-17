@@ -30,6 +30,7 @@ import InsightTopSummaryPanel from './InsightTopSummaryPanel';
 import { buildAbTopSummary, buildRankTopSummary } from '../insightPresentation';
 import { buildCaseEvidenceViewModels } from '../caseEvidence';
 import CaseEvidenceGallery from './CaseEvidenceGallery';
+import ModelFeedbackSummaryPanel from './ModelFeedbackSummaryPanel';
 
 type InsightItem = Partial<EvaluationItem> & { id: string; originalData?: Record<string, any> };
 
@@ -668,6 +669,7 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
 
       {bundle.mode === 'ab' ? <AbCharts bundle={bundle} setFilter={selectFilter} /> : <RankCharts bundle={bundle} setFilter={selectFilter} />}
       <DimensionTable bundle={bundle} onSelect={(key, value) => selectFilter({ type: 'dimension', key, value })} />
+      <ModelFeedbackSummaryPanel votes={votes} models={models} />
       <CaseEvidenceGallery sectionRef={galleryRef} cases={filteredEvidenceCases} filterLabel={getFilterLabel(filter, bundle)} />
       <AiReportPlaceholder />
     </div>

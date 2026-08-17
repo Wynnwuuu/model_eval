@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, CheckCircle2, Cloud, Equal, GripVertical, Layers3, SkipForward, Trophy, Unlink, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, CheckCircle2, Cloud, Equal, GripVertical, Layers3, RotateCcw, SkipForward, Trophy, Unlink, X } from 'lucide-react';
 import { EvaluationItem, RankingEntry } from '../types';
 import { getModelOutputsForItem, tiersToRankingEntries } from '../rankingUtils';
 import MediaRenderer from './MediaRenderer';
@@ -9,6 +9,8 @@ import DimensionChips from './DimensionChips';
 import { getDimensionValuesForItem, hasDimensionValues } from '../dimensionUtils';
 import { getEvaluationReferenceInputKeys } from '../evaluationReferenceMedia';
 import EvaluationReferenceMediaStrip from './EvaluationReferenceMediaStrip';
+import ModelFeedbackEditor from './ModelFeedbackEditor';
+import type { ModelFeedbackDraft } from '../modelFeedback';
 
 interface ArenaRankVotingScreenProps {
   item: EvaluationItem;
@@ -16,7 +18,12 @@ interface ArenaRankVotingScreenProps {
   currentIndex: number;
   totalItems: number;
   models?: { id: string; name: string }[];
-  onVote: (ranking: RankingEntry[]) => void;
+  blind?: boolean;
+  isRevealed?: boolean;
+  isLastItem?: boolean;
+  onVote: (ranking: RankingEntry[], feedback: ModelFeedbackDraft) => void;
+  onNext?: (feedback: ModelFeedbackDraft) => void;
+  onRevote?: () => void;
   onEnd: () => void;
   onBack?: () => void;
   onGoBack?: () => void;
@@ -31,7 +38,12 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
   currentIndex,
   totalItems,
   models = [],
+  blind = true,
+  isRevealed = false,
+  isLastItem = false,
   onVote,
+  onNext,
+  onRevote,
   onEnd,
   onBack,
   onGoBack,
@@ -44,6 +56,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
   const [justSaved, setJustSaved] = useState(false);
   const [showRankDrawer, setShowRankDrawer] = useState(false);
   const [rankAnnouncement, setRankAnnouncement] = useState('');
+  const [feedbackDraft, setFeedbackDraft] = useState<ModelFeedbackDraft>({});
   const draggedTierIndexRef = useRef<number | null>(null);
 
   const sourceOutputs = useMemo(() => getModelOutputsForItem(item, models), [item, models]);
@@ -66,6 +79,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
     setRankTiers(shuffled.map(modelId => [modelId]));
     setLoaded({});
     setMediaWaitTimedOut(false);
+    setFeedbackDraft({});
     draggedTierIndexRef.current = null;
     setDraggedTierIndex(null);
     setShowFullPrompt(false);
@@ -248,7 +262,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
       .map(modelId => outputsById.get(modelId))
       .filter(Boolean)
       .map(output => ({ modelId: output!.modelId, modelName: output!.modelName }))));
-    onVote(ranking);
+    onVote(ranking, feedbackDraft);
   };
 
   const getTierRank = (tierIndex: number) =>
@@ -263,7 +277,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
           </h3>
           <p className="mt-1 text-xs leading-5 text-slate-400">拖动梯队调整顺序；合并相邻梯队即可设为并列。</p>
           <div className="mt-2 flex flex-wrap gap-2">
-            <button
+            {!isRevealed && <button
               type="button"
               onClick={() => {
                 setRankTiers([rankTiers.flat()]);
@@ -273,8 +287,8 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
               className="inline-flex items-center gap-1 border border-[var(--accent)]/35 bg-[var(--accent)]/10 px-2 py-1 text-[11px] font-semibold text-amber-100 hover:bg-[var(--accent)]/20 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Equal size={12} /> 全部并列
-            </button>
-            <button
+            </button>}
+            {!isRevealed && <button
               type="button"
               onClick={() => {
                 setRankTiers(rankTiers.flat().map(modelId => [modelId]));
@@ -284,7 +298,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
               className="inline-flex items-center gap-1 border border-white/10 bg-white/5 px-2 py-1 text-[11px] font-semibold text-slate-300 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Unlink size={12} /> 拆为独立梯队
-            </button>
+            </button>}
           </div>
         </div>
         {mobile && (
@@ -299,7 +313,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
           const rank = getTierRank(tierIndex);
           return (
             <React.Fragment key={tier.slice().sort().join('|')}>
-              {tierIndex > 0 && (
+              {tierIndex > 0 && !isRevealed && (
                 <button
                   type="button"
                   onClick={() => mergeTierWithPrevious(tierIndex)}
@@ -314,7 +328,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
                 </button>
               )}
               <div
-                draggable
+                draggable={!isRevealed}
                 onDragStart={event => handleTierDragStart(event, tierIndex)}
                 onDragOver={handleTierDragOver}
                 onDrop={event => handleTierDrop(tierIndex, event)}
@@ -338,10 +352,10 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
                     </span>
                   </div>
                   <div className="flex shrink-0 items-center gap-1">
-                    <button onClick={() => moveTier(tierIndex, -1)} disabled={tierIndex === 0} className="p-1.5 text-slate-300 hover:bg-white/10 hover:text-white disabled:opacity-25" title="梯队上移" aria-label={`将第 ${rank} 名梯队上移`}>
+                    <button onClick={() => moveTier(tierIndex, -1)} disabled={isRevealed || tierIndex === 0} className="p-1.5 text-slate-300 hover:bg-white/10 hover:text-white disabled:opacity-25" title="梯队上移" aria-label={`将第 ${rank} 名梯队上移`}>
                       <ArrowUp size={14} />
                     </button>
-                    <button onClick={() => moveTier(tierIndex, 1)} disabled={tierIndex === rankTiers.length - 1} className="p-1.5 text-slate-300 hover:bg-white/10 hover:text-white disabled:opacity-25" title="梯队下移" aria-label={`将第 ${rank} 名梯队下移`}>
+                    <button onClick={() => moveTier(tierIndex, 1)} disabled={isRevealed || tierIndex === rankTiers.length - 1} className="p-1.5 text-slate-300 hover:bg-white/10 hover:text-white disabled:opacity-25" title="梯队下移" aria-label={`将第 ${rank} 名梯队下移`}>
                       <ArrowDown size={14} />
                     </button>
                   </div>
@@ -354,6 +368,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
                         <button
                           type="button"
                           onClick={() => splitModelFromTier(tierIndex, modelId)}
+                          disabled={isRevealed}
                           className="text-slate-500 hover:text-[var(--accent)]"
                           title="从并列组拆分为下一名"
                           aria-label={`将 ${optionLabels.get(modelId) || modelId} 从并列组拆分为下一名`}
@@ -373,15 +388,16 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
       <button
         onClick={() => {
           if (mobile) setShowRankDrawer(false);
-          submitRanking();
+          if (isRevealed) onNext?.(feedbackDraft);
+          else submitRanking();
         }}
-        disabled={!canSubmit}
+        disabled={!isRevealed && !canSubmit}
         className={`mt-4 flex w-full shrink-0 items-center justify-center gap-2 py-3 font-black transition-colors ${
-          canSubmit ? 'btn-primary' : 'cursor-not-allowed border border-white/10 bg-white/10 text-slate-400'
+          (isRevealed || canSubmit) ? 'btn-primary' : 'cursor-not-allowed border border-white/10 bg-white/10 text-slate-400'
         }`}
       >
         <Trophy size={18} />
-        {canSubmit ? '提交排名' : '媒体加载中...'}
+        {isRevealed ? (isLastItem ? '查看结果' : '下一题') : canSubmit ? '提交排名' : '媒体加载中...'}
       </button>
       {mediaWaitTimedOut && !allMediaLoaded && (
         <div className="mt-3 border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-amber-100">
@@ -410,12 +426,12 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
             <GripVertical size={14} />
             <span>拖拽图片调整排名；可将相邻名次合并为并列</span>
           </div>
-          {onGoBack && (
+          {onGoBack && !isRevealed && (
             <button onClick={onGoBack} className="border-l border-white/10 pl-4 text-sm font-medium text-slate-200 transition-colors hover:text-white">
               上一题
             </button>
           )}
-          {onSkip && (
+          {onSkip && !isRevealed && (
             <button onClick={onSkip} className="border-l border-white/10 pl-4 text-sm font-medium text-amber-200 transition-colors hover:text-amber-100">
               <span className="inline-flex items-center gap-1.5"><SkipForward size={15} /> 跳过本题</span>
             </button>
@@ -425,15 +441,29 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
               返回大盘
             </button>
           )}
-          <button onClick={onEnd} className="border-l border-white/10 pl-4 text-sm font-medium text-slate-200 transition-colors hover:text-white">
-            提前结束
-          </button>
+          {!isRevealed && (
+            <button onClick={onEnd} className="border-l border-white/10 pl-4 text-sm font-medium text-slate-200 transition-colors hover:text-white">
+              提前结束
+            </button>
+          )}
+          {isRevealed && onRevote && (
+            <button onClick={onRevote} className="inline-flex items-center gap-1.5 border-l border-white/10 pl-4 text-sm font-medium text-slate-200 transition-colors hover:text-white">
+              <RotateCcw size={14} /> 重新评本题
+            </button>
+          )}
         </div>
       </div>
 
       <div className="h-1 w-full shrink-0 bg-white/10">
         <div className="ark-progress h-full transition-all duration-300 ease-out" style={{ width: `${progress}%` }} />
       </div>
+
+      {isRevealed && (
+        <div className="border-b border-emerald-400/20 bg-emerald-400/10 px-6 py-2 text-sm text-emerald-200">
+          <span className="font-semibold">本 case 已保存，模型身份已揭示</span>
+          <span className="ml-2 text-xs text-slate-400">可继续修改备注。</span>
+        </div>
+      )}
 
       {(item.inputs || item.prompt || hasDimensions) && (
         <div className="ark-prompt-strip relative z-10 shrink-0 px-6 py-3">
@@ -483,7 +513,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
                 return (
                   <div
                     key={`${mediaCycleKey}-${output.modelId}-${output.url}`}
-                    draggable
+                    draggable={!isRevealed}
                     onDragStart={event => handleTierDragStart(event, tierIndex)}
                     onDragOver={handleTierDragOver}
                     onDrop={event => {
@@ -506,12 +536,13 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
                         <GripVertical size={15} className="shrink-0 text-black/55" />
                         <span className="truncate">{rankMeta?.tied ? `并列第 ${rankMeta.rank} 名` : `第 ${rankMeta?.rank || '-'} 名`}</span>
                         <span className="shrink-0 font-mono text-xs opacity-65">{optionLabel}</span>
+                        {(!blind || isRevealed) && <span className="truncate font-mono text-xs opacity-75">{output.modelName}</span>}
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
                         <button
                           type="button"
                           onClick={() => moveTier(tierIndex, -1)}
-                          disabled={tierIndex === 0}
+                          disabled={isRevealed || tierIndex === 0}
                           className="p-1 text-black/65 hover:bg-black hover:text-white disabled:opacity-25"
                           title="上移"
                           aria-label={`将 ${optionLabel} 所在梯队上移`}
@@ -521,7 +552,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
                         <button
                           type="button"
                           onClick={() => moveTier(tierIndex, 1)}
-                          disabled={tierIndex === rankTiers.length - 1}
+                          disabled={isRevealed || tierIndex === rankTiers.length - 1}
                           className="p-1 text-black/65 hover:bg-black hover:text-white disabled:opacity-25"
                           title="下移"
                           aria-label={`将 ${optionLabel} 所在梯队下移`}
@@ -531,7 +562,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
                         <button
                           type="button"
                           onClick={() => mergeTierWithPrevious(tierIndex)}
-                          disabled={tierIndex === 0}
+                          disabled={isRevealed || tierIndex === 0}
                           className="p-1 text-black/65 hover:bg-black hover:text-white disabled:opacity-25"
                           title="与上一名并列"
                           aria-label={`将 ${optionLabel} 与上一名合并为并列`}
@@ -542,6 +573,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
                           <button
                             type="button"
                             onClick={() => splitModelFromTier(tierIndex, output.modelId)}
+                            disabled={isRevealed}
                             className="p-1 text-black/65 hover:bg-black hover:text-white"
                             title="从并列组拆分为下一名"
                             aria-label={`将 ${optionLabel} 从并列组拆分为下一名`}
@@ -566,6 +598,12 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
                         onLoadStatusChange={(isLoaded) => handleLoadStatusChange(output.modelId, isLoaded)}
                       />
                     </div>
+                    <ModelFeedbackEditor
+                      modelId={output.modelId}
+                      optionLabel={optionLabel}
+                      value={feedbackDraft[output.modelId] || ''}
+                      onChange={value => setFeedbackDraft(previous => ({ ...previous, [output.modelId]: value }))}
+                    />
                   </div>
                 );
               })}
@@ -583,13 +621,13 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
       {displayOutputs.length >= 3 && (
         <button
           type="button"
-          onClick={() => setShowRankDrawer(true)}
+          onClick={() => isRevealed ? onNext?.(feedbackDraft) : setShowRankDrawer(true)}
           className="btn-primary fixed bottom-4 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 px-5 py-3 shadow-2xl xl:hidden"
           aria-expanded={showRankDrawer}
           aria-controls="arena-rank-tier-drawer"
         >
-          <Layers3 size={17} />
-          调整排名梯队
+          {isRevealed ? <Trophy size={17} /> : <Layers3 size={17} />}
+          {isRevealed ? (isLastItem ? '查看结果' : '下一题') : '调整排名梯队'}
         </button>
       )}
 

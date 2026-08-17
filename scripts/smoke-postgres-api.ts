@@ -395,6 +395,37 @@ const main = async () => {
         ],
       }),
     });
+    const reviewerAInitialVotes = await request<{ votes: any[] }>(`/api/tasks/${ids.task}/my-votes`, { headers: sharedReviewerA });
+    assert(reviewerAInitialVotes.votes.length === 1, 'initial model-feedback vote write did not persist exactly one record');
+    await request(`/api/tasks/${ids.task}/my-votes`, {
+      method: 'PUT',
+      headers: sharedReviewerA,
+      body: JSON.stringify({
+        progress: 1,
+        votes: reviewerAInitialVotes.votes.map(vote => ({
+          ...vote,
+          rubricResponses: {
+            'model-a': {
+              modelId: 'model-a',
+              modelName: 'model_a',
+              scores: {},
+              reason: 'revealed feedback update',
+            },
+          },
+        })),
+      }),
+    });
+    const reviewerAUpdatedVotes = await request<{ votes: any[] }>(`/api/tasks/${ids.task}/my-votes`, { headers: sharedReviewerA });
+    assert(reviewerAUpdatedVotes.votes.length === 1, 'revealed feedback update duplicated the vote record');
+    assert(
+      reviewerAUpdatedVotes.votes[0]?.rubricResponses?.['model-a']?.reason === 'revealed feedback update',
+      'revealed model feedback was not readable after the second save',
+    );
+    const taskAfterFeedbackUpdate = await request<{ task: any }>(`/api/tasks/${ids.task}`);
+    assert(
+      taskAfterFeedbackUpdate.task.progress?.['smoke-reviewer-a'] === 1,
+      'revealed feedback update incorrectly advanced task progress',
+    );
     await request(`/api/tasks/${ids.task}/votes/ignored-legacy-name`, {
       method: 'PUT',
       headers: sharedReviewerB,
