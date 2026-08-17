@@ -1,5 +1,13 @@
 # Arena Implementation Progress
 
+## 2026-08-17: Reviewer-controlled reveal flow (complete)
+
+- Added a top-of-evaluation “提交后揭示模型” switch for A/B, Pairwise, Arena-rank, MOS, and Rubric; it defaults off so a successful submission advances directly.
+- The preference is scoped to the current evaluation session only, is not persisted, remains stable across cases in that session, and resets when the evaluation is re-entered.
+- Enabling the switch preserves the existing save-then-reveal review phase. Changing it after a case is already revealed does not hide the identity and only affects a later submission.
+- Focused Chromium coverage passes for default-off direct advance, explicit reveal, mid-session switching, re-entry reset, all formal evaluation methods, and mobile Arena-rank layout.
+- Validation passed: every package `test:*` script, TypeScript lint, frontend/server production builds, 14 migrations on an ephemeral PostgreSQL 16 container, both database integration suites, isolated API smoke, and all 26 Chromium E2E tests. The browser suite includes Arena-rank media default-paused controls, desktop/mobile layout, failure protection, storage restore, and material navigation. `git diff --check` is clean.
+
 ## 2026-08-17: Per-case model reveal and per-model feedback (complete)
 
 - Baseline is clean `main@40dddc7` in worktree `codex/model-feedback-reveal`.

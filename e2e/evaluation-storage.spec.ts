@@ -433,6 +433,8 @@ test.describe.serial('evaluation client storage', () => {
 
     await page.goto(`/tasks/${modeTaskIds.feedback}/evaluate`);
     await expect(page.getByText('Arena-rank', { exact: true }).first()).toBeVisible();
+    await page.getByRole('switch', { name: '提交后揭示模型' }).click();
+    await expect(page.getByRole('switch', { name: '提交后揭示模型' })).toBeChecked();
     await expect(page.getByText('Model A', { exact: true })).toHaveCount(0);
     await page.getByLabel(/评价与备注/).first().fill('initial note');
     await page.getByRole('button', { name: '提交排名', exact: true }).click();

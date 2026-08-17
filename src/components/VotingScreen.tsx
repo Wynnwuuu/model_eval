@@ -9,6 +9,7 @@ import { getDimensionValuesForItem, hasDimensionValues } from '../dimensionUtils
 import { getEvaluationReferenceInputKeys, resolveEvaluationReferenceMedia } from '../evaluationReferenceMedia';
 import EvaluationReferenceMediaStrip from './EvaluationReferenceMediaStrip';
 import ModelFeedbackEditor from './ModelFeedbackEditor';
+import RevealAfterSubmitToggle from './RevealAfterSubmitToggle';
 import { resolveModelFeedbackCandidates, type ModelFeedbackDraft } from '../modelFeedback';
 
 interface VotingScreenProps {
@@ -20,6 +21,8 @@ interface VotingScreenProps {
   blind?: boolean;
   isRevealed?: boolean;
   isLastItem?: boolean;
+  revealAfterSubmit: boolean;
+  onRevealAfterSubmitChange: (checked: boolean) => void;
   onVote: (vote: VoteType, feedback: ModelFeedbackDraft) => void;
   onNext?: (feedback: ModelFeedbackDraft) => void;
   onRevote?: () => void;
@@ -46,6 +49,8 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
   blind = true,
   isRevealed = false,
   isLastItem = false,
+  revealAfterSubmit,
+  onRevealAfterSubmitChange,
   onVote,
   onNext,
   onRevote,
@@ -253,6 +258,8 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
       <div className="h-1 w-full shrink-0 bg-white/10">
         <div className="ark-progress h-full transition-all duration-300 ease-out" style={{ width: `${progress}%` }} />
       </div>
+
+      <RevealAfterSubmitToggle checked={revealAfterSubmit} onChange={onRevealAfterSubmitChange} />
 
       <div className="flex min-h-0 flex-1 flex-col bg-black/25">
         {(item.inputs || item.prompt || hasDimensions) && (

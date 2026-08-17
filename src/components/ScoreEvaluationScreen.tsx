@@ -8,6 +8,7 @@ import MediaRenderer from './MediaRenderer';
 import DimensionChips from './DimensionChips';
 import EvaluationReferenceMediaStrip from './EvaluationReferenceMediaStrip';
 import ModelFeedbackEditor from './ModelFeedbackEditor';
+import RevealAfterSubmitToggle from './RevealAfterSubmitToggle';
 import type { ModelFeedbackDraft } from '../modelFeedback';
 
 interface ScoreEvaluationScreenProps {
@@ -18,6 +19,8 @@ interface ScoreEvaluationScreenProps {
   config: EvaluationConfig;
   isRevealed?: boolean;
   isLastItem?: boolean;
+  revealAfterSubmit: boolean;
+  onRevealAfterSubmitChange: (checked: boolean) => void;
   onVote: (vote: Partial<VoteRecord>, feedback: ModelFeedbackDraft) => void;
   onNext?: (feedback: ModelFeedbackDraft) => void;
   onRevote?: () => void;
@@ -79,6 +82,8 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
   config,
   isRevealed = false,
   isLastItem = false,
+  revealAfterSubmit,
+  onRevealAfterSubmitChange,
   onVote,
   onNext,
   onRevote,
@@ -259,6 +264,8 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
       <div className="h-1 w-full shrink-0 bg-white/10">
         <div className="ark-progress h-full transition-all duration-300 ease-out" style={{ width: `${progress}%` }} />
       </div>
+
+      <RevealAfterSubmitToggle checked={revealAfterSubmit} onChange={onRevealAfterSubmitChange} />
 
       {(prompt || hasCaseDimensions) && (
         <div className="ark-prompt-strip relative z-10 shrink-0 px-6 py-3">

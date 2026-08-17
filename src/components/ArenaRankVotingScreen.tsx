@@ -10,6 +10,7 @@ import { getDimensionValuesForItem, hasDimensionValues } from '../dimensionUtils
 import { getEvaluationReferenceInputKeys } from '../evaluationReferenceMedia';
 import EvaluationReferenceMediaStrip from './EvaluationReferenceMediaStrip';
 import ModelFeedbackEditor from './ModelFeedbackEditor';
+import RevealAfterSubmitToggle from './RevealAfterSubmitToggle';
 import type { ModelFeedbackDraft } from '../modelFeedback';
 
 interface ArenaRankVotingScreenProps {
@@ -21,6 +22,8 @@ interface ArenaRankVotingScreenProps {
   blind?: boolean;
   isRevealed?: boolean;
   isLastItem?: boolean;
+  revealAfterSubmit: boolean;
+  onRevealAfterSubmitChange: (checked: boolean) => void;
   onVote: (ranking: RankingEntry[], feedback: ModelFeedbackDraft) => void;
   onNext?: (feedback: ModelFeedbackDraft) => void;
   onRevote?: () => void;
@@ -41,6 +44,8 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
   blind = true,
   isRevealed = false,
   isLastItem = false,
+  revealAfterSubmit,
+  onRevealAfterSubmitChange,
   onVote,
   onNext,
   onRevote,
@@ -457,6 +462,8 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
       <div className="h-1 w-full shrink-0 bg-white/10">
         <div className="ark-progress h-full transition-all duration-300 ease-out" style={{ width: `${progress}%` }} />
       </div>
+
+      <RevealAfterSubmitToggle checked={revealAfterSubmit} onChange={onRevealAfterSubmitChange} />
 
       {isRevealed && (
         <div className="border-b border-emerald-400/20 bg-emerald-400/10 px-6 py-2 text-sm text-emerald-200">

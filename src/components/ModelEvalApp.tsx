@@ -81,6 +81,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
   const [voteSaving, setVoteSaving] = useState(false);
   const [voteSaveError, setVoteSaveError] = useState<string | null>(null);
   const [casePhase, setCasePhase] = useState<'evaluating' | 'revealed'>('evaluating');
+  const [revealAfterSubmit, setRevealAfterSubmit] = useState(false);
   const [resyncLoading, setResyncLoading] = useState(false);
   const [resyncError, setResyncError] = useState<string | null>(null);
   const [storageIssue, setStorageIssue] = useState<BrowserStorageIssue | null>(null);
@@ -94,6 +95,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
     chain: Promise.resolve(),
   });
   const loadedRouteTaskIdRef = useRef<string | null>(null);
+  const revealPreferenceSessionRef = useRef<string | null>(null);
 
   // Confirm Modal State
   const [confirmConfig, setConfirmConfig] = useState<{
@@ -191,6 +193,18 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
   useEffect(() => {
     setCasePhase('evaluating');
   }, [currentIndex, sessionId]);
+
+  useEffect(() => {
+    if (currentRoute !== 'voting') {
+      revealPreferenceSessionRef.current = null;
+      return;
+    }
+
+    const evaluationSessionKey = routeContext.taskId || sessionId;
+    if (!evaluationSessionKey || revealPreferenceSessionRef.current === evaluationSessionKey) return;
+    revealPreferenceSessionRef.current = evaluationSessionKey;
+    setRevealAfterSubmit(false);
+  }, [currentRoute, routeContext.taskId, sessionId]);
 
   useEffect(() => {
     if (currentRoute === 'results' && !routeContext.taskId && activeTaskId) {
@@ -704,18 +718,18 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
       vote,
       choice: vote,
       pairContext: currentItem.pairContext
-    }, { feedback, reveal: true });
+    }, { feedback, reveal: revealAfterSubmit });
   };
 
   const handleRankVote = async (ranking: RankingEntry[], feedback: ModelFeedbackDraft) => {
     await commitVoteRecord({
       method: 'rank_order',
       ranking
-    }, { feedback, reveal: true });
+    }, { feedback, reveal: revealAfterSubmit });
   };
 
   const handleScoreVote = async (votePayload: Partial<VoteRecord>, feedback: ModelFeedbackDraft) => {
-    await commitVoteRecord(votePayload, { feedback, reveal: true });
+    await commitVoteRecord(votePayload, { feedback, reveal: revealAfterSubmit });
   };
 
   const handleSkipItem = async () => {
@@ -1235,6 +1249,8 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
           config={taskEvaluationConfig}
           isRevealed={casePhase === 'revealed'}
           isLastItem={currentIndex === items.length - 1}
+          revealAfterSubmit={revealAfterSubmit}
+          onRevealAfterSubmitChange={setRevealAfterSubmit}
           onVote={handleScoreVote}
           onNext={handleContinueAfterReveal}
           onRevote={handleRevoteCurrent}
@@ -1257,6 +1273,8 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
           blind={taskEvaluationConfig.blind !== false}
           isRevealed={casePhase === 'revealed'}
           isLastItem={currentIndex === items.length - 1}
+          revealAfterSubmit={revealAfterSubmit}
+          onRevealAfterSubmitChange={setRevealAfterSubmit}
           onVote={handleVote}
           onNext={handleContinueAfterReveal}
           onRevote={handleRevoteCurrent}
@@ -1285,6 +1303,8 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
           blind={taskEvaluationConfig.blind !== false}
           isRevealed={casePhase === 'revealed'}
           isLastItem={currentIndex === items.length - 1}
+          revealAfterSubmit={revealAfterSubmit}
+          onRevealAfterSubmitChange={setRevealAfterSubmit}
           onVote={handleRankVote}
           onNext={handleContinueAfterReveal}
           onRevote={handleRevoteCurrent}

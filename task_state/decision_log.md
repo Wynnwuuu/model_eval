@@ -1,5 +1,13 @@
 # Arena Decision Log
 
+## 2026-08-17: Reveal flow is an ephemeral reviewer choice and defaults off
+
+Formal evaluation pages expose one shared “提交后揭示模型” switch. It defaults off, so the durable vote save is followed immediately by the next case or results. Enabling it reuses the existing revealed review phase without changing vote records, task blindness, APIs, or database fields.
+
+The preference is intentionally in-memory and evaluation-session scoped. It persists across cases within that session, resets when the reviewer leaves and re-enters an evaluation, and is absent from Benchmark Preview. A case whose identity has already been shown cannot be made anonymous again; changing the switch there affects subsequent submissions while the current case still completes through the review continuation control.
+
+Full browser regression must start both the Vite app and API against the same isolated PostgreSQL database, with the API listening on `127.0.0.1:8787` because existing E2E setup requests use that fixed address. Running Vite in offline storage mode or moving only the API to another port produces misleading fixture-not-found failures and is not a valid full-E2E environment.
+
 ## 2026-08-17: Reveal only after durable case submission and reuse model responses
 
 Formal evaluations use a two-phase case flow. The first action persists the decision and current per-model notes before any real model name appears. A successful save keeps the current case mounted in a revealed review phase; the original submit control becomes `下一题`, which saves again only when notes changed. A failed first save never reveals identity, and skipped cases neither reveal nor collect model feedback.

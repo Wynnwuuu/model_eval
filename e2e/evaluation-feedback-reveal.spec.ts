@@ -47,6 +47,41 @@ const openRestoredEvaluation = async (page: Page) => {
   await page.getByRole('button', { name: '继续评测' }).click();
 };
 
+const enableRevealAfterSubmit = async (page: Page) => {
+  const toggle = page.getByRole('switch', { name: '提交后揭示模型' });
+  await expect(toggle).not.toBeChecked();
+  await toggle.click();
+  await expect(toggle).toBeChecked();
+};
+
+test('reveal is off by default and submission advances directly', async ({ page }) => {
+  await seedSession(page, baseSession({
+    items: [buildItem(0), buildItem(1)],
+    taskParadigm: 'Arena-rank',
+    taskEvaluationConfig: { method: 'rank_order', blind: true, tiePolicy: 'allow' },
+  }));
+
+  await openRestoredEvaluation(page);
+  await expect(page.getByRole('switch', { name: '提交后揭示模型' })).not.toBeChecked();
+  await page.getByRole('button', { name: '提交排名', exact: true }).click();
+  await expect(page.getByText('2 / 2', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('本 case 已保存，模型身份已揭示')).toHaveCount(0);
+  await expect(page.getByText('Reveal Model A', { exact: true })).toHaveCount(0);
+});
+
+test('reveal preference is not persisted when the evaluation is re-entered', async ({ page }) => {
+  await seedSession(page, baseSession({
+    taskParadigm: 'Arena-rank',
+    taskEvaluationConfig: { method: 'rank_order', blind: true, tiePolicy: 'allow' },
+  }));
+
+  await openRestoredEvaluation(page);
+  await enableRevealAfterSubmit(page);
+  await page.goto('/evaluation');
+  await page.getByRole('button', { name: '继续评测' }).click();
+  await expect(page.getByRole('switch', { name: '提交后揭示模型' })).not.toBeChecked();
+});
+
 test('Arena-rank saves before reveal, keeps feedback editable, and advances from the submit slot', async ({ page }) => {
   await page.addInitScript(({ session }) => {
     localStorage.setItem('modeleval_session', JSON.stringify(session));
@@ -68,6 +103,7 @@ test('Arena-rank saves before reveal, keeps feedback editable, and advances from
 
   await page.goto('/evaluation');
   await page.getByRole('button', { name: '继续评测' }).click();
+  await enableRevealAfterSubmit(page);
   await expect(page.getByText('1 / 2', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('Reveal Model A', { exact: true })).toHaveCount(0);
 
@@ -78,18 +114,22 @@ test('Arena-rank saves before reveal, keeps feedback editable, and advances from
   await page.getByRole('button', { name: '提交排名', exact: true }).click();
   await expect(page.getByText('本 case 已保存，模型身份已揭示')).toBeVisible();
   await expect(page.getByText('Reveal Model A', { exact: true })).toBeVisible();
+  await page.getByRole('switch', { name: '提交后揭示模型' }).click();
+  await expect(page.getByRole('switch', { name: '提交后揭示模型' })).not.toBeChecked();
+  await expect(page.getByText('Reveal Model A', { exact: true })).toBeVisible();
+  await page.getByRole('switch', { name: '提交后揭示模型' }).click();
   await expect(page.getByRole('button', { name: '下一题', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '提交排名', exact: true })).toHaveCount(0);
 
   await feedbackInputs.nth(0).fill('揭示后修改的备注');
   await page.getByRole('button', { name: '下一题', exact: true }).click();
   await expect(page.getByText('2 / 2', { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole('switch', { name: '提交后揭示模型' })).toBeChecked();
   await expect(page.getByText('Reveal Model A', { exact: true })).toHaveCount(0);
   await expect(feedbackInputs.nth(0)).toHaveValue('');
 
+  await page.getByRole('switch', { name: '提交后揭示模型' }).click();
   await page.getByRole('button', { name: '提交排名', exact: true }).click();
-  await expect(page.getByRole('button', { name: '查看结果', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: '查看结果', exact: true }).click();
   await expect(page.getByRole('heading', { name: '模型评价汇总' })).toBeVisible();
   await page.locator('[data-model-feedback-summary] details').filter({ hasText: '备注 1' }).locator('summary').click();
   await expect(page.getByText('揭示后修改的备注', { exact: true })).toBeVisible();
@@ -109,6 +149,7 @@ test('A/B keeps swapped output feedback attached to the actual model and reveals
   }));
 
   await openRestoredEvaluation(page);
+  await enableRevealAfterSubmit(page);
   await expect(page.getByText('Reveal Model A', { exact: true })).toHaveCount(0);
   await page.getByLabel('选项 1 评价与备注').fill('左侧实际是模型 B');
   await page.getByRole('button', { name: '投给选项 1（左侧）', exact: true }).click();
@@ -151,6 +192,7 @@ test('Pairwise uses assignment identities for reveal and per-model feedback', as
   }));
 
   await openRestoredEvaluation(page);
+  await enableRevealAfterSubmit(page);
   await expect(page.getByText('Reveal Model C', { exact: true })).toHaveCount(0);
   await page.getByLabel('选项 1 评价与备注').fill('模型 C 的动作最好');
   await page.getByRole('button', { name: '投给选项 1（左侧）', exact: true }).click();
@@ -168,6 +210,7 @@ test('MOS locks scores after submission while feedback remains editable', async 
   }));
 
   await openRestoredEvaluation(page);
+  await enableRevealAfterSubmit(page);
   await expect(page.getByText('Reveal Model A', { exact: true })).toHaveCount(0);
   const cards = page.locator('section.ark-rank-card');
   await cards.nth(0).getByRole('button', { name: '5', exact: true }).click();
@@ -192,6 +235,7 @@ test('Rubric keeps required rationale in the shared per-model feedback editor', 
   }));
 
   await openRestoredEvaluation(page);
+  await enableRevealAfterSubmit(page);
   await expect(page.getByText('Reveal Model A', { exact: true })).toBeVisible();
   const cards = page.locator('section.ark-rank-card');
   await cards.nth(0).getByRole('button', { name: '4', exact: true }).click();
@@ -228,6 +272,7 @@ test('Arena-rank exposes the same reveal continuation on mobile', async ({ page 
   }));
 
   await openRestoredEvaluation(page);
+  await enableRevealAfterSubmit(page);
   await page.getByRole('button', { name: '调整排名梯队', exact: true }).click();
   await expect(page.getByRole('dialog', { name: '排名梯队编辑器' })).toBeVisible();
   await page.getByRole('dialog', { name: '排名梯队编辑器' }).getByRole('button', { name: '提交排名', exact: true }).click();
