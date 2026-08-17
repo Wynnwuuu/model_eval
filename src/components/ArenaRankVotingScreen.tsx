@@ -561,7 +561,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
                         key={`${mediaCycleKey}-${output.modelId}-${output.url}-media`}
                         url={output.url}
                         label={optionLabel}
-                        isActive={true}
+                        isActive={false}
                         forceType={item.type}
                         onLoadStatusChange={(isLoaded) => handleLoadStatusChange(output.modelId, isLoaded)}
                       />
