@@ -49,9 +49,13 @@ const openRestoredEvaluation = async (page: Page) => {
 
 const enableRevealAfterSubmit = async (page: Page) => {
   const toggle = page.getByRole('switch', { name: '提交后揭示模型' });
+  const toggleLabel = toggle.locator('xpath=..');
   await expect(toggle).not.toBeChecked();
+  await expect(toggleLabel).toContainText('揭示模型');
+  await expect(toggleLabel).toContainText('关闭');
   await toggle.click();
   await expect(toggle).toBeChecked();
+  await expect(toggleLabel).toContainText('开启');
 };
 
 test('reveal is off by default and submission advances directly', async ({ page }) => {
