@@ -45,6 +45,7 @@ import {
   normalizeDimensions
 } from '../evaluationMethods';
 import { getTaskResultEntryState } from '../taskResults';
+import { LatestRequestGate } from '../latestRequestGate';
 
 interface TaskBuilderScreenProps {
   projectId?: string;
@@ -54,6 +55,7 @@ interface TaskBuilderScreenProps {
   initialTaskId?: string;
   initialDatasetId?: string;
   initialModelColumns?: string[];
+  onCloseTaskDetails?: () => void;
   onClearProjectScope?: () => void;
   onEvaluateTask?: (task: EvalTask) => void;
   onOpenResults?: (task: EvalTask) => void;
@@ -152,6 +154,7 @@ export default function TaskBuilderScreen({
   initialTaskId,
   initialDatasetId,
   initialModelColumns,
+  onCloseTaskDetails,
   onClearProjectScope,
   onEvaluateTask,
   onOpenResults
@@ -168,6 +171,8 @@ export default function TaskBuilderScreen({
   const [viewingTask, setViewingTask] = useState<EvalTask | null>(null);
   const [viewingTaskItems, setViewingTaskItems] = useState<EvaluationItem[]>([]);
   const [loadingItems, setLoadingItems] = useState(false);
+  const detailRequestGateRef = useRef(new LatestRequestGate());
+  const openedInitialTaskIdRef = useRef<string | null>(null);
   const [newTask, setNewTask] = useState<Partial<EvalTask>>({
     name: '',
     projectId: projectId || '',
@@ -1094,30 +1099,61 @@ export default function TaskBuilderScreen({
   };
 
   const handleViewTask = async (task: EvalTask) => {
+    const request = detailRequestGateRef.current.begin();
     setViewingTask(task);
+    setViewingTaskItems([]);
+    setEditingItemId(null);
+    setEditItemForm(null);
+    setItemToDelete(null);
     setLoadingItems(true);
+    setError(null);
     try {
-      const items = await loadTaskItems(task);
+      const items = await loadTaskItems(task, { signal: request.controller.signal });
+      if (!detailRequestGateRef.current.isCurrent(request)) return;
       setViewingTaskItems(items);
     } catch (err) {
+      const wasAborted = request.controller.signal.aborted || (err instanceof Error && err.name === 'AbortError');
+      if (wasAborted || !detailRequestGateRef.current.isCurrent(request)) return;
       console.error('Error fetching task items:', err);
       setError('加载物料详情失败');
     } finally {
-      setLoadingItems(false);
+      if (detailRequestGateRef.current.isCurrent(request)) {
+        setLoadingItems(false);
+        detailRequestGateRef.current.finish(request);
+      }
     }
   };
 
+  const handleCloseTaskDetails = () => {
+    detailRequestGateRef.current.cancel();
+    setViewingTask(null);
+    setViewingTaskItems([]);
+    setLoadingItems(false);
+    setEditingItemId(null);
+    setEditItemForm(null);
+    setItemToDelete(null);
+    if (initialTaskId) onCloseTaskDetails?.();
+  };
+
   useEffect(() => {
-    if (!initialTaskId) return;
+    if (!initialTaskId) {
+      openedInitialTaskIdRef.current = null;
+      return;
+    }
+
+    if (openedInitialTaskIdRef.current === initialTaskId) return;
 
     const targetTask = tasks.find(task => task.id === initialTaskId);
     if (!targetTask) return;
 
-    const alreadyLoaded = viewingTask?.id === initialTaskId && (viewingTaskItems.length > 0 || loadingItems);
-    if (alreadyLoaded) return;
+    openedInitialTaskIdRef.current = initialTaskId;
+    void handleViewTask(targetTask);
+  }, [initialTaskId, tasks]);
 
-    handleViewTask(targetTask);
-  }, [initialTaskId, tasks, viewingTask?.id, viewingTaskItems.length, loadingItems]);
+  useEffect(() => () => {
+    detailRequestGateRef.current.cancel();
+    openedInitialTaskIdRef.current = null;
+  }, []);
 
   const handleSaveItemEdit = async (itemId: string) => {
     if (!viewingTask || !editItemForm) return;
@@ -2270,14 +2306,21 @@ export default function TaskBuilderScreen({
 
       {viewingTask && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-white/5 rounded-2xl shadow-xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col animate-in zoom-in-95 duration-200">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="task-detail-dialog-title"
+            className="bg-white/5 rounded-2xl shadow-xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col animate-in zoom-in-95 duration-200"
+          >
             <div className="flex items-center justify-between p-6 border-b border-white/10">
-              <h3 className="text-xl font-bold text-slate-200 flex items-center gap-2">
+              <h3 id="task-detail-dialog-title" className="text-xl font-bold text-slate-200 flex items-center gap-2">
                 <Eye size={20} className="text-amber-400" />
                 物料详情: {viewingTask.name}
               </h3>
-              <button 
-                onClick={() => setViewingTask(null)}
+              <button
+                type="button"
+                aria-label="关闭物料详情"
+                onClick={handleCloseTaskDetails}
                 className="text-slate-300 hover:text-slate-300 transition-colors"
               >
                 <X size={24} />
@@ -2537,7 +2580,7 @@ export default function TaskBuilderScreen({
                                         <div className="h-40">
                                           <MediaRenderer
                                             url={url as string}
-                                            isActive
+                                            isActive={false}
                                             className="h-full w-full"
                                             videoPreload="metadata"
                                           />
@@ -2566,7 +2609,7 @@ export default function TaskBuilderScreen({
                                           <div className="h-48 overflow-hidden rounded-lg border border-white/10 bg-black/30">
                                             <MediaRenderer
                                               url={output.url}
-                                              isActive
+                                              isActive={false}
                                               forceType={['image', 'video', 'audio'].includes(outputType || '') ? outputType : undefined}
                                               className="h-full w-full"
                                               videoPreload="metadata"

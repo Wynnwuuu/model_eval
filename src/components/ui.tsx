@@ -145,6 +145,7 @@ export interface DataTableShellProps<TData> {
   emptyTitle?: string;
   className?: string;
   onRowClick?: (row: TData) => void;
+  isRowInteractive?: (row: TData) => boolean;
 }
 
 export function DataTableShell<TData>({
@@ -153,7 +154,8 @@ export function DataTableShell<TData>({
   searchPlaceholder = '搜索...',
   emptyTitle = '暂无数据',
   className = '',
-  onRowClick
+  onRowClick,
+  isRowInteractive
 }: DataTableShellProps<TData>) {
   const [sorting, setSorting] = React.useState<SortingState>([]);
   const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>([]);
@@ -212,32 +214,37 @@ export function DataTableShell<TData>({
             ))}
           </thead>
           <tbody>
-            {table.getRowModel().rows.length ? table.getRowModel().rows.map(row => (
-              <tr
-                key={row.id}
-                role={onRowClick ? 'button' : undefined}
-                tabIndex={onRowClick ? 0 : undefined}
-                onClick={event => {
-                  if (!onRowClick) return;
-                  const target = event.target as HTMLElement;
-                  if (target.closest('button,a,input,select,textarea')) return;
-                  onRowClick(row.original);
-                }}
-                onKeyDown={event => {
-                  if (!onRowClick) return;
-                  if (event.key !== 'Enter' && event.key !== ' ') return;
-                  event.preventDefault();
-                  onRowClick(row.original);
-                }}
-                className={`border-b border-[var(--border-subtle)] last:border-0 hover:bg-white/[0.03] ${onRowClick ? 'cursor-pointer focus:outline-none focus-visible:bg-white/[0.06]' : ''}`}
-              >
-                {row.getVisibleCells().map(cell => (
-                  <td key={cell.id} className="px-4 py-3 align-top text-[var(--text-secondary)]">
-                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                  </td>
-                ))}
-              </tr>
-            )) : (
+            {table.getRowModel().rows.length ? table.getRowModel().rows.map(row => {
+              const rowInteractive = Boolean(onRowClick && (isRowInteractive?.(row.original) ?? true));
+              return (
+                <tr
+                  key={row.id}
+                  role={rowInteractive ? 'button' : undefined}
+                  tabIndex={rowInteractive ? 0 : undefined}
+                  onClick={event => {
+                    if (!rowInteractive || !onRowClick) return;
+                    const target = event.target as HTMLElement;
+                    if (target.closest('button,a,input,select,textarea')) return;
+                    onRowClick(row.original);
+                  }}
+                  onKeyDown={event => {
+                    if (!rowInteractive || !onRowClick) return;
+                    const target = event.target as HTMLElement;
+                    if (target.closest('button,a,input,select,textarea')) return;
+                    if (event.key !== 'Enter' && event.key !== ' ') return;
+                    event.preventDefault();
+                    onRowClick(row.original);
+                  }}
+                  className={`border-b border-[var(--border-subtle)] last:border-0 hover:bg-white/[0.03] ${rowInteractive ? 'cursor-pointer focus:outline-none focus-visible:bg-white/[0.06]' : ''}`}
+                >
+                  {row.getVisibleCells().map(cell => (
+                    <td key={cell.id} className="px-4 py-3 align-top text-[var(--text-secondary)]">
+                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                    </td>
+                  ))}
+                </tr>
+              );
+            }) : (
               <tr>
                 <td colSpan={columns.length} className="px-4 py-12 text-center text-[var(--text-muted)]">{emptyTitle}</td>
               </tr>

@@ -828,3 +828,18 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - items 与 votes 并行读取，切换物料、评委范围或刷新时取消旧请求，并通过请求序号拒绝过期响应。
 - 专项回归、统计与路由测试、TypeScript、前后端构建、API smoke 和本地连通检查全部通过。
 - 浏览器验证桌面与 390x844 窄屏无横向溢出；视口外媒体不请求，滚入后加载、离开后释放，原始评审记录展开正常。
+
+## 2026-08-17: 首页物料项目入口与详情弹窗修复
+
+### Implemented
+
+- 首页“最近评测物料”的名称、整行和操作按钮统一进入物料所属项目；未归属物料不再暴露行、名称或键盘交互。
+- `/tasks/:id` 详情深链只自动打开一次；关闭会取消详情请求、清空局部状态并进入 `/tasks`，列表内“查看 / 编辑”仍保持本地弹窗语义。
+- 详情 items 使用 `LatestRequestGate` 和 `AbortSignal`，空结果、失败、关闭、切换和卸载均不会形成请求循环或跨任务响应污染。
+- 详情视频和音频默认暂停并保留独立原生 controls；弹窗补齐 dialog、标题关联和关闭按钮可访问性语义。
+
+### Validation
+
+- package.json 中全部 `test:*` 脚本通过，其中完整 Chromium E2E 为 16/16；新增六项覆盖首页三种入口、未归属行、深链关闭、空/失败单请求、慢响应隔离及音视频播放状态。
+- TypeScript、前端生产构建、服务端构建、API smoke、数据库集成、当前 checkout 本地健康检查、Docker 生产镜像构建及 `git diff --check` 全部通过。
+- `package-lock.json` 未修改。npm 审计显示锁文件既有的 15 项生产依赖告警；本次改动未引入或升级依赖，该跨范围升级债务未在本修复中处理。

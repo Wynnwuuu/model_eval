@@ -952,7 +952,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
           onGoToProjects={() => navigate('projects')}
           onGoToDatasets={() => navigate('datasets')}
           onGoToTasks={(statusFilter) => navigate('tasks', { materialStatusFilter: statusFilter })}
-          onOpenTask={(taskId) => navigate('tasks', { taskId, materialId: taskId, source: 'task', taskBuilderMode: 'list' })}
+          onOpenProject={(projectId) => navigate('projects', { projectId, source: 'dashboard' })}
           onGoToInsights={() => navigate('insights')}
           onGoToGeneration={(batchId) => navigate('generation', { generationBatchId: batchId })}
         />
@@ -1046,6 +1046,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
             initialDatasetId={routeContext.taskDatasetId}
             initialModelColumns={routeContext.taskModelColumns}
             onBack={() => routeContext.projectId ? navigate('projects', { projectId: routeContext.projectId, source: 'dashboard' }) : navigate('overview')}
+            onCloseTaskDetails={() => navigate('tasks', { taskBuilderMode: 'list' })}
             onClearProjectScope={routeContext.projectId ? () => navigate('tasks', { taskBuilderMode: 'list' }) : undefined}
             onEvaluateTask={(task) => navigate('voting', { taskId: task.id, materialId: task.id, source: 'task' })}
             onOpenResults={(task) => navigate('insights', {

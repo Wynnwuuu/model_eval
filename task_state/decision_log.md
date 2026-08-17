@@ -465,3 +465,11 @@ Task model identity comes only from mapped output columns. The removed manual Mo
 - 媒体采用视口懒加载和全局 6 路初始化调度，离屏暂停媒体可卸载，播放中媒体保持挂载。
 - 统计 bundle 在内容组件内仅构建一次；父级只负责选择、加载、错误与路由上下文。
 - 物料和评委范围切换必须取消旧请求，并用请求序号防止不可取消的旧响应覆盖新页面。
+
+## 2026-08-17: 首页物料入口遵循单一所属项目关系
+
+首页最近物料只使用现有的单值 `task.projectId` 进入标准 `/projects/:projectId` 项目详情，不推断洞察范围，也不打开物料详情。没有 `projectId` 的物料保持可见但完全不可交互；`DataTableShell` 通过可选逐行谓词表达这一差异，其他表格沿用原有默认行为。
+
+`/tasks/:id` 仍是受支持的物料详情深链。路由参数每个 ID 只触发一次自动打开，关闭深链导航到 `/tasks`；列表内打开的详情没有路由参数，因此关闭只修改本地状态。详情 items 与结果洞察采用相同的 latest-request 原则：新请求先中止旧请求，关闭和卸载中止当前请求，只有当前 token 可以写入 items、错误或 loading 状态。
+
+详情媒体的 `isActive` 固定为 false，只禁止自动播放，不协调用户主动播放的多个播放器。原生 controls、metadata 预加载、循环属性和现有媒体错误恢复保持不变。

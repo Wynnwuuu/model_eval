@@ -47,7 +47,7 @@
     "test:page-metadata": "tsx scripts/test-page-metadata.ts",
     "test:projects": "tsx scripts/test-project-contract.ts",
     "test:evaluation-storage": "tsx scripts/test-evaluation-client-storage.ts",
-    "test:e2e:evaluation-storage": "playwright test e2e/evaluation-storage.spec.ts e2e/arena-rank-playback.spec.ts",
+    "test:e2e:evaluation-storage": "playwright test e2e/evaluation-storage.spec.ts e2e/arena-rank-playback.spec.ts e2e/overview-material-navigation.spec.ts",
     "migrate:postgres": "tsx scripts/migrate-to-postgres.ts",
     "build": "vite build",
     "preview": "vite preview",

@@ -11,7 +11,7 @@ interface OverviewScreenProps {
   onGoToProjects: () => void;
   onGoToDatasets: () => void;
   onGoToTasks: (statusFilter?: EvalTask['status']) => void;
-  onOpenTask: (taskId: string) => void;
+  onOpenProject: (projectId: string) => void;
   onGoToInsights: (statusFilter?: EvalTask['status']) => void;
   onGoToGeneration: (batchId?: string) => void;
 }
@@ -71,7 +71,7 @@ const OverviewScreen: React.FC<OverviewScreenProps> = ({
   onGoToProjects,
   onGoToDatasets,
   onGoToTasks,
-  onOpenTask,
+  onOpenProject,
   onGoToInsights,
   onGoToGeneration
 }) => {
@@ -107,18 +107,25 @@ const OverviewScreen: React.FC<OverviewScreenProps> = ({
     {
       accessorKey: 'name',
       header: '评测物料',
-      cell: ({ row }: any) => (
-        <div>
-          <button
-            type="button"
-            onClick={() => onOpenTask(row.original.id)}
-            className="text-left font-medium text-[var(--text-primary)] hover:text-[var(--accent)]"
-          >
-            {row.original.name}
-          </button>
-          <div className="mt-1 text-xs text-[var(--text-muted)]">{row.original.totalItems || 0} cases</div>
-        </div>
-      )
+      cell: ({ row }: any) => {
+        const task = row.original as EvalTask;
+        return (
+          <div>
+            {task.projectId ? (
+              <button
+                type="button"
+                onClick={() => onOpenProject(task.projectId as string)}
+                className="text-left font-medium text-[var(--text-primary)] hover:text-[var(--accent)]"
+              >
+                {task.name}
+              </button>
+            ) : (
+              <div className="font-medium text-[var(--text-primary)]">{task.name}</div>
+            )}
+            <div className="mt-1 text-xs text-[var(--text-muted)]">{task.totalItems || 0} cases</div>
+          </div>
+        );
+      }
     },
     {
       accessorKey: 'status',
@@ -134,18 +141,22 @@ const OverviewScreen: React.FC<OverviewScreenProps> = ({
       id: 'actions',
       header: '操作',
       enableSorting: false,
-      cell: ({ row }: any) => (
-        <button
-          type="button"
-          onClick={() => onOpenTask(row.original.id)}
-          className="btn-secondary px-3 py-1.5 text-xs"
-          title="查看该评测物料的配置和 case 内容"
-        >
-          查看内容
-        </button>
-      )
+      cell: ({ row }: any) => {
+        const task = row.original as EvalTask;
+        return (
+          <button
+            type="button"
+            onClick={() => task.projectId && onOpenProject(task.projectId)}
+            disabled={!task.projectId}
+            className="btn-secondary px-3 py-1.5 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+            title={task.projectId ? '查看该评测物料所属的项目' : '该评测物料尚未归属项目'}
+          >
+            {task.projectId ? '查看项目' : '未归属项目'}
+          </button>
+        );
+      }
     }
-  ], [onOpenTask]);
+  ], [onOpenProject]);
 
   const jobColumns = useMemo(() => [
     {
@@ -221,7 +232,8 @@ const OverviewScreen: React.FC<OverviewScreenProps> = ({
               columns={taskColumns as any}
               searchPlaceholder="搜索评测物料..."
               emptyTitle="暂无评测物料"
-              onRowClick={(task: EvalTask) => onOpenTask(task.id)}
+              onRowClick={(task: EvalTask) => task.projectId && onOpenProject(task.projectId)}
+              isRowInteractive={(task: EvalTask) => Boolean(task.projectId)}
             />
           ) : (
             <EmptyState icon={<FileText size={32} />} title="暂无评测物料" description="从评测物料页面创建可执行评测配置后，这里会显示最近状态。" />
