@@ -33,7 +33,7 @@ const RevealAfterSubmitToggle: React.FC<RevealAfterSubmitToggleProps> = ({ check
       >
         <span
           aria-hidden="true"
-          className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${checked ? 'translate-x-5' : 'translate-x-1'}`}
+          className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${checked ? 'translate-x-6' : 'translate-x-0'}`}
         />
       </button>
     </div>

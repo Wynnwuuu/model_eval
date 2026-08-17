@@ -50,12 +50,33 @@ const openRestoredEvaluation = async (page: Page) => {
 const enableRevealAfterSubmit = async (page: Page) => {
   const toggle = page.getByRole('switch', { name: '提交后揭示模型' });
   const toggleLabel = toggle.locator('xpath=..');
+  const thumb = toggle.locator('span[aria-hidden="true"]');
+  const expectThumbOnSide = async (side: 'left' | 'right') => {
+    await thumb.evaluate((element) => Promise.all(element.getAnimations().map((animation) => animation.finished)));
+    const [trackBox, thumbBox] = await Promise.all([toggle.boundingBox(), thumb.boundingBox()]);
+    expect(trackBox).not.toBeNull();
+    expect(thumbBox).not.toBeNull();
+    if (!trackBox || !thumbBox) return;
+
+    expect(thumbBox.x).toBeGreaterThanOrEqual(trackBox.x);
+    expect(thumbBox.x + thumbBox.width).toBeLessThanOrEqual(trackBox.x + trackBox.width);
+    const trackCenter = trackBox.x + trackBox.width / 2;
+    const thumbCenter = thumbBox.x + thumbBox.width / 2;
+    if (side === 'left') {
+      expect(thumbCenter).toBeLessThan(trackCenter);
+    } else {
+      expect(thumbCenter).toBeGreaterThan(trackCenter);
+    }
+  };
+
   await expect(toggle).not.toBeChecked();
   await expect(toggleLabel).toContainText('揭示模型');
   await expect(toggleLabel).toContainText('关闭');
+  await expectThumbOnSide('left');
   await toggle.click();
   await expect(toggle).toBeChecked();
   await expect(toggleLabel).toContainText('开启');
+  await expectThumbOnSide('right');
 };
 
 test('reveal is off by default and submission advances directly', async ({ page }) => {
