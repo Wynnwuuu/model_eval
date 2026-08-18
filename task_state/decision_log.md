@@ -1,5 +1,9 @@
 # Arena Decision Log
 
+## 2026-08-18: Cookie-authenticated cloud requests must not carry legacy identity headers
+
+When cloud auth has no Bearer token, the only accepted identity is the server-verified owner Cookie. The frontend must return an empty auth-header set instead of copying the cached user into `X-User-*`: Unicode display names are not valid Fetch header values, and client-supplied identity metadata must not shadow a signed server session. Bearer-authenticated Feishu requests and explicit local-development headers keep their existing behavior.
+
 ## 2026-08-17: Reveal flow is an ephemeral reviewer choice and defaults off
 
 Formal evaluation pages expose one shared “提交后揭示模型” switch. It defaults off, so the durable vote save is followed immediately by the next case or results. Enabling it reuses the existing revealed review phase without changing vote records, task blindness, APIs, or database fields.

@@ -41,6 +41,7 @@
       "owner binding PostgreSQL tests",
       "full API smoke with binding, no-rebind, Bearer priority, same-origin mutation, logout revocation, and recovery",
       "27 Chromium regressions including fragment removal, hidden normal login, same-user recovery, and cleared-site-data recovery",
+      "Chinese owner display-name regression requiring a successful projects API request without invalid HTTP headers",
       "lint",
       "frontend build",
       "server build",

@@ -34,7 +34,7 @@ test.describe('hidden owner access', () => {
     const ownerBearer = createAuthToken({
       userId: 'smoke-user',
       email: 'smoke@example.com',
-      displayName: 'Smoke User',
+      displayName: '面包干',
       organizationId: 'default',
     });
     const setupResponse = await page.request.post(`${API_BASE_URL}/api/auth/owner/access`, {
@@ -66,8 +66,13 @@ test.describe('hidden owner access', () => {
       };
     });
     expect(firstIdentity.user?.id).toBe('smoke-user');
+    expect(firstIdentity.user?.displayName).toBe('面包干');
     expect(firstIdentity.bearer).toBeNull();
     expect(firstIdentity.storedValues.some(value => String(value).includes(ACCESS_KEY))).toBe(false);
+
+    await page.goto('/projects');
+    await expect.poll(() => requestUrls.filter(url => new URL(url).pathname === '/api/projects').length).toBeGreaterThan(0);
+    expect(consoleMessages.some(message => message.includes('non ISO-8859-1 code point'))).toBe(false);
 
     const currentUser = await page.evaluate(async apiBaseUrl => {
       const response = await fetch(`${apiBaseUrl}/api/auth/user/me`, { credentials: 'include' });

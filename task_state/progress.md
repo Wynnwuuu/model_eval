@@ -874,3 +874,10 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Passed owner cryptography/Cookie tests, disabled-state 404 tests, PostgreSQL binding tests, complete API smoke, project/storage/metadata regressions, TypeScript, frontend and server production builds, and `git diff --check`.
 - All 27 Chromium checks passed, including normal-login invisibility, fragment cleanup, same-user cookie access, and recovery after clearing browser data. Test bindings were removed and verified at zero rows.
 - No production key was generated, no GitHub secret was changed, and no deployment was triggered. Production activation still requires the documented two-stage rollout and the intended user's one-time Feishu binding.
+
+## 2026-08-18: Owner access Unicode identity hotfix
+
+- Live diagnostics proved that existing data was not deleted: project requests never left the browser because the Chinese owner display name was copied into the legacy `X-User-Name` HTTP header and Fetch rejected the non-Latin-1 value.
+- Cloud sessions without a Bearer token now rely exclusively on the signed HttpOnly owner Cookie. Legacy `X-User-*` headers remain unchanged for offline/local mode, while Feishu sessions continue to send the Bearer token.
+- The owner browser regression now binds the Chinese display name `面包干`, verifies the same stored identity, and requires a real `/api/projects` request without the non-Latin-1 console failure.
+- TypeScript lint, frontend/server production builds, owner security tests, project contracts, and `git diff --check` pass locally. The expanded browser regression will run in the required isolated PostgreSQL CI environment before deployment.
