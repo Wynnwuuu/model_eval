@@ -24,6 +24,10 @@ on:
         required: true
       EVAL_STUDIO_FEISHU_REDIRECT_URI_DEV:
         required: true
+      EVAL_STUDIO_OWNER_ACCESS_ENABLED_DEV:
+        required: false
+      EVAL_STUDIO_OWNER_ACCESS_KEY_SHA256_DEV:
+        required: false
       EVAL_STUDIO_AION_MANAGER_BASE_URL_DEV:
         required: true
       EVAL_STUDIO_AION_EVAL_USER_ID_DEV:
@@ -72,6 +76,8 @@ env:
   FEISHU_APP_ID: ${{ secrets.EVAL_STUDIO_FEISHU_APP_ID_DEV }}
   FEISHU_APP_SECRET: ${{ secrets.EVAL_STUDIO_FEISHU_APP_SECRET_DEV }}
   FEISHU_REDIRECT_URI: ${{ secrets.EVAL_STUDIO_FEISHU_REDIRECT_URI_DEV }}
+  OWNER_ACCESS_ENABLED: ${{ secrets.EVAL_STUDIO_OWNER_ACCESS_ENABLED_DEV }}
+  OWNER_ACCESS_KEY_SHA256: ${{ secrets.EVAL_STUDIO_OWNER_ACCESS_KEY_SHA256_DEV }}
   AION_MANAGER_BASE_URL: ${{ secrets.EVAL_STUDIO_AION_MANAGER_BASE_URL_DEV }}
   AION_EVAL_USER_ID: ${{ secrets.EVAL_STUDIO_AION_EVAL_USER_ID_DEV }}
   MANUEVAL_PUBLIC_BASE_URL: ${{ secrets.EVAL_STUDIO_PUBLIC_BASE_URL_DEV }}
@@ -117,6 +123,16 @@ jobs:
             echo "Feishu OAuth secrets are incomplete. Configure EVAL_STUDIO_FEISHU_APP_ID_DEV, EVAL_STUDIO_FEISHU_APP_SECRET_DEV, and EVAL_STUDIO_FEISHU_REDIRECT_URI_DEV."
             exit 1
           fi
+          if [ "$OWNER_ACCESS_ENABLED" = "true" ]; then
+            if ! [[ "$OWNER_ACCESS_KEY_SHA256" =~ ^[a-f0-9]{64}$ ]]; then
+              echo "Owner access is enabled but EVAL_STUDIO_OWNER_ACCESS_KEY_SHA256_DEV is not a 64-character lowercase SHA-256 value."
+              exit 1
+            fi
+          else
+            OWNER_ACCESS_ENABLED="false"
+          fi
+          export OWNER_ACCESS_ENABLED
+          echo "OWNER_ACCESS_ENABLED=$OWNER_ACCESS_ENABLED" >> "$GITHUB_ENV"
           if [ -z "$MANUEVAL_PUBLIC_BASE_URL" ]; then
             case "$FEISHU_REDIRECT_URI" in
               */feishu-callback)
@@ -161,11 +177,11 @@ jobs:
           cd ./deploy/overlays/dev
           ../../../kustomize edit set image REGISTRY/NAMESPACE/IMAGE:TAG=$ACR_EE_REGISTRY/$ACR_EE_NAMESPACE/$ACR_EE_IMAGE:$ACR_EE_TAG
           ../../../kustomize build > /tmp/eval-studio-dev.yml
-          node -e 'const fs = require("fs"); const file = "/tmp/eval-studio-dev.yml"; const replacements = { __DATABASE_URL__: process.env.DATABASE_URL, __JWT_SECRET__: process.env.JWT_SECRET, __FEISHU_APP_ID__: process.env.FEISHU_APP_ID, __FEISHU_APP_SECRET__: process.env.FEISHU_APP_SECRET, __FEISHU_REDIRECT_URI__: process.env.FEISHU_REDIRECT_URI, __AION_MANAGER_BASE_URL__: process.env.AION_MANAGER_BASE_URL, __AION_EVAL_USER_ID__: process.env.AION_EVAL_USER_ID, __MANUEVAL_PUBLIC_BASE_URL__: process.env.MANUEVAL_PUBLIC_BASE_URL, __MANUEVAL_OSS_ACCESS_KEY_ID__: process.env.MANUEVAL_OSS_ACCESS_KEY_ID, __MANUEVAL_OSS_ACCESS_KEY_SECRET__: process.env.MANUEVAL_OSS_ACCESS_KEY_SECRET, __MANUEVAL_OSS_ENDPOINT__: process.env.MANUEVAL_OSS_ENDPOINT, __MANUEVAL_OSS_REGION__: process.env.MANUEVAL_OSS_REGION, __MANUEVAL_OSS_BUCKET__: process.env.MANUEVAL_OSS_BUCKET }; let yaml = fs.readFileSync(file, "utf8"); for (const [key, value] of Object.entries(replacements)) yaml = yaml.replaceAll(`value: ${key}`, `value: ${JSON.stringify(value)}`); fs.writeFileSync(file, yaml);'
+          node -e 'const fs = require("fs"); const file = "/tmp/eval-studio-dev.yml"; const replacements = { __DATABASE_URL__: process.env.DATABASE_URL, __JWT_SECRET__: process.env.JWT_SECRET, __FEISHU_APP_ID__: process.env.FEISHU_APP_ID, __FEISHU_APP_SECRET__: process.env.FEISHU_APP_SECRET, __FEISHU_REDIRECT_URI__: process.env.FEISHU_REDIRECT_URI, __OWNER_ACCESS_ENABLED__: process.env.OWNER_ACCESS_ENABLED, __OWNER_ACCESS_KEY_SHA256__: process.env.OWNER_ACCESS_KEY_SHA256, __AION_MANAGER_BASE_URL__: process.env.AION_MANAGER_BASE_URL, __AION_EVAL_USER_ID__: process.env.AION_EVAL_USER_ID, __MANUEVAL_PUBLIC_BASE_URL__: process.env.MANUEVAL_PUBLIC_BASE_URL, __MANUEVAL_OSS_ACCESS_KEY_ID__: process.env.MANUEVAL_OSS_ACCESS_KEY_ID, __MANUEVAL_OSS_ACCESS_KEY_SECRET__: process.env.MANUEVAL_OSS_ACCESS_KEY_SECRET, __MANUEVAL_OSS_ENDPOINT__: process.env.MANUEVAL_OSS_ENDPOINT, __MANUEVAL_OSS_REGION__: process.env.MANUEVAL_OSS_REGION, __MANUEVAL_OSS_BUCKET__: process.env.MANUEVAL_OSS_BUCKET }; let yaml = fs.readFileSync(file, "utf8"); for (const [key, value] of Object.entries(replacements)) yaml = yaml.replaceAll(`value: ${key}`, `value: ${JSON.stringify(value || "")}`); fs.writeFileSync(file, yaml);'
 
           dump_diagnostics() {
             echo "::group::Rendered manifest"
-            node -e 'const fs = require("fs"); const secrets = [process.env.DATABASE_URL, process.env.JWT_SECRET, process.env.FEISHU_APP_SECRET, process.env.AION_EVAL_USER_ID, process.env.MANUEVAL_OSS_ACCESS_KEY_ID, process.env.MANUEVAL_OSS_ACCESS_KEY_SECRET].filter(Boolean); let yaml = fs.readFileSync("/tmp/eval-studio-dev.yml", "utf8"); for (const secret of secrets) yaml = yaml.split(secret).join("***SECRET***"); process.stdout.write(yaml);'
+            node -e 'const fs = require("fs"); const secrets = [process.env.DATABASE_URL, process.env.JWT_SECRET, process.env.FEISHU_APP_SECRET, process.env.OWNER_ACCESS_KEY_SHA256, process.env.AION_EVAL_USER_ID, process.env.MANUEVAL_OSS_ACCESS_KEY_ID, process.env.MANUEVAL_OSS_ACCESS_KEY_SECRET].filter(Boolean); let yaml = fs.readFileSync("/tmp/eval-studio-dev.yml", "utf8"); for (const secret of secrets) yaml = yaml.split(secret).join("***SECRET***"); process.stdout.write(yaml);'
             echo "::endgroup::"
 
             echo "::group::Migration job"

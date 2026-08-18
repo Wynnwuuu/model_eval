@@ -3,6 +3,11 @@ import type { NextFunction, Request, Response } from 'express';
 import { serverConfig } from '../config.ts';
 import { dbPool } from '../db/client.ts';
 import { ApiError } from '../http/errors.ts';
+import { normalizeOwnerAccessKeySha256 } from './ownerAccessCrypto.ts';
+import { readOwnerAccessCookie } from './ownerAccessCookie.ts';
+import { assertSameOriginRequest, isMutatingRequest } from './ownerAccessHttp.ts';
+import { getOwnerAccessBinding } from './ownerAccessRepository.ts';
+import { type OwnerSessionPayload, verifyOwnerSessionToken } from './ownerSession.ts';
 import { verifyAuthToken } from './jwt.ts';
 
 export type RequestUser = {
@@ -12,10 +17,20 @@ export type RequestUser = {
   organizationId: string;
 };
 
+export type RequestAuthSource = 'bearer' | 'owner-cookie' | 'local';
+
+export interface ResolvedRequestIdentity {
+  user: RequestUser;
+  source: RequestAuthSource;
+  ownerSession?: OwnerSessionPayload;
+}
+
 declare global {
   namespace Express {
     interface Request {
       user: RequestUser;
+      authSource: RequestAuthSource;
+      ownerSession?: OwnerSessionPayload;
     }
   }
 }
@@ -25,18 +40,46 @@ const readHeader = (req: Request, name: string) => {
   return typeof value === 'string' ? value.trim() : '';
 };
 
-const resolveRequestUser = (req: Request): RequestUser => {
+export const getBearerToken = (req: Request) => {
   const authorization = req.header('authorization') || '';
-  const bearerToken = authorization.startsWith('Bearer ') ? authorization.slice('Bearer '.length).trim() : '';
-  if (bearerToken) {
-    const payload = verifyAuthToken(bearerToken);
-    return {
-      id: payload.userId,
-      email: payload.email,
-      displayName: payload.displayName,
-      organizationId: payload.organizationId || 'default',
-    };
+  return authorization.startsWith('Bearer ') ? authorization.slice('Bearer '.length).trim() : '';
+};
+
+const userFromBearerToken = (bearerToken: string): RequestUser => {
+  const payload = verifyAuthToken(bearerToken);
+  return {
+    id: payload.userId,
+    email: payload.email,
+    displayName: payload.displayName,
+    organizationId: payload.organizationId || 'default',
+  };
+};
+
+export const resolveBearerRequestUser = async (req: Request) => {
+  const bearerToken = getBearerToken(req);
+  if (!bearerToken) throw new ApiError(401, 'AUTH_REQUIRED', 'Authorization token required');
+  return ensureUserMembership(userFromBearerToken(bearerToken));
+};
+
+export const resolveOwnerCookieIdentity = async (req: Request): Promise<ResolvedRequestIdentity | null> => {
+  const configuredKeySha256 = normalizeOwnerAccessKeySha256(serverConfig.ownerAccessKeySha256);
+  if (!serverConfig.ownerAccessEnabled || !configuredKeySha256) return null;
+
+  const cookieToken = readOwnerAccessCookie(req);
+  if (!cookieToken) return null;
+  const ownerSession = verifyOwnerSessionToken(cookieToken, serverConfig.jwtSecret, configuredKeySha256);
+  const binding = await getOwnerAccessBinding(ownerSession.bindingId);
+  if (
+    !binding
+    || binding.userId !== ownerSession.userId
+    || binding.sessionVersion !== ownerSession.sessionVersion
+  ) {
+    throw new ApiError(401, 'INVALID_OWNER_SESSION', 'Invalid owner session');
   }
+  return { user: binding.user, source: 'owner-cookie', ownerSession };
+};
+
+const resolveLocalRequestUser = (req: Request): RequestUser => {
 
   if (serverConfig.authMode === 'feishu') {
     throw new ApiError(401, 'AUTH_REQUIRED', 'Authorization token required');
@@ -99,9 +142,36 @@ export const ensureUserMembership = async (user: RequestUser): Promise<RequestUs
 
 export const attachRequestUser = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    req.user = await ensureUserMembership(resolveRequestUser(req));
+    const identity = await resolveRequestIdentity(req);
+    if (identity.source === 'owner-cookie' && isMutatingRequest(req)) {
+      assertSameOriginRequest(req);
+    }
+    req.user = identity.user;
+    req.authSource = identity.source;
+    req.ownerSession = identity.ownerSession;
     next();
   } catch (error) {
     next(error);
   }
+};
+
+export const resolveRequestIdentity = async (req: Request): Promise<ResolvedRequestIdentity> => {
+  const bearerToken = getBearerToken(req);
+  if (bearerToken) {
+    return {
+      user: await ensureUserMembership(userFromBearerToken(bearerToken)),
+      source: 'bearer',
+    };
+  }
+
+  const ownerIdentity = await resolveOwnerCookieIdentity(req);
+  if (ownerIdentity) return ownerIdentity;
+
+  if (serverConfig.authMode === 'feishu') {
+    throw new ApiError(401, 'AUTH_REQUIRED', 'Authorization token required');
+  }
+  return {
+    user: await ensureUserMembership(resolveLocalRequestUser(req)),
+    source: 'local',
+  };
 };

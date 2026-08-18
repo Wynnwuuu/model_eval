@@ -28,6 +28,10 @@ spec:
               value: "__FEISHU_APP_SECRET__"
             - name: FEISHU_REDIRECT_URI
               value: "__FEISHU_REDIRECT_URI__"
+            - name: OWNER_ACCESS_ENABLED
+              value: "__OWNER_ACCESS_ENABLED__"
+            - name: OWNER_ACCESS_KEY_SHA256
+              value: "__OWNER_ACCESS_KEY_SHA256__"
             - name: AION_MANAGER_BASE_URL
               value: "__AION_MANAGER_BASE_URL__"
             - name: AION_EVAL_USER_ID

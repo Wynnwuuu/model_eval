@@ -1,3 +1,7 @@
+import { createAuthToken } from '../server/auth/jwt.ts';
+import { fingerprintOwnerAccessHash, hashOwnerAccessKey } from '../server/auth/ownerAccessCrypto.ts';
+import { closeDatabase, dbPool } from '../server/db/client.ts';
+
 type JsonValue = Record<string, any> | Array<any> | string | number | boolean | null;
 
 const API_BASE_URL = (process.env.API_BASE_URL || process.env.VITE_API_BASE_URL || 'http://localhost:8787').replace(/\/+$/, '');
@@ -61,6 +65,127 @@ const assert = (condition: unknown, message: string) => {
   if (!condition) throw new Error(message);
 };
 
+const clearSmokeOwnerBinding = async () => {
+  if (!process.env.OWNER_ACCESS_SMOKE_KEY) return;
+  await dbPool.query(
+    'DELETE FROM owner_access_bindings WHERE id = $1 AND user_id = $2',
+    ['primary', 'smoke-user'],
+  );
+};
+
+const testOwnerAccess = async (projectId: string) => {
+  const accessKey = process.env.OWNER_ACCESS_SMOKE_KEY || '';
+  if (!accessKey) return;
+
+  const origin = process.env.CORS_ORIGIN || 'http://localhost:3000';
+  const fingerprint = fingerprintOwnerAccessHash(hashOwnerAccessKey(accessKey));
+  const ownerRequest = async (
+    path: string,
+    init: RequestInit = {},
+  ) => {
+    const response = await fetch(`${API_BASE_URL}${path}`, init);
+    const text = await response.text();
+    const body = text ? JSON.parse(text) : null;
+    return { response, body, text };
+  };
+  const accessBody = JSON.stringify({ fingerprint, accessKey });
+
+  const invalid = await ownerRequest('/api/auth/owner/access', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: origin },
+    body: JSON.stringify({ fingerprint, accessKey: `${accessKey.slice(0, -1)}B` }),
+  });
+  assert(invalid.response.status === 404, `wrong owner key should look missing, got ${invalid.response.status}`);
+
+  const setupRequired = await ownerRequest('/api/auth/owner/access', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: origin },
+    body: accessBody,
+  });
+  assert(setupRequired.response.status === 401, 'unbound owner access was accepted without a bearer identity');
+  assert(setupRequired.body?.error?.code === 'OWNER_SETUP_REQUIRED', 'unbound owner access returned the wrong error');
+
+  const ownerBearer = createAuthToken({
+    userId: 'smoke-user',
+    email: 'smoke@example.com',
+    displayName: 'Smoke User',
+    organizationId: 'default',
+  });
+  const firstAccess = await ownerRequest('/api/auth/owner/access', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${ownerBearer}`,
+      Origin: origin,
+    },
+    body: accessBody,
+  });
+  assert(firstAccess.response.status === 200, `owner binding failed: ${firstAccess.response.status} ${firstAccess.text}`);
+  assert(firstAccess.body?.user?.id === 'smoke-user', 'owner binding changed the authenticated user identity');
+  const firstCookie = (firstAccess.response.headers.get('set-cookie') || '').split(';')[0];
+  assert(firstCookie.includes('manueval-owner-session='), 'owner access did not issue an HttpOnly session cookie');
+
+  const intruderBearer = createAuthToken({
+    userId: 'smoke-owner-intruder',
+    email: 'smoke-owner-intruder@example.com',
+    displayName: 'Smoke Owner Intruder',
+    organizationId: 'default',
+  });
+  const repeatedAccess = await ownerRequest('/api/auth/owner/access', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${intruderBearer}`,
+      Origin: origin,
+    },
+    body: accessBody,
+  });
+  assert(repeatedAccess.body?.user?.id === 'smoke-user', 'a repeated access request reassigned the owner binding');
+
+  const me = await ownerRequest('/api/auth/user/me', { headers: { Cookie: firstCookie } });
+  assert(me.response.status === 200 && me.body?.user?.id === 'smoke-user', 'owner cookie did not restore the bound user');
+
+  const bearerPriority = await ownerRequest('/api/auth/user/me', {
+    headers: { Cookie: firstCookie, Authorization: `Bearer ${intruderBearer}` },
+  });
+  assert(bearerPriority.body?.user?.id === 'smoke-owner-intruder', 'Bearer auth did not take priority over owner cookie auth');
+
+  const missingOrigin = await ownerRequest(`/api/projects/${projectId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Cookie: firstCookie },
+    body: JSON.stringify({ patch: { analysis: 'must not be written' } }),
+  });
+  assert(missingOrigin.response.status === 403, 'owner cookie mutation without Origin was not rejected');
+
+  const ownerWrite = await ownerRequest(`/api/projects/${projectId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Cookie: firstCookie, Origin: origin },
+    body: JSON.stringify({ patch: { analysis: 'updated by owner cookie' } }),
+  });
+  assert(ownerWrite.response.status === 200, `same-origin owner mutation failed: ${ownerWrite.text}`);
+
+  const logoutResponse = await ownerRequest('/api/auth/logout', {
+    method: 'POST',
+    headers: { Cookie: firstCookie, Origin: origin },
+  });
+  assert(logoutResponse.response.status === 204, 'owner logout failed');
+  const revokedMe = await ownerRequest('/api/auth/user/me', { headers: { Cookie: firstCookie } });
+  assert(revokedMe.response.status === 401, 'owner logout did not revoke the old cookie version');
+
+  const recoveredAccess = await ownerRequest('/api/auth/owner/access', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Origin: origin },
+    body: accessBody,
+  });
+  assert(recoveredAccess.response.status === 200, 'magic link did not recover access after logout');
+  assert(recoveredAccess.body?.user?.id === 'smoke-user', 'recovered magic link returned a different user');
+  const recoveredCookie = (recoveredAccess.response.headers.get('set-cookie') || '').split(';')[0];
+  const protectedProject = await ownerRequest(`/api/projects/${projectId}`, {
+    headers: { Cookie: recoveredCookie },
+  });
+  assert(protectedProject.response.status === 200, 'recovered owner cookie could not access a protected API');
+};
+
 const main = async () => {
   const ids = {
     project: `project-${RUN_ID}`,
@@ -85,6 +210,7 @@ const main = async () => {
       sendJson(`/api/templates/${ids.template}`, 'DELETE'),
       sendJson(`/api/projects/${ids.project}`, 'DELETE'),
     ]);
+    await clearSmokeOwnerBinding();
   };
 
   await request('/api/health');
@@ -118,6 +244,8 @@ const main = async () => {
       user: { uid: 'smoke-user', displayName: 'Smoke User', email: 'smoke@example.com' },
     });
     assert(project.project.id, 'project was not created');
+
+    await testOwnerAccess(project.project.id);
 
     const projectDetail = await request<{ project: any }>(`/api/projects/${ids.project}`);
     assert(projectDetail.project.id === project.project.id, 'created project was not available by id');
@@ -702,7 +830,9 @@ const main = async () => {
   }
 };
 
-main().catch(error => {
-  console.error(error);
-  process.exit(1);
-});
+main()
+  .catch(error => {
+    console.error(error);
+    process.exitCode = 1;
+  })
+  .finally(closeDatabase);

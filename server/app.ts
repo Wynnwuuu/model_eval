@@ -4,6 +4,11 @@ import path from 'node:path';
 import express from 'express';
 
 import { authRoutes } from './auth/authRoutes.ts';
+import {
+  normalizeOwnerAccessKeySha256,
+  verifyOwnerAccessFingerprint,
+} from './auth/ownerAccessCrypto.ts';
+import { serverConfig } from './config.ts';
 import { datasetRoutes } from './datasets/datasetRoutes.ts';
 import { attachRequestUser } from './auth/context.ts';
 import { checkDatabaseHealth } from './db/client.ts';
@@ -57,7 +62,9 @@ export const createApp = (options: CreateAppOptions = {}) => {
   );
 
   app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', process.env.CORS_ORIGIN || '*');
+    const corsOrigin = process.env.CORS_ORIGIN || '*';
+    res.header('Access-Control-Allow-Origin', corsOrigin);
+    if (corsOrigin !== '*') res.header('Access-Control-Allow-Credentials', 'true');
     res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Range, X-User-Id, X-User-Email, X-User-Name, X-Organization-Id');
     if (req.method === 'OPTIONS') {
@@ -116,6 +123,25 @@ export const createApp = (options: CreateAppOptions = {}) => {
   app.use('/api/templates', attachRequestUser, templateRoutes);
   app.use('/api/tasks', attachRequestUser, taskRoutes);
   app.use('/api/generation', attachRequestUser, generationRoutes);
+
+  app.use('/access', (_req, res, next) => {
+    res.set({
+      'Cache-Control': 'no-store',
+      'Referrer-Policy': 'no-referrer',
+      'X-Robots-Tag': 'noindex, nofollow, noarchive',
+    });
+    const keySha256 = normalizeOwnerAccessKeySha256(serverConfig.ownerAccessKeySha256);
+    const fingerprint = _req.path.match(/^\/([a-f0-9]{32})\/?$/i)?.[1]?.toLowerCase() || '';
+    if (
+      !serverConfig.ownerAccessEnabled
+      || !keySha256
+      || !verifyOwnerAccessFingerprint(fingerprint, keySha256)
+    ) {
+      res.status(404).type('text/plain').send('Not found');
+      return;
+    }
+    next();
+  });
 
   if (fs.existsSync(staticDistPath)) {
     const indexPath = path.join(staticDistPath, 'index.html');

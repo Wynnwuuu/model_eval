@@ -3,6 +3,7 @@ import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { FeishuCallbackScreen } from '../components/FeishuCallbackScreen';
 import { LoginScreen } from '../components/LoginScreen';
 import { ModelEvalApp } from '../components/ModelEvalApp';
+import { OwnerAccessScreen } from '../components/OwnerAccessScreen';
 import { AppRoute, RouteContext } from '../types';
 import {
   buildGenerationRoutePath,
@@ -169,6 +170,9 @@ export default function AppRouter() {
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const isFeishuCallback = location.pathname === '/feishu-callback' || searchParams.has('code');
+  const ownerAccessFingerprint = location.pathname
+    .match(/^\/access\/([a-f0-9]{32})\/?$/i)?.[1]
+    ?.toLowerCase() || '';
   const routeState = useMemo(
     () => {
       const next = routeFromPath(location.pathname, searchParams);
@@ -181,10 +185,14 @@ export default function AppRouter() {
   );
 
   useEffect(() => {
-    if (!isFeishuCallback && routeState.redirectTo && routeState.redirectTo !== `${location.pathname}${location.search}`) {
+    if (!isFeishuCallback && !ownerAccessFingerprint && routeState.redirectTo && routeState.redirectTo !== `${location.pathname}${location.search}`) {
       navigate(routeState.redirectTo, { replace: true });
     }
-  }, [isFeishuCallback, location.pathname, location.search, navigate, routeState.redirectTo]);
+  }, [isFeishuCallback, location.pathname, location.search, navigate, ownerAccessFingerprint, routeState.redirectTo]);
+
+  if (ownerAccessFingerprint) {
+    return <OwnerAccessScreen fingerprint={ownerAccessFingerprint} />;
+  }
 
   if (isFeishuCallback) {
     return <FeishuCallbackScreen />;

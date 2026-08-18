@@ -860,3 +860,17 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - package.json 中全部 `test:*` 脚本通过，其中完整 Chromium E2E 为 16/16；新增六项覆盖首页三种入口、未归属行、深链关闭、空/失败单请求、慢响应隔离及音视频播放状态。
 - TypeScript、前端生产构建、服务端构建、API smoke、数据库集成、当前 checkout 本地健康检查、Docker 生产镜像构建及 `git diff --check` 全部通过。
 - `package-lock.json` 未修改。npm 审计显示锁文件既有的 15 项生产依赖告警；本次改动未引入或升级依赖，该跨范围升级债务未在本修复中处理。
+## 2026-08-18: Hidden owner magic access
+
+### Completed
+
+- Baseline refreshed from official `origin/main` at `3e6f225`; implementation branch is `codex/owner-magic-access`.
+- Added 256-bit generated keys, deployment-hash fingerprint matching, an immutable first binding, signed HttpOnly owner sessions, revocation versions, key-rotation invalidation, same-origin cookie mutations, and Bearer-first fallback authentication.
+- Added the hidden fragment route, immediate URL cleanup, no-store/no-referrer/noindex controls, same-user browser recovery, a read-only generator, migration 015, optional GitHub/Kubernetes configuration, and feature-off 404 behavior.
+- No phone number or Feishu contact invitation URL will be stored or used by the implementation.
+
+### Validation
+
+- Passed owner cryptography/Cookie tests, disabled-state 404 tests, PostgreSQL binding tests, complete API smoke, project/storage/metadata regressions, TypeScript, frontend and server production builds, and `git diff --check`.
+- All 27 Chromium checks passed, including normal-login invisibility, fragment cleanup, same-user cookie access, and recovery after clearing browser data. Test bindings were removed and verified at zero rows.
+- No production key was generated, no GitHub secret was changed, and no deployment was triggered. Production activation still requires the documented two-stage rollout and the intended user's one-time Feishu binding.

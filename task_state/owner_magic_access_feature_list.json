@@ -1,0 +1,52 @@
+{
+  "feature": "hidden-owner-magic-access",
+  "updatedAt": "2026-08-18",
+  "status": "implemented",
+  "requirements": [
+    {
+      "id": "disabled-by-default",
+      "description": "部署未显式启用或缺少密钥哈希时入口表现为不存在，现有飞书认证保持不变",
+      "status": "complete"
+    },
+    {
+      "id": "atomic-first-binding",
+      "description": "首次调用必须持有有效飞书 Bearer Token，并将永久密钥原子绑定到同一 users.id，之后不可改绑",
+      "status": "complete"
+    },
+    {
+      "id": "persistent-owner-session",
+      "description": "高熵魔法链接签发可续期 HttpOnly Cookie，支持版本撤销和密钥轮换失效",
+      "status": "complete"
+    },
+    {
+      "id": "fragment-hygiene",
+      "description": "浏览器立即清除 fragment，密钥不进入请求 URL、浏览器存储或日志",
+      "status": "complete"
+    },
+    {
+      "id": "same-user-experience",
+      "description": "站长 Cookie 作为 Bearer 后备认证，返回和访问现有资源时保持原 users.id 与权限",
+      "status": "complete"
+    },
+    {
+      "id": "deployment-and-rollback",
+      "description": "提供只读生成脚本、GitHub Secret/Kubernetes 注入和关闭变量回退路径",
+      "status": "complete"
+    }
+  ],
+  "validation": {
+    "passed": [
+      "owner access security tests",
+      "owner access disabled-state 404 tests",
+      "owner binding PostgreSQL tests",
+      "full API smoke with binding, no-rebind, Bearer priority, same-origin mutation, logout revocation, and recovery",
+      "27 Chromium regressions including fragment removal, hidden normal login, same-user recovery, and cleared-site-data recovery",
+      "lint",
+      "frontend build",
+      "server build",
+      "project contract, page metadata, and evaluation storage regressions",
+      "git diff --check"
+    ],
+    "pending": []
+  }
+}

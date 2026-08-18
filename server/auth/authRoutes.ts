@@ -3,10 +3,31 @@ import crypto from 'node:crypto';
 import { Router } from 'express';
 
 import { dbPool } from '../db/client.ts';
+import { serverConfig } from '../config.ts';
 import { ApiError, badRequest } from '../http/errors.ts';
-import { ensureUserMembership, type RequestUser } from './context.ts';
+import {
+  ensureUserMembership,
+  getBearerToken,
+  resolveBearerRequestUser,
+  resolveOwnerCookieIdentity,
+  resolveRequestIdentity,
+  type RequestUser,
+} from './context.ts';
 import { authenticateFeishuCode, getFeishuAuthorizationUrl, type FeishuUserInfo } from './feishuOAuth.ts';
-import { createAuthToken, verifyAuthToken } from './jwt.ts';
+import { createAuthToken } from './jwt.ts';
+import {
+  OWNER_ACCESS_BINDING_ID,
+  normalizeOwnerAccessKeySha256,
+  verifyOwnerAccessCredentials,
+} from './ownerAccessCrypto.ts';
+import { clearOwnerAccessCookie, setOwnerAccessCookie } from './ownerAccessCookie.ts';
+import { assertSameOriginRequest } from './ownerAccessHttp.ts';
+import {
+  bindOwnerAccessToUser,
+  getOwnerAccessBinding,
+  revokeOwnerAccessSessions,
+} from './ownerAccessRepository.ts';
+import { createOwnerSessionToken } from './ownerSession.ts';
 
 export const authRoutes = Router();
 
@@ -57,6 +78,28 @@ const publicUser = (user: RequestUser) => ({
   organizationId: user.organizationId,
 });
 
+const ownerAccessNotFound = () => new ApiError(404, 'NOT_FOUND', 'Not found');
+
+const configuredOwnerAccessKeySha256 = () => {
+  const keySha256 = normalizeOwnerAccessKeySha256(serverConfig.ownerAccessKeySha256);
+  if (!serverConfig.ownerAccessEnabled || !keySha256) throw ownerAccessNotFound();
+  return keySha256;
+};
+
+const issueOwnerSession = (
+  res: Parameters<typeof setOwnerAccessCookie>[0],
+  binding: NonNullable<Awaited<ReturnType<typeof getOwnerAccessBinding>>>,
+  keySha256: string,
+) => {
+  const token = createOwnerSessionToken({
+    bindingId: binding.id,
+    userId: binding.userId,
+    sessionVersion: binding.sessionVersion,
+    keySha256,
+  }, serverConfig.jwtSecret);
+  setOwnerAccessCookie(res, token);
+};
+
 authRoutes.get('/feishu/login-url', (_req, res, next) => {
   try {
     res.json({ authorizationUrl: getFeishuAuthorizationUrl() });
@@ -88,19 +131,72 @@ authRoutes.post('/feishu/callback', async (req, res, next) => {
   }
 });
 
+authRoutes.post('/owner/access', async (req, res, next) => {
+  try {
+    const keySha256 = configuredOwnerAccessKeySha256();
+    const fingerprint = typeof req.body?.fingerprint === 'string' ? req.body.fingerprint.trim() : '';
+    const accessKey = typeof req.body?.accessKey === 'string' ? req.body.accessKey.trim() : '';
+    if (!verifyOwnerAccessCredentials(fingerprint, accessKey, keySha256)) {
+      throw ownerAccessNotFound();
+    }
+    assertSameOriginRequest(req);
+
+    let binding = await getOwnerAccessBinding(OWNER_ACCESS_BINDING_ID);
+    if (!binding) {
+      if (!getBearerToken(req)) {
+        throw new ApiError(
+          401,
+          'OWNER_SETUP_REQUIRED',
+          'Owner access must first be bound from an existing Feishu session',
+        );
+      }
+      const feishuUser = await resolveBearerRequestUser(req);
+      binding = await bindOwnerAccessToUser(OWNER_ACCESS_BINDING_ID, feishuUser.id);
+    }
+
+    issueOwnerSession(res, binding, keySha256);
+    res.set('Cache-Control', 'no-store');
+    res.json({ user: publicUser(binding.user) });
+  } catch (error) {
+    next(error);
+  }
+});
+
 authRoutes.get('/user/me', async (req, res, next) => {
   try {
-    const authorization = req.header('authorization') || '';
-    const token = authorization.startsWith('Bearer ') ? authorization.slice('Bearer '.length).trim() : '';
-    if (!token) throw new ApiError(401, 'AUTH_REQUIRED', 'Authorization token required');
-    const payload = verifyAuthToken(token);
-    const user = await ensureUserMembership({
-      id: payload.userId,
-      email: payload.email,
-      displayName: payload.displayName,
-      organizationId: payload.organizationId || 'default',
-    });
-    res.json({ user: publicUser(user) });
+    const identity = await resolveRequestIdentity(req);
+    if (identity.source === 'owner-cookie' && identity.ownerSession) {
+      const keySha256 = configuredOwnerAccessKeySha256();
+      const binding = await getOwnerAccessBinding(identity.ownerSession.bindingId);
+      if (!binding) throw new ApiError(401, 'INVALID_OWNER_SESSION', 'Invalid owner session');
+      issueOwnerSession(res, binding, keySha256);
+    }
+    res.set('Cache-Control', 'no-store');
+    res.json({ user: publicUser(identity.user) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+authRoutes.post('/logout', async (req, res, next) => {
+  try {
+    let identity = null;
+    try {
+      identity = await resolveOwnerCookieIdentity(req);
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.statusCode !== 401) throw error;
+    }
+
+    if (identity?.ownerSession) {
+      assertSameOriginRequest(req);
+      await revokeOwnerAccessSessions(
+        identity.ownerSession.bindingId,
+        identity.ownerSession.sessionVersion,
+      );
+    }
+    clearOwnerAccessCookie(res);
+    res.set('Cache-Control', 'no-store');
+    res.status(204).end();
   } catch (error) {
     next(error);
   }

@@ -122,6 +122,9 @@ export const resolvePageMetadata = ({
   if (path === '/login' || path === '/feishu-callback') {
     return { title: titled(undefined, '登录'), description: DESCRIPTIONS.login };
   }
+  if (/^\/access\/[a-f0-9]{32}$/i.test(path)) {
+    return { title: titled(undefined, '安全访问'), description: DESCRIPTIONS.login };
+  }
 
   if (path === '/projects') return { title: titled(undefined, '项目'), description: DESCRIPTIONS.projects };
   if (/^\/projects\/[^/]+\/insights$/.test(path)) {

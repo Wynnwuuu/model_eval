@@ -94,6 +94,7 @@ const requestJson = async <T>(path: string, init?: RequestInit): Promise<T> => {
   requireSharedBackend();
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       ...getApiAuthHeaders(),

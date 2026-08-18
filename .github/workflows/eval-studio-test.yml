@@ -50,6 +50,10 @@ jobs:
       E2E_BASE_URL: http://localhost:3000
       VITE_USE_API_BACKEND: "true"
       VITE_API_BASE_URL: http://localhost:8787
+      JWT_SECRET: ci-owner-access-session-secret-for-regression-only
+      OWNER_ACCESS_ENABLED: "true"
+      OWNER_ACCESS_KEY_SHA256: 0f007385b6f9d4b7eeb2748605afe1a984a0a3bfa3f014d09e2a784ce9e5cd1a
+      OWNER_ACCESS_SMOKE_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
 
     steps:
 
@@ -63,6 +67,10 @@ jobs:
       - run: npm ci
 
       - run: npm run lint
+
+      - run: npm run test:owner-access
+
+      - run: npm run test:owner-access:disabled
 
       - run: npm run test:generation
 
@@ -81,6 +89,8 @@ jobs:
       - run: npm run server:build
 
       - run: npm run db:migrate
+
+      - run: npm run test:owner-access:db
 
       - run: npm run test:generation:db
 

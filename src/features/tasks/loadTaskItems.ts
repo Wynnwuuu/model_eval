@@ -22,6 +22,7 @@ interface LoadTaskItemsOptions {
 export async function loadTaskItems(task: EvalTask, options: LoadTaskItemsOptions = {}) {
   if (USE_API_BACKEND) {
     const response = await fetch(`${API_BASE_URL}/api/tasks/${task.id}/items`, {
+      credentials: 'include',
       headers: getApiAuthHeaders(),
       signal: options.signal,
     });

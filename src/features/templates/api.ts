@@ -12,6 +12,7 @@ const templateReloaders = new Set<() => void>();
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       ...getApiAuthHeaders(),

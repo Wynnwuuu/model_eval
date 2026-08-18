@@ -25,6 +25,17 @@ type ApiUser = {
   avatarUrl?: string | null;
 };
 
+export class AuthRequestError extends Error {
+  status: number;
+  code: string;
+
+  constructor(status: number, code: string, message: string) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
 const TOKEN_KEY = 'token';
 const USER_KEY = 'manueval_user';
 
@@ -72,6 +83,7 @@ const notify = (user: AppUser | null) => {
 const requestAuthJson = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       ...(init.headers || {}),
@@ -79,7 +91,11 @@ const requestAuthJson = async <T>(path: string, init: RequestInit = {}): Promise
   });
   if (!response.ok) {
     const payload = await response.json().catch(() => null);
-    throw new Error(payload?.error?.message || payload?.detail || `Auth request failed (${response.status})`);
+    throw new AuthRequestError(
+      response.status,
+      payload?.error?.code || 'AUTH_REQUEST_FAILED',
+      payload?.error?.message || payload?.detail || `Auth request failed (${response.status})`,
+    );
   }
   return response.json();
 };
@@ -90,6 +106,15 @@ const storeSession = (accessToken: string, user: ApiUser) => {
     [USER_KEY, JSON.stringify(user)],
   ]);
   notify(toAppUser(user));
+};
+
+const storeOwnerSession = (user: ApiUser) => {
+  safeRemoveStorageItem(localStorage, TOKEN_KEY, { kind: 'auth' });
+  const stored = safeSetStorageItem(localStorage, USER_KEY, JSON.stringify(user), { kind: 'auth' });
+  notify(toAppUser(user));
+  if (!stored.ok) {
+    console.warn('Owner user profile could not be cached; the HttpOnly session remains active');
+  }
 };
 
 export const getAuthToken = () => safeGetStorageItem(localStorage, TOKEN_KEY, { kind: 'auth' }).value || null;
@@ -116,13 +141,9 @@ export const refreshCurrentUser = async () => {
     return localUser;
   }
   const token = getAuthToken();
-  if (!token) {
-    notify(null);
-    return null;
-  }
   try {
     const payload = await requestAuthJson<{ user: ApiUser }>('/api/auth/user/me', {
-      headers: { Authorization: `Bearer ${token}` },
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     });
     const stored = safeSetStorageItem(localStorage, USER_KEY, JSON.stringify(payload.user), { kind: 'auth' });
     const user = toAppUser(payload.user);
@@ -130,7 +151,9 @@ export const refreshCurrentUser = async () => {
     if (!stored.ok) throw new AuthStorageError(stored.issue!);
     return user;
   } catch (error) {
-    console.error('Failed to refresh auth user', error);
+    if (!(error instanceof AuthRequestError) || error.status !== 401) {
+      console.error('Failed to refresh auth user', error);
+    }
     if (error instanceof AuthStorageError) return auth.currentUser;
     await logout();
     return null;
@@ -172,9 +195,30 @@ export const completeFeishuLogin = async (code: string) => {
   return toAppUser(payload.user);
 };
 
+export const signInWithOwnerAccess = async (fingerprint: string, accessKey: string) => {
+  const token = getAuthToken();
+  const payload = await requestAuthJson<{ user: ApiUser }>('/api/auth/owner/access', {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    body: JSON.stringify({ fingerprint, accessKey }),
+  });
+  storeOwnerSession(payload.user);
+  return toAppUser(payload.user);
+};
+
 export const signInWithGoogle = signInWithFeishu;
 
 export const logout = async () => {
+  const token = getAuthToken();
+  try {
+    await fetch(`${API_BASE_URL}/api/auth/logout`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    });
+  } catch (error) {
+    console.warn('Server logout could not be completed; local session data was still cleared', error);
+  }
   safeRemoveStorageItem(localStorage, TOKEN_KEY, { kind: 'auth' });
   safeRemoveStorageItem(localStorage, USER_KEY, { kind: 'auth' });
   notify(shouldUseCloudAuth ? null : localUser);

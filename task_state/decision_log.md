@@ -489,3 +489,9 @@ Task model identity comes only from mapped output columns. The removed manual Mo
 `/tasks/:id` 仍是受支持的物料详情深链。路由参数每个 ID 只触发一次自动打开，关闭深链导航到 `/tasks`；列表内打开的详情没有路由参数，因此关闭只修改本地状态。详情 items 与结果洞察采用相同的 latest-request 原则：新请求先中止旧请求，关闭和卸载中止当前请求，只有当前 token 可以写入 items、错误或 loading 状态。
 
 详情媒体的 `isActive` 固定为 false，只禁止自动播放，不协调用户主动播放的多个播放器。原生 controls、metadata 预加载、循环属性和现有媒体错误恢复保持不变。
+## 2026-08-18: Owner access is an isolated credential, not a Feishu OAuth exception
+
+- The existing Feishu OAuth flow remains the sole way to establish the initial user identity. Owner access only binds an already-issued Bearer identity to one server-side binding row.
+- The permanent secret exists only in the user's saved URL fragment and as a SHA-256 deployment secret. PostgreSQL stores only the bound user and revocation version.
+- Owner sessions use a separate HMAC-signed HttpOnly cookie. Bearer authentication stays authoritative when present; cookie-authenticated mutating requests require a same-origin `Origin` header.
+- Feature-off, missing-secret, wrong-fingerprint, and wrong-key cases share a generic not-found response so deployment state and credential validity are not disclosed.

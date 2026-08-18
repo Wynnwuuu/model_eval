@@ -41,6 +41,8 @@ export const serverConfig = {
   feishuAppSecret: process.env.FEISHU_APP_SECRET || '',
   feishuRedirectUri: process.env.FEISHU_REDIRECT_URI || '',
   publicBaseUrl: (process.env.MANUEVAL_PUBLIC_BASE_URL || '').replace(/\/+$/, ''),
+  ownerAccessEnabled: process.env.OWNER_ACCESS_ENABLED === 'true',
+  ownerAccessKeySha256: (process.env.OWNER_ACCESS_KEY_SHA256 || '').trim().toLowerCase(),
   aionManagerBaseUrl: (process.env.AION_MANAGER_BASE_URL || '').replace(/\/+$/, ''),
   aionModelApiBaseUrl: (process.env.AION_MODEL_API_BASE_URL || '').replace(/\/+$/, ''),
   aionExecutionTransport: parseAionExecutionTransport(process.env.AION_EXECUTION_TRANSPORT),

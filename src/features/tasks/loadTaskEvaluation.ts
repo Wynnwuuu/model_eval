@@ -40,7 +40,7 @@ export class TaskEvaluationLoadError extends Error {
 
 export async function loadTaskVoteGroups(taskId: string, signal?: AbortSignal): Promise<TaskVoteGroup[]> {
   if (USE_API_BACKEND) {
-    const response = await fetch(`${API_BASE_URL}/api/tasks/${taskId}/votes`, { headers: getApiAuthHeaders(), signal });
+    const response = await fetch(`${API_BASE_URL}/api/tasks/${taskId}/votes`, { credentials: 'include', headers: getApiAuthHeaders(), signal });
     if (!response.ok) throw new Error('无法读取全员投票结果');
     return ((await response.json()) as { userVotes: TaskVoteGroup[] }).userVotes || [];
   }
@@ -60,7 +60,7 @@ async function loadCurrentUserVotes(taskId: string, reviewer: ReturnType<typeof 
   if (!USE_API_BACKEND) return [];
   let response: Response;
   try {
-    response = await fetch(`${API_BASE_URL}/api/tasks/${taskId}/my-votes`, { headers: getApiAuthHeaders(), signal });
+    response = await fetch(`${API_BASE_URL}/api/tasks/${taskId}/my-votes`, { credentials: 'include', headers: getApiAuthHeaders(), signal });
   } catch (error) {
     throw new TaskEvaluationLoadError('network', error instanceof Error ? error.message : '网络连接失败');
   }
@@ -78,7 +78,7 @@ async function loadCurrentUserVotes(taskId: string, reviewer: ReturnType<typeof 
   // Compatibility for deployments created before the reviewer-identity route.
   const legacyKeys = [reviewer.id, reviewer.email, reviewer.displayName].filter(Boolean);
   for (const key of legacyKeys) {
-    const legacyResponse = await fetch(`${API_BASE_URL}/api/tasks/${taskId}/votes/${encodeURIComponent(key)}`, { headers: getApiAuthHeaders(), signal });
+    const legacyResponse = await fetch(`${API_BASE_URL}/api/tasks/${taskId}/votes/${encodeURIComponent(key)}`, { credentials: 'include', headers: getApiAuthHeaders(), signal });
     if (legacyResponse.ok) {
       const legacyVotes = ((await legacyResponse.json()) as { votes: VoteRecord[] }).votes || [];
       if (legacyVotes.length > 0) return legacyVotes;
@@ -95,7 +95,7 @@ export async function loadTaskEvaluation(taskId: string, options: { signal?: Abo
   if (USE_API_BACKEND) {
     let taskResponse: Response;
     try {
-      taskResponse = await fetch(`${API_BASE_URL}/api/tasks/${taskId}`, { headers: getApiAuthHeaders(), signal: options.signal });
+      taskResponse = await fetch(`${API_BASE_URL}/api/tasks/${taskId}`, { credentials: 'include', headers: getApiAuthHeaders(), signal: options.signal });
     } catch (error) {
       throw new TaskEvaluationLoadError('network', error instanceof Error ? error.message : '网络连接失败');
     }
@@ -107,14 +107,14 @@ export async function loadTaskEvaluation(taskId: string, options: { signal?: Abo
     task = ((await taskResponse.json()) as { task: EvalTask }).task;
 
     if (task.templateId) {
-      const templateResponse = await fetch(`${API_BASE_URL}/api/templates/${task.templateId}`, { headers: getApiAuthHeaders(), signal: options.signal });
+      const templateResponse = await fetch(`${API_BASE_URL}/api/templates/${task.templateId}`, { credentials: 'include', headers: getApiAuthHeaders(), signal: options.signal });
       if (templateResponse.ok) {
         template = ((await templateResponse.json()) as { template: EvalTemplate }).template;
       }
     }
 
     if (task.projectId) {
-      const projectResponse = await fetch(`${API_BASE_URL}/api/projects/${task.projectId}`, { headers: getApiAuthHeaders(), signal: options.signal });
+      const projectResponse = await fetch(`${API_BASE_URL}/api/projects/${task.projectId}`, { credentials: 'include', headers: getApiAuthHeaders(), signal: options.signal });
       if (projectResponse.ok) {
         project = ((await projectResponse.json()) as { project: EvaluationProject }).project;
       }
