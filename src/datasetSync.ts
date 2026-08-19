@@ -1,4 +1,5 @@
 import type { DatasetColumnMappings, DatasetTaskBinding, EvalTask, EvaluationItem, VoteItemSnapshot, VoteRecord } from './types.ts';
+import { createVoteItemSnapshot } from './taskItemSnapshot.ts';
 
 export const DATASET_ITEM_ID_KEY = '__datasetItemId';
 export const DATASET_HISTORICAL_CASE_ID_KEY = '__datasetHistoricalCaseId';
@@ -57,24 +58,6 @@ const buildPairwisePairs = (models: EvalTask['models'], mode: 'all_pairs' | 'adj
   }
   return pairs;
 };
-
-const createVoteItemSnapshot = (item: EvaluationItem): VoteItemSnapshot => ({
-  itemId: item.id,
-  prompt: item.prompt,
-  inputs: item.inputs ? { ...item.inputs } : undefined,
-  dimensionValues: item.dimensionValues ? { ...item.dimensionValues } : undefined,
-  modelOutputs: item.modelOutputs?.map(output => ({ ...output })),
-  modelA_Url: item.modelA_Url,
-  modelB_Url: item.modelB_Url,
-  startImageUrl: item.startImageUrl,
-  referenceUrls: item.referenceUrls ? [...item.referenceUrls] : undefined,
-  type: item.type,
-  pairContext: item.pairContext ? { ...item.pairContext } : undefined,
-  originalItemId: item.originalItemId,
-  originalData: item.originalData ? { ...item.originalData } : undefined,
-  sourceDatasetItemId: item.sourceDatasetItemId,
-  sourceDatasetVersion: item.sourceDatasetVersion,
-});
 
 export const hashDatasetIdentity = (value: string) => {
   let hash = 2166136261;

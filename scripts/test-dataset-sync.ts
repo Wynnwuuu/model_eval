@@ -247,6 +247,8 @@ const unchangedVote: VoteRecord = {
   itemSnapshot: createVoteItemSnapshot(activeItems[0]),
 };
 const unchangedSynchronizedVote = synchronizeVoteSnapshot(unchangedVote, unchangedItem, 2);
+assert.equal(unchangedSynchronizedVote.evaluatedItemSnapshot?.itemOrder, 0);
+assert.equal(unchangedSynchronizedVote.itemSnapshot?.itemOrder, 0);
 assert.equal(
   unchangedSynchronizedVote.contentUpdatedAfterVote,
   false,

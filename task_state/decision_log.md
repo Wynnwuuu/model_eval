@@ -8,6 +8,8 @@ Exports distinguish the business `CaseID`, 1-based `CaseIndex`, internal `TaskIt
 
 Identity resolution treats `evaluatedItemSnapshot` as the vote-time source after dataset synchronization and legacy `itemSnapshot` as the vote-time source before synchronization. Either snapshot precedes the current item; current item order and then array order are historical fallbacks only.
 
+Vote snapshots are constructed by the shared `taskItemSnapshot` helper, including during dataset synchronization. Dataset sync must not keep a private copy of the snapshot shape: a shape mismatch can make an unchanged case look content-updated and corrupt the audit signal.
+
 ExcelJS 4.4.0 is loaded only when a workbook is requested. The browser uses the document workbook and `xlsx.writeBuffer()` path; no streaming API, backend generation, or schema migration is introduced. Its `uuid` child is narrowly overridden to 11.1.1 because npm flags ExcelJS's declared uuid 8 range; the override removes the feature's only new audit finding while retaining ExcelJS 4.4.0.
 
 ## 2026-08-18: Cookie-authenticated cloud requests must not carry legacy identity headers
