@@ -1,16 +1,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, ArrowLeft, BarChart3, Download, Play, RefreshCw, RotateCcw, Check, Users, UploadCloud } from 'lucide-react';
 import { EvalParadigm, EvaluationConfig, ResultsVoteScope, TaskVoteGroup, VoteRecord, EvaluationItem } from '../types';
-import { formatRanking, getArenaRankModelOutputUrl, getRankingEntryMetrics, getRankingTieSummary, isArenaRankVote, resolveEvaluationItemPrompt, sortRanking } from '../rankingUtils';
+import { isArenaRankVote, resolveEvaluationItemPrompt, sortRanking } from '../rankingUtils';
 import { getDimensionColumnsForCsv, getDimensionCsvValues, getDimensionValuesForItem } from '../dimensionUtils';
 import ResultsInsightsScreen from './ResultsInsightsScreen';
 import ScoreInsightsScreen from './ScoreInsightsScreen';
 import { getDefaultEvaluationConfig, getMethodFromParadigm, isPairwiseMethod, isPreviewMethod, isRankMethod, isScoreMethod } from '../evaluationMethods';
-import { buildScoreCaseCsv, buildPairwiseCaseCsv, buildScoreInsights, buildPairwiseInsights } from '../scoringInsights';
 import { getEffectiveVotes, getSkippedVoteCount, isSkippedVote } from '../voteUtils';
 import { DATA_SOURCE_LABEL, IS_OFFLINE_LOCAL_DEMO } from '../runtimeConfig';
-import { getVoteAuditCsvValues, itemFromVoteSnapshot, resolveVoteDisplayItem, VOTE_AUDIT_CSV_HEADERS } from '../taskItemSnapshot';
+import { itemFromVoteSnapshot, resolveVoteDisplayItem } from '../taskItemSnapshot';
 import { countUniqueReviewers, withTaskVoteGroupReviewer } from '../taskResults';
+import type { InsightExportContext } from '../insightExports';
 
 interface ResultsScreenProps {
   votes: VoteRecord[];
@@ -90,6 +90,15 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
   const scopeLabel = voteScope === 'all' && teamScopeAvailable ? '全员汇总' : '我的结果';
   const exportScopeTag = voteScope === 'all' && teamScopeAvailable ? 'all' : 'mine';
   const reviewerLabel = reviewerIdentity?.displayName || userName || 'Anonymous';
+  const insightExportContext: InsightExportContext = {
+    projectId: '',
+    projectName: '当前评测',
+    materialId: taskId || '',
+    materialName: taskId ? `评测物料_${taskId}` : '当前评测',
+    evaluationMethod: activeConfig.method,
+    reviewerScope: exportScopeTag,
+    reviewerScopeLabel: scopeLabel,
+  };
 
   useEffect(() => {
     if (!teamScopeAvailable && voteScope === 'all') {
@@ -115,7 +124,6 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
         id: entry.modelId,
         name: entry.modelName,
       }])).values());
-  const maxRankCount = Math.max(0, ...rankVotes.map(v => v.ranking?.length || 0));
   const dimensionColumns = getDimensionColumnsForCsv(snapshotAwareItems);
 
   const scopeControls = (
@@ -366,157 +374,11 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
     );
   }
 
-  const downloadCSV = () => {
-    if (isScoreMethod(activeConfig)) {
-      const bundle = buildScoreInsights({
-        items,
-        votes: effectiveVotes,
-        models: models.length ? models : [
-          { id: 'model-0', name: modelNames.a },
-          { id: 'model-1', name: modelNames.b }
-        ],
-        config: activeConfig
-      });
-      const csvContent = buildScoreCaseCsv(bundle);
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.setAttribute('href', url);
-      link.setAttribute('download', `score_results_${exportScopeTag}_${userName || 'anon'}_${new Date().toISOString().slice(0,10)}.csv`);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      return;
-    }
-
-    if (isPairwiseMethod(activeConfig)) {
-      const bundle = buildPairwiseInsights({
-        items,
-        votes: effectiveVotes,
-        models: models.length ? models : [
-          { id: 'model-0', name: modelNames.a },
-          { id: 'model-1', name: modelNames.b }
-        ]
-      });
-      const csvContent = buildPairwiseCaseCsv(bundle);
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.setAttribute('href', url);
-      link.setAttribute('download', `pairwise_results_${exportScopeTag}_${userName || 'anon'}_${new Date().toISOString().slice(0,10)}.csv`);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      return;
-    }
-
-    if (isArenaRank) {
-      const rankHeaders = Array.from({ length: maxRankCount }, (_, idx) => `rank_${idx + 1}`);
-      const rankVideoHeaders = Array.from({ length: maxRankCount }, (_, idx) => `排名${idx + 1}视频链接`);
-      const modelHeaders = arenaRankModelList.flatMap(model => [
-        `${model.name}_rank`,
-        `${model.name}_score`,
-        `${model.name}_midrank`,
-        `${model.name}_borda_score`,
-        `${model.name}_normalized_borda`
-      ]);
-      const headers = ['ItemID', 'Prompt', ...dimensionColumns.map(col => col.header), 'Status', 'Timestamp', 'User', ...VOTE_AUDIT_CSV_HEADERS, 'RankingDisplay', 'HasTie', 'AllTied', 'TieGroupCount', 'TopTieSize', ...rankHeaders, ...rankVideoHeaders, ...modelHeaders, 'ranking_json'];
-      const rows = scopedVotes.filter(v => isArenaRankVote(v) || isSkippedVote(v)).map(v => {
-        const item = getDisplayItemForVote(v);
-        const ranking = sortRanking(v.ranking);
-        const tieSummary = getRankingTieSummary(ranking);
-        const dimensionValues = getDimensionValuesForItem(item);
-        const rankValues = rankHeaders.map((_, idx) => {
-          const entry = ranking[idx];
-          return entry ? `${entry.modelName} (${entry.modelId})` : '';
-        });
-        const rankVideoValues = rankHeaders.map((_, idx) => {
-          const entry = ranking[idx];
-          return entry ? getArenaRankModelOutputUrl(item, entry, arenaRankModelList) : '';
-        });
-        const modelValues = arenaRankModelList.flatMap(model => {
-          const entry = ranking.find(candidate => candidate.modelId === model.id);
-          const metrics = entry ? getRankingEntryMetrics(ranking, entry.modelId) : null;
-          return metrics
-            ? [String(entry!.rank), String(metrics.bordaScore), String(metrics.midRank), String(metrics.bordaScore), String(metrics.normalizedBorda)]
-            : ['', '', '', '', ''];
-        });
-        return [
-          v.itemId,
-          resolveEvaluationItemPrompt(item),
-          ...getDimensionCsvValues(dimensionValues, dimensionColumns.map(col => col.key)),
-          isSkippedVote(v) ? 'skipped' : 'ranked',
-          new Date(v.timestamp).toISOString(),
-          v.user || userName || 'Anonymous',
-          ...getVoteAuditCsvValues(v),
-          formatRanking(ranking),
-          tieSummary.hasTie ? 'true' : 'false',
-          tieSummary.allTied ? 'true' : 'false',
-          tieSummary.tieGroupCount,
-          tieSummary.topTieSize,
-          ...rankValues,
-          ...rankVideoValues,
-          ...modelValues,
-          JSON.stringify(ranking)
-        ].map(escapeCsvField).join(',');
-      });
-
-      const csvContent = [headers.join(','), ...rows].join('\n');
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.setAttribute('href', url);
-      link.setAttribute('download', `arena_rank_results_${exportScopeTag}_${userName || 'anon'}_${new Date().toISOString().slice(0,10)}.csv`);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      return;
-    }
-
-    // Standard cols: ItemID, Prompt, dimensions, model urls, winner, timestamp, user, model names, references
-    const headers = ['ItemID', 'Prompt', ...dimensionColumns.map(col => col.header), 'Status', 'ModelA_URL', 'ModelB_URL', 'Winner', 'Timestamp', 'User', ...VOTE_AUDIT_CSV_HEADERS, 'ModelA_Name', 'ModelB_Name', 'References'];
-    const rows = scopedVotes.map(v => {
-      const item = getDisplayItemForVote(v);
-      const dimensionValues = getDimensionValuesForItem(item);
-      return [
-        v.itemId,
-        resolveEvaluationItemPrompt(item),
-        ...getDimensionCsvValues(dimensionValues, dimensionColumns.map(col => col.key)),
-        isSkippedVote(v) ? 'skipped' : 'voted',
-        item?.modelA_Url || '',
-        item?.modelB_Url || '',
-        isSkippedVote(v) ? '' : v.vote,
-        new Date(v.timestamp).toISOString(),
-        v.user || userName || 'Anonymous',
-        ...getVoteAuditCsvValues(v),
-        modelNames.a,
-        modelNames.b,
-        item?.referenceUrls ? item.referenceUrls.join(' | ') : ''
-      ].map(escapeCsvField).join(',');
-    });
-
-    const csvContent = [headers.join(','), ...rows].join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', `results_${exportScopeTag}_${userName || 'anon'}_${new Date().toISOString().slice(0,10)}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
   const resultReturnAction = onBackToTasks
     ? { label: '返回评测物料', onClick: onBackToTasks }
     : onGoToDashboard
       ? { label: '返回大盘', onClick: onGoToDashboard }
       : undefined;
-  const legacyExportAction = (
-    <button type="button" onClick={downloadCSV} className="btn-secondary inline-flex items-center gap-2 px-3 py-2 text-xs">
-      <Download size={14} /> 原始结果 CSV
-    </button>
-  );
-
   if (isScoreMethod(activeConfig)) {
     return (
       <ScoreInsightsScreen
@@ -533,7 +395,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
         config={activeConfig}
         skippedCount={skippedCount}
         returnAction={resultReturnAction}
-        additionalActions={legacyExportAction}
+        exportContext={insightExportContext}
       />
     );
   }
@@ -553,7 +415,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
         ]}
         skippedCount={skippedCount}
         returnAction={resultReturnAction}
-        additionalActions={legacyExportAction}
+        exportContext={insightExportContext}
       />
     );
   }
@@ -570,7 +432,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
       models={arenaRankModelList}
       skippedCount={skippedCount}
       returnAction={resultReturnAction}
-      additionalActions={legacyExportAction}
+      exportContext={insightExportContext}
     />
   );
 

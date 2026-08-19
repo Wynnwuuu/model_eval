@@ -1,5 +1,15 @@
 # Arena Decision Log
 
+## 2026-08-19: Consolidate computed insight exports while keeping raw evidence separate
+
+Computed summaries for one selected material and reviewer scope will ship as one `.xlsx` workbook with mode-specific sheets. Reviewer-level records remain separate CSV evidence because their row grain and volume differ from aggregate statistics. Arena-rank also keeps a nested JSON evidence artifact.
+
+Exports distinguish the business `CaseID`, 1-based `CaseIndex`, internal `TaskItemID`, and stable `DatasetItemID`. Reviewer exports contain display names only by explicit product decision. Existing archived-vote audit, HTML snapshot, external CSV import, and data-template actions remain separate.
+
+Identity resolution treats `evaluatedItemSnapshot` as the vote-time source after dataset synchronization and legacy `itemSnapshot` as the vote-time source before synchronization. Either snapshot precedes the current item; current item order and then array order are historical fallbacks only.
+
+ExcelJS 4.4.0 is loaded only when a workbook is requested. The browser uses the document workbook and `xlsx.writeBuffer()` path; no streaming API, backend generation, or schema migration is introduced. Its `uuid` child is narrowly overridden to 11.1.1 because npm flags ExcelJS's declared uuid 8 range; the override removes the feature's only new audit finding while retaining ExcelJS 4.4.0.
+
 ## 2026-08-18: Cookie-authenticated cloud requests must not carry legacy identity headers
 
 When cloud auth has no Bearer token, the only accepted identity is the server-verified owner Cookie. The frontend must return an empty auth-header set instead of copying the cached user into `X-User-*`: Unicode display names are not valid Fetch header values, and client-supplied identity metadata must not shadow a signed server session. Bearer-authenticated Feishu requests and explicit local-development headers keep their existing behavior.

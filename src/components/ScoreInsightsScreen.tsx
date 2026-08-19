@@ -1,18 +1,11 @@
-import React, { useMemo } from 'react';
-import { AlertTriangle, ArrowLeft, Brain, Download } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { AlertTriangle, ArrowLeft, Brain, Download, Loader2 } from 'lucide-react';
 import { EvaluationConfig, EvaluationItem, VoteRecord } from '../types';
 import {
   PairwiseInsightBundle,
   ScoreInsightBundle,
-  buildPairwiseCaseCsv,
-  buildPairwiseBattleCsv,
-  buildPairwiseDimensionCsv,
   buildPairwiseInsights,
-  buildPairwiseMatchupCsv,
-  buildPairwiseSummaryCsv,
-  buildScoreCaseCsv,
   buildScoreInsights,
-  buildScoreSummaryCsv
 } from '../scoringInsights';
 import { formatNumber, formatPercent } from '../analysisInsights';
 import InsightTopSummaryPanel from './InsightTopSummaryPanel';
@@ -20,6 +13,12 @@ import { buildPairwiseTopSummary, buildScoreTopSummary } from '../insightPresent
 import { buildCaseEvidenceViewModels } from '../caseEvidence';
 import CaseEvidenceGallery from './CaseEvidenceGallery';
 import ModelFeedbackSummaryPanel from './ModelFeedbackSummaryPanel';
+import {
+  downloadInsightDetailCsv,
+  downloadInsightWorkbook,
+  type InsightExportContext,
+  type InsightExportRequest,
+} from '../insightExports';
 
 interface ScoreInsightsScreenProps {
   mode: 'score' | 'pairwise';
@@ -34,19 +33,8 @@ interface ScoreInsightsScreenProps {
   returnAction?: { label: string; onClick: () => void };
   additionalActions?: React.ReactNode;
   notices?: React.ReactNode;
+  exportContext?: InsightExportContext;
 }
-
-const downloadTextFile = (filename: string, content: string, mimeType = 'text/csv;charset=utf-8;') => {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
-};
 
 const Meter: React.FC<{ value: number; className?: string }> = ({ value, className = 'bg-amber-400' }) => (
   <div className="h-2 overflow-hidden rounded-full bg-white/10">
@@ -350,8 +338,10 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
   returnAction,
   additionalActions,
   notices,
+  exportContext,
 }) => {
-  const dateTag = new Date().toISOString().slice(0, 10);
+  const [isExportingWorkbook, setIsExportingWorkbook] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const scoreBundle = useMemo(() => {
     if (mode !== 'score' || !config) return null;
     return buildScoreInsights({ items, votes, models, config });
@@ -377,6 +367,55 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
     () => pairwiseBundle ? buildCaseEvidenceViewModels({ bundle: pairwiseBundle, items, votes }) : [],
     [items, pairwiseBundle, votes],
   );
+  const activeBundle = scoreBundle || pairwiseBundle;
+  const resolvedExportContext = useMemo<InsightExportContext>(() => exportContext || ({
+    projectId: '',
+    projectName: '当前评测',
+    materialId: '',
+    materialName: title || '结果洞察',
+    evaluationMethod: mode === 'pairwise' ? 'pairwise' : config?.method || 'direct_score',
+    reviewerScope: 'mine',
+    reviewerScopeLabel: '我的结果',
+  }), [config?.method, exportContext, mode, title]);
+  const exportRequest = useMemo<InsightExportRequest | null>(() => activeBundle ? ({
+    bundle: activeBundle,
+    items,
+    votes,
+    context: resolvedExportContext,
+  }) : null, [activeBundle, items, resolvedExportContext, votes]);
+  const exportWorkbook = async () => {
+    if (!exportRequest || isExportingWorkbook) return;
+    setIsExportingWorkbook(true);
+    setExportError(null);
+    try {
+      await downloadInsightWorkbook(exportRequest);
+    } catch (error: any) {
+      console.error('Failed to export insight workbook', error);
+      setExportError(error?.message || '分析报表生成失败，请重试。');
+    } finally {
+      setIsExportingWorkbook(false);
+    }
+  };
+  const exportDetails = () => {
+    if (!exportRequest) return;
+    setExportError(null);
+    try {
+      downloadInsightDetailCsv(exportRequest);
+    } catch (error: any) {
+      setExportError(error?.message || '评审明细生成失败，请重试。');
+    }
+  };
+  const exportActions = (
+    <>
+      <button onClick={exportWorkbook} disabled={isExportingWorkbook} className="btn-secondary disabled:cursor-wait disabled:opacity-60">
+        {isExportingWorkbook ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+        {isExportingWorkbook ? '生成中' : '分析报表 Excel'}
+      </button>
+      <button onClick={exportDetails} className="btn-secondary">
+        <Download size={16} /> 评审明细 CSV
+      </button>
+    </>
+  );
 
   if (mode === 'score' && scoreBundle) {
     return (
@@ -392,15 +431,12 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
             {description && <div className="mt-2 max-w-3xl text-sm text-slate-400">{description}</div>}
           </div>
           <div className="flex flex-wrap gap-2">
-            <button onClick={() => downloadTextFile(`score_summary_${dateTag}.csv`, buildScoreSummaryCsv(scoreBundle))} className="btn-secondary">
-              <Download size={16} /> 导出模型汇总
-            </button>
-            <button onClick={() => downloadTextFile(`score_cases_${dateTag}.csv`, buildScoreCaseCsv(scoreBundle))} className="btn-secondary">
-              <Download size={16} /> 导出 case 明细
-            </button>
+            {exportActions}
             {additionalActions}
           </div>
         </div>
+
+        {exportError && <div role="alert" className="border border-red-400/30 border-l-2 border-l-red-400 bg-[#151116] px-4 py-3 text-sm text-red-100">{exportError}</div>}
 
         {controls}
         {notices}
@@ -451,26 +487,12 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
             {description && <div className="mt-2 max-w-3xl text-sm text-slate-400">{description}</div>}
           </div>
           <div className="flex flex-wrap gap-2">
-            <button onClick={() => downloadTextFile(`pairwise_summary_${dateTag}.csv`, buildPairwiseSummaryCsv(pairwiseBundle))} className="btn-secondary">
-              <Download size={16} /> 导出 Arena 榜单
-            </button>
-            <button onClick={() => downloadTextFile(`pairwise_matchups_${dateTag}.csv`, buildPairwiseMatchupCsv(pairwiseBundle))} className="btn-secondary">
-              <Download size={16} /> 导出模型对矩阵
-            </button>
-            <button onClick={() => downloadTextFile(`pairwise_battles_${dateTag}.csv`, buildPairwiseBattleCsv(pairwiseBundle))} className="btn-secondary">
-              <Download size={16} /> 导出原始对战
-            </button>
-            <button onClick={() => downloadTextFile(`pairwise_cases_${dateTag}.csv`, buildPairwiseCaseCsv(pairwiseBundle))} className="btn-secondary">
-              <Download size={16} /> 导出 case 明细
-            </button>
-            {pairwiseBundle.dimensions.length > 0 && (
-              <button onClick={() => downloadTextFile(`pairwise_dimensions_${dateTag}.csv`, buildPairwiseDimensionCsv(pairwiseBundle))} className="btn-secondary">
-                <Download size={16} /> 导出维度统计
-              </button>
-            )}
+            {exportActions}
             {additionalActions}
           </div>
         </div>
+
+        {exportError && <div role="alert" className="border border-red-400/30 border-l-2 border-l-red-400 bg-[#151116] px-4 py-3 text-sm text-red-100">{exportError}</div>}
 
         {controls}
         {notices}

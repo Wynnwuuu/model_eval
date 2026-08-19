@@ -125,6 +125,7 @@ export interface EvaluationItem {
 
 export interface VoteItemSnapshot {
   itemId: string;
+  itemOrder?: number;
   prompt?: string;
   inputs?: Record<string, any>;
   dimensionValues?: Record<string, string>;

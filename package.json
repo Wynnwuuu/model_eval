@@ -42,6 +42,7 @@
     "test:rank-ties": "tsx scripts/test-rank-ties.ts",
     "test:model-feedback": "tsx scripts/test-model-feedback.ts",
     "test:insights-summary": "tsx scripts/test-insights-summary.ts",
+    "test:insight-exports": "tsx scripts/test-insight-exports.ts",
     "test:insight-workspace": "tsx scripts/test-insight-workspace.ts",
     "test:insight-links": "tsx scripts/test-insight-links.ts",
     "test:task-results": "tsx scripts/test-task-results.ts",
@@ -68,6 +69,7 @@
     "@vitejs/plugin-react": "^5.0.4",
     "ali-oss": "^6.23.0",
     "dotenv": "^17.2.3",
+    "exceljs": "^4.4.0",
     "express": "^4.21.2",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
@@ -87,5 +89,10 @@
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
     "vite": "^6.2.0"
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "11.1.1"
+    }
   }
 }

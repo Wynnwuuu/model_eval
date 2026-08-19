@@ -2,13 +2,13 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Upload, FileText, BarChart3, Users, AlertCircle, Download, ArrowRight, Database, Loader2 } from 'lucide-react';
 import { AggregatedResult, EvalParadigm, EvaluationConfig, EvalTask, EvalTemplate, EvaluationItem, EvaluationProject, ModelOutput, RankingEntry, TaskVoteGroup, VoteRecord, VoteType } from '../types';
-import { ArenaRankPromptItem, formatRanking, getArenaRankModelOutputUrl, getModelOutputsForItem, getRankingTieSummary, isArenaRankVote, normalizeRanking, resolveEvaluationItemPrompt, sortRanking, validateRanking } from '../rankingUtils';
+import { ArenaRankPromptItem, getModelOutputsForItem, isArenaRankVote, resolveEvaluationItemPrompt, sortRanking, validateRanking } from '../rankingUtils';
 import { VIDEO_EXTENSIONS } from '../constants';
 import { db, getCurrentReviewerIdentity, handlePersistenceError } from '../auth';
 import { collection, getDocs } from '../datastore';
 import ResultsInsightsScreen from './ResultsInsightsScreen';
 import ScoreInsightsScreen from './ScoreInsightsScreen';
-import { getDimensionColumnsForCsv, getDimensionCsvValues, getDimensionValuesForItem, getDimensionValuesFromRecord } from '../dimensionUtils';
+import { getDimensionValuesForItem, getDimensionValuesFromRecord } from '../dimensionUtils';
 import Papa from 'papaparse';
 import { getDefaultEvaluationConfig, getParadigmFromMethod, isPairwiseMethod, isScoreMethod, normalizeEvaluationConfig } from '../evaluationMethods';
 import { subscribeProjects } from '../features/projects/api';
@@ -24,6 +24,7 @@ import {
   withTaskVoteGroupReviewer,
 } from '../taskResults';
 import { LatestRequestGate } from '../latestRequestGate';
+import type { InsightExportContext } from '../insightExports';
 
 interface AnalysisScreenProps {
   onBack: () => void;
@@ -1165,11 +1166,19 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   };
 
   const isArenaRankAnalysis = analysisMode === 'Arena-rank';
-  const analysisItemsById = new Map<string, EvaluationItem>(analysisItems.map(item => [item.id, item] as [string, EvaluationItem]));
-  const analysisDimensionColumns = getDimensionColumnsForCsv(analysisItems);
-  const rankDimensionColumns = getDimensionColumnsForCsv(rankItems as any);
   const selectedMaterial = projectMaterials.find(task => task.id === selectedMaterialId);
   const reviewerScopeLabel = reviewerScope === 'mine' ? '我的结果' : '全员汇总';
+  const insightExportContext: InsightExportContext = {
+    projectId: selectedProjectId === UNASSIGNED_PROJECT_ID ? '' : selectedProjectId,
+    projectName: selectedProjectName,
+    materialId: selectedMaterial?.id || selectedMaterialId,
+    materialName: selectedMaterial?.name || '结果洞察',
+    evaluationMethod: analysisEvaluationConfig?.method
+      || selectedMaterial?.evaluationConfig?.method
+      || (isArenaRankAnalysis ? 'rank_order' : 'ab_preference'),
+    reviewerScope,
+    reviewerScopeLabel,
+  };
   const insightSubtitle = selectedMaterial
     ? `${selectedProjectName} · ${selectedMaterial.name} · ${reviewerScopeLabel}`
     : `${selectedProjectName} · 请选择评测物料`;
@@ -1255,93 +1264,6 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
 
   const escapeCsvField = (value: any) => `"${String(value ?? '').replace(/"/g, '""')}"`;
 
-  const downloadRawVotesCsv = () => {
-    if (isArenaRankAnalysis) {
-      const maxRankCount = Math.max(0, ...rankVotes.map(vote => vote.ranking?.length || 0));
-      const rankHeaders = Array.from({ length: maxRankCount }, (_, index) => `rank_${index + 1}`);
-      const rankVideoHeaders = Array.from({ length: maxRankCount }, (_, index) => `排名${index + 1}视频链接`);
-      const headers = ['ItemID', 'Prompt', ...rankDimensionColumns.map(col => col.header), 'User', 'Timestamp', ...VOTE_AUDIT_CSV_HEADERS, 'RankingDisplay', 'HasTie', 'AllTied', 'TieGroupCount', 'TopTieSize', ...rankHeaders, ...rankVideoHeaders, 'ranking_json'];
-      const rows = rankVotes.map(vote => {
-        const sourceItem = rankItems.find(item => item.id === vote.itemId);
-        const ranking = normalizeRanking(vote.ranking);
-        const tieSummary = getRankingTieSummary(ranking);
-        return [
-          vote.itemId,
-          resolveEvaluationItemPrompt(sourceItem),
-          ...getDimensionCsvValues(getDimensionValuesForItem(sourceItem as any), rankDimensionColumns.map(col => col.key)),
-          vote.user || 'Anonymous',
-          new Date(vote.timestamp).toISOString(),
-          ...getVoteAuditCsvValues(vote),
-          formatRanking(ranking),
-          tieSummary.hasTie ? 'true' : 'false',
-          tieSummary.allTied ? 'true' : 'false',
-          tieSummary.tieGroupCount,
-          tieSummary.topTieSize,
-          ...rankHeaders.map((_, index) => ranking[index] ? `${ranking[index].modelName} (${ranking[index].modelId})` : ''),
-          ...rankVideoHeaders.map((_, index) => ranking[index] ? getArenaRankModelOutputUrl(sourceItem, ranking[index]) : ''),
-          JSON.stringify(ranking)
-        ].map(escapeCsvField).join(',');
-      });
-      const csvContent = [headers.join(','), ...rows].join('\n');
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.setAttribute('href', url);
-      link.setAttribute('download', `arena_rank_raw_votes_${new Date().toISOString().slice(0,10)}.csv`);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      return;
-    }
-
-    const headers = [
-      'ItemID',
-      'Prompt',
-      ...analysisDimensionColumns.map(col => col.header),
-      'User',
-      'Timestamp',
-      ...VOTE_AUDIT_CSV_HEADERS,
-      'VoteSide',
-      'VoteModelName',
-      'ModelA_Name',
-      'ModelA_URL',
-      'ModelB_Name',
-      'ModelB_URL',
-      'ReferenceURLs'
-    ];
-    const rows = analysisVoteRows.map(vote => {
-      const sourceItem = analysisItemsById.get(vote.itemId);
-      const outputs = getCaseModelOutputs(sourceItem, analysisModels);
-      const modelNamesForVote = { a: outputs.a.modelName, b: outputs.b.modelName };
-
-      return [
-        vote.itemId,
-        resolveEvaluationItemPrompt(sourceItem),
-        ...getDimensionCsvValues(getDimensionValuesForItem(sourceItem as any), analysisDimensionColumns.map(col => col.key)),
-        vote.user,
-        new Date(vote.timestamp).toISOString(),
-        ...getVoteAuditCsvValues(vote.auditVote || {}),
-        vote.vote,
-        getWinnerLabel(vote.vote, modelNamesForVote),
-        outputs.a.modelName,
-        outputs.a.url,
-        outputs.b.modelName,
-        outputs.b.url,
-        sourceItem?.referenceUrls?.join(' | ') || ''
-      ].map(escapeCsvField).join(',');
-    });
-
-    const csvContent = [headers.join(','), ...rows].join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', `arena_raw_votes_${new Date().toISOString().slice(0,10)}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
   const downloadArchivedVotesCsv = () => {
     if (!archivedVoteRows.length) return;
     const headers = [
@@ -1414,16 +1336,6 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   );
   const resultActions = (
     <>
-      {(isArenaRankAnalysis || (aggregatedData.length > 0 && methodVotes.length === 0)) && (
-        <button
-          type="button"
-          onClick={downloadRawVotesCsv}
-          disabled={isArenaRankAnalysis ? rankVotes.length === 0 : analysisVoteRows.length === 0}
-          className="btn-secondary inline-flex items-center gap-2 px-3 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          <Download size={14} /> 原始{isArenaRankAnalysis ? '排名' : '投票'} CSV
-        </button>
-      )}
       <label className="btn-secondary inline-flex cursor-pointer items-center gap-2 px-3 py-2 text-xs">
         <Upload size={14} /> 追加外部 CSV
         <input type="file" multiple accept=".csv" className="hidden" onChange={handleFileUpload} />
@@ -1454,6 +1366,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         returnAction={resultReturnAction}
         additionalActions={resultActions}
         notices={resultNotices}
+        exportContext={insightExportContext}
       />
     );
   }
@@ -1474,6 +1387,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         returnAction={resultReturnAction}
         additionalActions={resultActions}
         notices={resultNotices}
+        exportContext={insightExportContext}
       />
     );
   };

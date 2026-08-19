@@ -1,5 +1,14 @@
 # Arena Implementation Progress
 
+## 2026-08-19: Result insight export consolidation (complete)
+
+- Baseline is `main@84d9f855`; implementation is on the existing `codex/owner-magic-access` worktree and the release target is `main`.
+- Replaced per-statistic CSV buttons with one lazy-generated, styled multi-sheet Excel workbook for A/B, Arena-rank, MOS/Rubric, and Pairwise. Reviewer-level detail CSVs remain separate, and Arena-rank/A-B evidence JSON now carries stable Case identity and audit snapshots.
+- Export identity distinguishes 1-based `CaseIndex`, business `CaseID`, internal `TaskItemID`, and stable `DatasetItemID`. Vote-time `evaluatedItemSnapshot` and legacy `itemSnapshot` take priority over current item data; new votes persist `itemOrder`.
+- CSV uses UTF-8 BOM and spreadsheet-formula hardening. Reviewer exports contain names only and never emit `ReviewerKey`. ExcelJS 4.4.0 is dynamically imported only for workbook downloads, with its uuid child pinned to the audited 11.1.1 release.
+- `test:insight-exports`, insight/rank/task/model-feedback regressions, TypeScript, frontend build, server build, and `git diff --check` pass. Real browser downloads were parsed successfully; failure/retry behavior and 390x844 wrapping/no-overflow also passed.
+- Browser fixtures and downloaded QA artifacts were removed. No database migration, server API change, or production data mutation occurred. The final release commit is recorded in git history.
+
 ## 2026-08-17: Reviewer-controlled reveal flow (complete)
 
 - Added a top-of-evaluation “提交后揭示模型” switch for A/B, Pairwise, Arena-rank, MOS, and Rubric; it defaults off so a successful submission advances directly.

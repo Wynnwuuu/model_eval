@@ -6,6 +6,7 @@ import {
   Download,
   FileJson,
   FileText,
+  Loader2,
 } from 'lucide-react';
 import { AggregatedResult, EvaluationItem, VoteRecord, VoteType } from '../types';
 import {
@@ -15,11 +16,6 @@ import {
   PairwiseComparisonStat,
   RawAbVoteRow,
   buildAbInsights,
-  buildEvidenceJson,
-  buildInsightCaseCsv,
-  buildInsightDimensionCsv,
-  buildInsightSummaryCsv,
-  buildRankPairwiseCsv,
   buildRankInsights,
   formatNumber,
   formatPValue,
@@ -31,6 +27,13 @@ import { buildAbTopSummary, buildRankTopSummary } from '../insightPresentation';
 import { buildCaseEvidenceViewModels } from '../caseEvidence';
 import CaseEvidenceGallery from './CaseEvidenceGallery';
 import ModelFeedbackSummaryPanel from './ModelFeedbackSummaryPanel';
+import {
+  downloadInsightDetailCsv,
+  downloadInsightEvidenceJson,
+  downloadInsightWorkbook,
+  type InsightExportContext,
+  type InsightExportRequest,
+} from '../insightExports';
 
 type InsightItem = Partial<EvaluationItem> & { id: string; originalData?: Record<string, any> };
 
@@ -49,6 +52,7 @@ interface ResultsInsightsScreenProps {
   returnAction?: { label: string; onClick: () => void };
   additionalActions?: React.ReactNode;
   notices?: React.ReactNode;
+  exportContext?: InsightExportContext;
 }
 
 type CaseFilter =
@@ -546,8 +550,11 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
   returnAction,
   additionalActions,
   notices,
+  exportContext,
 }) => {
   const [filter, setFilter] = useState<CaseFilter>({ type: 'all' });
+  const [isExportingWorkbook, setIsExportingWorkbook] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const galleryRef = useRef<HTMLElement>(null);
   const bundle = useMemo<InsightBundle>(() => {
     if (mode === 'rank') {
@@ -565,6 +572,22 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
     () => buildCaseEvidenceViewModels({ bundle, items, votes }),
     [bundle, items, votes],
   );
+  const resolvedExportContext = useMemo<InsightExportContext>(() => exportContext || ({
+    projectId: '',
+    projectName: '当前评测',
+    materialId: '',
+    materialName: title || '结果洞察',
+    evaluationMethod: mode === 'rank' ? 'rank_order' : 'ab_preference',
+    reviewerScope: 'mine',
+    reviewerScopeLabel: '我的结果',
+  }), [exportContext, mode, title]);
+  const exportRequest = useMemo<InsightExportRequest<InsightBundle>>(() => ({
+    bundle,
+    items,
+    votes,
+    rawAbVoteRows: rawVoteRows,
+    context: resolvedExportContext,
+  }), [bundle, items, rawVoteRows, resolvedExportContext, votes]);
 
   const filteredCases = filterCases(bundle, filter);
   const filteredCaseIds = new Set(filteredCases.map(item => item.itemId));
@@ -574,16 +597,36 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
     window.requestAnimationFrame(() => galleryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   };
   const dateTag = new Date().toISOString().slice(0, 10);
-  const exportSummary = () => downloadTextFile(`insights_summary_${bundle.mode}_${dateTag}.csv`, buildInsightSummaryCsv(bundle), 'text/csv;charset=utf-8;');
-  const exportCases = () => downloadTextFile(`insights_cases_${bundle.mode}_${dateTag}.csv`, buildInsightCaseCsv(bundle), 'text/csv;charset=utf-8;');
-  const exportDimensions = () => downloadTextFile(`insights_dimensions_${bundle.mode}_${dateTag}.csv`, buildInsightDimensionCsv(bundle), 'text/csv;charset=utf-8;');
-  const exportEvidence = () => downloadTextFile(`case_evidence_${bundle.mode}_${dateTag}.json`, buildEvidenceJson(bundle), 'application/json;charset=utf-8;');
-  const exportHtml = () => downloadTextFile(`insights_snapshot_${bundle.mode}_${dateTag}.html`, buildHtmlSnapshot(bundle), 'text/html;charset=utf-8;');
-  const exportPairwise = () => {
-    if (bundle.mode === 'rank') {
-      downloadTextFile(`insights_pairwise_rank_${dateTag}.csv`, buildRankPairwiseCsv(bundle), 'text/csv;charset=utf-8;');
+  const exportWorkbook = async () => {
+    if (isExportingWorkbook) return;
+    setIsExportingWorkbook(true);
+    setExportError(null);
+    try {
+      await downloadInsightWorkbook(exportRequest);
+    } catch (error: any) {
+      console.error('Failed to export insight workbook', error);
+      setExportError(error?.message || '分析报表生成失败，请重试。');
+    } finally {
+      setIsExportingWorkbook(false);
     }
   };
+  const exportDetails = () => {
+    setExportError(null);
+    try {
+      downloadInsightDetailCsv(exportRequest);
+    } catch (error: any) {
+      setExportError(error?.message || '评审明细生成失败，请重试。');
+    }
+  };
+  const exportEvidence = () => {
+    setExportError(null);
+    try {
+      downloadInsightEvidenceJson(exportRequest);
+    } catch (error: any) {
+      setExportError(error?.message || '证据 JSON 生成失败，请重试。');
+    }
+  };
+  const exportHtml = () => downloadTextFile(`insights_snapshot_${bundle.mode}_${dateTag}.html`, buildHtmlSnapshot(bundle), 'text/html;charset=utf-8;');
 
   return (
     <div className="mx-auto max-w-7xl space-y-6 p-6 animate-in fade-in duration-500">
@@ -601,20 +644,13 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
         </div>
 
         <div className="flex flex-wrap justify-end gap-2">
-          <button onClick={exportSummary} className="inline-flex items-center gap-2 rounded-lg bg-black/40 px-3 py-2 text-xs font-medium text-white hover:bg-white/10">
-            <Download size={14} /> 汇总 CSV
+          <button onClick={exportWorkbook} disabled={isExportingWorkbook} className="inline-flex items-center gap-2 rounded-lg bg-black/40 px-3 py-2 text-xs font-medium text-white hover:bg-white/10 disabled:cursor-wait disabled:opacity-60">
+            {isExportingWorkbook ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+            {isExportingWorkbook ? '生成中' : '分析报表 Excel'}
           </button>
-          <button onClick={exportCases} className="inline-flex items-center gap-2 rounded-lg bg-black/40 px-3 py-2 text-xs font-medium text-white hover:bg-white/10">
-            <Download size={14} /> Case CSV
+          <button onClick={exportDetails} className="inline-flex items-center gap-2 rounded-lg bg-black/40 px-3 py-2 text-xs font-medium text-white hover:bg-white/10">
+            <Download size={14} /> {bundle.mode === 'rank' ? '排名明细 CSV' : '投票明细 CSV'}
           </button>
-          <button onClick={exportDimensions} className="inline-flex items-center gap-2 rounded-lg bg-black/40 px-3 py-2 text-xs font-medium text-white hover:bg-white/10">
-            <Download size={14} /> 维度 CSV
-          </button>
-          {bundle.mode === 'rank' && (
-            <button onClick={exportPairwise} className="inline-flex items-center gap-2 rounded-lg bg-black/40 px-3 py-2 text-xs font-medium text-white hover:bg-white/10">
-              <Download size={14} /> Pairwise CSV
-            </button>
-          )}
           <button onClick={exportEvidence} className="inline-flex items-center gap-2 rounded-lg bg-black/40 px-3 py-2 text-xs font-medium text-white hover:bg-white/10">
             <FileJson size={14} /> 证据 JSON
           </button>
@@ -624,6 +660,12 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
           {additionalActions}
         </div>
       </div>
+
+      {exportError && (
+        <div role="alert" className="border border-red-400/30 border-l-2 border-l-red-400 bg-[#151116] px-4 py-3 text-sm text-red-100">
+          {exportError}
+        </div>
+      )}
 
       {controls}
       {notices}

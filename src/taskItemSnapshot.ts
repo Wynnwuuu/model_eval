@@ -15,6 +15,7 @@ export const createVoteItemSnapshot = (item?: EvaluationItem): VoteItemSnapshot 
   if (!item) return undefined;
   return {
     itemId: item.id,
+    itemOrder: item.itemOrder,
     prompt: item.prompt,
     inputs: item.inputs ? { ...item.inputs } : undefined,
     dimensionValues: item.dimensionValues ? { ...item.dimensionValues } : undefined,
@@ -37,6 +38,7 @@ export const itemFromVoteSnapshot = (vote?: Pick<VoteRecord, 'itemId' | 'itemSna
   const snapshot = vote.itemSnapshot;
   return {
     id: snapshot.itemId || vote.itemId,
+    itemOrder: snapshot.itemOrder,
     modelA_Url: snapshot.modelA_Url || '',
     modelB_Url: snapshot.modelB_Url || '',
     modelOutputs: snapshot.modelOutputs?.map(output => ({ ...output })),
