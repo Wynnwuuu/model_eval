@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 
 import {
   buildDatasetTableColumns,
+  getTaskBuilderDatasetColumns,
   getVisibleDatasetTableColumns,
 } from '../src/datasetTableColumns';
+import { inferOutputTypeFromDataset } from '../src/datasetManifest';
 import type { DatasetSchemaField, EvalDataset } from '../src/types';
 
 const CASE_ID = '\u7528\u4f8bID';
@@ -161,6 +163,88 @@ assert.deepEqual(
   legacyColumns.map(column => column.key),
   ['Case_ID', 'Prompt', 'ref_1', 'ref_2', 'ref_3'],
   'legacy row fields must remain available without a two-reference cap'
+);
+
+const SPARSE_OUTPUT = 'generated_result';
+const sparseGeneratedDataset: EvalDataset = {
+  id: 'sparse-generated-dataset',
+  name: 'Sparse generated dataset',
+  description: '',
+  tags: [],
+  inputSchema: [
+    { key: 'case_id', label: 'case_id', type: 'text', role: 'case_id' },
+    { key: 'prompt', label: 'prompt', type: 'text', role: 'input' },
+    { key: SPARSE_OUTPUT, label: SPARSE_OUTPUT, type: 'video_url', role: 'output', previewType: 'video' },
+    { key: `${SPARSE_OUTPUT}_status`, label: `${SPARSE_OUTPUT}_status`, type: 'text', role: 'metadata' },
+    { key: `${SPARSE_OUTPUT}_seed`, label: `${SPARSE_OUTPUT}_seed`, type: 'text', role: 'metadata' },
+    { key: `${SPARSE_OUTPUT}_request_id`, label: `${SPARSE_OUTPUT}_request_id`, type: 'text', role: 'metadata' },
+    { key: `${SPARSE_OUTPUT}_error`, label: `${SPARSE_OUTPUT}_error`, type: 'text', role: 'metadata' },
+    { key: `${SPARSE_OUTPUT}_params_json`, label: `${SPARSE_OUTPUT}_params_json`, type: 'text', role: 'system' },
+    { key: `${SPARSE_OUTPUT}_status_note`, label: `${SPARSE_OUTPUT}_status_note`, type: 'text', role: 'metadata' },
+    { key: 'system_trace', label: 'system_trace', type: 'text', role: 'system' },
+  ],
+  items: [
+    {
+      case_id: 'sparse-1',
+      prompt: 'The first selected generation failed.',
+      [`${SPARSE_OUTPUT}_status`]: 'failed',
+      [`${SPARSE_OUTPUT}_error`]: 'provider rejected the case',
+      __datasetItemId: 'sparse-item-1',
+    },
+    {
+      case_id: 'sparse-2',
+      prompt: 'The later case succeeded.',
+      [SPARSE_OUTPUT]: 'https://example.com/generated-2.mp4',
+      [`${SPARSE_OUTPUT}_status`]: 'succeeded',
+      [`${SPARSE_OUTPUT}_status_note`]: 'ordinary business note',
+      late_business_column: 'present only after row zero',
+      __datasetItemId: 'sparse-item-2',
+    },
+  ],
+  createdAt: 1,
+  updatedAt: 2,
+  version: 2,
+  columnMappings: {
+    caseId: 'case_id',
+    inputColumns: ['prompt'],
+    outputColumns: [SPARSE_OUTPUT],
+    dimensionColumns: [],
+    referenceColumns: [],
+    standard: { case_id: 'case_id', full_prompt: 'prompt' },
+  },
+};
+
+const taskBuilderColumns = getTaskBuilderDatasetColumns(sparseGeneratedDataset);
+assert.deepEqual(
+  taskBuilderColumns,
+  ['case_id', 'prompt', SPARSE_OUTPUT, `${SPARSE_OUTPUT}_status_note`, 'late_business_column'],
+  'material mapping must combine schema and every sparse row while hiding generation audit and system fields',
+);
+assert.ok(taskBuilderColumns.includes(SPARSE_OUTPUT), 'a schema output must remain selectable when row zero has no result cell');
+assert.ok(!taskBuilderColumns.some(column => column.startsWith('__')), 'internal dataset fields must never enter material mapping');
+
+const mixedOutputDataset: EvalDataset = {
+  ...sparseGeneratedDataset,
+  id: 'mixed-output-dataset',
+  inputSchema: [
+    ...sparseGeneratedDataset.inputSchema,
+    { key: 'old_image_result', label: 'old_image_result', type: 'image_url', role: 'output', previewType: 'image' },
+    { key: 'audio_result', label: 'audio_result', type: 'audio_url', role: 'output', previewType: 'audio' },
+  ],
+  columnMappings: {
+    ...sparseGeneratedDataset.columnMappings!,
+    outputColumns: ['old_image_result', SPARSE_OUTPUT, 'audio_result'],
+  },
+};
+assert.equal(
+  inferOutputTypeFromDataset(mixedOutputDataset, [SPARSE_OUTPUT]),
+  'video',
+  'generation prefill must infer output type from the requested result instead of the oldest output',
+);
+assert.equal(
+  inferOutputTypeFromDataset(mixedOutputDataset, ['audio_result']),
+  'audio',
+  'audio result columns must default to the audio renderer',
 );
 
 console.log('Dataset table column projection tests passed.');

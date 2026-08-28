@@ -511,3 +511,10 @@ Task model identity comes only from mapped output columns. The removed manual Mo
 - The permanent secret exists only in the user's saved URL fragment and as a SHA-256 deployment secret. PostgreSQL stores only the bound user and revocation version.
 - Owner sessions use a separate HMAC-signed HttpOnly cookie. Bearer authentication stays authoritative when present; cookie-authenticated mutating requests require a same-origin `Origin` header.
 - Feature-off, missing-secret, wrong-fingerprint, and wrong-key cases share a generic not-found response so deployment state and credential validity are not disclosed.
+# 2026-08-28: Material-builder columns use dataset structure, not row density
+
+Generation writeback remains sparse by design: only batch cases receive result or audit cells, while the dataset schema and `columnMappings.outputColumns` describe the complete structure. Every downstream column chooser must therefore combine schema order with keys from all rows instead of treating row zero as the schema.
+
+The material builder will expose business and output columns but not internal fields, system fields, or exact generation companion columns. It will preserve valid user selections across dataset refreshes, prune only deleted/now-ineligible columns, and consume generation deep-link prefill only after every requested result column is visible. No backend row densification or data migration will be used to mask the projection bug.
+
+Output-type inference may take preferred result columns and must recognize audio. The generation-to-evaluation shortcut uses the generated target as its preference so an older output column cannot select the wrong renderer.

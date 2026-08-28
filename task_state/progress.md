@@ -1,5 +1,16 @@
 # Arena Implementation Progress
 
+## 2026-08-28: Generated result columns in material builder (implementation complete; release verification follows commit)
+
+- Baseline is the private GitHub `main@271d1431`; implementation is isolated on `codex/fix-generated-result-columns` and will fast-forward `main` only after full validation.
+- Confirmed root cause: generation writeback correctly persists the output schema and mapping, while `TaskBuilderScreen` projects columns from only the first row whenever rows exist. Sparse generated outputs can therefore appear in the dataset repository but disappear from material mapping.
+- Added one shared task-builder projection over Schema plus every row. Normal business/output fields remain selectable; `_originalData`, `__*`, system fields, and exact generation status/seed/request/error/params companions stay out of the mapping UI. Ordinary selection, generation deep links, dataset normalization, mapping inference, and generation-column discovery no longer use row zero as a schema substitute.
+- Dataset subscription refreshes now add eligible columns, retain still-valid input/output/dimension choices, and prune deleted choices. Generation prefill is consumed only after every requested result is visible; preferred output inference follows the requested column and includes audio.
+- Regression coverage includes sparse row-zero failures, later-row-only business/output fields, audit isolation, an older image output plus a target video output, audio inference, invalid audit deep links, and add/delete version reconciliation in Chromium.
+- Local validation passed: projection, generation, dataset sync/filter/import/deletion, task-case, owner-access, project/storage contracts, TypeScript, frontend/server builds, Playwright test discovery, and `git diff --check`. The intended pre-fix projection test first failed on the missing shared export and passed after implementation.
+- Local PostgreSQL/API/Chromium execution could not start because Docker Desktop 4.67 crashed on its own stale `dockerInference` socket before any project container ran. Those unchanged CI gates remain mandatory in GitHub's isolated PostgreSQL/Chromium workflow before the dev rollout is accepted.
+- No Aion request, paid generation, database migration, or production writeback-contract change is authorized for this repair.
+
 ## 2026-08-19: Result insight export consolidation (complete)
 
 - Baseline is `main@84d9f855`; implementation is on the existing `codex/owner-magic-access` worktree and the release target is `main`.

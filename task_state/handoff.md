@@ -1,5 +1,11 @@
 # Arena And Arena-rank Handoff
 
+## Current work: generated result columns in the material builder
+
+Implementation is complete on `codex/fix-generated-result-columns` from private GitHub `main@271d1431`. Generation writeback was already correct and remains sparse; the bug was the material builder treating row zero as the dataset schema. A shared projection now combines Schema order with all row keys, excludes internal/system/exact generation audit companions, and is reused by ordinary selection, generation deep-link prefill, related mapping/normalization fallbacks, and generation column discovery.
+
+Open builders reconcile dataset versions without resetting valid edits, invalid deep-link columns cannot create ghost selections, preferred output inference follows the generated target and recognizes audio, and Chromium coverage includes sparse first rows plus add/delete refreshes. Focused deterministic suites, TypeScript, both builds, Playwright discovery, and diff checks pass. Local Docker Desktop 4.67 crashed before project startup on a stale `dockerInference` socket, so PostgreSQL/API/full Chromium execution must be accepted only from the repository's isolated GitHub Test workflow. No migration, writeback change, paid generation, or Aion request is part of this repair.
+
 ## Current work: result insight export consolidation
 
 Implementation and local validation are complete on the existing `codex/owner-magic-access` worktree from `main@84d9f855`. Result insights now expose one lazy-generated Excel workbook plus one reviewer-level detail CSV for every formal method; Arena-rank and A/B evidence JSON include stable case identities, and Arena-rank includes nested ballots, snapshots, aggregate ranking, Borda, tie, and agreement evidence. Archived audit CSV, HTML snapshot, external CSV import, and the data template remain separate.

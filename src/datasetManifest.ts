@@ -11,6 +11,7 @@ import {
   EvalDataset,
   SchemaFieldType
 } from './types';
+import { getDatasetActiveColumnKeys } from './datasetColumnDeletion';
 
 const URL_PATTERN = /https?:\/\/[^\s"'\t|,;>]+/i;
 const VIDEO_PATTERN = /\.(mp4|webm|ogg|mov|m4v)(\?|#|$)/i;
@@ -286,9 +287,7 @@ export const inferDatasetMappings = (headers: string[], rows: Record<string, any
 export const getDatasetColumnMappings = (dataset?: EvalDataset, headers?: string[]): DatasetColumnMappings => {
   const inferredHeaders = headers && headers.length
     ? headers
-    : dataset?.items?.[0]
-      ? Object.keys(dataset.items[0]).filter(key => key !== '_originalData' && !key.startsWith('__'))
-      : dataset?.inputSchema?.map(field => field.key) || [];
+    : getDatasetActiveColumnKeys(dataset);
   const inferred = inferDatasetMappings(inferredHeaders, dataset?.items || []);
   return {
     ...inferred,
@@ -474,15 +473,21 @@ export const inferDatasetModality = (
   return fallback;
 };
 
-export const inferOutputTypeFromDataset = (dataset?: EvalDataset): 'text' | 'image' | 'video' | 'markdown' => {
+export const inferOutputTypeFromDataset = (
+  dataset?: EvalDataset,
+  preferredOutputColumns: string[] = [],
+): 'text' | 'image' | 'video' | 'audio' | 'markdown' => {
   if (!dataset) return 'text';
   const mappings = getDatasetColumnMappings(dataset);
-  const firstOutput = mappings.outputColumns[0];
+  const activeColumns = new Set(getDatasetActiveColumnKeys(dataset));
+  const firstOutput = preferredOutputColumns.find(column => activeColumns.has(column))
+    || mappings.outputColumns.find(column => activeColumns.has(column));
   const field = firstOutput ? dataset.inputSchema?.find(schemaField => schemaField.key === firstOutput) : undefined;
   const sourceKey = field?.sourceKey || firstOutput;
   const preview = firstOutput ? field?.previewType || inferPreviewType(sourceKey, dataset.items?.slice(0, 5).map(row => row[sourceKey] ?? row[firstOutput])) : 'text';
   if (preview === 'image') return 'image';
   if (preview === 'video') return 'video';
+  if (preview === 'audio') return 'audio';
   return 'text';
 };
 
@@ -569,7 +574,7 @@ export const normalizeDatasetForDisplay = (dataset: EvalDataset): EvalDataset =>
     ...dataset,
     tags: dataset.tags || [],
     items: dataset.items || [],
-    inputSchema: dataset.inputSchema?.length ? dataset.inputSchema : buildDatasetSchema(Object.keys(dataset.items?.[0] || {}), dataset.items || [], mappings),
+    inputSchema: dataset.inputSchema?.length ? dataset.inputSchema : buildDatasetSchema(getDatasetActiveColumnKeys(dataset), dataset.items || [], mappings),
     modality,
     categoryPath: dataset.categoryPath || ['未分类'],
     standardFields: dataset.standardFields || STANDARD_DATASET_FIELDS,

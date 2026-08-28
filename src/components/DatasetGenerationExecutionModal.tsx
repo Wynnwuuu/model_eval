@@ -35,6 +35,7 @@ import {
   GenerationTargetMode,
 } from '../types';
 import { getDatasetColumnMappings } from '../datasetManifest';
+import { getDatasetActiveColumnKeys } from '../datasetColumnDeletion';
 import { DATASET_ITEM_ID_KEY } from '../datasetSync';
 import {
   getGenerationOutputColumns,
@@ -304,10 +305,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   }>({ status: 'idle', values: {}, issues: {} });
 
   const mappings = useMemo(() => getDatasetColumnMappings(dataset), [dataset]);
-  const headers = useMemo(() => Array.from(new Set([
-    ...(dataset.inputSchema || []).map(field => field.key),
-    ...Object.keys(dataset.items?.[0] || {}).filter(key => key !== '_originalData' && key !== DATASET_ITEM_ID_KEY),
-  ])), [dataset]);
+  const headers = useMemo(() => getDatasetActiveColumnKeys(dataset), [dataset]);
   const selectedModel = models.find(model => model.id === modelId);
   const outputColumns = useMemo(() => getGenerationOutputColumns(dataset), [dataset]);
   const targetOptions = useMemo(() => outputColumns.map(column => ({

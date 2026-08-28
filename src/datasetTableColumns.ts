@@ -85,3 +85,9 @@ export const getVisibleDatasetTableColumns = (
   columns: DatasetTableColumnDescriptor[],
   overrides: DatasetColumnVisibilityOverrides = {}
 ) => columns.filter(column => isDatasetTableColumnVisible(column, overrides));
+
+export const getTaskBuilderDatasetColumns = (dataset?: EvalDataset): string[] => (
+  buildDatasetTableColumns(dataset)
+    .filter(column => column.displayCategory === 'business' || column.displayCategory === 'output')
+    .map(column => column.key)
+);

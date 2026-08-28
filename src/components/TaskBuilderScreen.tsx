@@ -24,6 +24,7 @@ import {
   appendDatasetVersion,
   buildDatasetCard,
   buildDatasetSchema,
+  getDatasetColumnMappings,
   inferDatasetMappings,
   inferDatasetModality,
   inferInputTypeFromDataset,
@@ -31,6 +32,7 @@ import {
   normalizeDatasetRows,
   validateDatasetItems
 } from '../datasetManifest';
+import { getTaskBuilderDatasetColumns } from '../datasetTableColumns';
 import {
   DEFAULT_SCORE_LEVELS,
   EVALUATION_METHOD_OPTIONS,
@@ -215,12 +217,19 @@ export default function TaskBuilderScreen({
     () => datasets.find(dataset => dataset.id === newTask.datasetId),
     [datasets, newTask.datasetId],
   );
+  const selectedDatasetColumns = useMemo(
+    () => getTaskBuilderDatasetColumns(selectedSourceDataset),
+    [selectedSourceDataset],
+  );
+  const selectedDatasetColumnSignature = selectedDatasetColumns.join('\u0000');
   const evaluationSourceRows = useMemo(
     () => csvData.length > 0 ? csvData : (selectedSourceDataset?.items || []),
     [csvData, selectedSourceDataset],
   );
   const sourceMappings = useMemo(
-    () => selectedSourceDataset?.columnMappings || inferDatasetMappings(csvHeaders, evaluationSourceRows),
+    () => selectedSourceDataset
+      ? getDatasetColumnMappings(selectedSourceDataset, csvHeaders)
+      : inferDatasetMappings(csvHeaders, evaluationSourceRows),
     [csvHeaders, evaluationSourceRows, selectedSourceDataset],
   );
   const caseIdColumn = sourceMappings.caseId
@@ -264,6 +273,30 @@ export default function TaskBuilderScreen({
   useEffect(() => {
     if (initialStatusFilter) setStatusFilter(initialStatusFilter);
   }, [initialStatusFilter]);
+
+  useEffect(() => {
+    if (csvData.length > 0 || !selectedSourceDataset) return;
+    const activeColumns = new Set(selectedDatasetColumns);
+    const retainActiveColumns = (previous: string[]) => (
+      previous.every(column => activeColumns.has(column))
+        ? previous
+        : previous.filter(column => activeColumns.has(column))
+    );
+    setCsvHeaders(previous => (
+      previous.length === selectedDatasetColumns.length
+        && previous.every((column, index) => column === selectedDatasetColumns[index])
+        ? previous
+        : selectedDatasetColumns
+    ));
+    setInputColumns(retainActiveColumns);
+    setModelColumns(retainActiveColumns);
+    setDimensionColumns(retainActiveColumns);
+  }, [
+    csvData.length,
+    selectedDatasetColumnSignature,
+    selectedSourceDataset?.id,
+    selectedSourceDataset?.version,
+  ]);
 
   useEffect(() => {
     if (caseSelectionState.sourceKey === caseSelectionSourceKey) return;
@@ -438,9 +471,7 @@ export default function TaskBuilderScreen({
   };
 
   const applyDatasetDefaults = (dataset: EvalDataset) => {
-    const headers = dataset.items?.[0]
-      ? Object.keys(dataset.items[0]).filter(key => key !== '_originalData')
-      : dataset.inputSchema?.map(field => field.key) || [];
+    const headers = getTaskBuilderDatasetColumns(dataset);
 
     setCsvHeaders(headers);
     setInputColumns([]);
@@ -462,12 +493,11 @@ export default function TaskBuilderScreen({
     const targetDataset = datasets.find(item => item.id === initialDatasetId);
     if (!targetDataset) return;
 
-    const headers = Array.from(new Set([
-      ...(targetDataset.inputSchema || []).map(field => field.key),
-      ...Object.keys(targetDataset.items?.[0] || {}),
-    ])).filter(key => key !== '_originalData' && !key.startsWith('__'));
-    const inferred = targetDataset.columnMappings || inferDatasetMappings(headers, targetDataset.items || []);
-    const outputDefaults = (initialModelColumns || []).filter(column => headers.includes(column));
+    const headers = getTaskBuilderDatasetColumns(targetDataset);
+    const requestedOutputColumns = initialModelColumns || [];
+    if (requestedOutputColumns.some(column => !headers.includes(column))) return;
+    const inferred = getDatasetColumnMappings(targetDataset, headers);
+    const outputDefaults = requestedOutputColumns.filter(column => headers.includes(column));
     applyDatasetDefaults(targetDataset);
     setInputColumns((inferred.inputColumns || []).filter(column => headers.includes(column)));
     setModelColumns(outputDefaults);
@@ -477,7 +507,7 @@ export default function TaskBuilderScreen({
       ...previous,
       name: previous.name || `${targetDataset.name} - \u4eba\u5de5\u8bc4\u6d4b`,
       datasetId: targetDataset.id,
-      outputType: inferOutputTypeFromDataset(targetDataset),
+      outputType: inferOutputTypeFromDataset(targetDataset, outputDefaults),
     }));
     generationPrefillRef.current = generationPrefillKey;
   }, [datasets, generationPrefillKey, initialDatasetId]);
