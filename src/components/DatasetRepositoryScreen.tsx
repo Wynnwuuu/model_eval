@@ -45,6 +45,8 @@ import { normalizeUrl } from '../utils';
 import GenerationTaskCenter from './GenerationTaskCenter';
 import {
   cloneDataset as persistDatasetClone,
+  applyDatasetDirectImport,
+  createDatasetDirectImportPreview,
   deleteDataset,
   loadDatasetVersion,
   rollbackDataset,
@@ -52,7 +54,11 @@ import {
   subscribeDatasets,
   updateDatasetItem as persistDatasetItemEdit,
   updateDatasetManifest as persistDatasetManifestEdit,
+  type DatasetSyncSourceInput,
 } from '../features/datasets/api';
+import { parseDatasetSyncManualSource } from '../datasetSyncSourceParser';
+import type { DatasetDirectImportPreview } from '../datasetDirectImport';
+import { USE_SHARED_DATA_SOURCE } from '../runtimeConfig';
 import { DATASET_ITEM_ID_KEY, getDatasetItemStableId } from '../datasetSync';
 import {
   getDatasetActiveColumnKeys,
@@ -78,7 +84,6 @@ import {
 import { subscribeTasks } from '../features/tasks/api';
 import { getExecutionBatch } from '../features/generation/executionApi';
 import { subscribeGenerationJobs } from '../features/generation/api';
-import { parseVidMuseDatasetJson } from '../features/generation/vidmuseInputContract';
 import { isGenerationFailureCell } from '../features/generation/generationFailureCell';
 import {
   parseVerifiedEvaluationImportEnvelope,
@@ -144,6 +149,8 @@ interface DatasetRepositoryScreenProps {
 
 type WizardMode = 'create' | 'append';
 type WizardStep = 1 | 2 | 3;
+type DatasetImportStrategy = 'direct' | 'mapped';
+type DatasetImportSourceMode = 'feishu_base' | 'file' | 'paste';
 
 type DatasetValueEditor = 'text' | 'number' | 'boolean' | 'json' | 'list' | 'modality';
 
@@ -382,6 +389,21 @@ const jobStatusClass = (status?: DatasetGenerationJob['status']) => {
 
 const roleLabel = (role?: DatasetFieldRole) => ROLE_OPTIONS.find(option => option.key === role)?.label || '元数据列';
 
+const directImportUsageLabel: Record<DatasetDirectImportPreview['columns'][number]['usage'], string> = {
+  identity: 'Case 身份',
+  content: '生成内容',
+  reference: '参考素材',
+  parameter: '生成参数',
+  evaluation: '评测字段',
+  metadata: '普通元数据',
+};
+
+const summarizeDirectImportValue = (value: unknown) => {
+  const serialized = typeof value === 'string' ? value : JSON.stringify(value);
+  const text = serialized || '空样例';
+  return text.length > 120 ? `${text.slice(0, 117)}...` : text;
+};
+
 const previewTypeForField = (field: Pick<DatasetSchemaField, 'previewType' | 'sourceKey' | 'key'>, rows: Record<string, any>[]) =>
   field.previewType || inferPreviewType(field.sourceKey || field.key, rows.slice(0, 5).map(row => row[field.sourceKey || field.key] ?? row[field.key]));
 
@@ -605,20 +627,6 @@ const reconcileSchemaFieldsToHeaders = (
       type: field.type || inferSchemaType(previewType),
     };
   });
-
-const parseTableText = (text: string) => {
-  const delimiter = text.includes('\t') ? '\t' : undefined;
-  const results = Papa.parse<Record<string, any>>(text, {
-    header: true,
-    skipEmptyLines: true,
-    delimiter,
-    transform: value => String(value ?? '').trim(),
-    transformHeader: header => header.trim()
-  });
-  const rows = (results.data || []).filter(row => Object.values(row).some(value => String(value ?? '').trim()));
-  const headers = results.meta.fields || (rows[0] ? Object.keys(rows[0]) : []);
-  return { rows, headers };
-};
 
 const downloadCsv = (filename: string, rows: Record<string, any>[] | string[]) => {
   const csvContent = Array.isArray(rows) && typeof rows[0] === 'string'
@@ -916,6 +924,14 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   const [syncModalOpen, setSyncModalOpen] = useState(false);
   const [wizardMode, setWizardMode] = useState<WizardMode>('create');
   const [wizardStep, setWizardStep] = useState<WizardStep>(1);
+  const [importStrategy, setImportStrategy] = useState<DatasetImportStrategy>('direct');
+  const [importSourceMode, setImportSourceMode] = useState<DatasetImportSourceMode>('file');
+  const [directImportSource, setDirectImportSource] = useState<DatasetSyncSourceInput | null>(null);
+  const [directImportPreview, setDirectImportPreview] = useState<DatasetDirectImportPreview | null>(null);
+  const [directOutputColumns, setDirectOutputColumns] = useState<string[]>([]);
+  const [feishuBaseUrl, setFeishuBaseUrl] = useState('');
+  const [isLoadingImportPreview, setIsLoadingImportPreview] = useState(false);
+  const [isSavingWizard, setIsSavingWizard] = useState(false);
   const [wizardTarget, setWizardTarget] = useState<EvalDataset | null>(null);
   const [form, setForm] = useState<DatasetFormState>(emptyForm);
   const [parsedRows, setParsedRows] = useState<Record<string, any>[]>([]);
@@ -1152,6 +1168,8 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   );
   const tableDataset = viewingVersionDataset || selectedDataset;
   const isViewingHistoricalVersion = !!viewingVersionDataset;
+  const hasInternalOnlyImportIdentity = selectedDataset?.importMetadata?.mode === 'direct'
+    && selectedDataset.importMetadata.identityMode === 'internal';
   const selectedMappings = getDatasetColumnMappings(tableDataset);
   const selectedRows = useMemo(() => tableDataset?.items || [], [tableDataset]);
   const indexedSelectedRows = useMemo(() => indexDatasetRows(selectedRows), [selectedRows]);
@@ -1817,9 +1835,25 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     });
   };
 
+  const clearImportPreview = () => {
+    setDirectImportSource(null);
+    setDirectImportPreview(null);
+    setDirectOutputColumns([]);
+    setParsedRows([]);
+    setParsedHeaders([]);
+  };
+
   const openWizard = (mode: WizardMode, target?: EvalDataset) => {
     const normalizedTarget = target ? normalizeDatasetForDisplay(target) : null;
     setWizardMode(mode);
+    setImportStrategy(mode === 'create' ? 'direct' : 'mapped');
+    setImportSourceMode('file');
+    setDirectImportSource(null);
+    setDirectImportPreview(null);
+    setDirectOutputColumns([]);
+    setFeishuBaseUrl('');
+    setIsLoadingImportPreview(false);
+    setIsSavingWizard(false);
     setWizardTarget(normalizedTarget);
     setWizardStep(mode === 'append' ? 2 : 1);
     setWizardOpen(true);
@@ -1859,25 +1893,14 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     setWizardTarget(null);
     setWizardError('');
     setPreservedImport(null);
+    setDirectImportSource(null);
+    setDirectImportPreview(null);
+    setDirectOutputColumns([]);
+    setIsLoadingImportPreview(false);
+    setIsSavingWizard(false);
   };
 
-  const parseImportedData = (text: string, format: 'table' | 'json') => {
-    try {
-      return format === 'json' ? parseVidMuseDatasetJson(text) : parseTableText(text);
-    } catch (reason) {
-      setWizardError(reason instanceof Error ? reason.message : 'Unable to parse the dataset file.');
-      return null;
-    }
-  };
-
-  const applyParsedData = (text: string, format: 'table' | 'json' = 'table') => {
-    const parsed = parseImportedData(text, format);
-    if (!parsed) return;
-    const { rows, headers } = parsed;
-    if (!headers.length) {
-      setWizardError('未识别到表头，请确认 CSV/TSV 或粘贴内容第一行为字段名。');
-      return;
-    }
+  const applyRowsToMappedWizard = (rows: Record<string, unknown>[], headers: string[]) => {
     const fields = wizardMode === 'append' && wizardTarget
       ? reconcileSchemaFieldsToHeaders(wizardTarget.inputSchema || [], headers, rows)
       : createSchemaFieldsFromMappings(
@@ -1898,11 +1921,41 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     setWizardStep(3);
   };
 
+  const loadImportPreview = async (source: DatasetSyncSourceInput) => {
+    setIsLoadingImportPreview(true);
+    setWizardError('');
+    try {
+      const preview = await createDatasetDirectImportPreview(source);
+      setDirectImportSource(source);
+      setDirectImportPreview(preview);
+      setDirectOutputColumns([]);
+      setParsedRows(preview.rows);
+      setParsedHeaders(preview.headers);
+      if (importStrategy === 'direct' && wizardMode === 'create') {
+        setWizardStep(3);
+      } else {
+        applyRowsToMappedWizard(preview.rows, preview.headers);
+      }
+    } catch (reason) {
+      setWizardError(reason instanceof Error ? reason.message : '无法读取导入来源。');
+    } finally {
+      setIsLoadingImportPreview(false);
+    }
+  };
+
+  const applyPastedData = async () => {
+    try {
+      await loadImportPreview(parseDatasetSyncManualSource(pastedText, '粘贴内容'));
+    } catch (reason) {
+      setWizardError(reason instanceof Error ? reason.message : '无法解析粘贴内容。');
+    }
+  };
+
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
     const text = await file.text();
-    if (file.name.toLowerCase().endsWith('.json')) {
+    if (file.name.toLowerCase().endsWith('.json') && importStrategy === 'mapped') {
       try {
         const envelope = parseVerifiedEvaluationImportEnvelope(text);
         if (envelope) {
@@ -1936,7 +1989,11 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
       }
     }
     setPreservedImport(null);
-    applyParsedData(text, file.name.toLowerCase().endsWith('.json') ? 'json' : 'table');
+    try {
+      await loadImportPreview(parseDatasetSyncManualSource(text, file.name));
+    } catch (reason) {
+      setWizardError(reason instanceof Error ? reason.message : '无法解析数据文件。');
+    }
     event.target.value = '';
   };
 
@@ -2044,6 +2101,51 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     if (!form.name.trim()) {
       setWizardError('请填写评测集名称。');
       setWizardStep(1);
+      return;
+    }
+    if (wizardMode === 'create' && importStrategy === 'direct') {
+      if (!directImportSource || !directImportPreview) {
+        setWizardError('请先读取文件、粘贴内容或飞书 Base，再确认导入。');
+        setWizardStep(2);
+        return;
+      }
+      if (!directImportPreview.valid) {
+        setWizardError('源表仍有阻断问题，请修正后重新读取。');
+        setWizardStep(3);
+        return;
+      }
+      setIsSavingWizard(true);
+      try {
+        const dataset = await applyDatasetDirectImport({
+          source: directImportSource,
+          expectedSnapshotHash: directImportPreview.snapshotHash,
+          outputColumns: directOutputColumns,
+          metadata: {
+            name: form.name,
+            description: form.description,
+            tags: splitList(form.tags),
+            modality: form.modality,
+            categoryPath: form.categoryPath.split('/').map(part => part.trim()).filter(Boolean),
+            datasetCard: {
+              applicableTasks: splitList(form.applicableTasks),
+              applicableStages: splitList(form.applicableStages),
+              source: form.source.trim(),
+              rubricBinding: form.rubricBinding.trim(),
+              coverageGaps: form.coverageGaps.split('\n').map(item => item.trim()).filter(Boolean),
+            },
+          },
+        });
+        setDatasets(current => [dataset, ...current.filter(item => item.id !== dataset.id)]);
+        setSelectedDatasetId(dataset.id);
+        setSelectedRowIndex(0);
+        closeWizard();
+      } catch (error: any) {
+        setWizardError(error?.code === 'DATASET_IMPORT_SOURCE_CHANGED'
+          ? '数据源在预览后发生变化，请返回上一步重新读取。'
+          : `直接导入失败：${error?.message || error}`);
+      } finally {
+        setIsSavingWizard(false);
+      }
       return;
     }
     if (preservedImport) {
@@ -2483,6 +2585,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
 
   const renderWizard = () => {
     if (!wizardOpen) return null;
+    const isDirectImport = wizardMode === 'create' && importStrategy === 'direct';
     const headers = parsedHeaders.length ? parsedHeaders : wizardTarget?.inputSchema?.map(field => field.key) || DEFAULT_TEMPLATE_HEADERS;
     const previewRows = parsedRows.slice(0, 5);
     const persistedSchemaFields = stripSchemaFieldEditorIds(schemaFields);
@@ -2518,8 +2621,8 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
         <div className="glass-panel border border-white/10 rounded-2xl w-full max-w-6xl max-h-[92vh] overflow-hidden shadow-2xl flex flex-col">
           <div className="px-6 py-4 border-b border-white/10 flex items-center justify-between shrink-0">
             <div>
-              <h2 className="text-xl font-bold text-slate-100">{wizardMode === 'append' ? '向评测集追加内容' : '新建结构化评测集'}</h2>
-              <p className="text-xs text-slate-400 mt-1">基础信息 {'->'} 上传/粘贴 {'->'} 字段映射与校验</p>
+              <h2 className="text-xl font-bold text-slate-100">{wizardMode === 'append' ? '向评测集追加内容' : '新建评测集'}</h2>
+              <p className="text-xs text-slate-400 mt-1">基础信息 {'->'} 读取来源 {'->'} {isDirectImport ? '确认全部列' : '字段映射与校验'}</p>
             </div>
             <button onClick={closeWizard} className="p-2 rounded-lg text-slate-300 hover:text-white hover:bg-white/10">
               <X size={18} />
@@ -2533,7 +2636,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                 onClick={() => setWizardStep(step as WizardStep)}
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium border ${wizardStep === step ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' : 'bg-white/5 text-slate-300 border-white/10'}`}
               >
-                {step === 1 ? '1 基础信息' : step === 2 ? '2 上传/粘贴' : '3 字段映射'}
+                {step === 1 ? '1 基础信息' : step === 2 ? '2 读取来源' : isDirectImport ? '3 确认导入' : '3 字段映射'}
               </button>
             ))}
           </div>
@@ -2561,6 +2664,35 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
 
             {wizardStep === 1 && (
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                {wizardMode === 'create' && (
+                  <div className="lg:col-span-2 border border-white/10 bg-black/20 p-4">
+                    <div className="text-sm font-semibold text-slate-100">导入方式</div>
+                    <div className="mt-3 grid gap-3 md:grid-cols-2" role="radiogroup" aria-label="导入方式">
+                      {([
+                        ['direct', '直接导入', '默认方式。源表所有列按原名称、顺序和值完整保存。'],
+                        ['mapped', '兼容字段映射', '沿用旧流程，将源列映射或重命名为平台标准字段。'],
+                      ] as const).map(([value, label, description]) => (
+                        <button
+                          key={value}
+                          type="button"
+                          role="radio"
+                          aria-checked={importStrategy === value}
+                          onClick={() => {
+                            setImportStrategy(value);
+                            clearImportPreview();
+                          }}
+                          className={`border p-4 text-left ${importStrategy === value ? 'border-amber-400 bg-amber-500/10' : 'border-white/10 bg-white/[0.03] hover:bg-white/[0.06]'}`}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="font-medium text-slate-100">{label}</span>
+                            {value === 'direct' && <span className="text-[10px] font-semibold text-amber-300">默认</span>}
+                          </div>
+                          <p className="mt-1 text-xs leading-5 text-slate-400">{description}</p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <div>
                   <label className="block text-sm font-medium text-slate-200 mb-1.5">评测集名称 *</label>
                   <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="w-full px-4 py-2.5 glass-input rounded-xl text-sm text-slate-200" placeholder="例如：VidMuse MV 核心回归集" />
@@ -2608,26 +2740,94 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
             )}
 
             {wizardStep === 2 && (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div className="rounded-xl border border-white/10 bg-white/5 p-5">
-                  <h3 className="font-semibold text-slate-100 mb-2 flex items-center gap-2"><Upload size={18} className="text-amber-400" /> 上传文件</h3>
-                  <p className="text-sm text-slate-400 mb-4">支持 CSV、TSV、TXT、JSON；Excel/飞书复制建议使用右侧粘贴。</p>
-                  <input ref={fileInputRef} type="file" accept=".csv,.tsv,.txt,.json,application/json" className="hidden" onChange={handleFileUpload} />
-                  <button onClick={() => fileInputRef.current?.click()} className="w-full py-4 rounded-xl border-2 border-dashed border-white/20 text-slate-300 hover:text-white hover:border-amber-400/50 hover:bg-white/5 transition-colors">
-                    选择文件并解析
-                  </button>
-                  <button onClick={() => downloadCsv('eval_dataset_template.csv', DEFAULT_TEMPLATE_HEADERS)} className="mt-3 w-full flex items-center justify-center gap-2 py-2 rounded-xl bg-white/5 glass-panel-hover text-slate-300 text-sm">
-                    <Download size={15} /> 下载标准字段模板
-                  </button>
+              <div className="space-y-5">
+                <div className="border border-white/10 bg-black/20 p-4">
+                  <div className="text-sm font-semibold text-slate-100">数据来源</div>
+                  <div className="mt-3 inline-flex border border-white/10 bg-slate-950 p-1" role="tablist" aria-label="数据来源">
+                    {([
+                      ['feishu_base', '飞书 Base', Database],
+                      ['file', '文件', Upload],
+                      ['paste', '粘贴内容', ClipboardList],
+                    ] as const).map(([value, label, Icon]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        role="tab"
+                        aria-selected={importSourceMode === value}
+                        onClick={() => {
+                          if (importSourceMode !== value) clearImportPreview();
+                          setImportSourceMode(value);
+                        }}
+                        className={`flex items-center gap-2 px-4 py-2 text-sm ${importSourceMode === value ? 'bg-amber-400 text-black' : 'text-slate-300 hover:bg-white/5'}`}
+                      >
+                        <Icon size={15} /> {label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-                <div className="rounded-xl border border-white/10 bg-white/5 p-5">
-                  <h3 className="font-semibold text-slate-100 mb-2 flex items-center gap-2"><ClipboardList size={18} className="text-blue-400" /> 粘贴表格</h3>
-                  <textarea value={pastedText} onChange={e => setPastedText(e.target.value)} rows={9} className="w-full px-4 py-3 glass-input rounded-xl text-xs font-mono text-slate-200" placeholder="粘贴包含表头的 CSV/TSV/飞书表格内容..." />
-                  <button onClick={() => applyParsedData(pastedText)} disabled={!pastedText.trim()} className="mt-3 w-full py-2 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium">
-                    解析粘贴内容
-                  </button>
-                </div>
-                <div className="lg:col-span-2 rounded-xl border border-white/10 bg-black/20 p-4">
+
+                {importSourceMode === 'feishu_base' && (
+                  <section className="border border-white/10 bg-white/[0.04] p-5">
+                    <h3 className="flex items-center gap-2 font-semibold text-slate-100"><Database size={18} className="text-amber-400" /> 飞书多维表格</h3>
+                    <p className="mt-2 text-sm leading-6 text-slate-400">粘贴 Base 表格链接。平台读取整张表，链接中的 view 仅用于打开页面，不限制导入行；创建后不会保存该链接。</p>
+                    {!USE_SHARED_DATA_SOURCE && (
+                      <div className="mt-3 border border-amber-400/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">飞书 Base 读取仅在 ManuEval dev 服务模式可用；当前离线模式请使用文件或粘贴内容。</div>
+                    )}
+                    <input
+                      value={feishuBaseUrl}
+                      onChange={event => {
+                        setFeishuBaseUrl(event.target.value);
+                        if (directImportSource) clearImportPreview();
+                      }}
+                      className="mt-4 w-full border border-white/10 bg-slate-950 px-4 py-3 text-sm text-slate-100"
+                      placeholder="https://...feishu.cn/base/...?...table=tbl...&view=..."
+                    />
+                    <button
+                      type="button"
+                      disabled={!USE_SHARED_DATA_SOURCE || !feishuBaseUrl.trim() || isLoadingImportPreview}
+                      onClick={() => loadImportPreview({ kind: 'feishu_base', url: feishuBaseUrl.trim() })}
+                      className="mt-3 bg-amber-400 px-4 py-2 text-sm font-medium text-black disabled:opacity-40"
+                    >
+                      {isLoadingImportPreview ? '正在读取...' : '读取整张 Base 表'}
+                    </button>
+                  </section>
+                )}
+
+                {importSourceMode === 'file' && (
+                  <section className="border border-white/10 bg-white/[0.04] p-5">
+                    <h3 className="flex items-center gap-2 font-semibold text-slate-100"><Upload size={18} className="text-amber-400" /> 上传文件</h3>
+                    <p className="mt-2 text-sm text-slate-400">支持 CSV、TSV、TXT、JSON。JSON 可使用对象数组或包含 items 的对象。</p>
+                    <input ref={fileInputRef} type="file" accept=".csv,.tsv,.txt,.json,application/json" className="hidden" onChange={handleFileUpload} />
+                    <button
+                      type="button"
+                      disabled={isLoadingImportPreview}
+                      onClick={() => fileInputRef.current?.click()}
+                      className="mt-4 w-full border-2 border-dashed border-white/20 py-5 text-sm text-slate-300 hover:border-amber-400/50 hover:bg-white/5 disabled:opacity-40"
+                    >
+                      {isLoadingImportPreview ? '正在解析...' : '选择文件并读取'}
+                    </button>
+                    {!isDirectImport && (
+                      <button onClick={() => downloadCsv('eval_dataset_template.csv', DEFAULT_TEMPLATE_HEADERS)} className="mt-3 flex w-full items-center justify-center gap-2 bg-white/5 py-2 text-sm text-slate-300">
+                        <Download size={15} /> 下载兼容字段模板
+                      </button>
+                    )}
+                  </section>
+                )}
+
+                {importSourceMode === 'paste' && (
+                  <section className="border border-white/10 bg-white/[0.04] p-5">
+                    <h3 className="flex items-center gap-2 font-semibold text-slate-100"><ClipboardList size={18} className="text-blue-400" /> 粘贴表格或 JSON</h3>
+                    <textarea value={pastedText} onChange={e => {
+                      setPastedText(e.target.value);
+                      if (directImportSource) clearImportPreview();
+                    }} rows={10} className="mt-4 w-full border border-white/10 bg-slate-950 px-4 py-3 font-mono text-xs text-slate-200" placeholder="粘贴包含表头的 CSV/TSV/飞书表格内容，或 JSON 对象数组..." />
+                    <button onClick={applyPastedData} disabled={!pastedText.trim() || isLoadingImportPreview} className="mt-3 bg-blue-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-40">
+                      {isLoadingImportPreview ? '正在解析...' : '读取粘贴内容'}
+                    </button>
+                  </section>
+                )}
+
+                <div className="border border-white/10 bg-black/20 p-4">
                   <div className="flex items-center justify-between mb-3">
                     <span className="text-sm font-medium text-slate-200">当前解析结果</span>
                     <span className="text-xs text-slate-400">{parsedRows.length} 行 / {parsedHeaders.length || headers.length} 列</span>
@@ -2650,7 +2850,108 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
               </div>
             )}
 
-            {wizardStep === 3 && (
+            {wizardStep === 3 && isDirectImport && (
+              directImportPreview ? (
+                <div className="space-y-5">
+                  <section className="border border-emerald-400/25 bg-emerald-500/[0.06] p-5">
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                      <div>
+                        <h3 className="text-lg font-semibold text-slate-100">源表将完整导入</h3>
+                        <p className="mt-1 text-sm text-slate-400">不重命名、不重排、不遗漏未知列。模型结果复选框只标注列用途，不决定是否导入。</p>
+                      </div>
+                      <div className="grid grid-cols-3 gap-px border border-white/10 bg-white/10 text-center">
+                        <div className="bg-slate-950 px-5 py-3"><div className="text-[11px] text-slate-500">Case</div><div className="mt-1 font-semibold text-slate-100">{directImportPreview.rowCount}</div></div>
+                        <div className="bg-slate-950 px-5 py-3"><div className="text-[11px] text-slate-500">列</div><div className="mt-1 font-semibold text-slate-100">{directImportPreview.columnCount}</div></div>
+                        <div className="bg-slate-950 px-5 py-3"><div className="text-[11px] text-slate-500">导入</div><div className="mt-1 font-semibold text-emerald-300">{directImportPreview.columnCount}/{directImportPreview.columnCount}</div></div>
+                      </div>
+                    </div>
+                  </section>
+
+                  {directImportPreview.warnings.map(warning => (
+                    <div key={warning.code} className="flex items-start gap-2 border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+                      <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+                      <div><div className="font-medium">无法进行可靠的源表增量同步</div><div className="mt-1 text-xs text-amber-100/75">{warning.message}</div></div>
+                    </div>
+                  ))}
+                  {directImportPreview.issues.map(issue => (
+                    <div key={`${issue.code}:${issue.rowIndexes.join(',')}`} className="flex items-start gap-2 border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+                      <AlertTriangle size={16} className="mt-0.5 shrink-0" /> {issue.message}
+                    </div>
+                  ))}
+
+                  <section className="overflow-hidden border border-white/10 bg-white/[0.03]">
+                    <div className="flex flex-col gap-2 border-b border-white/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <h3 className="font-semibold text-slate-100">完整列清单</h3>
+                        <p className="mt-1 text-xs text-slate-400">平台仅按精确列名标注用途；未识别列保留为普通元数据。</p>
+                      </div>
+                      <div className="text-xs text-slate-400">已选择 {directOutputColumns.length} 个过往模型结果列</div>
+                    </div>
+                    <div className="max-h-[48vh] overflow-auto">
+                      <table className="w-full min-w-[820px] text-left text-xs">
+                        <thead className="sticky top-0 z-10 bg-slate-950 text-slate-400">
+                          <tr>
+                            <th className="px-4 py-3">顺序</th>
+                            <th className="px-4 py-3">原始列名</th>
+                            <th className="px-4 py-3">平台用途</th>
+                            <th className="px-4 py-3">预览类型</th>
+                            <th className="px-4 py-3">样例值</th>
+                            <th className="px-4 py-3 text-center">过往模型结果</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-white/5">
+                          {directImportPreview.columns.map((column, index) => {
+                            const selectedAsOutput = directOutputColumns.includes(column.key);
+                            return (
+                              <tr key={column.key} className={selectedAsOutput ? 'bg-amber-500/[0.07]' : undefined}>
+                                <td className="px-4 py-3 text-slate-500">{index + 1}</td>
+                                <td className="px-4 py-3 font-mono font-medium text-slate-100">{column.key}</td>
+                                <td className="px-4 py-3">
+                                  <span className={`border px-2 py-1 ${column.canonicalKey ? 'border-sky-400/25 bg-sky-500/10 text-sky-200' : 'border-white/10 bg-white/5 text-slate-400'}`}>
+                                    {directImportUsageLabel[column.usage]}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3 text-slate-300">{selectedAsOutput ? `${form.modality} 结果` : PREVIEW_OPTIONS.find(option => option.key === column.previewType)?.label || column.previewType}</td>
+                                <td className="max-w-[360px] truncate px-4 py-3 text-slate-400" title={summarizeDirectImportValue(column.sampleValue)}>{summarizeDirectImportValue(column.sampleValue)}</td>
+                                <td className="px-4 py-3 text-center">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedAsOutput}
+                                    disabled={!column.outputEligible}
+                                    aria-label={`将 ${column.key} 标记为过往模型结果`}
+                                    onChange={event => setDirectOutputColumns(current => event.target.checked
+                                      ? [...current, column.key]
+                                      : current.filter(key => key !== column.key))}
+                                    className="h-4 w-4 accent-amber-400 disabled:opacity-30"
+                                  />
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+
+                  <section className="grid gap-4 md:grid-cols-2">
+                    <div className="border border-white/10 bg-black/20 p-4">
+                      <div className="text-xs text-slate-500">Case 身份</div>
+                      <div className="mt-2 text-sm font-medium text-slate-100">{directImportPreview.identityMode === 'case_variant' ? 'case_id + variant_label' : '平台隐藏稳定 ID'}</div>
+                      <p className="mt-1 text-xs leading-5 text-slate-400">{directImportPreview.identityMode === 'case_variant' ? '可用于后续版本化同步和历史结果继承。' : '不添加可见业务列；此评测集将禁用版本化同步。'}</p>
+                    </div>
+                    <div className="border border-white/10 bg-black/20 p-4">
+                      <div className="text-xs text-slate-500">来源保存</div>
+                      <div className="mt-2 text-sm font-medium text-slate-100">一次性导入</div>
+                      <p className="mt-1 text-xs leading-5 text-slate-400">飞书链接、app token 和 table ID 不写入评测集；以后同步需重新提供来源。</p>
+                    </div>
+                  </section>
+                </div>
+              ) : (
+                <div className="border border-amber-400/25 bg-amber-500/10 p-5 text-sm text-amber-100">尚未读取数据源，请返回上一步。</div>
+              )
+            )}
+
+            {wizardStep === 3 && !isDirectImport && (
               <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-6">
                 <div className="space-y-5 min-w-0">
                   <div className="rounded-xl border border-white/10 bg-white/5 overflow-hidden">
@@ -2873,10 +3174,18 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
             <div className="flex gap-3">
               {wizardStep > 1 && <button onClick={() => setWizardStep((wizardStep - 1) as WizardStep)} className="px-4 py-2 rounded-xl bg-white/5 glass-panel-hover text-slate-300 text-sm">上一步</button>}
               {wizardStep < 3 ? (
-                <button onClick={() => setWizardStep((wizardStep + 1) as WizardStep)} className="px-5 py-2 rounded-xl bg-amber-500 text-black font-medium text-sm">下一步</button>
+                <button
+                  onClick={() => setWizardStep((wizardStep + 1) as WizardStep)}
+                  disabled={wizardStep === 2 && (!directImportPreview || !parsedHeaders.length)}
+                  className="px-5 py-2 rounded-xl bg-amber-500 text-black font-medium text-sm disabled:cursor-not-allowed disabled:opacity-40"
+                >下一步</button>
               ) : (
-                <button onClick={handleSaveWizard} className="px-5 py-2 rounded-xl bg-amber-500 text-black font-medium text-sm flex items-center gap-2">
-                  <Save size={16} /> 保存评测集
+                <button
+                  onClick={handleSaveWizard}
+                  disabled={isSavingWizard || (isDirectImport && (!directImportPreview?.valid || !directImportSource))}
+                  className="px-5 py-2 rounded-xl bg-amber-500 text-black font-medium text-sm flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <Save size={16} /> {isSavingWizard ? '正在创建...' : isDirectImport ? '确认并直接导入' : '保存评测集'}
                 </button>
               )}
             </div>
@@ -3160,7 +3469,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
             <button onClick={openNewGeneration} disabled={!selectedDataset || isViewingHistoricalVersion} className="flex items-center gap-2 border border-amber-500/20 bg-amber-500/10 px-4 py-2.5 text-sm font-medium text-amber-300 hover:bg-amber-500/20 disabled:opacity-40">
               <Wand2 size={18} /> 批量生产产物
             </button>
-            <button onClick={() => setSyncModalOpen(true)} disabled={!selectedDataset || isViewingHistoricalVersion} className="flex items-center gap-2 border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-slate-300 hover:bg-white/10 disabled:opacity-40">
+            <button onClick={() => setSyncModalOpen(true)} title={hasInternalOnlyImportIdentity ? '源表没有精确 case_id，不能可靠同步' : '同步更新评测集'} disabled={!selectedDataset || isViewingHistoricalVersion || hasInternalOnlyImportIdentity} className="flex items-center gap-2 border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-slate-300 hover:bg-white/10 disabled:opacity-40">
               <RefreshCw size={18} /> 同步更新
             </button>
             <button onClick={openColumnRenameEditor} disabled={!selectedDataset || isViewingHistoricalVersion} className="flex items-center gap-2 border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-slate-300 hover:bg-white/10 disabled:opacity-40">
@@ -3437,7 +3746,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                       <button onClick={openColumnRenameEditor} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-white/5 glass-panel-hover text-slate-300 text-sm flex items-center gap-2 border border-white/10 disabled:opacity-40">
                         <Settings size={16} /> {'\u7ba1\u7406\u5217'}
                       </button>
-                      <button onClick={() => setSyncModalOpen(true)} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-sm flex items-center gap-2 border border-amber-500/20 disabled:opacity-40">
+                      <button onClick={() => setSyncModalOpen(true)} title={hasInternalOnlyImportIdentity ? '源表没有精确 case_id，不能可靠同步' : '同步更新评测集'} disabled={isViewingHistoricalVersion || hasInternalOnlyImportIdentity} className="px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-sm flex items-center gap-2 border border-amber-500/20 disabled:opacity-40">
                         <RefreshCw size={16} /> 同步更新
                       </button>
                       <button onClick={() => setDatasetToDelete(selectedDataset.id)} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-300 text-sm flex items-center gap-2 border border-red-500/20 disabled:opacity-40">
@@ -3451,6 +3760,12 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                 <div role="status" className="flex items-start justify-between gap-3 border-b border-emerald-400/20 bg-emerald-500/10 px-5 py-3 text-sm text-emerald-100">
                   <span className="flex items-start gap-2"><CheckCircle2 size={16} className="mt-0.5 shrink-0" /> {cloneNotice}</span>
                   <button type="button" onClick={() => setCloneNotice('')} aria-label="关闭副本创建提示" className="shrink-0 text-emerald-200/70 hover:text-emerald-100"><X size={16} /></button>
+                </div>
+              )}
+              {!isGenerationMode && hasInternalOnlyImportIdentity && (
+                <div className="flex items-start gap-2 border-b border-amber-400/20 bg-amber-500/10 px-5 py-3 text-sm text-amber-100">
+                  <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+                  <span>该评测集直接导入时没有精确 <code>case_id</code>，因此只使用平台隐藏稳定 ID。版本化同步已禁用；请在源表补充 <code>case_id</code> 后重新直接导入。</span>
                 </div>
               )}
               {columnManagerOpen && createPortal(
@@ -3833,7 +4148,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
       {!isGenerationMode && renderWizard()}
       {!isGenerationMode && renderColumnRenameModal()}
       {!isGenerationMode && renderColumnDeleteModal()}
-      {!isGenerationMode && syncModalOpen && selectedDataset && !isViewingHistoricalVersion && (
+      {!isGenerationMode && syncModalOpen && selectedDataset && !isViewingHistoricalVersion && !hasInternalOnlyImportIdentity && (
         <DatasetSyncModal
           dataset={selectedDataset}
           onClose={() => setSyncModalOpen(false)}

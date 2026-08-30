@@ -528,7 +528,14 @@ export interface DatasetVersionSnapshot {
   syncSummary?: DatasetSyncSummary;
   copiedFrom?: DatasetCopySource;
   syncSource?: DatasetSyncSourceBinding;
+  importMetadata?: DatasetImportMetadata;
   updatedAt: number;
+}
+
+export interface DatasetImportMetadata {
+  version: 1;
+  mode: 'direct';
+  identityMode: 'case_variant' | 'internal';
 }
 
 export interface EvalDataset {
@@ -551,6 +558,7 @@ export interface EvalDataset {
   syncSummary?: DatasetSyncSummary;
   copiedFrom?: DatasetCopySource;
   syncSource?: DatasetSyncSourceBinding;
+  importMetadata?: DatasetImportMetadata;
   creatorUid?: string;
   creatorName?: string;
   createdAt: number;

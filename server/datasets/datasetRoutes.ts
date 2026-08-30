@@ -18,8 +18,37 @@ import {
   createDatasetSyncPreview,
   updateDatasetSyncPreview,
 } from './datasetSyncService.ts';
+import {
+  applyDatasetDirectImport,
+  createDatasetDirectImportPreview,
+} from './datasetDirectImportService.ts';
 
 export const datasetRoutes = Router();
+
+datasetRoutes.post('/import-previews', async (req, res) => {
+  try {
+    if (!req.body?.source || typeof req.body.source !== 'object') throw badRequest('source is required');
+    const preview = await createDatasetDirectImportPreview(req.body.source);
+    res.status(201).json({ preview });
+  } catch (error) {
+    sendError(res, error, 'Failed to create dataset import preview');
+  }
+});
+
+datasetRoutes.post('/imports', async (req, res) => {
+  try {
+    if (!req.body?.source || typeof req.body.source !== 'object') throw badRequest('source is required');
+    const dataset = await applyDatasetDirectImport({
+      source: req.body.source,
+      expectedSnapshotHash: req.body.expectedSnapshotHash,
+      outputColumns: req.body.outputColumns,
+      metadata: req.body.metadata,
+    }, req.user);
+    res.status(201).json({ dataset, syncSummary: dataset.syncSummary });
+  } catch (error) {
+    sendError(res, error, 'Failed to import dataset');
+  }
+});
 
 datasetRoutes.post('/:datasetId/sync-previews', async (req, res) => {
   try {

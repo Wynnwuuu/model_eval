@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 
 import {
@@ -13,10 +13,12 @@ import type {
   EvalDataset,
 } from '../../src/types.ts';
 import type { RequestUser } from '../auth/context.ts';
-import { getFeishuTenantAccessToken } from '../auth/feishuOAuth.ts';
 import { dbPool } from '../db/client.ts';
 import { ApiError, badRequest, conflict, notFound } from '../http/errors.ts';
-import { readFeishuBaseSnapshot } from './feishuBaseClient.ts';
+import {
+  loadDatasetSourceSnapshot,
+  type DatasetSourceRequest,
+} from './datasetSourceSnapshot.ts';
 import {
   getDataset,
   listDatasetHistoricalRows,
@@ -24,26 +26,13 @@ import {
 } from './datasetRepository.ts';
 
 const PREVIEW_TTL_MS = 60 * 60 * 1000;
-const MAX_SYNC_ROWS = 10_000;
 const OUTPUT_POLICIES = new Set<DatasetSyncOutputPolicy>([
   'preserve_platform',
   'fill_platform_blanks',
   'source_overwrite',
 ]);
 
-type ManualSource = {
-  kind: 'manual';
-  headers: string[];
-  rows: Record<string, unknown>[];
-  label?: string;
-};
-
-type FeishuSource = {
-  kind: 'feishu_base';
-  url: string;
-};
-
-export type DatasetSyncSourceRequest = ManualSource | FeishuSource;
+export type DatasetSyncSourceRequest = DatasetSourceRequest;
 
 interface DatasetSyncDecisions {
   outputPolicies: Record<string, DatasetSyncOutputPolicy>;
@@ -68,73 +57,6 @@ interface StoredPreviewRow {
   created_by: string | null;
   expires_at: Date;
 }
-
-const normalizeHeaders = (headers: unknown) => {
-  if (!Array.isArray(headers) || !headers.length) throw badRequest('同步源必须包含列名。');
-  const normalized = headers.map(header => String(header ?? ''));
-  if (normalized.some(header => !header.trim())) throw badRequest('同步源包含空列名。');
-  if (new Set(normalized).size !== normalized.length) throw badRequest('同步源包含重复列名。');
-  if (normalized.some(header => header.startsWith('__'))) throw badRequest('以 __ 开头的列名由 ManuEval 保留，不能从同步源写入。');
-  return normalized;
-};
-
-const normalizeRows = (headers: string[], rows: unknown) => {
-  if (!Array.isArray(rows)) throw badRequest('同步源 rows 必须是对象数组。');
-  if (rows.length > MAX_SYNC_ROWS) throw badRequest(`单次最多同步 ${MAX_SYNC_ROWS} 条 case。`);
-  return rows.map((row, index) => {
-    if (!row || typeof row !== 'object' || Array.isArray(row)) throw badRequest(`第 ${index + 1} 行不是有效对象。`);
-    const record = row as Record<string, unknown>;
-    return Object.fromEntries(headers.map(header => [
-      header,
-      Object.prototype.hasOwnProperty.call(record, header) ? record[header] : '',
-    ]));
-  });
-};
-
-const snapshotHash = (headers: string[], rows: Record<string, unknown>[]) => createHash('sha256')
-  .update(JSON.stringify({ headers, rows }))
-  .digest('hex');
-
-const loadSourceSnapshot = async (source: DatasetSyncSourceRequest) => {
-  if (!source || !['manual', 'feishu_base'].includes(source.kind)) {
-    throw badRequest('同步来源必须是手动数据或飞书 Base。');
-  }
-  if (source.kind === 'manual') {
-    const headers = normalizeHeaders(source.headers);
-    const rows = normalizeRows(headers, source.rows);
-    return {
-      headers,
-      rows,
-      binding: {
-        version: 1 as const,
-        kind: 'manual' as const,
-        sourceLabel: source.label?.trim() || '手动导入',
-        columnOrder: headers,
-        snapshotHash: snapshotHash(headers, rows),
-        lastSyncedAt: Date.now(),
-      },
-    };
-  }
-  if (!source.url?.trim()) throw badRequest('请输入飞书多维表格链接。');
-  const token = await getFeishuTenantAccessToken();
-  const snapshot = await readFeishuBaseSnapshot({ sourceUrl: source.url.trim(), tenantAccessToken: token });
-  const headers = normalizeHeaders(snapshot.headers);
-  const rows = normalizeRows(headers, snapshot.rows);
-  return {
-    headers,
-    rows,
-    binding: {
-      version: 1 as const,
-      kind: 'feishu_base' as const,
-      sourceUrl: source.url.trim(),
-      sourceLabel: '飞书多维表格',
-      tableId: snapshot.tableId,
-      columnOrder: headers,
-      snapshotHash: snapshotHash(headers, rows),
-      lastSyncedAt: Date.now(),
-    },
-  };
-};
 
 const defaultDecisions = (dataset: EvalDataset, headers: string[]): DatasetSyncDecisions => {
   const knownColumns = new Set(dataset.inputSchema.map(field => field.key));
@@ -336,11 +258,14 @@ export const createDatasetSyncPreview = async (
 ) => {
   const dataset = await getDataset(datasetId);
   if (!dataset) throw notFound('Dataset');
+  if (dataset.importMetadata?.mode === 'direct' && dataset.importMetadata.identityMode === 'internal') {
+    throw badRequest('该评测集没有精确 case_id，无法可靠执行版本化同步。请先在源表补充 case_id 后重新直接导入。');
+  }
   if ((dataset.version || 1) !== expectedVersion) throw conflict('评测集版本已变化，请刷新后重试。', {
     expectedVersion,
     currentVersion: dataset.version || 1,
   });
-  const source = await loadSourceSnapshot(sourceRequest);
+  const source = await loadDatasetSourceSnapshot(sourceRequest);
   const decisions = defaultDecisions(dataset, source.headers);
   const id = `ds-sync-${randomUUID()}`;
   const createdAt = Date.now();
@@ -469,7 +394,7 @@ export const applyDatasetSyncPreview = async (
   let rows = stored.payload_json.rows;
   let binding = stored.payload_json.sourceBinding;
   if (stored.source_kind === 'feishu_base') {
-    const refreshed = await loadSourceSnapshot(stored.payload_json.sourceRequest);
+    const refreshed = await loadDatasetSourceSnapshot(stored.payload_json.sourceRequest);
     if (refreshed.binding.snapshotHash !== stored.snapshot_hash) {
       throw new ApiError(409, 'DATASET_SYNC_SOURCE_CHANGED', '飞书 Base 已在预览后发生变化，请重新预览。');
     }

@@ -518,3 +518,11 @@ Generation writeback remains sparse by design: only batch cases receive result o
 The material builder will expose business and output columns but not internal fields, system fields, or exact generation companion columns. It will preserve valid user selections across dataset refreshes, prune only deleted/now-ineligible columns, and consume generation deep-link prefill only after every requested result column is visible. No backend row densification or data migration will be used to mask the projection bug.
 
 Output-type inference may take preferred result columns and must recognize audio. The generation-to-evaluation shortcut uses the generated target as its preference so an older output column cannot select the wrong renderer.
+
+## 2026-08-30: Direct import preserves the source table contract
+
+New datasets default to direct import. Source headers, order, root-level values, and unknown metadata are authoritative; exact known names only add role and preview annotations. Existing model-result columns require an explicit user selection and identity columns can never become outputs.
+
+Feishu Base import is a one-time, full-table read. The linked view is ignored, apply re-reads the table and compares its snapshot hash, and no Base binding is persisted. Versioned synchronization remains a separate maintenance operation.
+
+An exact `case_id + variant_label` pair is the only business identity eligible for source synchronization. A source without `case_id` may be imported with hidden stable IDs, but both UI and API must reject later synchronization. This restriction is persisted in version manifests and inherited by dataset copies.

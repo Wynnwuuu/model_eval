@@ -13,6 +13,13 @@ import {
 import { getApiAuthHeaders } from '../apiAuthHeaders';
 import { API_BASE_URL, USE_SHARED_DATA_SOURCE } from '../../runtimeConfig';
 import { notifyPageMetadataRefresh } from '../../pageMetadataClient';
+import {
+  buildDatasetDirectImportPreview,
+  compileDirectImportDataset,
+  hashDirectImportSnapshot,
+  type DatasetDirectImportMetadata,
+  type DatasetDirectImportPreview,
+} from '../../datasetDirectImport';
 
 const HTTP_REFRESH_INTERVAL_MS = 5000;
 
@@ -96,6 +103,7 @@ const toVersionSnapshot = (dataset: EvalDataset): DatasetVersionSnapshot => ({
   syncSummary: dataset.syncSummary,
   copiedFrom: dataset.copiedFrom,
   syncSource: dataset.syncSource,
+  importMetadata: dataset.importMetadata,
   updatedAt: dataset.updatedAt || Date.now(),
 });
 
@@ -128,6 +136,7 @@ const datasetFromSnapshot = (dataset: EvalDataset, snapshot: DatasetVersionSnaps
   syncSummary: snapshot.syncSummary,
   copiedFrom: snapshot.copiedFrom ?? dataset.copiedFrom,
   syncSource: snapshot.syncSource ?? dataset.syncSource,
+  importMetadata: snapshot.importMetadata ?? dataset.importMetadata,
   version: snapshot.version,
   updatedAt: snapshot.updatedAt || dataset.updatedAt,
 });
@@ -409,6 +418,64 @@ export async function saveDataset(
 export type DatasetSyncSourceInput =
   | { kind: 'feishu_base'; url: string }
   | { kind: 'manual'; headers: string[]; rows: Record<string, unknown>[]; label?: string };
+
+export async function createDatasetDirectImportPreview(source: DatasetSyncSourceInput) {
+  if (USE_SHARED_DATA_SOURCE) {
+    const response = await requestJson<{ preview: DatasetDirectImportPreview }>('/api/datasets/import-previews', {
+      method: 'POST',
+      body: JSON.stringify({ source: sanitizeDatasetValue(source) }),
+    });
+    return response.preview;
+  }
+  if (source.kind === 'feishu_base') {
+    throw new Error('飞书 Base 直接导入仅在 ManuEval dev 服务模式下可用。');
+  }
+  const snapshotHash = hashDirectImportSnapshot(source.headers, source.rows);
+  return buildDatasetDirectImportPreview({
+    headers: source.headers,
+    rows: source.rows,
+    snapshotHash,
+  });
+}
+
+export async function applyDatasetDirectImport(input: {
+  source: DatasetSyncSourceInput;
+  expectedSnapshotHash: string;
+  outputColumns: string[];
+  metadata: DatasetDirectImportMetadata;
+}) {
+  if (USE_SHARED_DATA_SOURCE) {
+    const response = await requestJson<{ dataset: EvalDataset }>('/api/datasets/imports', {
+      method: 'POST',
+      body: JSON.stringify(sanitizeDatasetValue(input)),
+    });
+    notifyDatasetReloaders();
+    return response.dataset;
+  }
+  if (input.source.kind === 'feishu_base') {
+    throw new Error('飞书 Base 直接导入仅在 ManuEval dev 服务模式下可用。');
+  }
+  const preview = await createDatasetDirectImportPreview(input.source);
+  if (preview.snapshotHash !== input.expectedSnapshotHash) {
+    const error = new Error('数据源已在预览后发生变化，请重新预览。') as Error & { code?: string };
+    error.code = 'DATASET_IMPORT_SOURCE_CHANGED';
+    throw error;
+  }
+  const currentUser = auth.currentUser;
+  const dataset = compileDirectImportDataset({
+    id: `ds-${crypto.randomUUID()}`,
+    preview,
+    outputColumns: input.outputColumns,
+    metadata: input.metadata,
+    actor: {
+      id: currentUser?.uid || 'local-user',
+      name: currentUser?.displayName || currentUser?.email || 'Local',
+    },
+  });
+  const datasetWithSnapshot = attachLocalVersionSnapshot(dataset);
+  await setDoc(doc(db, 'evalDatasets', dataset.id), sanitizeDatasetValue(datasetWithSnapshot));
+  return datasetWithSnapshot;
+}
 
 export async function createDatasetSyncPreview(
   dataset: EvalDataset,

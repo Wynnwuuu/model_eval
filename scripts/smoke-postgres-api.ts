@@ -198,10 +198,14 @@ const main = async () => {
   };
 
   let clonedDatasetId = '';
+  let directImportedDatasetId = '';
+  let directInternalDatasetId = '';
 
   const cleanup = async () => {
     await Promise.allSettled([
       ...(clonedDatasetId ? [sendJson(`/api/datasets/${clonedDatasetId}`, 'DELETE')] : []),
+      ...(directImportedDatasetId ? [sendJson(`/api/datasets/${directImportedDatasetId}`, 'DELETE')] : []),
+      ...(directInternalDatasetId ? [sendJson(`/api/datasets/${directInternalDatasetId}`, 'DELETE')] : []),
       sendJson(`/api/generation/jobs/${ids.job}`, 'DELETE'),
       sendJson(`/api/tasks/${ids.task}`, 'DELETE'),
       sendJson(`/api/tasks/${ids.benchmarkTask}`, 'DELETE'),
@@ -244,6 +248,69 @@ const main = async () => {
       user: { uid: 'smoke-user', displayName: 'Smoke User', email: 'smoke@example.com' },
     });
     assert(project.project.id, 'project was not created');
+
+    const directSource = {
+      kind: 'manual',
+      label: 'direct import smoke fixture',
+      headers: ['case_id', 'variant_label', 'prompt', 'elements', 'model_result', 'unknown_note'],
+      rows: [{
+        case_id: 'direct-1',
+        variant_label: 'reference',
+        prompt: 'keep this prompt exactly',
+        elements: [{ frontal_image_url: 'https://example.com/person.png' }],
+        model_result: 'https://example.com/result.mp4',
+        unknown_note: 'must remain at root',
+      }],
+    } as const;
+    const directPreview = await sendJson<{ preview: any }>('/api/datasets/import-previews', 'POST', { source: directSource });
+    assert(directPreview.preview.valid === true, 'direct import preview should be valid');
+    assert(directPreview.preview.headers.join('|') === directSource.headers.join('|'), 'direct import preview changed source column order');
+    const changedImport = await expectJsonFailure('/api/datasets/imports', 409, {
+      method: 'POST',
+      body: JSON.stringify({
+        source: directSource,
+        expectedSnapshotHash: 'stale-preview-hash',
+        outputColumns: ['model_result'],
+        metadata: {
+          name: 'Direct import smoke', description: '', tags: [], modality: 'video', categoryPath: [],
+          datasetCard: { applicableTasks: [], applicableStages: [], source: '', rubricBinding: '', coverageGaps: [] },
+        },
+      }),
+    });
+    assert(changedImport.error?.code === 'DATASET_IMPORT_SOURCE_CHANGED', 'direct import did not reject a changed source snapshot');
+    const directImported = await sendJson<{ dataset: any }>('/api/datasets/imports', 'POST', {
+      source: directSource,
+      expectedSnapshotHash: directPreview.preview.snapshotHash,
+      outputColumns: ['model_result'],
+      metadata: {
+        name: 'Direct import smoke', description: '', tags: [], modality: 'video', categoryPath: [],
+        datasetCard: { applicableTasks: [], applicableStages: [], source: '', rubricBinding: '', coverageGaps: [] },
+      },
+    });
+    directImportedDatasetId = directImported.dataset.id;
+    assert(directImported.dataset.inputSchema.map((field: any) => field.key).join('|') === directSource.headers.join('|'), 'direct import changed persisted column order');
+    assert(directImported.dataset.items[0].unknown_note === 'must remain at root', 'direct import omitted an unknown root column');
+    assert(directImported.dataset.columnMappings.outputColumns[0] === 'model_result', 'direct import did not persist the selected result column');
+    assert(!directImported.dataset.syncSource, 'one-time direct import persisted its source binding');
+
+    const internalSource = { kind: 'manual', headers: ['prompt', 'custom'], rows: [{ prompt: 'no business id', custom: 'kept' }] } as const;
+    const internalPreview = await sendJson<{ preview: any }>('/api/datasets/import-previews', 'POST', { source: internalSource });
+    const internalImported = await sendJson<{ dataset: any }>('/api/datasets/imports', 'POST', {
+      source: internalSource,
+      expectedSnapshotHash: internalPreview.preview.snapshotHash,
+      outputColumns: [],
+      metadata: {
+        name: 'Direct import internal identity smoke', description: '', tags: [], modality: 'text', categoryPath: [],
+        datasetCard: { applicableTasks: [], applicableStages: [], source: '', rubricBinding: '', coverageGaps: [] },
+      },
+    });
+    directInternalDatasetId = internalImported.dataset.id;
+    assert(internalImported.dataset.importMetadata?.identityMode === 'internal', 'missing case_id did not persist internal identity mode');
+    const blockedInternalSync = await expectJsonFailure(`/api/datasets/${directInternalDatasetId}/sync-previews`, 400, {
+      method: 'POST',
+      body: JSON.stringify({ expectedVersion: 1, source: internalSource }),
+    });
+    assert(blockedInternalSync.error?.code === 'BAD_REQUEST', 'internal-identity direct import allowed versioned synchronization');
 
     await testOwnerAccess(project.project.id);
 

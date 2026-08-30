@@ -48,6 +48,7 @@ export const buildDatasetClone = (
     columnMappings: source.columnMappings ? cloneValue(source.columnMappings) : undefined,
     datasetCard,
     validationSummary: source.validationSummary ? cloneValue(source.validationSummary) : undefined,
+    importMetadata: source.importMetadata ? cloneValue(source.importMetadata) : undefined,
     copiedFrom: {
       datasetId: source.id,
       datasetName: source.name,

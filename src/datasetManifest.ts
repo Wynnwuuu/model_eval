@@ -10,8 +10,8 @@ import {
   DatasetVersionEntry,
   EvalDataset,
   SchemaFieldType
-} from './types';
-import { getDatasetActiveColumnKeys } from './datasetColumnDeletion';
+} from './types.ts';
+import { getDatasetActiveColumnKeys } from './datasetColumnDeletion.ts';
 
 const URL_PATTERN = /https?:\/\/[^\s"'\t|,;>]+/i;
 const VIDEO_PATTERN = /\.(mp4|webm|ogg|mov|m4v)(\?|#|$)/i;

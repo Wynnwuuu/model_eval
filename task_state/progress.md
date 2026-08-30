@@ -901,3 +901,19 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Cloud sessions without a Bearer token now rely exclusively on the signed HttpOnly owner Cookie. Legacy `X-User-*` headers remain unchanged for offline/local mode, while Feishu sessions continue to send the Bearer token.
 - The owner browser regression now binds the Chinese display name `面包干`, verifies the same stored identity, and requires a real `/api/projects` request without the non-Latin-1 console failure.
 - TypeScript lint, frontend/server production builds, owner security tests, project contracts, and `git diff --check` pass locally. The expanded browser regression will run in the required isolated PostgreSQL CI environment before deployment.
+
+## 2026-08-30: Dataset direct import and Feishu Base intake
+
+### Implemented
+
+- New-dataset creation now defaults to direct import; every source column remains a root-level field with its exact name, order, and value. Legacy field mapping remains an explicit compatibility mode and existing append behavior is unchanged.
+- File, paste, and one-time Feishu Base sources share one compiler and two-stage preview/apply contract. Base import reads the full table, ignores the linked view, rechecks the source hash at apply time, and does not persist a source binding.
+- Exact known columns receive role/preview annotations only. Existing model-result columns are opt-in, default to none, keep source order, and identity/reserved columns are rejected by UI and server.
+- Exact `case_id + variant_label` identities support later synchronization. Sources without `case_id` receive hidden stable IDs and persist an internal-only identity marker that disables synchronization in both UI and API.
+- Duplicate/blank headers, reserved columns, missing/duplicate business identities, and over-limit sources fail before creation. CSV/TSV values are no longer trimmed or silently renamed by Papa Parse.
+
+### Validation so far
+
+- Passed direct import, versioned sync, Feishu Base pagination, legacy import mapping, clone, column deletion, table projection/filtering, generation/MCP/seed, evaluation reference media, task scope, Arena/rank, structured audit, projects, results, insights, page metadata, layout, TypeScript, frontend build, and server build.
+- Browser QA passed on desktop and 390x844 mobile. It verified the direct mode default, Base/file/paste source tabs, N/N full-column confirmation, unknown-column retention, missing-case-ID warning, successful local import, disabled synchronization, and zero console errors.
+- No paid generation ran and no Feishu source was modified. PostgreSQL/API smoke remains pending because the local Docker/PostgreSQL service is not running; the smoke script now includes preview hash conflict, direct persistence, source-binding absence, and internal-identity sync rejection.

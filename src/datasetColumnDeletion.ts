@@ -4,8 +4,8 @@ import type {
   DatasetSchemaField,
   EvalDataset,
   EvalTask,
-} from './types';
-import { DATASET_ITEM_ID_KEY } from './datasetSync';
+} from './types.ts';
+import { DATASET_ITEM_ID_KEY } from './datasetSync.ts';
 
 export const RESERVED_DATASET_COLUMNS = new Set(['_originalData', DATASET_ITEM_ID_KEY]);
 
