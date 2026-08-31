@@ -6,6 +6,7 @@ import { loadTaskEvaluation, loadTaskVoteGroups } from './loadTaskEvaluation';
 import { loadTaskItems } from './loadTaskItems';
 import { API_BASE_URL, USE_SHARED_DATA_SOURCE } from '../../runtimeConfig';
 import { notifyPageMetadataRefresh } from '../../pageMetadataClient';
+import { createSingleFlightLoader, startNonOverlappingPolling } from '../../httpPolling';
 
 export { loadTaskEvaluation, loadTaskItems, loadTaskVoteGroups };
 
@@ -169,22 +170,20 @@ export function subscribeTasks(
 ) {
   if (USE_TASK_API_BACKEND) {
     let active = true;
-    const reload = () => {
+    const reload = createSingleFlightLoader(async () => {
       const queryString = params.projectId ? `?projectId=${encodeURIComponent(params.projectId)}` : '';
-      requestTaskJson<{ tasks: EvalTask[] }>(`/api/tasks${queryString}`)
-        .then(response => {
-          if (active) onNext(response.tasks);
-        })
-        .catch(error => {
-          if (active) onError?.(error);
-        });
-    };
+      try {
+        const response = await requestTaskJson<{ tasks: EvalTask[] }>(`/api/tasks${queryString}`);
+        if (active) onNext(response.tasks);
+      } catch (error) {
+        if (active) onError?.(error);
+      }
+    });
     taskReloaders.add(reload);
-    reload();
-    const intervalId = window.setInterval(reload, HTTP_REFRESH_INTERVAL_MS);
+    const stopPolling = startNonOverlappingPolling(reload, HTTP_REFRESH_INTERVAL_MS);
     return () => {
       active = false;
-      window.clearInterval(intervalId);
+      stopPolling();
       taskReloaders.delete(reload);
     };
   }

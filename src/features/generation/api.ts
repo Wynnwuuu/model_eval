@@ -4,6 +4,7 @@ import { DatasetGenerationJob, DatasetGenerationJobItem } from '../../types';
 import { getApiAuthHeaders } from '../apiAuthHeaders';
 import { API_BASE_URL, USE_SHARED_DATA_SOURCE } from '../../runtimeConfig';
 import { notifyPageMetadataRefresh } from '../../pageMetadataClient';
+import { createSingleFlightLoader, startNonOverlappingPolling } from '../../httpPolling';
 
 const HTTP_REFRESH_INTERVAL_MS = 5000;
 
@@ -41,22 +42,20 @@ export function subscribeGenerationJobs(
 ) {
   if (USE_SHARED_DATA_SOURCE) {
     let active = true;
-    const reload = () => {
+    const reload = createSingleFlightLoader(async () => {
       const queryString = params.datasetId ? `?datasetId=${encodeURIComponent(params.datasetId)}` : '';
-      requestJson<{ jobs: DatasetGenerationJob[] }>(`/api/generation/jobs${queryString}`)
-        .then(response => {
-          if (active) onNext(response.jobs);
-        })
-        .catch(error => {
-          if (active) onError?.(error);
-        });
-    };
+      try {
+        const response = await requestJson<{ jobs: DatasetGenerationJob[] }>(`/api/generation/jobs${queryString}`);
+        if (active) onNext(response.jobs);
+      } catch (error) {
+        if (active) onError?.(error);
+      }
+    });
     reloaders.add(reload);
-    reload();
-    const intervalId = window.setInterval(reload, HTTP_REFRESH_INTERVAL_MS);
+    const stopPolling = startNonOverlappingPolling(reload, HTTP_REFRESH_INTERVAL_MS);
     return () => {
       active = false;
-      window.clearInterval(intervalId);
+      stopPolling();
       reloaders.delete(reload);
     };
   }

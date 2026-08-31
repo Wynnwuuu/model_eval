@@ -4,6 +4,7 @@ import { EvalTemplate } from '../../types';
 import { getApiAuthHeaders } from '../apiAuthHeaders';
 import { API_BASE_URL, USE_SHARED_DATA_SOURCE } from '../../runtimeConfig';
 import { notifyPageMetadataRefresh } from '../../pageMetadataClient';
+import { createSingleFlightLoader, startNonOverlappingPolling } from '../../httpPolling';
 
 const HTTP_REFRESH_INTERVAL_MS = 5000;
 
@@ -45,21 +46,19 @@ export function subscribeTemplates(
 ) {
   if (USE_SHARED_DATA_SOURCE) {
     let active = true;
-    const reload = () => {
-      loadHttpTemplates()
-        .then(templates => {
-          if (active) onNext(templates);
-        })
-        .catch(error => {
-          if (active) onError?.(error);
-        });
-    };
+    const reload = createSingleFlightLoader(async () => {
+      try {
+        const templates = await loadHttpTemplates();
+        if (active) onNext(templates);
+      } catch (error) {
+        if (active) onError?.(error);
+      }
+    });
     templateReloaders.add(reload);
-    reload();
-    const intervalId = window.setInterval(reload, HTTP_REFRESH_INTERVAL_MS);
+    const stopPolling = startNonOverlappingPolling(reload, HTTP_REFRESH_INTERVAL_MS);
     return () => {
       active = false;
-      window.clearInterval(intervalId);
+      stopPolling();
       templateReloaders.delete(reload);
     };
   }

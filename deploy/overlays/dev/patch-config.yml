@@ -13,6 +13,8 @@ spec:
               value: production
             - name: API_PORT
               value: "8787"
+            - name: NODE_OPTIONS
+              value: "--max-old-space-size=1024"
             - name: STATIC_DIST_PATH
               value: /app/dist
             - name: CORS_ORIGIN
@@ -89,6 +91,13 @@ spec:
               value: "1500000"
             - name: GENERATION_MAX_ASSET_BYTES
               value: "2147483647"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
 ---
 apiVersion: batch/v1
 kind: Job

@@ -31,5 +31,15 @@ assert.match(
   /- name: GENERATION_WORKER_ENABLED\r?\n\s+value: "false"/,
   'dev generation execution must remain paused during native-exit isolation',
 );
+assert.match(
+  devConfig,
+  /- name: NODE_OPTIONS\r?\n\s+value: "--max-old-space-size=1024"/,
+  'dev must retain a bounded one-GiB V8 heap while the API serves large evaluation datasets',
+);
+assert.match(
+  devConfig,
+  /limits:\r?\n\s+cpu: "1"\r?\n\s+memory: "2Gi"/,
+  'the dev container limit must leave native-memory headroom around the one-GiB V8 heap',
+);
 
 console.log('Deployment runtime regression tests passed.');

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 
 import type { RequestUser } from '../server/auth/context.ts';
 import { closeDatabase, dbPool } from '../server/db/client.ts';
-import { getDataset, saveDataset } from '../server/datasets/datasetRepository.ts';
+import { getDataset, getDatasetVersion, listDatasets, saveDataset } from '../server/datasets/datasetRepository.ts';
 import {
   applyDatasetSyncPreview,
   createDatasetSyncPreview,
@@ -195,6 +195,12 @@ try {
   );
 
   assert.equal((await getDataset(datasetId))?.version, 5, 'a blocked synchronization must not create a partial version');
+  const listedDataset = (await listDatasets()).find(dataset => dataset.id === datasetId);
+  assert.equal(listedDataset?.version, 5, 'dataset listings must materialize the current version');
+  assert.equal(listedDataset?.items.length, 3, 'dataset listings must retain every current case');
+  const versionOne = await getDatasetVersion(datasetId, 1);
+  assert.equal(versionOne?.items[0].prompt, 'old prompt', 'explicit historical version reads must remain available');
+  assert.equal(versionOne?.items.length, 2, 'historical reads must materialize only the requested version');
   console.log('Versioned dataset synchronization PostgreSQL tests passed.');
 } finally {
   await dbPool.query('DELETE FROM datasets WHERE id = $1', [datasetId]).catch(() => undefined);

@@ -540,3 +540,10 @@ An exact `case_id + variant_label` pair is the only business identity eligible f
 - Worker-disabled mode must reject batch confirmation instead of accepting work that cannot run. Model discovery and preflight are read-only and remain available for diagnosis.
 - A successful Kubernetes rollout is insufficient evidence of stability. The deployment gate must also prove unchanged Pod identities and restart counts over a post-readiness observation window.
 - Paid generation remains out of scope until the web service is stable and the Worker failure is isolated or removed.
+
+## 2026-08-31: Treat the recurring native exit as V8 heap exhaustion
+
+- Previous exit-code-only evidence was insufficient to rule out memory exhaustion. The first captured previous-container logs prove the same exit 139 follows V8's `Reached heap limit` fatal path at about 511 MiB.
+- The routine dataset endpoint must never materialize historical case payloads. Historical payloads are loaded only by an explicit version/audit request.
+- Fixed-interval HTTP polling is prohibited for API-backed collections because request duration can exceed the interval. Polling is completion-relative and single-flight, including manual refresh triggers.
+- Memory headroom is defense in depth, not the primary fix. The deployment remains invalid unless two unchanged ready Pods survive the soak gate and public health checks stay successful.

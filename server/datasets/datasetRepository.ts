@@ -134,7 +134,7 @@ const mapDataset = (
   };
 };
 
-const loadDatasetRows = async (datasetId?: string) => {
+const loadDatasetRows = async (datasetId?: string, targetVersionNumber?: number) => {
   const datasetResult = await dbPool.query<DatasetRow>(
     `
       SELECT *
@@ -150,26 +150,33 @@ const loadDatasetRows = async (datasetId?: string) => {
     return { datasets: [], versions: [], items: [] };
   }
 
-  const [versionResult, itemResult] = await Promise.all([
-    dbPool.query<DatasetVersionRow>(
-      `
-        SELECT *
-        FROM dataset_versions
-        WHERE dataset_id = ANY($1)
-        ORDER BY dataset_id, version
-      `,
-      [datasetIds]
-    ),
-    dbPool.query<DatasetItemRow>(
+  const versionResult = await dbPool.query<DatasetVersionRow>(
+    `
+      SELECT *
+      FROM dataset_versions
+      WHERE dataset_id = ANY($1)
+      ORDER BY dataset_id, version
+    `,
+    [datasetIds]
+  );
+  const selectedVersionIds = datasetResult.rows.flatMap(dataset => {
+    const datasetVersions = versionResult.rows.filter(version => version.dataset_id === dataset.id);
+    const selectedVersion = datasetVersions.find(version => (
+      version.version === (targetVersionNumber ?? dataset.current_version)
+    )) || datasetVersions.at(-1);
+    return selectedVersion ? [selectedVersion.id] : [];
+  });
+  const itemResult = selectedVersionIds.length
+    ? await dbPool.query<DatasetItemRow>(
       `
         SELECT dataset_id, version_id, row_index, payload_json, dimension_values_json, stable_item_id
         FROM dataset_items
-        WHERE dataset_id = ANY($1)
+        WHERE version_id = ANY($1)
         ORDER BY dataset_id, version_id, row_index
       `,
-      [datasetIds]
-    ),
-  ]);
+      [selectedVersionIds]
+    )
+    : { rows: [] as DatasetItemRow[] };
 
   return {
     datasets: datasetResult.rows,
@@ -214,7 +221,7 @@ export const getDataset = async (datasetId: string): Promise<EvalDataset | null>
 };
 
 export const getDatasetVersion = async (datasetId: string, version: number): Promise<EvalDataset | null> => {
-  const rows = await loadDatasetRows(datasetId);
+  const rows = await loadDatasetRows(datasetId, version);
   const dataset = rows.datasets[0];
   if (!dataset) return null;
   const exists = rows.versions.some(item => item.dataset_id === datasetId && item.version === version);

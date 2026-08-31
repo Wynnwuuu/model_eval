@@ -946,3 +946,20 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Dev API replicas are increased from one to two while the Worker is isolated, removing the single ready-endpoint dependency.
 - Deployment now observes Pod identity, readiness, and restart counts for 180 seconds after rollout. Diagnostics include current and previous container logs when the stability gate fails.
 - No generation request or retry is part of this isolation release.
+
+## 2026-08-31: Platform heap-exhaustion root cause and repair
+
+### Root cause
+
+- The two Worker-disabled Debian API Pods each restarted three times during the 180-second deployment observation. Both previous-container logs show `FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory` at roughly 511 MiB V8 heap usage, followed by exit code 139.
+- `GET /api/datasets` loaded every `dataset_items` row for every historical version of every dataset on each list request, even though the response materialized only each dataset's current version.
+- Dataset, task, project, template, and generation subscriptions used fixed five-second intervals. A slow request did not delay the next interval, so large dataset loads could overlap and multiply the retained PostgreSQL rows and JSON serialization buffers.
+- With both service endpoints simultaneously restarting or unready, the public ALB returned 502/503 and the browser surfaced `request failed`.
+
+### Repair
+
+- Routine dataset list/current reads now select only one version ID per dataset; explicit historical-version reads still select the requested version, and the dedicated historical audit query remains unchanged.
+- HTTP subscriptions now use single-flight, completion-relative polling. Dataset polling is reduced to 30 seconds; manual refresh and scheduled refresh share the same in-flight promise.
+- The API logs slow or memory-intensive requests and rejects new non-health API work only after the V8 heap reaches 85% of its limit.
+- Dev keeps two API replicas, a bounded 1 GiB V8 heap, and a 2 GiB container limit. Generation execution remains paused.
+- Focused runtime regressions, generation regressions, TypeScript, server build, frontend build, and diff checks pass locally. PostgreSQL, browser, deployment soak, and public health verification are pending CI/deployment.

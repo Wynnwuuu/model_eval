@@ -84,6 +84,8 @@ jobs:
 
       - run: npm run test:evaluation-storage
 
+      - run: npm run test:runtime-stability
+
       - run: npm run build
 
       - run: npm run server:build

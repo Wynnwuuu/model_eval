@@ -13,6 +13,7 @@ import {
 import { getApiAuthHeaders } from '../apiAuthHeaders';
 import { API_BASE_URL, USE_SHARED_DATA_SOURCE } from '../../runtimeConfig';
 import { notifyPageMetadataRefresh } from '../../pageMetadataClient';
+import { createSingleFlightLoader, startNonOverlappingPolling } from '../../httpPolling';
 import {
   buildDatasetDirectImportPreview,
   compileDirectImportDataset,
@@ -21,7 +22,7 @@ import {
   type DatasetDirectImportPreview,
 } from '../../datasetDirectImport';
 
-const HTTP_REFRESH_INTERVAL_MS = 5000;
+const HTTP_REFRESH_INTERVAL_MS = 30_000;
 
 const datasetReloaders = new Set<() => void>();
 
@@ -279,21 +280,19 @@ export function subscribeDatasets(
 ) {
   if (USE_SHARED_DATA_SOURCE) {
     let active = true;
-    const reload = () => {
-      loadHttpDatasets()
-        .then(datasets => {
-          if (active) onNext(datasets);
-        })
-        .catch(error => {
-          if (active) onError?.(error);
-        });
-    };
+    const reload = createSingleFlightLoader(async () => {
+      try {
+        const datasets = await loadHttpDatasets();
+        if (active) onNext(datasets);
+      } catch (error) {
+        if (active) onError?.(error);
+      }
+    });
     datasetReloaders.add(reload);
-    reload();
-    const intervalId = window.setInterval(reload, HTTP_REFRESH_INTERVAL_MS);
+    const stopPolling = startNonOverlappingPolling(reload, HTTP_REFRESH_INTERVAL_MS);
     return () => {
       active = false;
-      window.clearInterval(intervalId);
+      stopPolling();
       datasetReloaders.delete(reload);
     };
   }

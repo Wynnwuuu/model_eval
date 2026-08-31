@@ -16,6 +16,7 @@ import { generationPublicAssetRoutes } from './generation/generationPublicAssetR
 import { generationRoutes } from './generation/generationRoutes.ts';
 import { badRequest, sendError } from './http/errors.ts';
 import { mediaProxyRoutes } from './media/mediaProxyRoutes.ts';
+import { requestResourceMonitor } from './observability/requestResourceMonitor.ts';
 import { projectRoutes } from './projects/projectRoutes.ts';
 import { taskRoutes } from './tasks/taskRoutes.ts';
 import { templateRoutes } from './templates/templateRoutes.ts';
@@ -73,6 +74,8 @@ export const createApp = (options: CreateAppOptions = {}) => {
     }
     next();
   });
+
+  app.use(requestResourceMonitor);
 
   app.use(express.json({ limit: '25mb' }));
 
