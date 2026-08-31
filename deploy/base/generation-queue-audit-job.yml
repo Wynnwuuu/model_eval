@@ -1,0 +1,32 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: eval-studio-generation-queue-audit
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: eval-studio-generation-queue-audit
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        pool-type: server
+      containers:
+        - name: generation-queue-audit
+          image: REGISTRY/NAMESPACE/IMAGE:TAG
+          command: ["node", "dist-server/server/generation/generationQueueAudit.js"]
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: DATABASE_URL
+              value: "__DATABASE_URL__"
+            - name: DATABASE_POOL_MAX
+              value: "2"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"

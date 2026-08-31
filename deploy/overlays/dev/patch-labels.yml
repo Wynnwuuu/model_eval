@@ -17,3 +17,23 @@ spec:
     metadata:
       labels:
         environment: dev
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eval-studio-generation-worker
+spec:
+  template:
+    metadata:
+      labels:
+        environment: dev
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: eval-studio-generation-queue-audit
+spec:
+  template:
+    metadata:
+      labels:
+        environment: dev

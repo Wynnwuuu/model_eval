@@ -48,6 +48,12 @@ export interface GenerationRuntimeHealth {
   durableAssets: boolean;
   localUploadsEnabled: boolean;
   workerEnabled: boolean;
+  executionEnabled: boolean;
+  workerAvailable: boolean;
+  activeWorkerCount: number;
+  workerHeartbeatAgeMs: number | null;
+  workerVersions: string[];
+  workerHealthError?: string;
   maxBatchSize: number;
   imageConcurrency: number;
   videoConcurrency: number;

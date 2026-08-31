@@ -37,15 +37,42 @@ import {
 } from './generationRepository.ts';
 import { notFound, sendError } from '../http/errors.ts';
 import { requireBodyObject, validateGenerationJobItemPayload, validateGenerationJobPayload } from '../http/validation.ts';
+import {
+  getGenerationWorkerFleetHealth,
+  type GenerationWorkerFleetHealth,
+} from './generationWorkerRegistry.ts';
 
 export const generationRoutes = Router();
 
-const assertGenerationWorkerAvailable = () => {
-  if (!serverConfig.generationWorkerEnabled) {
+const assertGenerationWorkerAvailable = async () => {
+  if (!serverConfig.generationExecutionEnabled) {
+    throw new ApiError(
+      503,
+      'GENERATION_EXECUTION_DISABLED',
+      'Model generation is disabled for this environment.',
+    );
+  }
+  if (!aionGenerationClient.isExecutionConfigured() || !generationAssetService.isExecutionReady()) {
+    throw new ApiError(
+      503,
+      'GENERATION_EXECUTION_NOT_CONFIGURED',
+      'Model generation execution is not fully configured for this environment.',
+    );
+  }
+  let fleet: GenerationWorkerFleetHealth;
+  try {
+    fleet = await getGenerationWorkerFleetHealth();
+  } catch (error) {
+    throw new ApiError(503, 'GENERATION_WORKER_HEALTH_UNAVAILABLE',
+      'The generation worker health check is temporarily unavailable.', {
+        cause: error instanceof Error ? error.message : String(error),
+      });
+  }
+  if (!fleet.workerAvailable) {
     throw new ApiError(
       503,
       'GENERATION_WORKER_UNAVAILABLE',
-      'Model generation is temporarily paused while the execution worker is under maintenance.',
+      'No ready generation worker is currently available. The preflight remains valid; retry submission after the worker fleet recovers.',
     );
   }
 };
@@ -65,6 +92,19 @@ generationRoutes.get('/health', async (_req, res) => {
   const ossConfigured = generationAssetService.isConfigured();
   const assetMode = generationAssetService.mode();
   const configured = aionConfigured && generationAssetService.isExecutionReady();
+  let fleet: GenerationWorkerFleetHealth = {
+    workerAvailable: false,
+    activeWorkerCount: 0,
+    workerVersions: [],
+  };
+  let workerHealthError: string | undefined;
+  try {
+    fleet = await getGenerationWorkerFleetHealth();
+  } catch (error) {
+    workerHealthError = error instanceof Error ? error.message : String(error);
+  }
+  const workerAvailable = fleet.workerAvailable;
+  const workerEnabled = serverConfig.generationExecutionEnabled && configured && workerAvailable;
   res.json({
     configured,
     aionConfigured,
@@ -73,7 +113,13 @@ generationRoutes.get('/health', async (_req, res) => {
     executionTransport: aionGenerationClient.executionTransport(),
     durableAssets: assetMode === 'oss' && ossConfigured,
     localUploadsEnabled: assetMode === 'oss' && ossConfigured,
-    workerEnabled: serverConfig.generationWorkerEnabled && configured,
+    workerEnabled,
+    executionEnabled: serverConfig.generationExecutionEnabled,
+    workerAvailable,
+    activeWorkerCount: fleet.activeWorkerCount,
+    workerHeartbeatAgeMs: fleet.workerHeartbeatAgeMs ?? null,
+    workerVersions: fleet.workerVersions,
+    ...(workerHealthError ? { workerHealthError } : {}),
     maxBatchSize: serverConfig.generationMaxBatchSize,
     imageConcurrency: serverConfig.generationImageConcurrency,
     videoConcurrency: serverConfig.generationVideoConcurrency,
@@ -117,7 +163,7 @@ generationRoutes.post('/preflights', async (req, res) => {
 
 generationRoutes.post('/batches', async (req, res) => {
   try {
-    assertGenerationWorkerAvailable();
+    await assertGenerationWorkerAvailable();
     const payload = requireBodyObject(req.body, 'batch');
     if (typeof payload.preflightId !== 'string' || !payload.preflightId) {
       throw badRequest('preflightId is required.');

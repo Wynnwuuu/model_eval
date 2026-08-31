@@ -547,3 +547,11 @@ An exact `case_id + variant_label` pair is the only business identity eligible f
 - The routine dataset endpoint must never materialize historical case payloads. Historical payloads are loaded only by an explicit version/audit request.
 - Fixed-interval HTTP polling is prohibited for API-backed collections because request duration can exceed the interval. Polling is completion-relative and single-flight, including manual refresh triggers.
 - Memory headroom is defense in depth, not the primary fix. The deployment remains invalid unless two unchanged ready Pods survive the soak gate and public health checks stay successful.
+
+## 2026-08-31: Generation execution has an independent failure boundary
+
+- Batch admission and worker startup are separate controls. API Pods set `GENERATION_EXECUTION_ENABLED=true` and `GENERATION_WORKER_ENABLED=false`; dedicated Worker Pods set both true.
+- Worker availability is a PostgreSQL-backed lease of service readiness, not a property of whichever API Pod answered the request. Only `ready` heartbeats newer than 20 seconds allow a paid batch to be created.
+- Generation Worker Pods use a distinct Kubernetes selector and have no Service, Feishu, JWT, or Owner credentials. Two replicas share the existing advisory-lock, `FOR UPDATE SKIP LOCKED`, lease, and global-capacity contracts.
+- A terminating Worker publishes `draining` before it stops claiming. It retains item lease renewal while the active request completes and receives a 600-second shutdown window.
+- The first release from an absent or zero-replica fleet runs a read-only queue audit after migration and API stabilization. Any pre-existing `pending` or `submitting` item blocks Worker enablement; already submitted/polling/archiving work may recover without a second POST.

@@ -30,6 +30,13 @@ import {
   recordAdaptiveGenerationSubmissionOutcome,
 } from './generationAdaptiveCapacityRepository.ts';
 import { writeGenerationBatchToDataset } from './generationWritebackService.ts';
+import {
+  cleanupStaleGenerationWorkerInstances,
+  heartbeatGenerationWorkerInstance,
+  isGenerationWorkerInstanceReady,
+  registerGenerationWorkerInstance,
+  type GenerationWorkerStatus,
+} from './generationWorkerRegistry.ts';
 
 const TERMINAL_PROVIDER_STATUSES = new Set(['succeed', 'succeeded', 'success', 'completed']);
 const FAILED_PROVIDER_STATUSES = new Set(['failed', 'error', 'cancelled', 'canceled']);
@@ -804,6 +811,67 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 let stopRequested = false;
 let workerPromise: Promise<void> | null = null;
+let workerHeartbeat: ReturnType<typeof setInterval> | null = null;
+let workerRuntimeStatus: GenerationWorkerStatus | 'stopped' | 'failed' = 'stopped';
+let workerInstanceId: string | null = null;
+let heartbeatCount = 0;
+
+const newWorkerInstanceId = () => {
+  const hostname = process.env.HOSTNAME || 'local';
+  return `${hostname}-${process.pid}-${randomUUID()}`;
+};
+
+const heartbeatWorker = async () => {
+  if (!workerInstanceId || !['starting', 'ready', 'draining'].includes(workerRuntimeStatus)) return;
+  const updated = await heartbeatGenerationWorkerInstance(
+    workerInstanceId,
+    workerRuntimeStatus as GenerationWorkerStatus,
+  );
+  if (!updated) {
+    await registerGenerationWorkerInstance({
+      instanceId: workerInstanceId,
+      status: workerRuntimeStatus as GenerationWorkerStatus,
+      buildVersion: serverConfig.generationWorkerBuildVersion,
+      metadata: { pid: process.pid },
+    });
+  }
+  heartbeatCount += 1;
+  if (heartbeatCount % 12 === 0) await cleanupStaleGenerationWorkerInstances();
+};
+
+const startWorkerHeartbeat = () => {
+  if (workerHeartbeat) clearInterval(workerHeartbeat);
+  workerHeartbeat = setInterval(() => {
+    void heartbeatWorker().catch(error => {
+      console.error('[generation-worker] instance heartbeat failed', {
+        instanceId: workerInstanceId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }, serverConfig.generationWorkerHeartbeatIntervalMs);
+  workerHeartbeat.unref();
+};
+
+export const getGenerationWorkerRuntimeState = () => ({
+  instanceId: workerInstanceId,
+  status: workerRuntimeStatus,
+  acceptingWork: workerRuntimeStatus === 'ready' && !stopRequested,
+});
+
+export const checkGenerationWorkerReadiness = async () => {
+  const configured = serverConfig.generationExecutionEnabled
+    && serverConfig.generationWorkerEnabled
+    && aionGenerationClient.isExecutionConfigured()
+    && generationAssetService.isExecutionReady();
+  if (!configured) return { ready: false, reason: 'generation execution is not fully configured' };
+  if (!workerInstanceId || workerRuntimeStatus !== 'ready' || stopRequested) {
+    return { ready: false, reason: `worker is ${workerRuntimeStatus}` };
+  }
+  const heartbeatReady = await isGenerationWorkerInstanceReady(workerInstanceId);
+  return heartbeatReady
+    ? { ready: true, instanceId: workerInstanceId, buildVersion: serverConfig.generationWorkerBuildVersion }
+    : { ready: false, reason: 'worker heartbeat is not current' };
+};
 
 const lane = async (
   modality: 'image' | 'video',
@@ -844,18 +912,38 @@ const writebackLane = async () => {
 };
 
 export const startGenerationWorker = () => {
-  if (workerPromise || !serverConfig.generationWorkerEnabled) return workerPromise;
+  if (workerPromise || !serverConfig.generationWorkerEnabled || !serverConfig.generationExecutionEnabled) {
+    return workerPromise;
+  }
   if (!aionGenerationClient.isExecutionConfigured() || !generationAssetService.isExecutionReady()) {
     console.warn('[generation-worker] disabled because Aion or generation asset configuration is incomplete');
+    workerRuntimeStatus = 'failed';
     return null;
   }
   stopRequested = false;
+  workerRuntimeStatus = 'starting';
+  workerInstanceId = newWorkerInstanceId();
+  heartbeatCount = 0;
   workerPromise = (async () => {
+    await registerGenerationWorkerInstance({
+      instanceId: workerInstanceId!,
+      status: 'starting',
+      buildVersion: serverConfig.generationWorkerBuildVersion,
+      metadata: {
+        pid: process.pid,
+        imageConcurrency: serverConfig.generationImageConcurrency,
+        videoSubmitWorkers: serverConfig.generationVideoAdaptivePolicy.submitWorkers,
+        videoPollWorkers: serverConfig.generationVideoAdaptivePolicy.pollWorkers,
+      },
+    });
     await initializeAdaptiveGenerationCapacity().catch(error => {
       console.error('[generation-capacity] startup synchronization deferred', {
         message: error instanceof Error ? error.message : String(error),
       });
     });
+    workerRuntimeStatus = 'ready';
+    await heartbeatWorker();
+    startWorkerHeartbeat();
     const lanes = [
       ...Array.from({ length: serverConfig.generationImageConcurrency }, (_, index) => lane('image', index)),
       ...Array.from(
@@ -868,8 +956,17 @@ export const startGenerationWorker = () => {
       ),
       writebackLane(),
     ];
-    await Promise.all(lanes);
-  })();
+    try {
+      await Promise.all(lanes);
+    } finally {
+      if (workerHeartbeat) clearInterval(workerHeartbeat);
+      workerHeartbeat = null;
+      workerRuntimeStatus = 'stopped';
+    }
+  })().catch(error => {
+    workerRuntimeStatus = 'failed';
+    throw error;
+  });
   console.log('[generation-worker] started', {
     imageConcurrency: serverConfig.generationImageConcurrency,
     legacyVideoConcurrency: serverConfig.generationVideoConcurrency,
@@ -886,7 +983,26 @@ export const startGenerationWorker = () => {
 };
 
 export const stopGenerationWorker = async () => {
+  if (!workerPromise) return;
   stopRequested = true;
-  await Promise.race([workerPromise || Promise.resolve(), sleep(5000)]);
+  workerRuntimeStatus = 'draining';
+  await heartbeatWorker().catch(error => {
+    console.error('[generation-worker] failed to publish draining state', {
+      instanceId: workerInstanceId,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  });
+  const activePromise = workerPromise;
+  const drained = await Promise.race([
+    activePromise.then(() => true),
+    sleep(serverConfig.generationWorkerShutdownTimeoutMs).then(() => false),
+  ]);
+  if (!drained) {
+    console.error('[generation-worker] graceful shutdown timed out', {
+      instanceId: workerInstanceId,
+      timeoutMs: serverConfig.generationWorkerShutdownTimeoutMs,
+    });
+    return;
+  }
   workerPromise = null;
 };

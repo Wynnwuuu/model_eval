@@ -963,3 +963,19 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - The API logs slow or memory-intensive requests and rejects new non-health API work only after the V8 heap reaches 85% of its limit.
 - Dev keeps two API replicas, a bounded 1 GiB V8 heap, and a 2 GiB container limit. Generation execution remains paused.
 - Focused runtime regressions, generation regressions, TypeScript, server build, frontend build, and diff checks pass locally. PostgreSQL, browser, deployment soak, and public health verification are pending CI/deployment.
+
+## 2026-08-31: Independent generation Worker implementation
+
+### Implemented
+
+- Added a PostgreSQL worker-instance registry with `starting`, `ready`, and `draining` heartbeats, a 20-second availability TTL, build-version reporting, and stale-row cleanup.
+- API batch admission now checks the live Worker fleet. Generation health reports execution enablement, availability, ready count, heartbeat age, and Worker versions; the modal refreshes this state without discarding preflight work.
+- Added a dedicated Worker process with internal live/ready endpoints, graceful 600-second drain, continued item lease renewal, and conservative interrupted-submission behavior.
+- Added a two-replica Worker Deployment with a distinct selector, no public Service or web-auth secrets, a 768 MiB V8 heap, 1.5 GiB limit, and five-connection database pool. API remains two replicas with its existing memory fix and a five-connection pool.
+- Deployment is phased as migration, API stabilization, first-enable queue audit, Worker rollout, joint API/Worker stability observation, and public health probes.
+
+### Validation so far
+
+- The new tests failed first on the missing Worker registry and deployment, then passed after implementation.
+- Generation contracts, Worker heartbeat semantics, deployment runtime assertions, TypeScript, server build, Kustomize rendering, manifest phase splitting, and diff checks pass locally.
+- PostgreSQL integration, full regressions, CI deployment, dev heartbeat/restart observation, and the independent one-case canary remain pending. No paid request or existing batch operation has run.

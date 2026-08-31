@@ -582,6 +582,27 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     return () => { active = false; };
   }, [initialBatchId]);
 
+  useEffect(() => {
+    if (initialBatchId || batch) return undefined;
+    let active = true;
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+    const refreshHealth = async () => {
+      try {
+        const health = await getGenerationRuntimeHealth();
+        if (active) setRuntimeHealth(health);
+      } catch {
+        // A transient health request must not discard the last known fleet state.
+      } finally {
+        if (active) refreshTimer = setTimeout(refreshHealth, 5000);
+      }
+    };
+    refreshTimer = setTimeout(refreshHealth, 5000);
+    return () => {
+      active = false;
+      if (refreshTimer) clearTimeout(refreshTimer);
+    };
+  }, [initialBatchId, Boolean(batch)]);
+
   const selectedAudioCases = useMemo(() => {
     const selectedIds = new Set(selectedDatasetItemIds);
     return (dataset.items || []).flatMap(row => {
@@ -1155,10 +1176,13 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
       setConfirmed(false);
       if (!isTerminalGenerationBatch(loaded)) startPolling(loaded.id);
     } catch (reason) {
-      const typed = reason as Error & { status?: number };
+      const typed = reason as Error & { status?: number; code?: string };
       if (typed.status === 409 || typed.status === 410) {
         setPreflight(null);
         setConfirmed(false);
+      }
+      if (typed.status === 503 && typed.code?.startsWith('GENERATION_WORKER')) {
+        void getGenerationRuntimeHealth().then(setRuntimeHealth).catch(() => undefined);
       }
       setError(errorMessage(reason));
     } finally {
@@ -1482,7 +1506,9 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
           {runtimeHealth && !runtimeHealth.workerEnabled && !batch && (
             <div className="mb-4 flex items-start gap-2 border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">
               <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-              <span>{'\u751f\u6210\u6267\u884c\u5668\u6b63\u5728\u7ef4\u62a4\uff0c\u53ef\u67e5\u770b\u6a21\u578b\u548c\u9884\u68c0\uff0c\u4f46\u6682\u65f6\u4e0d\u80fd\u63d0\u4ea4\u65b0\u7684\u751f\u6210\u6279\u6b21\u3002'}</span>
+              <span>{runtimeHealth.executionEnabled
+                ? '\u5f53\u524d\u6ca1\u6709\u53ef\u7528\u7684\u751f\u6210 Worker\u3002\u9884\u68c0\u7ed3\u679c\u4f1a\u4fdd\u7559\uff0cWorker \u6062\u590d\u540e\u53ef\u76f4\u63a5\u63d0\u4ea4\u3002'
+                : '\u5f53\u524d\u73af\u5883\u5df2\u5173\u95ed\u751f\u6210\u6267\u884c\uff0c\u53ef\u7ee7\u7eed\u67e5\u770b\u6a21\u578b\u548c\u9884\u68c0\u3002'}</span>
             </div>
           )}
 

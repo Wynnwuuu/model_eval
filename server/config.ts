@@ -32,8 +32,10 @@ const generationModelValidationOverrides = parseGenerationModelValidationOverrid
 
 export const serverConfig = {
   apiPort: parsePort(process.env.API_PORT, 8787),
+  generationWorkerHealthPort: parsePort(process.env.GENERATION_WORKER_HEALTH_PORT, 8788),
   databaseUrl: process.env.DATABASE_URL || DEFAULT_DATABASE_URL,
   databaseConnectionTimeoutMs: parsePort(process.env.DATABASE_CONNECTION_TIMEOUT_MS, 15000),
+  databasePoolMax: parsePort(process.env.DATABASE_POOL_MAX, 10),
   authMode: (process.env.AUTH_MODE || 'local').toLowerCase(),
   jwtSecret: process.env.JWT_SECRET || '',
   jwtExpiresDays: parsePort(process.env.JWT_EXPIRES_DAYS, 7),
@@ -53,7 +55,12 @@ export const serverConfig = {
   aionEvalUserId: process.env.AION_EVAL_USER_ID || '',
   aionRequestTimeoutMs: parsePort(process.env.AION_REQUEST_TIMEOUT_MS, 30000),
   aionImageGenerationTimeoutMs: parsePort(process.env.AION_IMAGE_GENERATION_TIMEOUT_MS, 420000),
+  generationExecutionEnabled: process.env.GENERATION_EXECUTION_ENABLED !== 'false',
   generationWorkerEnabled: process.env.GENERATION_WORKER_ENABLED !== 'false',
+  generationWorkerHeartbeatIntervalMs: parsePort(process.env.GENERATION_WORKER_HEARTBEAT_INTERVAL_MS, 5000),
+  generationWorkerHeartbeatTtlMs: parsePort(process.env.GENERATION_WORKER_HEARTBEAT_TTL_MS, 20000),
+  generationWorkerShutdownTimeoutMs: parsePort(process.env.GENERATION_WORKER_SHUTDOWN_TIMEOUT_MS, 600000),
+  generationWorkerBuildVersion: process.env.GENERATION_WORKER_BUILD_VERSION || process.env.BUILD_REVISION || 'local',
   generationMaxBatchSize: parsePort(process.env.GENERATION_MAX_BATCH_SIZE, 500),
   generationImageConcurrency: parsePort(process.env.GENERATION_IMAGE_CONCURRENCY, 4),
   generationVideoConcurrency,

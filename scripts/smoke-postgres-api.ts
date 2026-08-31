@@ -187,6 +187,16 @@ const testOwnerAccess = async (projectId: string) => {
 };
 
 const main = async () => {
+  const generationHealth = await request<Record<string, any>>('/api/generation/health');
+  assert(generationHealth.executionEnabled === true,
+    'generation execution admission should default to enabled outside maintenance mode');
+  assert(typeof generationHealth.workerAvailable === 'boolean',
+    'generation health must expose remote worker availability');
+  assert(Number.isInteger(generationHealth.activeWorkerCount),
+    'generation health must expose the active worker count');
+  assert(Array.isArray(generationHealth.workerVersions),
+    'generation health must expose ready worker build versions');
+
   const ids = {
     project: `project-${RUN_ID}`,
     dataset: `dataset-${RUN_ID}`,

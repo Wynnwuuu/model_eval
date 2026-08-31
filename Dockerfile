@@ -29,6 +29,6 @@ RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/dist-server ./dist-server
 
-EXPOSE 8787
+EXPOSE 8787 8788
 
 CMD ["node", "dist-server/server/index.js"]

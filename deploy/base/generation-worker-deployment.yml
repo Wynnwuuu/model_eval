@@ -1,42 +1,46 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: eval-studio-deployment
+  name: eval-studio-generation-worker
 spec:
   replicas: 2
+  minReadySeconds: 20
+  selector:
+    matchLabels:
+      app: eval-studio-generation-worker
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   template:
+    metadata:
+      labels:
+        app: eval-studio-generation-worker
     spec:
+      nodeSelector:
+        pool-type: server
+      terminationGracePeriodSeconds: 600
       containers:
-        - name: main
+        - name: generation-worker
+          image: REGISTRY/NAMESPACE/IMAGE:TAG
+          command: ["node", "dist-server/server/generationWorkerProcess.js"]
+          ports:
+            - name: health
+              containerPort: 8788
           env:
             - name: NODE_ENV
               value: production
-            - name: API_PORT
-              value: "8787"
             - name: NODE_OPTIONS
-              value: "--max-old-space-size=1024"
-            - name: STATIC_DIST_PATH
-              value: /app/dist
-            - name: CORS_ORIGIN
-              value: "*"
+              value: "--max-old-space-size=768"
+            - name: GENERATION_WORKER_HEALTH_PORT
+              value: "8788"
+            - name: GENERATION_WORKER_BUILD_VERSION
+              value: "__BUILD_VERSION__"
             - name: DATABASE_URL
               value: "__DATABASE_URL__"
             - name: DATABASE_POOL_MAX
               value: "5"
-            - name: AUTH_MODE
-              value: "feishu"
-            - name: JWT_SECRET
-              value: "__JWT_SECRET__"
-            - name: FEISHU_APP_ID
-              value: "__FEISHU_APP_ID__"
-            - name: FEISHU_APP_SECRET
-              value: "__FEISHU_APP_SECRET__"
-            - name: FEISHU_REDIRECT_URI
-              value: "__FEISHU_REDIRECT_URI__"
-            - name: OWNER_ACCESS_ENABLED
-              value: "__OWNER_ACCESS_ENABLED__"
-            - name: OWNER_ACCESS_KEY_SHA256
-              value: "__OWNER_ACCESS_KEY_SHA256__"
             - name: AION_MANAGER_BASE_URL
               value: "__AION_MANAGER_BASE_URL__"
             - name: AION_EVAL_USER_ID
@@ -68,7 +72,13 @@ spec:
             - name: GENERATION_EXECUTION_ENABLED
               value: "true"
             - name: GENERATION_WORKER_ENABLED
-              value: "false"
+              value: "true"
+            - name: GENERATION_WORKER_HEARTBEAT_INTERVAL_MS
+              value: "5000"
+            - name: GENERATION_WORKER_HEARTBEAT_TTL_MS
+              value: "20000"
+            - name: GENERATION_WORKER_SHUTDOWN_TIMEOUT_MS
+              value: "600000"
             - name: GENERATION_MAX_BATCH_SIZE
               value: "500"
             - name: GENERATION_IMAGE_CONCURRENCY
@@ -81,8 +91,6 @@ spec:
               value: '{"policyVersion":5,"hardLimit":24,"initialGlobalLimit":24,"coldStartLimit":8,"optimisticWaves":[8,16,24],"idleResetMs":86400000,"globalSubmitRatePerSecond":2,"globalSubmitBurst":2,"capacityCooldownMs":60000,"ambiguous429WindowMs":600000,"submissionUnknownCooldownMs":300000,"globalSubmissionUnknownCooldownMs":60000,"availabilityFailureWindowMs":120000,"availabilityFailureThreshold":3,"bucketCircuitMs":120000,"pollMinMs":10000,"pollMaxMs":30000,"submitWorkers":2,"pollWorkers":6}'
             - name: GENERATION_VIDEO_MODEL_LIMITS_JSON
               value: '{"default":{"min":8,"initial":8,"max":8},"models":{}}'
-            - name: GENERATION_MODEL_VALIDATION_OVERRIDES_JSON
-              value: '{"wan/wan3.0-video":{"promptLength":{"unit":"unicode_code_points","string":{"maxLength":5000},"array":{"scope":"array_joined","maxLength":5000,"separator":"\n","trimItems":true,"omitEmptyItems":true}}}}'
             - name: GENERATION_RECONCILIATION_TIMEOUT_MS
               value: "7200000"
             - name: GENERATION_RECONCILIATION_POLL_MAX_MS
@@ -95,25 +103,30 @@ spec:
               value: "1500000"
             - name: GENERATION_MAX_ASSET_BYTES
               value: "2147483647"
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: 8788
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8788
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 8788
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 3
           resources:
             requests:
               cpu: "250m"
               memory: "512Mi"
             limits:
               cpu: "1"
-              memory: "2Gi"
----
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: eval-studio-migrate
-spec:
-  template:
-    spec:
-      containers:
-        - name: migrate
-          env:
-            - name: NODE_ENV
-              value: production
-            - name: DATABASE_URL
-              value: "__DATABASE_URL__"
+              memory: "1536Mi"

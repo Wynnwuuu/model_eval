@@ -3,5 +3,7 @@ kind: Kustomization
 
 resources:
   - deployment.yml
+  - generation-worker-deployment.yml
   - service.yml
   - migration-job.yml
+  - generation-queue-audit-job.yml

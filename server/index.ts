@@ -12,16 +12,22 @@ const server = createServer(app);
 server.listen(serverConfig.apiPort, () => {
   console.log(`Eval Studio API listening on http://localhost:${serverConfig.apiPort}`);
   logRuntimeMemoryBudget();
-  startGenerationWorker();
+  void startGenerationWorker()?.catch(error => {
+    console.error('[generation-worker] integrated worker stopped unexpectedly', error);
+  });
 });
 
+let shutdownStarted = false;
 const shutdown = async () => {
-  server.close(async () => {
-    await stopGenerationWorker();
-    await closeDatabase();
-    process.exit(0);
-  });
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  await Promise.all([
+    new Promise<void>(resolve => server.close(() => resolve())),
+    stopGenerationWorker(),
+  ]);
+  await closeDatabase();
+  process.exit(0);
 };
 
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+process.on('SIGINT', () => { void shutdown(); });
+process.on('SIGTERM', () => { void shutdown(); });

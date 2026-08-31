@@ -35,6 +35,12 @@ import {
   skipGenerationFamilyItemsWithWriteback,
   writeGenerationBatchToDataset,
 } from '../server/generation/generationWritebackService.ts';
+import {
+  cleanupStaleGenerationWorkerInstances,
+  getGenerationWorkerFleetHealth,
+  heartbeatGenerationWorkerInstance,
+  registerGenerationWorkerInstance,
+} from '../server/generation/generationWorkerRegistry.ts';
 import { isGenerationFailureCell } from '../src/features/generation/generationFailureCell.ts';
 import { DATASET_ITEM_ID_KEY } from '../src/datasetSync.ts';
 import type { EvalDataset } from '../src/types.ts';
@@ -65,6 +71,8 @@ const fairnessDatasetId = `generation-db-fairness-dataset-${suffix}`;
 
 const fairnessDatasetCId = `generation-db-fairness-dataset-c-${suffix}`;
 const fairnessOtherOrganizationDatasetId = `generation-db-fairness-other-org-${suffix}`;
+const workerInstanceA = `generation-db-worker-a-${suffix}`;
+const workerInstanceB = `generation-db-worker-b-${suffix}`;
 const originalAdaptiveEnabled = serverConfig.generationVideoAdaptiveEnabled;
 const model = normalizeAionModelConfig({
   name: 'fake/image-model',
@@ -173,6 +181,33 @@ try {
   await dbPool.query(
     `DELETE FROM datasets WHERE id LIKE 'generation-db-%'`,
   );
+
+  await registerGenerationWorkerInstance({
+    instanceId: workerInstanceA,
+    status: 'starting',
+    buildVersion: 'generation-db-test',
+  });
+  assert.equal((await getGenerationWorkerFleetHealth()).workerAvailable, false,
+    'starting workers must not admit a paid batch');
+  assert.equal(await heartbeatGenerationWorkerInstance(workerInstanceA, 'ready'), true);
+  const readyFleet = await getGenerationWorkerFleetHealth();
+  assert.equal(readyFleet.workerAvailable, true);
+  assert.equal(readyFleet.activeWorkerCount, 1);
+  await registerGenerationWorkerInstance({
+    instanceId: workerInstanceB,
+    status: 'draining',
+    buildVersion: 'generation-db-test',
+  });
+  assert.equal((await getGenerationWorkerFleetHealth()).activeWorkerCount, 1,
+    'draining instances must not be counted as ready workers');
+  await dbPool.query(
+    `UPDATE generation_worker_instances
+     SET last_heartbeat_at = now() - interval '11 minutes'
+     WHERE instance_id = $1`,
+    [workerInstanceB],
+  );
+  assert.ok(await cleanupStaleGenerationWorkerInstances() >= 1,
+    'stale worker rows must be cleaned without touching ready instances');
 
   await dbPool.query(
     `INSERT INTO users (id, email, display_name) VALUES ($1, $2, $3)`,
@@ -1598,5 +1633,9 @@ try {
     [[user.id, teammate.id, otherOrganizationUser.id]],
   ).catch(() => undefined);
   await dbPool.query('DELETE FROM organizations WHERE id = $1', [otherOrganizationId]).catch(() => undefined);
+  await dbPool.query(
+    'DELETE FROM generation_worker_instances WHERE instance_id = ANY($1::text[])',
+    [[workerInstanceA, workerInstanceB]],
+  ).catch(() => undefined);
   await closeDatabase();
 }

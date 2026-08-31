@@ -5,6 +5,7 @@ import { serverConfig } from '../config.ts';
 export const dbPool = new Pool({
   connectionString: serverConfig.databaseUrl,
   connectionTimeoutMillis: serverConfig.databaseConnectionTimeoutMs,
+  max: serverConfig.databasePoolMax,
 });
 
 export type DatabaseHealth = {
