@@ -959,7 +959,7 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 ### Repair
 
 - Routine dataset list/current reads now select only one version ID per dataset; explicit historical-version reads still select the requested version, and the dedicated historical audit query remains unchanged.
-- HTTP subscriptions now use single-flight, completion-relative polling. Dataset polling is reduced to 30 seconds; manual refresh and scheduled refresh share the same in-flight promise.
+- HTTP subscriptions now use single-flight, completion-relative polling. The existing five-second refresh experience remains; manual refresh and scheduled refresh share the same in-flight promise.
 - The API logs slow or memory-intensive requests and rejects new non-health API work only after the V8 heap reaches 85% of its limit.
 - Dev keeps two API replicas, a bounded 1 GiB V8 heap, and a 2 GiB container limit. Generation execution remains paused.
 - Focused runtime regressions, generation regressions, TypeScript, server build, frontend build, and diff checks pass locally. PostgreSQL, browser, deployment soak, and public health verification are pending CI/deployment.

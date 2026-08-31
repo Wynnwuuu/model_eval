@@ -22,7 +22,7 @@ import {
   type DatasetDirectImportPreview,
 } from '../../datasetDirectImport';
 
-const HTTP_REFRESH_INTERVAL_MS = 30_000;
+const HTTP_REFRESH_INTERVAL_MS = 5000;
 
 const datasetReloaders = new Set<() => void>();
 
