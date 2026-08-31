@@ -40,6 +40,16 @@ import { requireBodyObject, validateGenerationJobItemPayload, validateGeneration
 
 export const generationRoutes = Router();
 
+const assertGenerationWorkerAvailable = () => {
+  if (!serverConfig.generationWorkerEnabled) {
+    throw new ApiError(
+      503,
+      'GENERATION_WORKER_UNAVAILABLE',
+      'Model generation is temporarily paused while the execution worker is under maintenance.',
+    );
+  }
+};
+
 const assertLegacyJobMutable = async (jobId: string, organizationId: string) => {
   const existing = await getGenerationBatch(jobId);
   if (existing && !await isGenerationBatchInOrganization(jobId, organizationId)) {
@@ -107,6 +117,7 @@ generationRoutes.post('/preflights', async (req, res) => {
 
 generationRoutes.post('/batches', async (req, res) => {
   try {
+    assertGenerationWorkerAvailable();
     const payload = requireBodyObject(req.body, 'batch');
     if (typeof payload.preflightId !== 'string' || !payload.preflightId) {
       throw badRequest('preflightId is required.');

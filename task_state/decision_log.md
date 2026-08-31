@@ -533,3 +533,10 @@ An exact `case_id + variant_label` pair is the only business identity eligible f
 - The failure is below JavaScript exception handling and is not an out-of-memory exit. The smallest deployment mitigation is to replace Alpine/musl with a pinned official Debian/glibc Node 22 image; no Aion request, database, Worker state, or writeback contract changes.
 - Dev image concurrency is one for the recovery run. It can be raised only after a later controlled load check shows stable restart counts on the glibc image.
 - Interrupted synchronous submissions remain conservative and are never auto-retried because the provider may have charged before the process died. The user explicitly authorized manual regeneration of the twelve known interrupted cases.
+
+## 2026-08-31: Protect the web service before resuming generation execution
+
+- The platform and generation executor must not share one failure boundary while the executor can terminate the Node process natively. Dev therefore pauses the in-process Worker and runs two API replicas during root-cause isolation.
+- Worker-disabled mode must reject batch confirmation instead of accepting work that cannot run. Model discovery and preflight are read-only and remain available for diagnosis.
+- A successful Kubernetes rollout is insufficient evidence of stability. The deployment gate must also prove unchanged Pod identities and restart counts over a post-readiness observation window.
+- Paid generation remains out of scope until the web service is stable and the Worker failure is isolated or removed.

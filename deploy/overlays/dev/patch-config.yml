@@ -3,6 +3,7 @@ kind: Deployment
 metadata:
   name: eval-studio-deployment
 spec:
+  replicas: 2
   template:
     spec:
       containers:
@@ -61,7 +62,7 @@ spec:
             - name: MANUEVAL_OSS_SIGNED_URL_TTL_SECONDS
               value: "86400"
             - name: GENERATION_WORKER_ENABLED
-              value: "true"
+              value: "false"
             - name: GENERATION_MAX_BATCH_SIZE
               value: "500"
             - name: GENERATION_IMAGE_CONCURRENCY

@@ -1479,6 +1479,12 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
               <span className="break-words">{error}</span>
             </div>
           )}
+          {runtimeHealth && !runtimeHealth.workerEnabled && !batch && (
+            <div className="mb-4 flex items-start gap-2 border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-100">
+              <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+              <span>{'\u751f\u6210\u6267\u884c\u5668\u6b63\u5728\u7ef4\u62a4\uff0c\u53ef\u67e5\u770b\u6a21\u578b\u548c\u9884\u68c0\uff0c\u4f46\u6682\u65f6\u4e0d\u80fd\u63d0\u4ea4\u65b0\u7684\u751f\u6210\u6279\u6b21\u3002'}</span>
+            </div>
+          )}
 
           {step === 1 && (
             <div className="space-y-6">
@@ -2418,7 +2424,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
             {preflight && (
               <>
                 <button type="button" disabled={busy} onClick={() => { setPreflight(null); setConfirmed(false); setStep(2); }} className="border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200 disabled:opacity-40">{copy.rerunPreflight}</button>
-                <button type="button" disabled={busy || reviewsDirty || !confirmed || preflight.validCount === 0} onClick={() => { void confirmPreflight(); }} className="inline-flex items-center gap-2 bg-amber-500 px-5 py-2 text-sm font-medium text-black disabled:opacity-40">
+                <button type="button" disabled={busy || reviewsDirty || !confirmed || preflight.validCount === 0 || runtimeHealth?.workerEnabled === false} onClick={() => { void confirmPreflight(); }} className="inline-flex items-center gap-2 bg-amber-500 px-5 py-2 text-sm font-medium text-black disabled:opacity-40">
                   {busy ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />} {copy.confirm}
                 </button>
               </>

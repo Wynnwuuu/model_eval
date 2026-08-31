@@ -205,6 +205,12 @@ jobs:
             kubectl describe deployment/$ACK_DEPLOYMENT_NAME -n $ACK_NAMESPACE || true
             kubectl get pods -n $ACK_NAMESPACE -l app=eval-studio -o wide || true
             kubectl describe pods -n $ACK_NAMESPACE -l app=eval-studio || true
+            for pod in $(kubectl get pods -n $ACK_NAMESPACE -l app=eval-studio -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' || true); do
+              echo "--- current logs pod/$pod"
+              kubectl logs pod/$pod -n $ACK_NAMESPACE --all-containers=true --tail=200 || true
+              echo "--- previous logs pod/$pod"
+              kubectl logs pod/$pod -n $ACK_NAMESPACE --all-containers=true --previous --tail=200 || true
+            done
             echo "::endgroup::"
 
             echo "::group::Eval Studio events"
@@ -230,6 +236,38 @@ jobs:
             dump_diagnostics
             exit 1
           fi
+
+          stable_snapshot() {
+            kubectl get pods -n $ACK_NAMESPACE -l app=eval-studio -o json \
+              | jq -r '.items
+                | map(select(.metadata.deletionTimestamp == null))
+                | sort_by(.metadata.name)
+                | map([.metadata.name, (.status.phase // ""), (.status.containerStatuses[0].ready // false), (.status.containerStatuses[0].restartCount // 0)] | @tsv)
+                | .[]'
+          }
+
+          initial_snapshot="$(stable_snapshot)"
+          initial_ready="$(printf '%s\n' "$initial_snapshot" | awk -F '\t' '$2 == "Running" && $3 == "true" { count++ } END { print count + 0 }')"
+          if [ "$initial_ready" -ne 2 ]; then
+            echo "Expected two ready Eval Studio API pods before the stability observation."
+            dump_diagnostics
+            exit 1
+          fi
+
+          echo "Observing Eval Studio pod identity and restart counts for 180 seconds."
+          sleep 180
+          final_snapshot="$(stable_snapshot)"
+          final_ready="$(printf '%s\n' "$final_snapshot" | awk -F '\t' '$2 == "Running" && $3 == "true" { count++ } END { print count + 0 }')"
+          if [ "$final_ready" -ne 2 ] || [ "$initial_snapshot" != "$final_snapshot" ]; then
+            echo "Eval Studio pods changed identity, readiness, or restart count during the stability observation."
+            echo "Initial snapshot:"
+            printf '%s\n' "$initial_snapshot"
+            echo "Final snapshot:"
+            printf '%s\n' "$final_snapshot"
+            dump_diagnostics
+            exit 1
+          fi
+
           kubectl get services -o wide -n $ACK_NAMESPACE
           kubectl get pods -n $ACK_NAMESPACE -l app=eval-studio
 

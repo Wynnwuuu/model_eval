@@ -931,3 +931,18 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 
 - `test:generation`, TypeScript, frontend production build, server production build, and the deployment regression pass locally.
 - Remaining gates: GitHub CI image build/deploy, post-rollout restart-count observation, then retry and verify only the 12 interrupted cases.
+
+## 2026-08-31: Web-service stability isolation
+
+### Evidence
+
+- The Debian/glibc image also restarted repeatedly. Kubernetes events reached six container starts and fourteen BackOff events, including readiness connection resets.
+- Aion manager logs for the replacement Pod IP contained model-config GETs but no generation POSTs, so a long paid image request is not required to trigger the native exit.
+- Public `502/503` and browser `request failed` states coincide with the single Pod being unready or in restart backoff.
+
+### Isolation release
+
+- Dev generation execution is paused and batch confirmation is rejected with `GENERATION_WORKER_UNAVAILABLE`; preflight remains available and the UI shows an explicit maintenance state.
+- Dev API replicas are increased from one to two while the Worker is isolated, removing the single ready-endpoint dependency.
+- Deployment now observes Pod identity, readiness, and restart counts for 180 seconds after rollout. Diagnostics include current and previous container logs when the stability gate fails.
+- No generation request or retry is part of this isolation release.

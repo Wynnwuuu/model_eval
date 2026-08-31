@@ -21,5 +21,15 @@ assert.match(
   /- name: GENERATION_IMAGE_CONCURRENCY\r?\n\s+value: "1"/,
   'dev image concurrency must remain conservative until synchronous generation is stable under the glibc runtime',
 );
+assert.match(
+  devConfig,
+  /spec:\r?\n\s+replicas: 2/,
+  'dev must keep two API replicas while generation execution is isolated from the web service',
+);
+assert.match(
+  devConfig,
+  /- name: GENERATION_WORKER_ENABLED\r?\n\s+value: "false"/,
+  'dev generation execution must remain paused during native-exit isolation',
+);
 
 console.log('Deployment runtime regression tests passed.');
