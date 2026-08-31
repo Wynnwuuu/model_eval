@@ -567,6 +567,8 @@ export interface EvalDataset {
 
 export type GenerationOutputModality = DatasetModality;
 export type GenerationJobStatus = 'draft' | 'queued' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled' | 'writeback_conflict';
+export type GenerationJobSortField = 'dataset' | 'model' | 'status' | 'creator' | 'createdAt' | 'updatedAt';
+export type GenerationJobSortDirection = 'asc' | 'desc';
 export type GenerationItemStatus =
   | 'pending' | 'submitting' | 'submitted' | 'processing' | 'reconciling' | 'archiving'
   | 'running' | 'succeeded' | 'completed' | 'failed' | 'submission_unknown' | 'cancelled';

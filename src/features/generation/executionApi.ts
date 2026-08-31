@@ -8,6 +8,8 @@ import {
   GenerationModelConfig,
   GenerationPreflightResult,
   GenerationJobEvent,
+  GenerationJobSortDirection,
+  GenerationJobSortField,
   GenerationJobStatus,
   GenerationQueueState,
   GenerationSeedMode,
@@ -179,6 +181,8 @@ export type GenerationJobListFilters = {
   status?: GenerationJobStatus | '';
   model?: string;
   createdBy?: string;
+  sortBy?: GenerationJobSortField;
+  sortDirection?: GenerationJobSortDirection;
   page?: number;
   limit?: number;
 };

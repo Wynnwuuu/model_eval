@@ -1,5 +1,13 @@
 # Arena Decision Log
 
+## 2026-08-31: Sort logical generation families on the server and preserve the operational default
+
+The production task center uses single-column server-side sorting because the table is server-paginated and each visible row represents a retry family rather than a physical batch. Sorting a fetched page in React would produce incorrect cross-page results; sorting physical jobs before family aggregation would duplicate or misorder retries.
+
+The public query accepts only `dataset`, `model`, `status`, `creator`, `createdAt`, or `updatedAt` paired with `asc` or `desc`. Code-owned expressions map those values to SQL, empty text stays last in both directions, and latest activity, root creation time, then task ID provide deterministic ties. Status ascending is the agreed operational priority: running, queued, writeback conflict, failed, partial, completed, cancelled, draft.
+
+No explicit sort preserves the existing active/unresolved-first order. A sortable header cycles ascending, descending, then no explicit sort; changing the column starts ascending and resets pagination. The root job supplies creation time, while the maximum update across the retry family supplies latest activity. Live queue reason and the compound Case cell remain unsortable because neither has one unambiguous stable value.
+
 ## 2026-08-19: Consolidate computed insight exports while keeping raw evidence separate
 
 Computed summaries for one selected material and reviewer scope will ship as one `.xlsx` workbook with mode-specific sheets. Reviewer-level records remain separate CSV evidence because their row grain and volume differ from aggregate statistics. Arena-rank also keeps a nested JSON evidence artifact.

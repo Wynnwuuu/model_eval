@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Clock3,
   Image,
   Loader2,
@@ -16,6 +17,7 @@ import {
 import type {
   DatasetGenerationJob,
   EvalDataset,
+  GenerationJobSortField,
   GenerationJobStatus,
   GenerationQueueLane,
   GenerationQueueState,
@@ -25,6 +27,7 @@ import {
   listExecutionJobs,
   type GenerationJobListFilters,
 } from '../features/generation/executionApi';
+import { nextGenerationJobSort } from '../features/generation/generationJobSorting';
 
 type GenerationTaskCenterProps = {
   datasets: EvalDataset[];
@@ -64,12 +67,65 @@ const statusClass = (status: DatasetGenerationJob['status']) => {
 
 const formatTime = (value?: number) => value
   ? new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
+    hour12: false,
   }).format(new Date(value))
   : '-';
+
+const STATUS_SORT_DESCRIPTION = '\u8fd0\u884c\u4e2d\u3001\u6392\u961f\u4e2d\u3001\u56de\u586b\u51b2\u7a81\u3001\u5931\u8d25\u3001\u90e8\u5206\u6210\u529f\u3001\u5df2\u5b8c\u6210\u3001\u5df2\u53d6\u6d88\u3001\u8349\u7a3f';
+
+const SortableHeader: React.FC<{
+  field: GenerationJobSortField;
+  label: string;
+  sortBy?: GenerationJobSortField;
+  sortDirection?: GenerationJobListFilters['sortDirection'];
+  onSort: (field: GenerationJobSortField) => void;
+  ascendingDescription?: string;
+}> = ({ field, label, sortBy, sortDirection, onSort, ascendingDescription }) => {
+  const activeDirection = sortBy === field ? sortDirection : undefined;
+  const action = activeDirection === 'asc'
+    ? '\u5207\u6362\u4e3a\u5012\u5e8f'
+    : activeDirection === 'desc'
+      ? '\u6062\u590d\u9ed8\u8ba4\u6392\u5e8f'
+      : '\u6309\u8be5\u5217\u5347\u5e8f\u6392\u5217';
+  const description = ascendingDescription ? `\uff0c\u5347\u5e8f\u4e3a ${ascendingDescription}` : '';
+  const accessibleLabel = `${label}\uff1a${action}${description}`;
+  return (
+    <th
+      className="p-0 font-medium"
+      aria-sort={activeDirection === 'asc' ? 'ascending' : activeDirection === 'desc' ? 'descending' : undefined}
+      data-sort-field={field}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(field)}
+        className={`group flex w-full items-center gap-2 px-4 py-3 text-left outline-none transition-colors hover:bg-white/[0.03] hover:text-slate-200 focus-visible:bg-white/[0.05] focus-visible:text-slate-100 ${activeDirection ? 'text-slate-200' : 'text-slate-400'}`}
+        aria-label={accessibleLabel}
+        title={accessibleLabel}
+      >
+        <span>{label}</span>
+        <span className="flex h-5 w-3 shrink-0 flex-col items-center justify-center" aria-hidden="true">
+          <ChevronUp
+            size={10}
+            strokeWidth={2.5}
+            className={activeDirection === 'asc' ? 'text-amber-300' : 'text-slate-600 group-hover:text-slate-500'}
+            data-sort-indicator="asc"
+          />
+          <ChevronDown
+            size={10}
+            strokeWidth={2.5}
+            className={activeDirection === 'desc' ? 'text-amber-300' : 'text-slate-600 group-hover:text-slate-500'}
+            data-sort-indicator="desc"
+          />
+        </span>
+      </button>
+    </th>
+  );
+};
 
 const modelPolicyLabel = (mode: NonNullable<GenerationQueueLane['models']>[number]['mode']) => ({
   initial: '\u65e0\u8fd1\u671f\u5bb9\u91cf\u6837\u672c\uff0c\u4f7f\u7528\u521d\u59cb\u5e76\u53d1',
@@ -195,6 +251,16 @@ const GenerationTaskCenter: React.FC<GenerationTaskCenterProps> = ({
     }, 300);
     return () => window.clearTimeout(timeout);
   }, [creatorSearch, modelSearch]);
+
+  const handleSort = useCallback((field: GenerationJobSortField) => {
+    setFilters(current => {
+      const nextSort = nextGenerationJobSort(current, field);
+      const nextFilters = { ...current, page: 1 };
+      delete nextFilters.sortBy;
+      delete nextFilters.sortDirection;
+      return { ...nextFilters, ...nextSort };
+    });
+  }, []);
 
   const page = Number(filters.page || 1);
   const limit = Number(filters.limit || 20);
@@ -365,16 +431,17 @@ const GenerationTaskCenter: React.FC<GenerationTaskCenterProps> = ({
       )}
 
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[1040px] text-left text-sm">
+        <table className="w-full min-w-[1180px] text-left text-sm">
           <thead className="border-b border-white/10 bg-white/[0.03] text-xs text-slate-400">
             <tr>
-              <th className="px-4 py-3 font-medium">{'\u8bc4\u6d4b\u96c6 / \u76ee\u6807\u5217'}</th>
-              <th className="px-4 py-3 font-medium">{'\u6a21\u578b'}</th>
-              <th className="px-4 py-3 font-medium">{'\u72b6\u6001'}</th>
+              <SortableHeader field="dataset" label={'\u8bc4\u6d4b\u96c6 / \u76ee\u6807\u5217'} sortBy={filters.sortBy} sortDirection={filters.sortDirection} onSort={handleSort} />
+              <SortableHeader field="model" label={'\u6a21\u578b'} sortBy={filters.sortBy} sortDirection={filters.sortDirection} onSort={handleSort} />
+              <SortableHeader field="status" label={'\u72b6\u6001'} sortBy={filters.sortBy} sortDirection={filters.sortDirection} onSort={handleSort} ascendingDescription={STATUS_SORT_DESCRIPTION} />
               <th className="px-4 py-3 font-medium">Case</th>
               <th className="px-4 py-3 font-medium">{'\u961f\u5217\u539f\u56e0'}</th>
-              <th className="px-4 py-3 font-medium">{'\u521b\u5efa\u8005'}</th>
-              <th className="px-4 py-3 font-medium">{'\u6700\u8fd1\u6d3b\u52a8'}</th>
+              <SortableHeader field="creator" label={'\u521b\u5efa\u8005'} sortBy={filters.sortBy} sortDirection={filters.sortDirection} onSort={handleSort} />
+              <SortableHeader field="createdAt" label={'\u521b\u5efa\u65f6\u95f4'} sortBy={filters.sortBy} sortDirection={filters.sortDirection} onSort={handleSort} />
+              <SortableHeader field="updatedAt" label={'\u6700\u8fd1\u6d3b\u52a8'} sortBy={filters.sortBy} sortDirection={filters.sortDirection} onSort={handleSort} />
             </tr>
           </thead>
           <tbody className="divide-y divide-white/10">
@@ -405,7 +472,8 @@ const GenerationTaskCenter: React.FC<GenerationTaskCenterProps> = ({
                   )}
                 </td>
                 <td className="px-4 py-3 text-xs text-slate-400">{job.createdBy || job.createdByUid || '-'}</td>
-                <td className="px-4 py-3 text-xs text-slate-400">{formatTime(job.updatedAt)}</td>
+                <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-400">{formatTime(job.createdAt)}</td>
+                <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-400">{formatTime(job.updatedAt)}</td>
               </tr>
             ))}
           </tbody>

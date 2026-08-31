@@ -1,5 +1,15 @@
 # Arena Implementation Progress
 
+## 2026-08-31: Generation task server-side sorting (implementation complete; CI database verification pending)
+
+- Baseline is the clean private GitHub `main@6350e2b`; implementation is isolated on `codex/generation-task-sorting` and will fast-forward `main` only after final validation and a fresh remote check.
+- Added one allowlisted single-column sorting contract for dataset, model, operational status, creator, root creation time, and retry-family latest activity. Sorting runs after retry-family aggregation and before pagination; the existing active/attention-first default remains unchanged when sorting is cleared.
+- The production task table now exposes six keyboard-accessible sortable headers, a three-state ascending/descending/default cycle, direction-specific stacked Chevron contrast, `aria-sort`, a separate creation-time column, and stable full date/time rendering. Case and live queue-reason columns remain intentionally unsortable.
+- Regression coverage includes the shared field/direction contract, SQL projection and status priority, API rejection of incomplete or unknown sort parameters, all six PostgreSQL sort dimensions, retry-family collapse, cross-page order, null-last behavior, and deterministic ties.
+- Local validation passed: TypeScript, frontend/server builds, generation tests, worker/runtime polling tests, and mocked real-browser checks at desktop and 390px mobile. Browser checks confirmed exact API parameters, three-state clearing, keyboard activation, page reset, `aria-sort`, icon contrast, and contained horizontal scrolling.
+- Local PostgreSQL and API smoke remain environment-blocked because Docker Desktop started but its engine never became available. GitHub CI already runs `test:generation:db` and `test:api:smoke`; those checks remain mandatory before the dev rollout is accepted.
+- No migration, paid generation, Aion request, generation-worker behavior, asset storage, writeback, or evaluation workflow changed.
+
 ## 2026-08-28: Generated result columns in material builder (implementation complete; release verification follows commit)
 
 - Baseline is the private GitHub `main@271d1431`; implementation is isolated on `codex/fix-generated-result-columns` and will fast-forward `main` only after full validation.

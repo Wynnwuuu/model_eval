@@ -1,4 +1,14 @@
-import type { DatasetGenerationJob, DatasetGenerationJobItem } from '../../src/types.ts';
+import type {
+  DatasetGenerationJob,
+  DatasetGenerationJobItem,
+  GenerationJobSortDirection,
+  GenerationJobSortField,
+} from '../../src/types.ts';
+import {
+  GENERATION_JOB_STATUS_SORT_ORDER,
+  isGenerationJobSortDirection,
+  isGenerationJobSortField,
+} from '../../src/features/generation/generationJobSorting.ts';
 import { dbPool } from '../db/client.ts';
 
 type GenerationJobRow = {
@@ -185,8 +195,73 @@ export type GenerationJobListParams = {
   status?: string;
   model?: string;
   createdBy?: string;
+  sortBy?: GenerationJobSortField;
+  sortDirection?: GenerationJobSortDirection;
   page?: number;
   limit?: number;
+};
+
+const defaultGenerationJobOrderBy = `
+  ORDER BY
+    CASE
+      WHEN summaries.logical_status IN ('queued', 'running') OR summaries.unresolved_count > 0 THEN 0
+      ELSE 1
+    END,
+    summaries.family_updated_at DESC,
+    summaries.created_at DESC,
+    summaries.id DESC
+`;
+
+const generationJobTextSortExpressions: Record<Exclude<GenerationJobSortField, 'status' | 'createdAt' | 'updatedAt'>, readonly string[]> = {
+  dataset: [
+    "LOWER(NULLIF(BTRIM(summaries.dataset_name), ''))",
+    "LOWER(NULLIF(BTRIM(COALESCE(summaries.target_column, '')), ''))",
+  ],
+  model: [
+    "LOWER(COALESCE(NULLIF(BTRIM(summaries.model_config_json->>'displayName'), ''), NULLIF(BTRIM(summaries.model_config_json->>'modelName'), '')))",
+    "LOWER(NULLIF(BTRIM(summaries.model_config_json->>'modelName'), ''))",
+  ],
+  creator: [
+    "LOWER(COALESCE(NULLIF(BTRIM(summaries.creator_name), ''), NULLIF(BTRIM(summaries.controls_json->>'createdBy'), ''), NULLIF(BTRIM(summaries.controls_json->>'createdByUid'), '')))",
+  ],
+};
+
+export const buildGenerationJobOrderBy = (
+  sortBy?: GenerationJobSortField,
+  sortDirection?: GenerationJobSortDirection,
+) => {
+  if (!sortBy && !sortDirection) return defaultGenerationJobOrderBy;
+  if (!isGenerationJobSortField(sortBy) || !isGenerationJobSortDirection(sortDirection)) {
+    throw new Error('Generation job sort field and direction must be provided together.');
+  }
+
+  const direction = sortDirection === 'desc' ? 'DESC' : 'ASC';
+  let primaryOrder: string[];
+  if (sortBy === 'status') {
+    const knownStatuses = GENERATION_JOB_STATUS_SORT_ORDER.map(status => `'${status}'`).join(', ');
+    const statusRank = GENERATION_JOB_STATUS_SORT_ORDER
+      .map((status, index) => `WHEN '${status}' THEN ${index}`)
+      .join(' ');
+    primaryOrder = [
+      `CASE WHEN summaries.logical_status IN (${knownStatuses}) THEN 0 ELSE 1 END ASC`,
+      `CASE summaries.logical_status ${statusRank} ELSE ${GENERATION_JOB_STATUS_SORT_ORDER.length} END ${direction}`,
+    ];
+  } else if (sortBy === 'createdAt') {
+    primaryOrder = [`summaries.created_at ${direction} NULLS LAST`];
+  } else if (sortBy === 'updatedAt') {
+    primaryOrder = [`summaries.family_updated_at ${direction} NULLS LAST`];
+  } else {
+    primaryOrder = generationJobTextSortExpressions[sortBy]
+      .map(expression => `${expression} ${direction} NULLS LAST`);
+  }
+
+  return `
+    ORDER BY
+      ${primaryOrder.join(',\n      ')},
+      summaries.family_updated_at DESC,
+      summaries.created_at DESC,
+      summaries.id DESC
+  `;
 };
 
 export const listGenerationJobs = async (params: GenerationJobListParams) => {
@@ -195,6 +270,7 @@ export const listGenerationJobs = async (params: GenerationJobListParams) => {
   const page = Number.isInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1;
   const limit = Number.isInteger(requestedLimit) && requestedLimit > 0 ? Math.min(100, requestedLimit) : 20;
   const offset = (page - 1) * limit;
+  const orderByClause = buildGenerationJobOrderBy(params.sortBy, params.sortDirection);
   const result = await dbPool.query<GenerationJobRow>(
     `
       WITH RECURSIVE filtered_roots AS (
@@ -323,13 +399,7 @@ export const listGenerationJobs = async (params: GenerationJobListParams) => {
       SELECT summaries.*, count(*) OVER()::int AS full_count
       FROM summaries
       WHERE ($5::text IS NULL OR summaries.logical_status = $5)
-      ORDER BY
-        CASE
-          WHEN summaries.logical_status IN ('queued', 'running') OR summaries.unresolved_count > 0 THEN 0
-          ELSE 1
-        END,
-        summaries.family_updated_at DESC,
-        summaries.created_at DESC
+      ${orderByClause}
       LIMIT $6 OFFSET $7
     `,
     [

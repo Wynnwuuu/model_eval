@@ -4,6 +4,12 @@ import { serverConfig } from '../config.ts';
 import { ApiError, badRequest } from '../http/errors.ts';
 import { aionGenerationClient } from './aionGenerationClient.ts';
 import { generationOptionsSupportSeed } from './generationPlanning.ts';
+import {
+  GENERATION_JOB_SORT_DIRECTIONS,
+  GENERATION_JOB_SORT_FIELDS,
+  isGenerationJobSortDirection,
+  isGenerationJobSortField,
+} from '../../src/features/generation/generationJobSorting.ts';
 import { generationAssetService } from './generationAssetService.ts';
 import {
   getGenerationBatch,
@@ -366,6 +372,25 @@ generationRoutes.get('/jobs', async (req, res) => {
     const status = typeof req.query.status === 'string' ? req.query.status : undefined;
     const model = typeof req.query.model === 'string' ? req.query.model : undefined;
     const createdBy = typeof req.query.createdBy === 'string' ? req.query.createdBy : undefined;
+    const rawSortBy = req.query.sortBy;
+    const rawSortDirection = req.query.sortDirection;
+    const hasSortBy = rawSortBy !== undefined;
+    const hasSortDirection = rawSortDirection !== undefined;
+    if (hasSortBy !== hasSortDirection) {
+      throw badRequest('sortBy and sortDirection must be provided together.');
+    }
+    const sortBy = hasSortBy && isGenerationJobSortField(rawSortBy)
+      ? rawSortBy
+      : undefined;
+    const sortDirection = hasSortDirection && isGenerationJobSortDirection(rawSortDirection)
+      ? rawSortDirection
+      : undefined;
+    if (hasSortBy && (!sortBy || !sortDirection)) {
+      throw badRequest('Invalid generation job sort.', {
+        allowedSortFields: GENERATION_JOB_SORT_FIELDS,
+        allowedSortDirections: GENERATION_JOB_SORT_DIRECTIONS,
+      });
+    }
     const page = typeof req.query.page === 'string' ? Number(req.query.page) : undefined;
     const limit = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
     res.json(await listGenerationJobs({
@@ -374,6 +399,8 @@ generationRoutes.get('/jobs', async (req, res) => {
       status,
       model,
       createdBy,
+      sortBy,
+      sortDirection,
       page,
       limit,
     }));

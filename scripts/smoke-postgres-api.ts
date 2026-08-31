@@ -898,6 +898,25 @@ const main = async () => {
     });
     const jobs = await request<{ jobs: any[] }>(`/api/generation/jobs?datasetId=${ids.dataset}`);
     assert(jobs.jobs.some(job => job.id === ids.job), 'generation job was not persisted');
+    const sortedJobs = await request<{ jobs: any[] }>(
+      `/api/generation/jobs?datasetId=${ids.dataset}&sortBy=createdAt&sortDirection=asc`,
+    );
+    assert(sortedJobs.jobs.some(job => job.id === ids.job), 'valid generation sorting was rejected');
+    const missingSortDirection = await expectJsonFailure(
+      `/api/generation/jobs?datasetId=${ids.dataset}&sortBy=createdAt`,
+      400,
+    );
+    assert(missingSortDirection?.error?.code === 'BAD_REQUEST', 'incomplete generation sorting returned the wrong error');
+    const invalidSortField = await expectJsonFailure(
+      `/api/generation/jobs?datasetId=${ids.dataset}&sortBy=caseCount&sortDirection=asc`,
+      400,
+    );
+    assert(invalidSortField?.error?.code === 'BAD_REQUEST', 'unknown generation sort field was accepted');
+    const invalidSortDirection = await expectJsonFailure(
+      `/api/generation/jobs?datasetId=${ids.dataset}&sortBy=createdAt&sortDirection=ascending`,
+      400,
+    );
+    assert(invalidSortDirection?.error?.code === 'BAD_REQUEST', 'unknown generation sort direction was accepted');
 
     await cleanup();
     console.log(`Smoke test passed against ${API_BASE_URL}`);
