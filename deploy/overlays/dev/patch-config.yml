@@ -40,6 +40,8 @@ spec:
               value: "http://dev-vidmuse-manager-service:443/model/api/v1/model"
             - name: AION_EXECUTION_TRANSPORT
               value: "model_api"
+            - name: AION_IMAGE_GENERATION_TIMEOUT_MS
+              value: "420000"
             - name: MANUEVAL_PUBLIC_BASE_URL
               value: "__MANUEVAL_PUBLIC_BASE_URL__"
             - name: GENERATION_ASSET_MODE

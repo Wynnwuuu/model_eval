@@ -52,6 +52,7 @@ export const serverConfig = {
   aionTaskWorkerVideoBaseUrl: (process.env.AION_TASK_WORKER_VIDEO_BASE_URL || 'https://vidmuse-dev-video.sandcdn.com').replace(/\/+$/, ''),
   aionEvalUserId: process.env.AION_EVAL_USER_ID || '',
   aionRequestTimeoutMs: parsePort(process.env.AION_REQUEST_TIMEOUT_MS, 30000),
+  aionImageGenerationTimeoutMs: parsePort(process.env.AION_IMAGE_GENERATION_TIMEOUT_MS, 420000),
   generationWorkerEnabled: process.env.GENERATION_WORKER_ENABLED !== 'false',
   generationMaxBatchSize: parsePort(process.env.GENERATION_MAX_BATCH_SIZE, 500),
   generationImageConcurrency: parsePort(process.env.GENERATION_IMAGE_CONCURRENCY, 4),

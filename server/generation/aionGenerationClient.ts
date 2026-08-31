@@ -7,6 +7,10 @@ import {
 type FetchLike = typeof fetch;
 export type AionExecutionTransport = 'model_api' | 'task_worker';
 type GenerationModality = 'image' | 'video';
+type AionGenerationTimeouts = {
+  requestMs: number;
+  imageGenerationMs: number;
+};
 
 const TASK_WORKER_FIELDS: Record<GenerationModality, string[]> = {
   image: ['model_name', 'prompt', 'image_urls', 'aspect_ratio', 'resolution', 'caption'],
@@ -221,6 +225,10 @@ export class AionGenerationClient {
     private readonly taskWorkerThreadId = serverConfig.aionTaskWorkerThreadId,
     private readonly taskWorkerImageBaseUrl = serverConfig.aionTaskWorkerImageBaseUrl,
     private readonly taskWorkerVideoBaseUrl = serverConfig.aionTaskWorkerVideoBaseUrl,
+    private readonly timeouts: AionGenerationTimeouts = {
+      requestMs: serverConfig.aionRequestTimeoutMs,
+      imageGenerationMs: serverConfig.aionImageGenerationTimeoutMs,
+    },
   ) {}
 
   executionTransport() {
@@ -252,6 +260,7 @@ export class AionGenerationClient {
     init: RequestInit = {},
     authenticated = false,
     threadScoped = false,
+    timeoutMs = this.timeouts.requestMs,
   ): Promise<any> {
     if (authenticated && !this.userId) throw new Error('AION_EVAL_USER_ID is not configured');
     const headers = new Headers(init.headers);
@@ -264,7 +273,7 @@ export class AionGenerationClient {
     }
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), serverConfig.aionRequestTimeoutMs);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await this.fetchImpl(url, {
         ...init,
@@ -345,8 +354,13 @@ export class AionGenerationClient {
     }
   }
 
-  private requestJson(path: string, init: RequestInit = {}, authenticated = false): Promise<any> {
-    return this.requestJsonUrl(this.url(path), init, authenticated);
+  private requestJson(
+    path: string,
+    init: RequestInit = {},
+    authenticated = false,
+    timeoutMs = this.timeouts.requestMs,
+  ): Promise<any> {
+    return this.requestJsonUrl(this.url(path), init, authenticated, false, timeoutMs);
   }
 
   async listModels(modalities: GenerationModality[] = ['image', 'video']): Promise<NormalizedGenerationModel[]> {
@@ -390,7 +404,9 @@ export class AionGenerationClient {
       return this.requestJson(path, {
         method: 'POST',
         body: JSON.stringify(body),
-      }, true);
+      }, true, path.endsWith('/generate-image')
+        ? this.timeouts.imageGenerationMs
+        : this.timeouts.requestMs);
     }
 
     if (!this.taskWorkerBaseUrl || !this.taskWorkerThreadId) {

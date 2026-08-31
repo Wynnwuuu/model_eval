@@ -4119,6 +4119,48 @@ const submitRequest = aionRequests.at(-1);
 assert.equal(submitRequest?.url, 'https://model.example.com/private/api/v1/model/generate-video');
 assert.equal(new Headers(submitRequest?.init?.headers).get('x-auth-user-id'), '987654');
 
+const delayedFetch = (delayMs: number): typeof fetch => async (_input, init) => new Promise<Response>((resolve, reject) => {
+  const timer = setTimeout(() => resolve(new Response(JSON.stringify({
+    images: [{ url: 'https://images.example.com/result.png' }],
+    task_status: 'succeed',
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })), delayMs);
+  const abort = () => {
+    clearTimeout(timer);
+    reject(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' }));
+  };
+  if (init?.signal?.aborted) abort();
+  else init?.signal?.addEventListener('abort', abort, { once: true });
+});
+const modalityTimeoutClient = new AionGenerationClient(
+  'https://aion.example.com',
+  '987654',
+  delayedFetch(30),
+  '',
+  'model_api',
+  '',
+  '',
+  '',
+  '',
+  { requestMs: 10, imageGenerationMs: 100 },
+);
+await assert.rejects(
+  () => modalityTimeoutClient.submit('/model/api/v1/model/generate-video', {}),
+  (error: any) => error?.name === 'AbortError',
+  'video submission should retain the regular Aion request timeout',
+);
+const delayedImageResult = await modalityTimeoutClient.submit(
+  '/model/api/v1/model/generate-image',
+  {},
+);
+assert.equal(
+  delayedImageResult.images[0].url,
+  'https://images.example.com/result.png',
+  'synchronous image generation should use the longer image timeout',
+);
+
 const structuredErrorClient = new AionGenerationClient(
   'https://aion.example.com',
   '987654',
