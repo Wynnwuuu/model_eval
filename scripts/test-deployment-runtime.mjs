@@ -22,8 +22,8 @@ const deployWorkflow = await readFile(new URL('../.github/workflows/eval-studio-
 const manifestSplitter = await readFile(new URL('./split-deployment-manifest.mjs', import.meta.url), 'utf8');
 assert.match(
   devConfig,
-  /- name: GENERATION_IMAGE_CONCURRENCY\r?\n\s+value: "1"/,
-  'dev image concurrency must remain conservative until synchronous generation is stable under the glibc runtime',
+  /- name: GENERATION_IMAGE_CONCURRENCY\r?\n\s+value: "4"/,
+  'dev API capacity reporting must match the restored global image concurrency of four',
 );
 assert.match(
   devConfig,
@@ -61,6 +61,11 @@ assert.match(workerDeployment, /app: eval-studio-generation-worker/g,
 assert.match(workerDeployment, /terminationGracePeriodSeconds: 600/);
 assert.match(workerDeployment, /- name: GENERATION_EXECUTION_ENABLED\r?\n\s+value: "true"/);
 assert.match(workerDeployment, /- name: GENERATION_WORKER_ENABLED\r?\n\s+value: "true"/);
+assert.match(
+  workerDeployment,
+  /- name: GENERATION_IMAGE_CONCURRENCY\r?\n\s+value: "4"/,
+  'the worker fleet must enforce the restored global image concurrency of four',
+);
 assert.match(workerDeployment, /- name: NODE_OPTIONS\r?\n\s+value: "--max-old-space-size=768"/);
 assert.match(workerDeployment, /memory: "1536Mi"/,
   'worker containers need native-memory headroom around the 768 MiB V8 heap');

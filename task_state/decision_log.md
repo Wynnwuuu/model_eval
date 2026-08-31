@@ -555,3 +555,9 @@ An exact `case_id + variant_label` pair is the only business identity eligible f
 - Generation Worker Pods use a distinct Kubernetes selector and have no Service, Feishu, JWT, or Owner credentials. Two replicas share the existing advisory-lock, `FOR UPDATE SKIP LOCKED`, lease, and global-capacity contracts.
 - A terminating Worker publishes `draining` before it stops claiming. It retains item lease renewal while the active request completes and receives a 600-second shutdown window.
 - The first release from an absent or zero-replica fleet runs a read-only queue audit after migration and API stabilization. Any pre-existing `pending` or `submitting` item blocks Worker enablement; already submitted/polling/archiving work may recover without a second POST.
+
+## 2026-08-31: Restore the global image concurrency to four
+
+- The temporary dev image limit of one did not address the API heap-exhaustion root cause. Dataset history materialization and overlapping HTTP polling caused that failure, and generation now also runs outside the API process.
+- Dev restores the established image concurrency of four. The value is a fleet-wide provider limit, not a per-Pod limit: every Worker claim is serialized by the PostgreSQL modality advisory lock and counted against all active image submissions before a lease is granted.
+- API and Worker manifests must use the same value so displayed queue capacity matches execution. A deployment regression enforces both values, and the database integration test models two Worker replicas contending for eight cases while admitting only four.

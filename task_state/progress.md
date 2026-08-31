@@ -979,3 +979,18 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - The new tests failed first on the missing Worker registry and deployment, then passed after implementation.
 - Generation contracts, Worker heartbeat semantics, deployment runtime assertions, TypeScript, server build, Kustomize rendering, manifest phase splitting, and diff checks pass locally.
 - PostgreSQL integration, full regressions, CI deployment, dev heartbeat/restart observation, and the independent one-case canary remain pending. No paid request or existing batch operation has run.
+
+## 2026-08-31: Restore image generation concurrency
+
+### Change
+
+- Restored `GENERATION_IMAGE_CONCURRENCY` from the temporary recovery value of one to the established dev value of four in both the API and independent Worker manifests.
+- Strengthened deployment regression coverage so API capacity reporting and Worker execution cannot drift.
+- Strengthened the PostgreSQL capacity integration scenario to emulate two Worker replicas contending for eight image cases and require exactly four fleet-wide claims.
+
+### Validation status
+
+- Eval-first deployment regression failed against the old value of one as expected.
+- `test:generation`, TypeScript, frontend production build, server production build, deployment regression, Kustomize rendering, and `git diff --check` pass locally.
+- The rendered dev manifest contains exactly two image-concurrency declarations, one for API capacity reporting and one for Worker execution, and both are four.
+- Local PostgreSQL integration could not run because Docker Desktop is not active. CI must pass the two-replica/eight-claim database scenario before the dev rollout is accepted. No paid generation is part of this change.

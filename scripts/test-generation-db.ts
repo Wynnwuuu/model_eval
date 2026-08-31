@@ -1530,7 +1530,9 @@ try {
     `request-${suffix}-capacity`,
   );
   const baseCase = capacityPreflight.result.cases[0];
-  const requestedClaims = serverConfig.generationImageConcurrency + 1;
+  const originalImageConcurrency = serverConfig.generationImageConcurrency;
+  serverConfig.generationImageConcurrency = 4;
+  const requestedClaims = 8;
   capacityPreflight.result = {
     ...capacityPreflight.result,
     validCount: requestedClaims,
@@ -1547,10 +1549,14 @@ try {
   const capacityJob = await createGenerationBatchFromPreflight(capacityPreflight, user);
   const capacityClaims = await Promise.all(Array.from(
     { length: requestedClaims },
-    (_, index) => claimNextGenerationItem('image', `capacity-worker-${index}-${suffix}`),
+    (_, index) => claimNextGenerationItem(
+      'image',
+      `capacity-replica-${index % 2}-lane-${index}-${suffix}`,
+    ),
   ));
   const activeClaims = capacityClaims.filter(item => item !== null);
-  assert.equal(activeClaims.length, serverConfig.generationImageConcurrency, 'global image leases must respect the configured capacity');
+  assert.equal(activeClaims.length, 4,
+    'two worker replicas must share four global image slots instead of claiming four each');
   const firstActiveIndex = capacityClaims.findIndex(item => item !== null);
   const firstActiveClaim = capacityClaims[firstActiveIndex]!;
   const leaseBefore = await dbPool.query(
@@ -1558,7 +1564,10 @@ try {
     [firstActiveClaim.id],
   );
   assert.equal(await renewGenerationItemLease(firstActiveClaim.id, 'wrong-owner'), false);
-  assert.equal(await renewGenerationItemLease(firstActiveClaim.id, `capacity-worker-${firstActiveIndex}-${suffix}`), true);
+  assert.equal(await renewGenerationItemLease(
+    firstActiveClaim.id,
+    `capacity-replica-${firstActiveIndex % 2}-lane-${firstActiveIndex}-${suffix}`,
+  ), true);
   const leaseAfter = await dbPool.query(
     'SELECT lease_expires_at FROM generation_job_items WHERE id = $1',
     [firstActiveClaim.id],
@@ -1592,6 +1601,7 @@ try {
     'a terminal provider task must release capacity for the next pending submission');
   await releaseGenerationItemLease(resumedClaim!.id);
   await requestGenerationCancellation(capacityJob.id, user);
+  serverConfig.generationImageConcurrency = originalImageConcurrency;
   const partlyInvalidPreflight = createPreflightRecord(
     (await getDataset(datasetId))!,
     'partly_invalid_result',
