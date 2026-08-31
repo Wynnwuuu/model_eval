@@ -65,7 +65,7 @@ spec:
             - name: GENERATION_MAX_BATCH_SIZE
               value: "500"
             - name: GENERATION_IMAGE_CONCURRENCY
-              value: "4"
+              value: "1"
             - name: GENERATION_VIDEO_CONCURRENCY
               value: "8"
             - name: GENERATION_VIDEO_ADAPTIVE_ENABLED

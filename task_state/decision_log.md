@@ -526,3 +526,10 @@ New datasets default to direct import. Source headers, order, root-level values,
 Feishu Base import is a one-time, full-table read. The linked view is ignored, apply re-reads the table and compares its snapshot hash, and no Base binding is persisted. Versioned synchronization remains a separate maintenance operation.
 
 An exact `case_id + variant_label` pair is the only business identity eligible for source synchronization. A source without `case_id` may be imported with hidden stable IDs, but both UI and API must reject later synchronization. This restriction is persisted in version manifests and inherited by dataset copies.
+
+## 2026-08-31: Image generation runtime uses Debian/glibc after exit 139
+
+- Aion completed synchronous Seedream requests in 66-118 seconds once ManuEval's timeout was raised, but the single dev Pod repeatedly terminated with native exit code 139 while requests were in flight.
+- The failure is below JavaScript exception handling and is not an out-of-memory exit. The smallest deployment mitigation is to replace Alpine/musl with a pinned official Debian/glibc Node 22 image; no Aion request, database, Worker state, or writeback contract changes.
+- Dev image concurrency is one for the recovery run. It can be raised only after a later controlled load check shows stable restart counts on the glibc image.
+- Interrupted synchronous submissions remain conservative and are never auto-retried because the provider may have charged before the process died. The user explicitly authorized manual regeneration of the twelve known interrupted cases.

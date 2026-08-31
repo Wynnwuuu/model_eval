@@ -1,4 +1,4 @@
-FROM node:22-alpine AS build
+FROM node:22.23.2-bookworm-slim AS build
 
 WORKDIR /app
 
@@ -16,7 +16,7 @@ RUN npm run lint
 RUN npm run build
 RUN npm run server:build
 
-FROM node:22-alpine AS runtime
+FROM node:22.23.2-bookworm-slim AS runtime
 
 WORKDIR /app
 ENV NODE_ENV=production

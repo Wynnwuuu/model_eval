@@ -917,3 +917,17 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Passed direct import, versioned sync, Feishu Base pagination, legacy import mapping, clone, column deletion, table projection/filtering, generation/MCP/seed, evaluation reference media, task scope, Arena/rank, structured audit, projects, results, insights, page metadata, layout, TypeScript, frontend build, and server build.
 - Browser QA passed on desktop and 390x844 mobile. It verified the direct mode default, Base/file/paste source tabs, N/N full-column confirmation, unknown-column retention, missing-case-ID warning, successful local import, disabled synchronization, and zero console errors.
 - No paid generation ran and no Feishu source was modified. PostgreSQL/API smoke remains pending because the local Docker/PostgreSQL service is not running; the smoke script now includes preview hash conflict, direct persistence, source-binding absence, and internal-identity sync rejection.
+
+## 2026-08-31: Synchronous image crash-loop incident
+
+### Current status
+
+- The 420-second image timeout release allowed 21 of 33 Seedream 5.0 Pro cases to succeed, proving the original 30-second timeout was fixed.
+- Twelve remaining submissions were interrupted by repeated ManuEval container restarts. Kubernetes audit status records `lastState.terminated.reason=Error` and `exitCode=139`; the failures were not Aion model rejections.
+- The container base is changed from Alpine/musl to pinned official `node:22.23.2-bookworm-slim` for both build and runtime stages. Dev image concurrency is temporarily reduced from four to one while the synchronous path is revalidated.
+- A deployment regression test now prevents Alpine from returning and asserts the conservative dev concurrency. It failed against the old Dockerfile and passes after the change.
+
+### Validation
+
+- `test:generation`, TypeScript, frontend production build, server production build, and the deployment regression pass locally.
+- Remaining gates: GitHub CI image build/deploy, post-rollout restart-count observation, then retry and verify only the 12 interrupted cases.
