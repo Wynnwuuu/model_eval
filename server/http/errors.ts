@@ -25,6 +25,9 @@ export const forbidden = (message = 'Forbidden') =>
 export const conflict = (message: string, details?: unknown) =>
   new ApiError(409, 'VERSION_CONFLICT', message, details);
 
+export const unprocessableEntity = (code: string, message: string, details?: unknown) =>
+  new ApiError(422, code, message, details);
+
 export const sendError = (res: Response, error: unknown, fallbackMessage = 'Internal server error') => {
   if (error instanceof ApiError) {
     res.status(error.statusCode).json({

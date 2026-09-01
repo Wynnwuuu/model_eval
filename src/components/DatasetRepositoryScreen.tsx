@@ -22,6 +22,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  Redo2,
   RotateCcw,
   Save,
   Search,
@@ -29,6 +30,7 @@ import {
   Table2,
   Tag,
   Trash2,
+  Undo2,
   Upload,
   Wand2,
   X
@@ -53,6 +55,7 @@ import {
   saveDataset,
   subscribeDatasets,
   updateDatasetItem as persistDatasetItemEdit,
+  updateDatasetItemsBatch as persistDatasetItemsBatch,
   updateDatasetManifest as persistDatasetManifestEdit,
   type DatasetSyncSourceInput,
 } from '../features/datasets/api';
@@ -132,6 +135,28 @@ import {
   resizeDatasetRepositoryPane,
   setDatasetColumnWidth,
 } from '../layoutSizing';
+import { buildDatasetCsv } from '../datasetCsvExport';
+import {
+  applyDatasetBatchEdit,
+  buildDatasetSelectionTsv,
+  createDatasetDraftHistory,
+  isDatasetCellSelected,
+  isDatasetDraftDirty,
+  isDatasetGridColumnEditable,
+  normalizeDatasetGridSelection,
+  overlayDatasetEditDraft,
+  parseDatasetClipboardMatrix,
+  planDatasetGridPaste,
+  pushDatasetDraft,
+  redoDatasetDraft,
+  serializeDatasetClipboardValue,
+  undoDatasetDraft,
+  type DatasetAppendedRow,
+  type DatasetCellEdit,
+  type DatasetEditDraft,
+  type DatasetEditIssue,
+  type DatasetGridSelection,
+} from '../datasetGridEditing';
 
 interface DatasetRepositoryScreenProps {
   onBack: () => void;
@@ -145,6 +170,7 @@ interface DatasetRepositoryScreenProps {
   ) => void;
   onOpenDatasetRepository?: (datasetId?: string) => void;
   onCreateEvaluation?: (datasetId: string, resultColumn: string) => void;
+  onDraftStateChange?: (dirty: boolean) => void;
 }
 
 type WizardMode = 'create' | 'append';
@@ -628,13 +654,10 @@ const reconcileSchemaFieldsToHeaders = (
     };
   });
 
-const downloadCsv = (filename: string, rows: Record<string, any>[] | string[]) => {
-  const csvContent = Array.isArray(rows) && typeof rows[0] === 'string'
-    ? (rows as string[]).join(',') + '\n'
-    : Papa.unparse((rows as Record<string, any>[]).map(row => {
-      const { _originalData, [DATASET_ITEM_ID_KEY]: _stableItemId, ...rest } = row;
-      return Object.fromEntries(Object.entries(rest).filter(([key]) => !key.startsWith('__')));
-    }));
+const downloadCsv = (filename: string, source: EvalDataset | string[]) => {
+  const csvContent = Array.isArray(source)
+    ? Papa.unparse({ fields: source, data: [] }, { header: true, newline: '\r\n' })
+    : buildDatasetCsv(source);
   const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
   const blob = new Blob([bom, csvContent], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
@@ -646,6 +669,11 @@ const downloadCsv = (filename: string, rows: Record<string, any>[] | string[]) =
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 };
+
+const isInteractiveGridTarget = (target: EventTarget | null) => (
+  target instanceof Element
+  && Boolean(target.closest('a, button, input, textarea, select, video, audio, [role="button"], [data-grid-interactive="true"]'))
+);
 
 const mediaSizeClasses: Record<DatasetPreviewSize, { media: string; audio: string; link: string; text: string }> = {
   small: {
@@ -795,6 +823,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   onGenerationNavigate,
   onOpenDatasetRepository,
   onCreateEvaluation,
+  onDraftStateChange,
 }) => {
   const [fallbackGenerationView, setFallbackGenerationView] = useState<GenerationWorkspaceView>('tasks');
   const generationWorkspaceView = generationView || fallbackGenerationView;
@@ -845,6 +874,10 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   };
   const openNewGeneration = () => {
     if (!selectedDataset || isViewingHistoricalVersion) return;
+    if (gridDraftDirty) {
+      setGridSaveError('请先保存或放弃批量修改草稿，再进入批量生产。');
+      return;
+    }
     const nextScope = hasDatasetColumnFilters(columnFilters)
       ? createGenerationCaseScopeSnapshot({
         dataset: selectedDataset,
@@ -903,6 +936,8 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   } | null>(null);
   const repositoryLayoutRef = useRef<HTMLDivElement>(null);
   const datasetTableRef = useRef<HTMLTableElement>(null);
+  const datasetTableContainerRef = useRef<HTMLDivElement>(null);
+  const gridSelectionDraggingRef = useRef(false);
   const [rowToDelete, setRowToDelete] = useState<number | null>(null);
   const [isDeletingRow, setIsDeletingRow] = useState(false);
   const [inlineRenameColumn, setInlineRenameColumn] = useState<string | null>(null);
@@ -919,6 +954,15 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   const [editError, setEditError] = useState('');
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [syncNotice, setSyncNotice] = useState('');
+  const [gridSelection, setGridSelection] = useState<DatasetGridSelection | null>(null);
+  const [gridDraftHistory, setGridDraftHistory] = useState(createDatasetDraftHistory);
+  const [gridDraftBaseDataset, setGridDraftBaseDataset] = useState<EvalDataset | null>(null);
+  const [gridIssues, setGridIssues] = useState<DatasetEditIssue[]>([]);
+  const [gridSaveError, setGridSaveError] = useState('');
+  const [isSavingGridDraft, setIsSavingGridDraft] = useState(false);
+  const [gridWarningsAwaitingConfirmation, setGridWarningsAwaitingConfirmation] = useState(false);
+  const gridDraft = gridDraftHistory.present;
+  const gridDraftDirty = isDatasetDraftDirty(gridDraft);
 
   const [wizardOpen, setWizardOpen] = useState(false);
   const [syncModalOpen, setSyncModalOpen] = useState(false);
@@ -971,6 +1015,36 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
       // Local UI preference only; ignore storage failures.
     }
   }, [previewSize]);
+
+  useEffect(() => {
+    const stopSelecting = () => {
+      gridSelectionDraggingRef.current = false;
+    };
+    window.addEventListener('pointerup', stopSelecting);
+    window.addEventListener('pointercancel', stopSelecting);
+    return () => {
+      window.removeEventListener('pointerup', stopSelecting);
+      window.removeEventListener('pointercancel', stopSelecting);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!gridDraftDirty) return undefined;
+    const preventUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', preventUnload);
+    return () => window.removeEventListener('beforeunload', preventUnload);
+  }, [gridDraftDirty]);
+
+  useEffect(() => {
+    onDraftStateChange?.(gridDraftDirty);
+  }, [gridDraftDirty, onDraftStateChange]);
+
+  useEffect(() => () => {
+    onDraftStateChange?.(false);
+  }, [onDraftStateChange]);
 
   useEffect(() => {
     try {
@@ -1120,6 +1194,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   }), [normalizedDatasets, searchTerm, modalityFilter, tagFilter, dimensionFilter]);
 
   useEffect(() => {
+    if (gridDraftDirty) return;
     if (mode === 'repository' && !selectedDatasetId && filteredDatasets.length) {
       setSelectedDatasetId(filteredDatasets[0].id);
       return;
@@ -1130,15 +1205,16 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
       && shouldClearGenerationWorkspaceDataset(normalizedDatasets, selectedDatasetId)) {
       setSelectedDatasetId('');
     }
-  }, [filteredDatasets, mode, normalizedDatasets, selectedDatasetId]);
+  }, [filteredDatasets, gridDraftDirty, mode, normalizedDatasets, selectedDatasetId]);
 
   useEffect(() => {
+    if (gridDraftDirty) return;
     if (initialDatasetId && normalizedDatasets.some(dataset => dataset.id === initialDatasetId)) {
       setSelectedDatasetId(initialDatasetId);
     } else if (mode === 'generation' && generationWorkspaceView === 'new' && !initialDatasetId) {
       setSelectedDatasetId('');
     }
-  }, [generationWorkspaceView, initialDatasetId, mode, normalizedDatasets]);
+  }, [generationWorkspaceView, gridDraftDirty, initialDatasetId, mode, normalizedDatasets]);
 
   useEffect(() => {
     if (!batchQueryId || mode !== 'generation') return;
@@ -1166,12 +1242,20 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     selectedDatasetId,
     mode === 'repository',
   );
-  const tableDataset = viewingVersionDataset || selectedDataset;
+  const draftBaseDataset = gridDraftDirty
+    && gridDraftBaseDataset?.id === selectedDataset?.id
+    ? gridDraftBaseDataset
+    : null;
+  const tableDataset = viewingVersionDataset || draftBaseDataset || selectedDataset;
   const isViewingHistoricalVersion = !!viewingVersionDataset;
   const hasInternalOnlyImportIdentity = selectedDataset?.importMetadata?.mode === 'direct'
     && selectedDataset.importMetadata.identityMode === 'internal';
   const selectedMappings = getDatasetColumnMappings(tableDataset);
-  const selectedRows = useMemo(() => tableDataset?.items || [], [tableDataset]);
+  const selectedRows = useMemo(() => {
+    const rows = tableDataset?.items || [];
+    if (!draftBaseDataset || isViewingHistoricalVersion) return rows;
+    return overlayDatasetEditDraft(rows, gridDraft);
+  }, [draftBaseDataset, gridDraft, isViewingHistoricalVersion, tableDataset]);
   const indexedSelectedRows = useMemo(() => indexDatasetRows(selectedRows), [selectedRows]);
   const filteredSelectedRows = useMemo(
     () => applyDatasetColumnFilters(indexedSelectedRows, columnFilters),
@@ -1360,6 +1444,318 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
   const idKeys = [selectedMappings.standard.case_id, selectedMappings.caseId, '用例ID', 'id', 'Case_ID']
     .filter((key): key is string => Boolean(key) && key !== DATASET_ITEM_ID_KEY && !key.startsWith('__'));
 
+  const resetGridDraftState = () => {
+    setGridDraftHistory(createDatasetDraftHistory());
+    setGridDraftBaseDataset(null);
+    setGridIssues([]);
+    setGridSaveError('');
+    setGridWarningsAwaitingConfirmation(false);
+  };
+
+  const requestDatasetSelection = (datasetId: string) => {
+    if (datasetId === selectedDatasetId) return true;
+    if (gridDraftDirty && !window.confirm('当前评测集有尚未保存的批量修改。切换评测集将放弃这些修改，是否继续？')) return false;
+    resetGridDraftState();
+    setGridSelection(null);
+    setSelectedDatasetId(datasetId);
+    setSelectedRowIndex(0);
+    return true;
+  };
+
+  const stageGridDraft = (edits: DatasetCellEdit[], appendedRows: DatasetEditDraft['appendedRows'] = []) => {
+    if (!selectedDataset || isViewingHistoricalVersion || isGenerationMode) return;
+    const baseDataset = gridDraftBaseDataset || selectedDataset;
+    const currentDraft = gridDraftHistory.present;
+    const nextAppended = new Map<string, DatasetAppendedRow>();
+    currentDraft.appendedRows.forEach(row => nextAppended.set(row.tempItemId, {
+      ...row,
+      values: { ...row.values },
+    }));
+    appendedRows.forEach(row => {
+      const existing = nextAppended.get(row.tempItemId);
+      nextAppended.set(row.tempItemId, {
+        tempItemId: row.tempItemId,
+        values: { ...(existing?.values || {}), ...row.values },
+      });
+    });
+    const nextEdits = new Map<string, DatasetCellEdit>();
+    currentDraft.edits.forEach(edit => nextEdits.set(
+      `${edit.stableItemId}\u0000${edit.fieldKey}`,
+      { ...edit },
+    ));
+    const baseRows = new Map(baseDataset.items.map(row => [getDatasetItemStableId(row), row]));
+
+    edits.forEach(edit => {
+      const appended = nextAppended.get(edit.stableItemId);
+      if (appended) {
+        appended.values[edit.fieldKey] = edit.value;
+        return;
+      }
+      const key = `${edit.stableItemId}\u0000${edit.fieldKey}`;
+      const originalValue = baseRows.get(edit.stableItemId)?.[edit.fieldKey];
+      const valuesMatch = (() => {
+        if (Object.is(originalValue, edit.value)) return true;
+        try { return JSON.stringify(originalValue) === JSON.stringify(edit.value); } catch { return false; }
+      })();
+      if (valuesMatch) nextEdits.delete(key);
+      else nextEdits.set(key, { ...edit });
+    });
+
+    const nextDraft: DatasetEditDraft = {
+      edits: [...nextEdits.values()],
+      appendedRows: [...nextAppended.values()],
+    };
+    if (JSON.stringify(nextDraft) === JSON.stringify(currentDraft)) return;
+    if (!gridDraftBaseDataset) setGridDraftBaseDataset(selectedDataset);
+    setGridDraftHistory(current => pushDatasetDraft(current, nextDraft));
+    if (activeColumnFilters || columnSort) setGridSelection(null);
+    setGridIssues([]);
+    setGridSaveError('');
+    setGridWarningsAwaitingConfirmation(false);
+  };
+
+  const applyGridPastePlan = (plan: ReturnType<typeof planDatasetGridPaste>) => {
+    const hardIssues = plan.issues.filter(item => item.severity === 'error');
+    if (hardIssues.length) {
+      setGridIssues(plan.issues);
+      setGridSaveError(hardIssues[0].message);
+      return;
+    }
+    stageGridDraft(plan.edits, plan.appendedRows);
+  };
+
+  const handleGridCopy = (event: React.ClipboardEvent<HTMLDivElement>) => {
+    if (!gridSelection || !displayedSelectedRows.length || !visibleTableColumns.length || isInteractiveGridTarget(event.target)) return;
+    const text = buildDatasetSelectionTsv({
+      rows: displayedSelectedRows,
+      columns: visibleTableColumns,
+      selection: gridSelection,
+    });
+    event.clipboardData.setData('text/plain', text);
+    event.preventDefault();
+  };
+
+  const copyGridSelection = async () => {
+    if (!gridSelection) return;
+    const text = buildDatasetSelectionTsv({
+      rows: displayedSelectedRows,
+      columns: visibleTableColumns,
+      selection: gridSelection,
+    });
+    try {
+      await navigator.clipboard.writeText(text);
+      setSyncNotice('已复制选中单元格，可直接粘贴到 Excel、飞书表格或其他评测集。');
+      setGridSaveError('');
+    } catch {
+      setGridSaveError('浏览器未允许直接写入剪贴板，请将焦点放在表格中后使用 Ctrl/Cmd + C。');
+    }
+  };
+
+  const handleGridPaste = (event: React.ClipboardEvent<HTMLDivElement>) => {
+    if (!gridSelection || !selectedDataset || isViewingHistoricalVersion || isGenerationMode || isInteractiveGridTarget(event.target)) return;
+    const text = event.clipboardData.getData('text/plain');
+    if (!text && text !== '') return;
+    event.preventDefault();
+    const plan = planDatasetGridPaste({
+      dataset: draftBaseDataset || selectedDataset,
+      rows: displayedSelectedRows,
+      columns: visibleTableColumns,
+      selection: gridSelection,
+      matrix: parseDatasetClipboardMatrix(text),
+      allowAppendRows: !activeColumnFilters && !columnSort,
+    });
+    applyGridPastePlan(plan);
+  };
+
+  const clearGridSelection = () => {
+    if (!gridSelection || !selectedDataset) return;
+    applyGridPastePlan(planDatasetGridPaste({
+      dataset: draftBaseDataset || selectedDataset,
+      rows: displayedSelectedRows,
+      columns: visibleTableColumns,
+      selection: gridSelection,
+      matrix: [['']],
+      allowAppendRows: false,
+    }));
+  };
+
+  const fillGridSelection = () => {
+    if (!gridSelection || !selectedDataset) return;
+    const bounds = normalizeDatasetGridSelection(gridSelection);
+    const row = displayedSelectedRows[bounds.startRow];
+    const column = visibleTableColumns[bounds.startColumn];
+    if (!row || !column) return;
+    applyGridPastePlan(planDatasetGridPaste({
+      dataset: draftBaseDataset || selectedDataset,
+      rows: displayedSelectedRows,
+      columns: visibleTableColumns,
+      selection: gridSelection,
+      matrix: [[serializeDatasetClipboardValue(row.row[column.key])]],
+      allowAppendRows: false,
+    }));
+  };
+
+  const handleGridKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (isInteractiveGridTarget(event.target)) return;
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && gridDraftHistory.past.length > 0) {
+      event.preventDefault();
+      setGridDraftHistory(current => event.shiftKey ? redoDatasetDraft(current) : undoDatasetDraft(current));
+      setGridIssues([]);
+      setGridSaveError('');
+      return;
+    }
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y' && gridDraftHistory.future.length > 0) {
+      event.preventDefault();
+      setGridDraftHistory(redoDatasetDraft);
+      setGridIssues([]);
+      setGridSaveError('');
+      return;
+    }
+    if (!displayedSelectedRows.length || !visibleTableColumns.length) return;
+    const current = gridSelection?.focus || { rowIndex: 0, columnIndex: 0 };
+    const directions: Record<string, [number, number]> = {
+      ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1],
+    };
+    if (directions[event.key]) {
+      event.preventDefault();
+      const [rowDelta, columnDelta] = directions[event.key];
+      const next = {
+        rowIndex: Math.max(0, Math.min(displayedSelectedRows.length - 1, current.rowIndex + rowDelta)),
+        columnIndex: Math.max(0, Math.min(visibleTableColumns.length - 1, current.columnIndex + columnDelta)),
+      };
+      setGridSelection(previous => event.shiftKey && previous
+        ? { anchor: previous.anchor, focus: next }
+        : { anchor: next, focus: next });
+      setSelectedRowIndex(displayedSelectedRows[next.rowIndex].sourceIndex);
+      return;
+    }
+    if ((event.key === 'Delete' || event.key === 'Backspace') && !isViewingHistoricalVersion && !isGenerationMode) {
+      event.preventDefault();
+      clearGridSelection();
+      return;
+    }
+    if ((event.key === 'Enter' || event.key === 'F2') && gridSelection && !isViewingHistoricalVersion && !isGenerationMode) {
+      event.preventDefault();
+      const row = displayedSelectedRows[gridSelection.focus.rowIndex];
+      const column = visibleTableColumns[gridSelection.focus.columnIndex];
+      if (row && column && isDatasetGridColumnEditable(column)) openCaseEditor(row.sourceIndex, column.key);
+    }
+  };
+
+  const focusGridIssue = (item: DatasetEditIssue) => {
+    if (!item.stableItemId || !item.fieldKey) return;
+    const rowIndex = displayedSelectedRows.findIndex(row => row.stableItemId === item.stableItemId);
+    const columnIndex = visibleTableColumns.findIndex(column => column.key === item.fieldKey);
+    if (rowIndex < 0 || columnIndex < 0) {
+      setGridSaveError('问题单元格当前被筛选或隐藏。请清除筛选并显示对应列后定位。');
+      return;
+    }
+    const point = { rowIndex, columnIndex };
+    setGridSelection({ anchor: point, focus: point });
+    setSelectedRowIndex(displayedSelectedRows[rowIndex].sourceIndex);
+    requestAnimationFrame(() => {
+      datasetTableRef.current
+        ?.querySelector<HTMLElement>(`[data-grid-row="${rowIndex}"][data-grid-column="${columnIndex}"]`)
+        ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      datasetTableContainerRef.current?.focus({ preventScroll: true });
+    });
+  };
+
+  const saveGridDraft = async (acceptWarnings = false) => {
+    const baseDataset = gridDraftBaseDataset;
+    if (!baseDataset || !gridDraftDirty || isSavingGridDraft) return;
+    const localOutcome = applyDatasetBatchEdit(baseDataset, gridDraft);
+    if (localOutcome.errors.length) {
+      setGridIssues(localOutcome.errors);
+      setGridSaveError(localOutcome.errors[0].message);
+      setGridWarningsAwaitingConfirmation(false);
+      return;
+    }
+    if (localOutcome.warnings.length && !acceptWarnings) {
+      setGridIssues(localOutcome.warnings);
+      setGridSaveError('请检查以下数据质量警告；可以修正后再保存，也可以确认按当前值保存。');
+      setGridWarningsAwaitingConfirmation(true);
+      return;
+    }
+    try {
+      setIsSavingGridDraft(true);
+      setGridSaveError('');
+      const response = await persistDatasetItemsBatch(baseDataset, gridDraft, { acceptWarnings });
+      const saved = response.dataset;
+      setDatasets(current => current.map(dataset => dataset.id === saved.id ? saved : dataset));
+      resetGridDraftState();
+      setGridSelection(null);
+      setViewingVersionDataset(null);
+      const sync = saved.syncSummary;
+      setSyncNotice(`批量修改已保存为 v${saved.version}${sync ? `；同步 ${sync.tasks} 个任务、${sync.votesUpdated} 条结果记录` : ''}。`);
+    } catch (error: any) {
+      const serverIssues = Array.isArray(error?.details?.issues) ? error.details.issues as DatasetEditIssue[] : [];
+      if (serverIssues.length) setGridIssues(serverIssues);
+      if (error?.code === 'DATASET_BATCH_EDIT_WARNINGS') {
+        setGridWarningsAwaitingConfirmation(true);
+        setGridSaveError('服务端发现需要确认的数据质量警告。');
+      } else if (error?.status === 409 || error?.code === 'VERSION_CONFLICT') {
+        setGridWarningsAwaitingConfirmation(false);
+        setGridSaveError('评测集已出现新版本，草稿仍保留。请等待数据刷新后重新检查草稿，系统不会覆盖新版本。');
+      } else {
+        setGridWarningsAwaitingConfirmation(false);
+        setGridSaveError(error?.message || String(error));
+      }
+    } finally {
+      setIsSavingGridDraft(false);
+    }
+  };
+
+  const rebaseGridDraft = () => {
+    if (!gridDraftBaseDataset || !selectedDataset || selectedDataset.id !== gridDraftBaseDataset.id) return;
+    if ((selectedDataset.version || 1) === (gridDraftBaseDataset.version || 1)) {
+      setGridSaveError('当前仍是草稿创建时的版本，请稍后刷新再试。');
+      return;
+    }
+    const oldRows = new Map(gridDraftBaseDataset.items.map(row => [getDatasetItemStableId(row), row]));
+    const latestRows = new Map(selectedDataset.items.map(row => [getDatasetItemStableId(row), row]));
+    const conflicts = gridDraft.edits.flatMap(edit => {
+      const oldRow = oldRows.get(edit.stableItemId);
+      const latestRow = latestRows.get(edit.stableItemId);
+      if (!oldRow || !latestRow) {
+        return [{ severity: 'error', code: 'CELL_VERSION_CONFLICT', message: '目标 case 已被删除或替换。', stableItemId: edit.stableItemId, fieldKey: edit.fieldKey } as DatasetEditIssue];
+      }
+      const previousValue = oldRow[edit.fieldKey];
+      const latestValue = latestRow[edit.fieldKey];
+      const changedRemotely = JSON.stringify(previousValue) !== JSON.stringify(latestValue);
+      const draftAlreadyMatches = JSON.stringify(edit.value) === JSON.stringify(latestValue);
+      return changedRemotely && !draftAlreadyMatches
+        ? [{ severity: 'error', code: 'CELL_VERSION_CONFLICT', message: '该单元格在草稿期间已被其他人修改，请先决定采用哪个值。', stableItemId: edit.stableItemId, fieldKey: edit.fieldKey } as DatasetEditIssue]
+        : [];
+    });
+    if (conflicts.length) {
+      setGridIssues(conflicts);
+      setGridSaveError(`发现 ${conflicts.length} 个单元格冲突。点击问题定位；将草稿值改为当前值后可再次重新检查。`);
+      return;
+    }
+    const rebasedOutcome = applyDatasetBatchEdit(selectedDataset, gridDraft);
+    if (rebasedOutcome.errors.length) {
+      setGridIssues(rebasedOutcome.errors);
+      setGridSaveError(rebasedOutcome.errors[0].message);
+      return;
+    }
+    setGridDraftBaseDataset(selectedDataset);
+    setGridIssues(rebasedOutcome.warnings);
+    setGridSaveError(rebasedOutcome.warnings.length ? '已基于最新版本重建草稿，请检查警告后保存。' : '已基于最新版本重建草稿，可以继续保存。');
+    setGridWarningsAwaitingConfirmation(false);
+  };
+
+  const gridDraftCellCount = gridDraft.edits.length
+    + gridDraft.appendedRows.reduce((total, row) => total + Object.keys(row.values).length, 0);
+  const gridDraftEditedCells = new Set([
+    ...gridDraft.edits.map(edit => `${edit.stableItemId}\u0000${edit.fieldKey}`),
+    ...gridDraft.appendedRows.flatMap(row => Object.keys(row.values).map(fieldKey => `${row.tempItemId}\u0000${fieldKey}`)),
+  ]);
+  const gridSelectedCellCount = gridSelection ? (() => {
+    const bounds = normalizeDatasetGridSelection(gridSelection);
+    return (bounds.endRow - bounds.startRow + 1) * (bounds.endColumn - bounds.startColumn + 1);
+  })() : 0;
+
   useEffect(() => {
     if (!selectedDataset?.id) {
       setGenerationJobs([]);
@@ -1385,6 +1781,12 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     setVersionLoading(null);
     setVersionToRollback(null);
     setSelectedRowIndex(0);
+    setGridSelection(null);
+    setGridDraftHistory(createDatasetDraftHistory());
+    setGridDraftBaseDataset(null);
+    setGridIssues([]);
+    setGridSaveError('');
+    setGridWarningsAwaitingConfirmation(false);
   }, [selectedDatasetId]);
 
   useEffect(() => {
@@ -1408,6 +1810,16 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
 
   const openCaseEditor = (rowIndex: number, fieldKey: string) => {
     if (!selectedDataset || isViewingHistoricalVersion || fieldKey === DATASET_ITEM_ID_KEY || fieldKey.startsWith('__')) return;
+    const descriptor = tableColumns.find(column => column.key === fieldKey);
+    if (!descriptor || !isDatasetGridColumnEditable(descriptor)) {
+      setGridIssues([{
+        severity: 'error',
+        code: 'READ_ONLY_FIELD',
+        message: `“${descriptor?.label || fieldKey}”是只读记录列，只能选择和复制。`,
+        fieldKey,
+      }]);
+      return;
+    }
     const row = selectedRows[rowIndex];
     if (!row) return;
     const stableItemId = getDatasetItemStableId(row);
@@ -1446,6 +1858,10 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
     editor: DatasetValueEditor = 'text'
   ) => {
     if (!selectedDataset || isViewingHistoricalVersion) return;
+    if (gridDraftDirty) {
+      setGridSaveError('请先保存或放弃批量修改草稿，再修改评测集资料。');
+      return;
+    }
     const target: DatasetEditTarget = {
       scope: 'manifest',
       label,
@@ -1495,6 +1911,16 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
       setEditError('');
       let saved: EvalDataset;
       if (editTarget.scope === 'case') {
+        if (gridDraftDirty) {
+          stageGridDraft([{
+            stableItemId: editTarget.stableItemId || '',
+            fieldKey: editTarget.fieldKey,
+            value,
+          }]);
+          setEditTarget(null);
+          setEditDraft('');
+          return;
+        }
         saved = await persistDatasetItemEdit(
           selectedDataset,
           editTarget.stableItemId || '',
@@ -1550,6 +1976,10 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
 
   const openColumnRenameEditor = () => {
     if (!selectedDataset || isViewingHistoricalVersion) return;
+    if (gridDraftDirty) {
+      setGridSaveError('请先保存或放弃批量修改草稿，再管理字段结构。');
+      return;
+    }
     const drafts = Object.fromEntries(getDatasetActiveColumnKeys(selectedDataset).map(column => [column, column]));
     setColumnRenameDrafts(drafts);
     setColumnRenameError('');
@@ -1565,6 +1995,10 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
 
   const openColumnDelete = (column: string, source: 'header' | 'manager' = 'manager') => {
     if (!selectedDataset || isViewingHistoricalVersion || column === DATASET_ITEM_ID_KEY || column.startsWith('__')) return;
+    if (gridDraftDirty) {
+      setGridSaveError('请先保存或放弃批量修改草稿，再删除字段。');
+      return;
+    }
     setColumnToDelete(column);
     setColumnDeleteSource(source);
     setColumnDeleteRiskAccepted(false);
@@ -1795,6 +2229,10 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
 
   const openInlineColumnRename = (column: string) => {
     if (isViewingHistoricalVersion) return;
+    if (gridDraftDirty) {
+      setGridSaveError('请先保存或放弃批量修改草稿，再修改字段名称。');
+      return;
+    }
     setInlineRenameColumn(column);
     setInlineRenameValue(column);
     setInlineRenameError('');
@@ -2365,6 +2803,10 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
 
   const openCloneDialog = () => {
     if (!selectedDataset || !tableDataset) return;
+    if (gridDraftDirty) {
+      setGridSaveError('请先保存或放弃批量修改草稿，再创建副本。');
+      return;
+    }
     setCloneTarget({
       datasetId: selectedDataset.id,
       datasetName: tableDataset.name,
@@ -2424,6 +2866,11 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
 
   const handleViewVersion = async (version: number) => {
     if (!selectedDataset) return;
+    if (gridDraftDirty) {
+      if (!window.confirm('当前评测集有尚未保存的批量修改。查看历史版本将放弃这些修改，是否继续？')) return;
+      resetGridDraftState();
+      setGridSelection(null);
+    }
     if (version === selectedDataset.version) {
       setViewingVersionDataset(null);
       setVersionError('');
@@ -3466,10 +3913,10 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
           </button>
         ) : (
           <div className="flex flex-wrap gap-3">
-            <button onClick={openNewGeneration} disabled={!selectedDataset || isViewingHistoricalVersion} className="flex items-center gap-2 border border-amber-500/20 bg-amber-500/10 px-4 py-2.5 text-sm font-medium text-amber-300 hover:bg-amber-500/20 disabled:opacity-40">
+            <button onClick={openNewGeneration} disabled={!selectedDataset || isViewingHistoricalVersion || gridDraftDirty} className="flex items-center gap-2 border border-amber-500/20 bg-amber-500/10 px-4 py-2.5 text-sm font-medium text-amber-300 hover:bg-amber-500/20 disabled:opacity-40">
               <Wand2 size={18} /> 批量生产产物
             </button>
-            <button onClick={() => setSyncModalOpen(true)} title={hasInternalOnlyImportIdentity ? '源表没有精确 case_id，不能可靠同步' : '同步更新评测集'} disabled={!selectedDataset || isViewingHistoricalVersion || hasInternalOnlyImportIdentity} className="flex items-center gap-2 border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-slate-300 hover:bg-white/10 disabled:opacity-40">
+            <button onClick={() => setSyncModalOpen(true)} title={gridDraftDirty ? '请先保存或放弃批量修改草稿' : hasInternalOnlyImportIdentity ? '源表没有精确 case_id，不能可靠同步' : '同步更新评测集'} disabled={!selectedDataset || isViewingHistoricalVersion || hasInternalOnlyImportIdentity || gridDraftDirty} className="flex items-center gap-2 border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-slate-300 hover:bg-white/10 disabled:opacity-40">
               <RefreshCw size={18} /> 同步更新
             </button>
             <button onClick={openColumnRenameEditor} disabled={!selectedDataset || isViewingHistoricalVersion} className="flex items-center gap-2 border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-slate-300 hover:bg-white/10 disabled:opacity-40">
@@ -3538,7 +3985,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                 <div className="mt-1 text-sm font-semibold text-slate-100">{selectedDataset?.items.length ?? '-'}</div>
               </div>
             </div>
-            <button onClick={openNewGeneration} disabled={!selectedDataset || isViewingHistoricalVersion} className="btn-primary shrink-0 disabled:opacity-40">
+            <button onClick={openNewGeneration} disabled={!selectedDataset || isViewingHistoricalVersion || gridDraftDirty} className="btn-primary shrink-0 disabled:opacity-40">
               <Wand2 size={18} /> 配置生成
             </button>
           </div>
@@ -3643,8 +4090,7 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
             <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
               {filteredDatasets.map(dataset => (
                 <button key={dataset.id} onClick={() => {
-                  setSelectedDatasetId(dataset.id);
-                  setSelectedRowIndex(0);
+                  if (!requestDatasetSelection(dataset.id)) return;
                   if (isGenerationMode) navigateGeneration('new', { datasetId: dataset.id });
                 }} className={`w-full text-left p-3 rounded-xl border transition-colors ${selectedDataset?.id === dataset.id ? 'bg-white/10 border-amber-400/40' : 'bg-white/5 border-white/10 hover:bg-white/[0.08]'}`}>
                   <div className="flex items-center justify-between gap-2">
@@ -3721,18 +4167,18 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                     )}
                   </button>
                   {!isGenerationMode && isViewingHistoricalVersion && (
-                    <button onClick={() => { setViewingVersionDataset(null); setSelectedRowIndex(0); }} className="px-3 py-2 rounded-xl bg-purple-500/10 hover:bg-purple-500/20 text-purple-200 text-sm flex items-center gap-2 border border-purple-400/20">
+                    <button onClick={() => { setViewingVersionDataset(null); setSelectedRowIndex(0); setGridSelection(null); }} className="px-3 py-2 rounded-xl bg-purple-500/10 hover:bg-purple-500/20 text-purple-200 text-sm flex items-center gap-2 border border-purple-400/20">
                       <RotateCcw size={16} /> 返回当前版本
                     </button>
                   )}
-                  {!isGenerationMode && <button onClick={openNewGeneration} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-sm flex items-center gap-2 border border-amber-500/20 disabled:opacity-40">
+                  {!isGenerationMode && <button onClick={openNewGeneration} disabled={isViewingHistoricalVersion || gridDraftDirty} title={gridDraftDirty ? '请先保存或放弃批量修改草稿' : '批量生产'} className="px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-sm flex items-center gap-2 border border-amber-500/20 disabled:opacity-40">
                     <Wand2 size={16} /> 批量生产
                   </button>}
                   {!isGenerationMode && (
                     <button
                       type="button"
                       onClick={openCloneDialog}
-                      disabled={isCloningDataset}
+                      disabled={isCloningDataset || gridDraftDirty}
                       className="px-3 py-2 rounded-xl bg-blue-500/10 hover:bg-blue-500/20 text-blue-200 text-sm flex items-center gap-2 border border-blue-400/20 disabled:opacity-40"
                     >
                       <Copy size={16} /> 创建副本
@@ -3740,16 +4186,16 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                   )}
                   {!isGenerationMode && (
                     <>
-                      <button onClick={() => tableDataset && downloadCsv(tableDataset.items.length ? `${selectedDataset.name}_v${tableDataset.version || selectedDataset.version || 1}_data.csv` : `template_${selectedDataset.id}.csv`, tableDataset.items.length ? tableDataset.items : tableDataset.inputSchema.map(field => field.key))} className="px-3 py-2 rounded-xl bg-white/5 glass-panel-hover text-slate-300 text-sm flex items-center gap-2 border border-white/10">
+                      <button onClick={() => tableDataset && downloadCsv(tableDataset.items.length ? `${selectedDataset.name}_v${tableDataset.version || selectedDataset.version || 1}_data.csv` : `template_${selectedDataset.id}.csv`, tableDataset.items.length ? { ...tableDataset, items: selectedRows } : tableDataset.inputSchema.map(field => field.key))} className="px-3 py-2 rounded-xl bg-white/5 glass-panel-hover text-slate-300 text-sm flex items-center gap-2 border border-white/10" title={gridDraftDirty ? '下载包含当前未保存草稿的全部 case 与完整列结构' : '下载全部 case 与完整列结构'}>
                         <Download size={16} /> {tableDataset?.items.length ? '下载数据' : '下载模板'}
                       </button>
                       <button onClick={openColumnRenameEditor} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-white/5 glass-panel-hover text-slate-300 text-sm flex items-center gap-2 border border-white/10 disabled:opacity-40">
                         <Settings size={16} /> {'\u7ba1\u7406\u5217'}
                       </button>
-                      <button onClick={() => setSyncModalOpen(true)} title={hasInternalOnlyImportIdentity ? '源表没有精确 case_id，不能可靠同步' : '同步更新评测集'} disabled={isViewingHistoricalVersion || hasInternalOnlyImportIdentity} className="px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-sm flex items-center gap-2 border border-amber-500/20 disabled:opacity-40">
+                      <button onClick={() => setSyncModalOpen(true)} title={gridDraftDirty ? '请先保存或放弃批量修改草稿' : hasInternalOnlyImportIdentity ? '源表没有精确 case_id，不能可靠同步' : '同步更新评测集'} disabled={isViewingHistoricalVersion || hasInternalOnlyImportIdentity || gridDraftDirty} className="px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-sm flex items-center gap-2 border border-amber-500/20 disabled:opacity-40">
                         <RefreshCw size={16} /> 同步更新
                       </button>
-                      <button onClick={() => setDatasetToDelete(selectedDataset.id)} disabled={isViewingHistoricalVersion} className="px-3 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-300 text-sm flex items-center gap-2 border border-red-500/20 disabled:opacity-40">
+                      <button onClick={() => setDatasetToDelete(selectedDataset.id)} disabled={isViewingHistoricalVersion || gridDraftDirty} title={gridDraftDirty ? '请先保存或放弃批量修改草稿' : '删除评测集'} className="px-3 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-300 text-sm flex items-center gap-2 border border-red-500/20 disabled:opacity-40">
                         <Trash2 size={16} /> 删除
                       </button>
                     </>
@@ -3880,7 +4326,69 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                   </span>
                 )}
               </div>
-              <div className="max-h-[calc(100vh-250px)] min-h-[360px] overflow-auto" data-testid="dataset-schema-table">
+              {!isGenerationMode && !isViewingHistoricalVersion && (gridSelection || gridDraftDirty || gridIssues.length > 0) && (
+                <div className="border-b border-white/10 bg-slate-950/95 px-5 py-3" data-testid="dataset-grid-edit-toolbar">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="mr-2 text-xs text-slate-300">
+                      {gridSelectedCellCount > 0 ? `已选择 ${gridSelectedCellCount} 格` : '未选择单元格'}
+                      {gridDraftDirty && <span className="ml-2 text-amber-300">草稿：{gridDraftCellCount} 格 / 新增 {gridDraft.appendedRows.length} 行</span>}
+                    </div>
+                    <button type="button" onClick={() => { void copyGridSelection(); }} disabled={!gridSelection} className="inline-flex items-center gap-1.5 border border-white/10 px-2.5 py-1.5 text-xs text-slate-200 hover:bg-white/10 disabled:opacity-35" title="复制为 TSV（Ctrl/Cmd + C）">
+                      <Copy size={14} /> 复制
+                    </button>
+                    <button type="button" onClick={fillGridSelection} disabled={!gridSelection} className="inline-flex items-center gap-1.5 border border-white/10 px-2.5 py-1.5 text-xs text-slate-200 hover:bg-white/10 disabled:opacity-35" title="使用选区左上角的值填充整个选区">
+                      <ClipboardList size={14} /> 同值填充
+                    </button>
+                    <button type="button" onClick={clearGridSelection} disabled={!gridSelection} className="inline-flex items-center gap-1.5 border border-white/10 px-2.5 py-1.5 text-xs text-slate-200 hover:bg-white/10 disabled:opacity-35" title="清空选中单元格（Delete/Backspace）">
+                      <X size={14} /> 清空
+                    </button>
+                    <button type="button" onClick={() => setGridDraftHistory(undoDatasetDraft)} disabled={!gridDraftHistory.past.length} className="inline-flex h-8 w-8 items-center justify-center border border-white/10 text-slate-300 hover:bg-white/10 disabled:opacity-30" aria-label="撤销批量修改" title="撤销（Ctrl/Cmd + Z）"><Undo2 size={14} /></button>
+                    <button type="button" onClick={() => setGridDraftHistory(redoDatasetDraft)} disabled={!gridDraftHistory.future.length} className="inline-flex h-8 w-8 items-center justify-center border border-white/10 text-slate-300 hover:bg-white/10 disabled:opacity-30" aria-label="重做批量修改" title="重做（Ctrl/Cmd + Y）"><Redo2 size={14} /></button>
+                    {gridDraftDirty && (
+                      <div className="ml-auto flex flex-wrap items-center gap-2">
+                        <button type="button" onClick={() => { if (window.confirm('确定放弃当前批量修改草稿吗？')) resetGridDraftState(); }} disabled={isSavingGridDraft} className="btn-secondary px-3 py-1.5 text-xs">放弃草稿</button>
+                        {gridSaveError.includes('新版本') && <button type="button" onClick={rebaseGridDraft} disabled={isSavingGridDraft} className="btn-secondary px-3 py-1.5 text-xs">按最新版本重新检查</button>}
+                        {gridWarningsAwaitingConfirmation ? (
+                          <button type="button" onClick={() => { void saveGridDraft(true); }} disabled={isSavingGridDraft} className="btn-primary px-3 py-1.5 text-xs">
+                            {isSavingGridDraft ? '保存中...' : '确认警告并保存'}
+                          </button>
+                        ) : (
+                          <button type="button" onClick={() => { void saveGridDraft(false); }} disabled={isSavingGridDraft} className="btn-primary px-3 py-1.5 text-xs">
+                            {isSavingGridDraft ? '保存中...' : '保存批量修改'}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  {gridSaveError && <div role="alert" className="mt-2 border-l-2 border-amber-400 bg-amber-500/[0.06] px-3 py-2 text-xs text-amber-100">{gridSaveError}</div>}
+                  {gridIssues.length > 0 && (
+                    <div className="mt-2 flex max-h-28 flex-wrap gap-2 overflow-y-auto">
+                      {gridIssues.slice(0, 40).map((item, index) => (
+                        <button
+                          key={`${item.code}-${item.stableItemId || item.rowIndex || index}-${item.fieldKey || ''}`}
+                          type="button"
+                          onClick={() => focusGridIssue(item)}
+                          className={`border px-2 py-1 text-left text-[11px] ${item.severity === 'error' ? 'border-red-400/30 bg-red-500/10 text-red-100' : 'border-amber-400/25 bg-amber-500/10 text-amber-100'}`}
+                          title="点击定位问题单元格"
+                        >
+                          {item.message}
+                        </button>
+                      ))}
+                      {gridIssues.length > 40 && <span className="px-2 py-1 text-[11px] text-slate-400">另有 {gridIssues.length - 40} 项</span>}
+                    </div>
+                  )}
+                </div>
+              )}
+              <div
+                ref={datasetTableContainerRef}
+                tabIndex={0}
+                onKeyDown={handleGridKeyDown}
+                onCopy={handleGridCopy}
+                onPaste={handleGridPaste}
+                className="max-h-[calc(100vh-250px)] min-h-[360px] overflow-auto outline-none focus-visible:ring-1 focus-visible:ring-amber-400/60"
+                data-testid="dataset-schema-table"
+                aria-label="评测集表格。支持方向键、Shift 多选、复制和批量粘贴"
+              >
                 <table
                   ref={datasetTableRef}
                   className={`table-fixed border-collapse text-left ${resizingColumn ? 'is-resizing-column' : ''}`}
@@ -3909,12 +4417,15 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/10">
-                    {displayedSelectedRows.map(({ row, sourceIndex: index, stableItemId }) => {
+                    {displayedSelectedRows.map(({ row, sourceIndex: index, stableItemId }, displayRowIndex) => {
                       const rowSelected = index === selectedRowIndex;
                       return (
                         <tr key={stableItemId || `${getDatasetDisplayValue(row, idKeys) || index}-${index}`} onClick={() => setSelectedRowIndex(index)} className={`cursor-pointer ${rowSelected ? 'bg-amber-500/10' : 'hover:bg-white/[0.04]'}`}>
-                          {visibleTableColumns.map(column => {
+                          {visibleTableColumns.map((column, columnIndex) => {
                             const value = row[column.key];
+                            const cellSelected = isDatasetCellSelected(gridSelection, displayRowIndex, columnIndex);
+                            const cellActive = gridSelection?.focus.rowIndex === displayRowIndex && gridSelection.focus.columnIndex === columnIndex;
+                            const cellEdited = gridDraftEditedCells.has(`${stableItemId}\u0000${column.key}`);
                             const resultFreshness = column.role === 'output'
                               ? row.__generationResultMeta?.[column.key]
                               : undefined;
@@ -3925,10 +4436,38 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                               <td
                                 key={column.key}
                                 data-column-key={column.key}
-                                className={`overflow-hidden px-4 py-3 align-top ${column.lockedVisible ? 'sticky left-0 z-10 bg-slate-950/95 font-mono text-sm text-slate-200' : ''}`}
-                                onDoubleClick={isGenerationMode ? undefined : () => openCaseEditor(index, column.key)}
-                                title={isViewingHistoricalVersion || isGenerationMode ? '\u53ea\u8bfb\u9884\u89c8' : `\u53cc\u51fb\u7f16\u8f91 ${column.label}`}
+                                data-grid-row={displayRowIndex}
+                                data-grid-column={columnIndex}
+                                data-grid-selected={cellSelected ? 'true' : 'false'}
+                                className={`relative overflow-hidden px-4 py-3 align-top transition-colors ${column.lockedVisible ? 'sticky left-0 z-10 bg-slate-950/95 font-mono text-sm text-slate-200' : ''} ${cellSelected ? 'bg-amber-400/[0.09] shadow-[inset_0_0_0_1px_rgba(251,191,36,0.42)]' : ''} ${cellActive ? 'z-[11] shadow-[inset_0_0_0_2px_rgba(251,191,36,0.95)]' : ''}`}
+                                onPointerDown={event => {
+                                  if (event.button !== 0 || isInteractiveGridTarget(event.target)) return;
+                                  event.preventDefault();
+                                  gridSelectionDraggingRef.current = true;
+                                  const point = { rowIndex: displayRowIndex, columnIndex };
+                                  setGridSelection(previous => event.shiftKey && previous
+                                    ? { anchor: previous.anchor, focus: point }
+                                    : { anchor: point, focus: point });
+                                  setSelectedRowIndex(index);
+                                  datasetTableContainerRef.current?.focus({ preventScroll: true });
+                                }}
+                                onPointerEnter={() => {
+                                  if (!gridSelectionDraggingRef.current) return;
+                                  setGridSelection(previous => previous
+                                    ? { anchor: previous.anchor, focus: { rowIndex: displayRowIndex, columnIndex } }
+                                    : previous);
+                                  setSelectedRowIndex(index);
+                                }}
+                                onDoubleClick={isGenerationMode ? undefined : event => {
+                                  if (!isInteractiveGridTarget(event.target)) openCaseEditor(index, column.key);
+                                }}
+                                title={isViewingHistoricalVersion || isGenerationMode
+                                  ? '只读预览；可选择和复制'
+                                  : isDatasetGridColumnEditable(column)
+                                    ? `双击编辑 ${column.label}`
+                                    : `${column.label} 是只读记录列；可选择和复制`}
                               >
+                                {cellEdited && <span className="absolute right-1 top-1 h-1.5 w-1.5 bg-amber-300" title="未保存修改" />}
                                 {column.lockedVisible ? caseIdValue : column.role === 'dimension' ? (
                                   serializeCellValue(value) ? (
                                     <span className="inline-flex border border-blue-500/20 bg-blue-500/10 px-2 py-1 text-[11px] text-blue-200">
@@ -3958,8 +4497,8 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
                                 event.stopPropagation();
                                 setRowToDelete(index);
                               }}
-                              disabled={isViewingHistoricalVersion}
-                              title={isViewingHistoricalVersion ? '历史版本为只读' : '删除这一行'}
+                              disabled={isViewingHistoricalVersion || gridDraftDirty}
+                              title={isViewingHistoricalVersion ? '历史版本为只读' : gridDraftDirty ? '请先保存或放弃批量修改草稿' : '删除这一行'}
                               className="inline-flex items-center gap-1 rounded-lg border border-red-400/20 bg-red-500/10 px-2 py-1 text-xs text-red-200 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-40"
                             >
                               <Trash2 size={13} /> {'\u5220\u9664'}
@@ -4262,7 +4801,11 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
               <div>
                 <div className="text-xs uppercase text-amber-300">{editTarget.scope === 'case' ? 'Case 字段编辑' : 'Dataset Card 编辑'}</div>
                 <h3 className="mt-1 text-lg font-semibold text-slate-100">{editTarget.label}</h3>
-                <p className="mt-1 text-xs text-slate-400">保存后立即生成一个新版本，并同步关联任务与结果。</p>
+                <p className="mt-1 text-xs text-slate-400">
+                  {editTarget.scope === 'case' && gridDraftDirty
+                    ? '本次修改会加入当前批量草稿，统一保存后只生成一个版本。'
+                    : '保存后立即生成一个新版本，并同步关联任务与结果。'}
+                </p>
               </div>
               <button type="button" onClick={closeValueEditor} disabled={isSavingEdit} aria-label="关闭编辑器" className="p-2 text-slate-400 hover:text-white disabled:opacity-40"><X size={18} /></button>
             </div>
@@ -4311,7 +4854,9 @@ const DatasetRepositoryScreen: React.FC<DatasetRepositoryScreenProps> = ({
             <div className="flex justify-end gap-3 border-t border-white/10 px-5 py-4">
               <button type="button" onClick={closeValueEditor} disabled={isSavingEdit} className="btn-secondary px-4 py-2 text-sm">取消</button>
               <button type="button" onClick={commitValueEdit} disabled={isSavingEdit} className="btn-primary inline-flex items-center gap-2 px-4 py-2 text-sm">
-                {isSavingEdit ? <><span className="h-4 w-4 animate-spin rounded-full border-2 border-black/30 border-t-black" /> 保存中</> : <><Save size={16} /> 保存并生成版本</>}
+                {isSavingEdit
+                  ? <><span className="h-4 w-4 animate-spin rounded-full border-2 border-black/30 border-t-black" /> 保存中</>
+                  : <><Save size={16} /> {editTarget.scope === 'case' && gridDraftDirty ? '加入批量草稿' : '保存并生成版本'}</>}
               </button>
             </div>
           </div>

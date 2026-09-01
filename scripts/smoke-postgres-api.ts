@@ -489,6 +489,58 @@ const main = async () => {
     assert(editedClone.dataset.version === 2, 'editing a clone must create its own next version');
     assert(editedClone.dataset.items[0].prompt === 'changed only in clone', 'clone edit was not persisted');
 
+    const cloneBatchWarning = await expectJsonFailure(`/api/datasets/${clonedDataset.id}/items/batch`, 422, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        expectedVersion: 2,
+        edits: [{
+          stableItemId: editedClone.dataset.items[0].__datasetItemId,
+          fieldKey: 'model_a',
+          value: 'not-a-media-url',
+        }],
+        appendedRows: [],
+        acceptWarnings: false,
+      }),
+    });
+    assert(cloneBatchWarning.error?.code === 'DATASET_BATCH_EDIT_WARNINGS', 'unconfirmed batch warnings were not rejected');
+    const cloneAfterWarning = await request<{ dataset: any }>(`/api/datasets/${clonedDataset.id}`);
+    assert(cloneAfterWarning.dataset.version === 2, 'warning preflight unexpectedly created a dataset version');
+    assert(cloneAfterWarning.dataset.items[0].model_a === 'https://example.com/a.mp4', 'warning preflight mutated a media result');
+
+    const cloneBatch = await sendJson<{ dataset: any; summary: any }>(`/api/datasets/${clonedDataset.id}/items/batch`, 'PATCH', {
+      expectedVersion: 2,
+      edits: [
+        { stableItemId: editedClone.dataset.items[0].__datasetItemId, fieldKey: 'prompt', value: 'batch-updated prompt' },
+        { stableItemId: editedClone.dataset.items[1].__datasetItemId, fieldKey: 'model_b', value: 'https://example.com/batch-b.mp4' },
+      ],
+      appendedRows: [{
+        tempItemId: 'smoke-new-row',
+        values: {
+          case_id: 'case-3',
+          prompt: 'batch appended',
+          model_a: 'https://example.com/new-a.mp4',
+          model_b: 'https://example.com/new-b.mp4',
+        },
+      }],
+      acceptWarnings: true,
+    });
+    assert(cloneBatch.dataset.version === 3, 'one batch edit did not create exactly one dataset version');
+    assert(cloneBatch.dataset.items.length === 3, 'batch append did not persist one new case');
+    assert(cloneBatch.dataset.items[0].prompt === 'batch-updated prompt', 'batch cell edit was not persisted');
+    assert(Boolean(cloneBatch.dataset.items[2].__datasetItemId), 'batch append did not generate a stable item ID');
+    assert(cloneBatch.summary.changedCellCount === 2 && cloneBatch.summary.appendedRowCount === 1, 'batch summary was incorrect');
+
+    const staleCloneBatch = await expectJsonFailure(`/api/datasets/${clonedDataset.id}/items/batch`, 409, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        expectedVersion: 2,
+        edits: [{ stableItemId: cloneBatch.dataset.items[0].__datasetItemId, fieldKey: 'prompt', value: 'must not win' }],
+        appendedRows: [],
+        acceptWarnings: true,
+      }),
+    });
+    assert(staleCloneBatch.error?.code === 'VERSION_CONFLICT', 'stale batch edit did not return VERSION_CONFLICT');
+
     const sourceVersionOneAfterCloneEdit = await request<{ dataset: any }>(`/api/datasets/${ids.dataset}/versions/1`);
     const sourceCurrentAfterCloneEdit = await request<{ dataset: any }>(`/api/datasets/${ids.dataset}`);
     assert(sourceVersionOneAfterCloneEdit.dataset.items[0].prompt === 'hello', 'clone edit mutated the source historical version');

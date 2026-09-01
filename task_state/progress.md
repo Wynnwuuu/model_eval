@@ -1004,3 +1004,16 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - `test:generation`, TypeScript, frontend production build, server production build, deployment regression, Kustomize rendering, and `git diff --check` pass locally.
 - The rendered dev manifest contains exactly two image-concurrency declarations, one for API capacity reporting and one for Worker execution, and both are four.
 - Local PostgreSQL integration could not run because Docker Desktop is not active. CI must pass the two-replica/eight-claim database scenario before the dev rollout is accepted. No paid generation is part of this change.
+
+# 2026-09-01: Complete dataset export and spreadsheet editing
+
+### Completed
+
+- Fast-forwarded local `main` to official `origin/main` at `6e9096f` with a clean worktree.
+- Confirmed the export regression: `Papa.unparse(object[])` infers fields from row zero even though the table already has a complete schema-plus-sparse-row projection.
+- Confirmed the server uses a 25 MB JSON limit and transactionally locks `datasets.current_version`, so the batch can reuse the existing one-version/one-propagation save path.
+- Implemented complete schema-plus-sparse-row CSV projection. A real browser download retained all six columns and all three cases even when the first row had an empty output cell and later rows carried sparse data.
+- Added rectangular cell selection, Shift/drag and keyboard extension, TSV copy/paste, same-value fill, clearing, undo/redo, staged cell editing, warning confirmation, conflict preservation, and desktop/mobile draft controls without replacing media DOM cells.
+- Added `PATCH /api/datasets/:datasetId/items/batch` with server-side read-only/identity/type/limit validation, warning confirmation, stable IDs, source-trace synchronization, optimistic version locking, and one transactional dataset version/task propagation.
+- Browser verification passed for 2x2 paste, copy round-trip, undo/redo, one-version save, warning confirmation, media-control click isolation, 390px wrapping, and SPA leave protection.
+- Validation passed: CSV/grid/batch tests, dataset table/filter/sync/direct-import/mapping/deletion/clone/task-case regressions, generation tests, TypeScript, frontend/server builds, PostgreSQL API smoke, `local:check`, and `git diff --check`.

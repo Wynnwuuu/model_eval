@@ -569,3 +569,12 @@ An exact `case_id + variant_label` pair is the only business identity eligible f
 - The temporary dev image limit of one did not address the API heap-exhaustion root cause. Dataset history materialization and overlapping HTTP polling caused that failure, and generation now also runs outside the API process.
 - Dev restores the established image concurrency of four. The value is a fleet-wide provider limit, not a per-Pod limit: every Worker claim is serialized by the PostgreSQL modality advisory lock and counted against all active image submissions before a lease is granted.
 - API and Worker manifests must use the same value so displayed queue capacity matches execution. A deployment regression enforces both values, and the database integration test models two Worker replicas contending for eight cases while admitting only four.
+
+# 2026-09-01: Dataset grid editing extends the existing media table
+
+- CSV export uses the complete dataset column projection and every stored row, independent of filters, sorting, and browser-local column visibility.
+- The existing DOM table remains authoritative because its real image, video, audio, resizing, filtering, and inspector behavior must not regress. Spreadsheet behavior is added as selection and draft state, not as a replacement grid dependency.
+- Batch mutations are staged in the browser and committed atomically with the existing optimistic dataset version lock. One accepted batch creates one dataset version and one propagation transaction.
+- Generation companion and system/audit fields are selectable and copyable but read-only. Row overflow may append rows only when the paste includes a valid unique business case ID; columns are never created by paste.
+- Confirmable data-quality warnings are distinct from hard structural errors. The server recomputes both and never trusts client validation.
+- Unsaved draft state is reported to the app router so normal SPA navigation receives the same leave confirmation as browser close or refresh.

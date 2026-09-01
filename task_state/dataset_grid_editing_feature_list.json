@@ -1,0 +1,23 @@
+[
+  {
+    "id": "DGE-001",
+    "description": "CSV 下载按评测集完整列结构导出全部 case",
+    "status": "completed",
+    "eval": "npm.cmd run test:dataset-csv-export",
+    "notes": "首行为空、schema-only 和后续稀疏列必须保留"
+  },
+  {
+    "id": "DGE-002",
+    "description": "现有媒体表格支持连续单元格选择、复制、粘贴、清空、填充和撤销重做",
+    "status": "completed",
+    "eval": "npm.cmd run test:dataset-grid-editing",
+    "notes": "媒体原生交互优先，不替换表格依赖"
+  },
+  {
+    "id": "DGE-003",
+    "description": "批量草稿一次原子保存为一个评测集版本",
+    "status": "completed",
+    "eval": "npm.cmd run test:dataset-batch-edit && npm.cmd run test:api:smoke",
+    "notes": "含权限、警告确认、稳定 ID、版本冲突和 _originalData 同步"
+  }
+]

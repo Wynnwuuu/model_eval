@@ -11,6 +11,7 @@ import {
   updateDatasetItem,
   updateDatasetManifest,
 } from './datasetRepository.ts';
+import { updateDatasetItemsBatch } from './datasetBatchEditService.ts';
 import { badRequest, notFound, sendError } from '../http/errors.ts';
 import { requireBodyObject, requireNonEmptyString, validateDatasetPayload } from '../http/validation.ts';
 import {
@@ -174,6 +175,35 @@ datasetRoutes.post('/:datasetId/rollback', async (req, res) => {
     res.json({ dataset, syncSummary: dataset.syncSummary });
   } catch (error) {
     sendError(res, error, 'Failed to rollback dataset');
+  }
+});
+
+datasetRoutes.patch('/:datasetId/items/batch', async (req, res) => {
+  try {
+    const expectedVersion = Number(req.body?.expectedVersion);
+    const edits = req.body?.edits;
+    const appendedRows = req.body?.appendedRows;
+    if (!Number.isInteger(expectedVersion) || !Array.isArray(edits) || !Array.isArray(appendedRows)) {
+      throw badRequest('expectedVersion, edits and appendedRows are required');
+    }
+    const result = await updateDatasetItemsBatch(req.params.datasetId, {
+      expectedVersion,
+      edits,
+      appendedRows,
+      acceptWarnings: req.body?.acceptWarnings === true,
+    }, req.user);
+    if (!result) throw notFound('Dataset');
+    res.json({
+      dataset: result.dataset,
+      syncSummary: result.dataset.syncSummary,
+      warnings: result.warnings,
+      summary: {
+        changedCellCount: result.outcome.changedCellCount,
+        appendedRowCount: result.outcome.appendedRowCount,
+      },
+    });
+  } catch (error) {
+    sendError(res, error, 'Failed to batch update dataset items');
   }
 });
 

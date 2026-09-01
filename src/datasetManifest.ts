@@ -388,7 +388,8 @@ export const calculateDimensionDistribution = (
 
 export const validateDatasetItems = (
   rows: Record<string, any>[],
-  mappings: DatasetColumnMappings
+  mappings: DatasetColumnMappings,
+  schemaFields: DatasetSchemaField[] = [],
 ): DatasetValidationSummary => {
   const warnings: string[] = [];
   const caseKey = mappings.standard.case_id || mappings.caseId || '用例ID';
@@ -398,7 +399,20 @@ export const validateDatasetItems = (
   let invalidUrlCount = 0;
   let missingInputCount = 0;
   let emptyOutputCells = 0;
-  const urlColumns = [...mappings.outputColumns, ...mappings.referenceColumns];
+  const schemaUrlColumns = schemaFields
+    .filter(field => (
+      field.type === 'url'
+      || field.type === 'image_url'
+      || field.type === 'video_url'
+      || field.type === 'audio_url'
+      || ['image', 'video', 'audio', 'link'].includes(field.previewType || '')
+    ))
+    .map(field => field.key);
+  const urlColumns = Array.from(new Set([
+    ...mappings.outputColumns,
+    ...mappings.referenceColumns,
+    ...schemaUrlColumns,
+  ]));
 
   rows.forEach(row => {
     const id = cleanValue(row[caseKey] || row['用例ID']);
@@ -416,7 +430,8 @@ export const validateDatasetItems = (
 
     urlColumns.forEach(column => {
       const value = cleanValue(row[column]);
-      if (value && (inferPreviewType(column, [value]) !== 'text') && !URL_PATTERN.test(value)) invalidUrlCount += 1;
+      const schemaDeclaresUrl = schemaUrlColumns.includes(column);
+      if (value && (schemaDeclaresUrl || inferPreviewType(column, [value]) !== 'text') && !URL_PATTERN.test(value)) invalidUrlCount += 1;
     });
   });
 
@@ -579,7 +594,7 @@ export const normalizeDatasetForDisplay = (dataset: EvalDataset): EvalDataset =>
     categoryPath: dataset.categoryPath || ['未分类'],
     standardFields: dataset.standardFields || STANDARD_DATASET_FIELDS,
     columnMappings: mappings,
-    validationSummary: dataset.validationSummary || validateDatasetItems(dataset.items || [], mappings),
+    validationSummary: dataset.validationSummary || validateDatasetItems(dataset.items || [], mappings, dataset.inputSchema || []),
     datasetCard: dataset.datasetCard || buildDatasetCard({ ...dataset, modality }, mappings),
     version: dataset.version || 1,
     versionHistory: dataset.versionHistory || []

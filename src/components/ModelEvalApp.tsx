@@ -86,6 +86,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
   const [resyncError, setResyncError] = useState<string | null>(null);
   const [storageIssue, setStorageIssue] = useState<BrowserStorageIssue | null>(null);
   const [clientStorageWarning, setClientStorageWarning] = useState<string | null>(null);
+  const [datasetEditDraftDirty, setDatasetEditDraftDirty] = useState(false);
   const clientStoreRef = useRef<ReturnType<typeof createEvaluationClientStore> | null>(null);
   if (!clientStoreRef.current) clientStoreRef.current = createEvaluationClientStore();
   const clientStore = clientStoreRef.current;
@@ -111,6 +112,11 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
   });
 
   const goToRoute = (route: AppRoute, context: RouteContext = {}) => {
+    if (datasetEditDraftDirty && route !== currentRoute) {
+      const shouldLeave = window.confirm('当前评测集有尚未保存的批量修改。离开页面将放弃这些修改，是否继续？');
+      if (!shouldLeave) return;
+      setDatasetEditDraftDirty(false);
+    }
     const nextContext: RouteContext = route === 'tasks'
       ? { taskBuilderMode: 'list', ...context }
       : context;
@@ -224,8 +230,17 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
 
   // Update state if initialRoute changes
   useEffect(() => {
+    if (initialRoute === currentRoute) return;
+    if (datasetEditDraftDirty) {
+      const shouldLeave = window.confirm('当前评测集有尚未保存的批量修改。离开页面将放弃这些修改，是否继续？');
+      if (!shouldLeave) {
+        onRouteChange?.(currentRoute, routeContext);
+        return;
+      }
+      setDatasetEditDraftDirty(false);
+    }
     setCurrentRoute(initialRoute);
-  }, [initialRoute]);
+  }, [datasetEditDraftDirty, initialRoute]);
 
   useEffect(() => {
     setRouteContext(initialContext);
@@ -1130,6 +1145,7 @@ export function ModelEvalApp({ initialRoute = 'overview', initialContext = {}, o
               taskDatasetId: datasetId,
               taskModelColumns: [resultColumn],
             })}
+            onDraftStateChange={setDatasetEditDraftDirty}
           />
         </div>
       );

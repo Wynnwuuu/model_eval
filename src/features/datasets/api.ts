@@ -21,6 +21,13 @@ import {
   type DatasetDirectImportMetadata,
   type DatasetDirectImportPreview,
 } from '../../datasetDirectImport';
+import {
+  applyDatasetBatchEdit,
+  buildBatchEditedDataset,
+  type DatasetAppendedRow,
+  type DatasetCellEdit,
+  type DatasetEditIssue,
+} from '../../datasetGridEditing';
 
 const HTTP_REFRESH_INTERVAL_MS = 5000;
 
@@ -628,6 +635,66 @@ export async function updateDatasetItem(
     datasetCard: dataset.datasetCard ? { ...dataset.datasetCard, latestChange: preciseSummary, updatedAt: now } : dataset.datasetCard,
     updatedAt: now,
   }, { expectedVersion: dataset.version || 1 });
+}
+
+export async function updateDatasetItemsBatch(
+  dataset: EvalDataset,
+  input: { edits: DatasetCellEdit[]; appendedRows: DatasetAppendedRow[] },
+  options: { acceptWarnings?: boolean } = {},
+) {
+  if (USE_SHARED_DATA_SOURCE) {
+    const response = await requestJson<{
+      dataset: EvalDataset;
+      syncSummary?: DatasetSyncSummary;
+      warnings: DatasetEditIssue[];
+      summary: { changedCellCount: number; appendedRowCount: number };
+    }>(`/api/datasets/${dataset.id}/items/batch`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        expectedVersion: dataset.version || 1,
+        edits: sanitizeDatasetValue(input.edits),
+        appendedRows: sanitizeDatasetValue(input.appendedRows),
+        acceptWarnings: options.acceptWarnings === true,
+      }),
+    });
+    notifyDatasetReloaders();
+    return response;
+  }
+
+  const outcome = applyDatasetBatchEdit(dataset, input);
+  const createValidationError = (code: string, message: string, issues: DatasetEditIssue[]) => {
+    const error = new Error(message) as Error & { status?: number; code?: string; details?: unknown };
+    error.status = 422;
+    error.code = code;
+    error.details = { issues };
+    return error;
+  };
+  if (outcome.errors.length) {
+    throw createValidationError('DATASET_BATCH_EDIT_INVALID', '批量修改包含不可保存的问题，请按提示修正。', outcome.errors);
+  }
+  if (outcome.warnings.length && options.acceptWarnings !== true) {
+    throw createValidationError('DATASET_BATCH_EDIT_WARNINGS', '批量修改包含需要确认的数据质量警告。', outcome.warnings);
+  }
+  if (!outcome.changedCellCount && !outcome.appendedRowCount) {
+    return {
+      dataset,
+      warnings: outcome.warnings,
+      summary: { changedCellCount: 0, appendedRowCount: 0 },
+    };
+  }
+  const currentUser = auth.currentUser;
+  const next = buildBatchEditedDataset(dataset, outcome, {
+    actorName: currentUser?.displayName || currentUser?.email || 'Local',
+  });
+  const saved = await saveDataset(next, { expectedVersion: dataset.version || 1 });
+  return {
+    dataset: saved,
+    warnings: outcome.warnings,
+    summary: {
+      changedCellCount: outcome.changedCellCount,
+      appendedRowCount: outcome.appendedRowCount,
+    },
+  };
 }
 
 export async function updateDatasetManifest(dataset: EvalDataset, patch: Partial<EvalDataset>) {

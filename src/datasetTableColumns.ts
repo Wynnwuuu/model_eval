@@ -1,7 +1,7 @@
-import { getDatasetActiveColumnKeys, getDatasetColumnRole } from './datasetColumnDeletion';
-import { inferPreviewType } from './datasetManifest';
-import { findGenerationOutputCompanion } from './datasetOutputColumns';
-import type { DatasetFieldRole, DatasetPreviewType, EvalDataset } from './types';
+import { getDatasetActiveColumnKeys, getDatasetColumnRole } from './datasetColumnDeletion.ts';
+import { inferPreviewType } from './datasetManifest.ts';
+import { findGenerationOutputCompanion } from './datasetOutputColumns.ts';
+import type { DatasetFieldRole, DatasetPreviewType, EvalDataset } from './types.ts';
 
 export type DatasetTableColumnDisplayCategory =
   | 'business'
