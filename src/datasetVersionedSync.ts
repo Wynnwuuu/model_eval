@@ -4,10 +4,14 @@ import {
   createDatasetItemStableId,
   getDatasetItemStableId,
 } from './datasetSync.ts';
-import { isGenerationOutputCompanionColumn } from './datasetOutputColumns.ts';
+import {
+  findGenerationOutputCompanion,
+  isGenerationOutputCompanionColumn,
+} from './datasetOutputColumns.ts';
 import type {
   DatasetSchemaField,
   DatasetSyncCaseChange,
+  DatasetSyncMode,
   DatasetSyncOutputPolicy,
   DatasetSyncPreviewSummary,
   EvalDataset,
@@ -38,8 +42,12 @@ export interface DatasetVersionedSyncPlan {
   rows: Record<string, any>[];
   schema: DatasetSchemaField[];
   outputColumns: string[];
+  ignoredSourceColumns: string[];
+  outputColumnsPromoted: string[];
+  outputColumnsDemoted: string[];
   cases: DatasetSyncCaseChange[];
   summary: DatasetSyncPreviewSummary;
+  hasChanges: boolean;
 }
 
 const cleanIdentityPart = (value: unknown) => String(value ?? '').trim();
@@ -228,13 +236,6 @@ const fieldKind = (dataset: EvalDataset, field: string, outputColumns: Set<strin
 
 const sourceField = (header: string, dataset: EvalDataset, outputColumns: Set<string>): DatasetSchemaField => {
   const existing = dataset.inputSchema.find(field => field.key === header);
-  if (existing) return {
-    ...existing,
-    key: header,
-    label: header,
-    sourceKey: header,
-    ...(outputColumns.has(header) ? { role: 'output' as const } : {}),
-  };
   const canonical = header.toLowerCase();
   const isOutput = outputColumns.has(header);
   const role = isOutput
@@ -244,6 +245,10 @@ const sourceField = (header: string, dataset: EvalDataset, outputColumns: Set<st
       : ['prompt', 'image_urls', 'images', 'elements', 'audio_url', 'audios'].includes(canonical)
         ? (canonical === 'prompt' ? 'input' : 'reference')
         : 'metadata';
+  if (existing) return {
+    ...existing,
+    role: isOutput || existing.role === 'output' ? role : existing.role,
+  };
   const type = isOutput && dataset.modality === 'image'
     ? 'image_url'
     : /image/.test(canonical)
@@ -287,6 +292,28 @@ const cloneResultMeta = (row?: Record<string, unknown>): DatasetResultFreshnessM
     : {};
 };
 
+const emptyPreviewSummary = (input: {
+  sourceResultOverwrites?: number;
+  sourceResultFills?: number;
+  sourceResultReplacements?: number;
+  sourceResultClears?: number;
+  outputColumnsPromoted?: number;
+  outputColumnsDemoted?: number;
+} = {}): DatasetSyncPreviewSummary => ({
+  added: 0,
+  updated: 0,
+  deleted: 0,
+  restored: 0,
+  unchanged: 0,
+  staleResults: 0,
+  sourceResultOverwrites: input.sourceResultOverwrites || 0,
+  sourceResultFills: input.sourceResultFills || 0,
+  sourceResultReplacements: input.sourceResultReplacements || 0,
+  sourceResultClears: input.sourceResultClears || 0,
+  outputColumnsPromoted: input.outputColumnsPromoted || 0,
+  outputColumnsDemoted: input.outputColumnsDemoted || 0,
+});
+
 export const buildDatasetVersionedSyncPlan = (input: {
   dataset: EvalDataset;
   sourceHeaders: string[];
@@ -294,7 +321,9 @@ export const buildDatasetVersionedSyncPlan = (input: {
   historicalRows: Record<string, any>[];
   outputColumns: string[];
   outputPolicies: Record<string, DatasetSyncOutputPolicy>;
+  syncMode?: DatasetSyncMode;
 }): DatasetVersionedSyncPlan => {
+  const syncMode = input.syncMode || 'snapshot';
   const sourceValidation = validateDatasetSyncSource(input.sourceRows);
   const validationIssues = [
     ...(!input.sourceHeaders.includes('case_id') ? [{
@@ -306,7 +335,18 @@ export const buildDatasetVersionedSyncPlan = (input: {
     ...validateCurrentDatasetIdentities(input.dataset),
   ];
   const outputColumns = [...new Set(input.outputColumns)];
+  const previousOutputColumns = [...new Set(input.dataset.columnMappings?.outputColumns || [])];
+  const outputColumnsPromoted = outputColumns.filter(column => !previousOutputColumns.includes(column));
+  const outputColumnsDemoted = previousOutputColumns.filter(column => !outputColumns.includes(column));
+  const knownOutputColumns = [...new Set([...previousOutputColumns, ...outputColumns])];
+  const ignoredSourceColumns = input.sourceHeaders.filter(header => Boolean(
+    findGenerationOutputCompanion(header, knownOutputColumns),
+  ));
+  const ignoredSourceSet = new Set(ignoredSourceColumns);
+  const sourceHeaders = input.sourceHeaders.filter(header => !ignoredSourceSet.has(header));
   const outputSet = new Set(outputColumns);
+  const promotedOutputSet = new Set(outputColumnsPromoted);
+  const demotedOutputSet = new Set(outputColumnsDemoted);
   const currentByIdentity = new Map(input.dataset.items.map(row => [datasetRowSyncIdentity(input.dataset, row), row]));
   const historicalByIdentity = new Map<string, Record<string, any>>();
   input.historicalRows.forEach(row => {
@@ -316,6 +356,9 @@ export const buildDatasetVersionedSyncPlan = (input: {
   const dependencyFallback = getDatasetGenerationInputColumns(input.dataset);
   const cases: DatasetSyncCaseChange[] = [];
   let sourceResultOverwrites = 0;
+  let sourceResultFills = 0;
+  let sourceResultReplacements = 0;
+  let sourceResultClears = 0;
 
   if (validationIssues.length) {
     return {
@@ -324,38 +367,97 @@ export const buildDatasetVersionedSyncPlan = (input: {
       rows: [],
       schema: [],
       outputColumns,
+      ignoredSourceColumns,
+      outputColumnsPromoted,
+      outputColumnsDemoted,
       cases: [],
-      summary: { added: 0, updated: 0, deleted: 0, restored: 0, unchanged: 0, staleResults: 0, sourceResultOverwrites: 0 },
+      summary: emptyPreviewSummary({
+        outputColumnsPromoted: outputColumnsPromoted.length,
+        outputColumnsDemoted: outputColumnsDemoted.length,
+      }),
+      hasChanges: false,
     };
   }
 
-  const rows = input.sourceRows.map(sourceRow => {
-    const identity = datasetSyncIdentity(sourceRow);
+  const compileRow = (
+    sourceRow: Record<string, any> | undefined,
+    currentRow: Record<string, any> | undefined,
+    restoredRow: Record<string, any> | undefined,
+  ) => {
+    const identity = sourceRow
+      ? datasetSyncIdentity(sourceRow)
+      : datasetRowSyncIdentity(input.dataset, currentRow || {});
     const [caseId, variantLabel = ''] = parseDatasetSyncIdentity(identity);
-    const currentRow = currentByIdentity.get(identity);
-    const historicalRow = currentRow || historicalByIdentity.get(identity);
+    const historicalRow = currentRow || restoredRow;
     const stableItemId = getDatasetItemStableId(historicalRow)
       || createDatasetItemStableId(input.dataset.id, caseId, variantLabel);
-    const nextRow: Record<string, any> = Object.fromEntries(input.sourceHeaders.map(header => [
-      header,
-      Object.prototype.hasOwnProperty.call(sourceRow, header) ? sourceRow[header] : '',
-    ]));
+    const nextRow: Record<string, any> = syncMode === 'merge' && currentRow
+      ? { ...currentRow }
+      : Object.fromEntries(sourceHeaders.map(header => [
+        header,
+        sourceRow && Object.prototype.hasOwnProperty.call(sourceRow, header) ? sourceRow[header] : '',
+      ]));
+    if (sourceRow) {
+      sourceHeaders.forEach(header => {
+        nextRow[header] = Object.prototype.hasOwnProperty.call(sourceRow, header) ? sourceRow[header] : '';
+      });
+      if (
+        syncMode === 'merge'
+        && currentRow?._originalData
+        && typeof currentRow._originalData === 'object'
+        && !Array.isArray(currentRow._originalData)
+      ) {
+        nextRow._originalData = {
+          ...currentRow._originalData,
+          ...Object.fromEntries(sourceHeaders.map(header => [header, nextRow[header]])),
+        };
+      }
+    }
     const resultMeta = cloneResultMeta(historicalRow);
+
+    outputColumnsDemoted.forEach(outputColumn => {
+      delete resultMeta[outputColumn];
+      Object.keys(nextRow).forEach(column => {
+        if (isGenerationOutputCompanionColumn(column, outputColumn)) delete nextRow[column];
+      });
+    });
 
     outputColumns.forEach(outputColumn => {
       const policy = input.outputPolicies[outputColumn] || 'preserve_platform';
-      const sourceHasColumn = input.sourceHeaders.includes(outputColumn);
-      const sourceValue = sourceHasColumn ? sourceRow[outputColumn] : undefined;
+      const sourceHasColumn = Boolean(sourceRow && sourceHeaders.includes(outputColumn));
+      const sourceValue = sourceHasColumn ? sourceRow?.[outputColumn] : undefined;
       const platformValue = historicalRow?.[outputColumn];
       if (sourceHasColumn) {
         nextRow[outputColumn] = mergeResultValue(policy, sourceValue, platformValue, Boolean(historicalRow));
-        if (policy === 'source_overwrite' && historicalRow && stableSerialize(sourceValue) !== stableSerialize(platformValue)) {
-          sourceResultOverwrites += 1;
-        }
       } else if (historicalRow && Object.prototype.hasOwnProperty.call(historicalRow, outputColumn)) {
         nextRow[outputColumn] = platformValue;
       }
-      if (historicalRow) {
+      const resultChanged = Boolean(historicalRow)
+        && !(
+          (isBlank(nextRow[outputColumn]) && isBlank(platformValue))
+          || stableSerialize(nextRow[outputColumn]) === stableSerialize(platformValue)
+        );
+      const sourceApplied = sourceHasColumn && (
+        !historicalRow
+        || policy === 'source_overwrite'
+        || (policy === 'fill_platform_blanks' && isBlank(platformValue))
+      );
+      if (sourceApplied && resultChanged) {
+        if (isBlank(platformValue) && !isBlank(nextRow[outputColumn])) {
+          sourceResultFills += 1;
+        } else if (!isBlank(platformValue) && isBlank(nextRow[outputColumn])) {
+          sourceResultClears += 1;
+          sourceResultOverwrites += 1;
+        } else if (!isBlank(platformValue)) {
+          sourceResultReplacements += 1;
+          sourceResultOverwrites += 1;
+        }
+      }
+      if (resultChanged) {
+        Object.keys(nextRow).forEach(column => {
+          if (isGenerationOutputCompanionColumn(column, outputColumn)) delete nextRow[column];
+        });
+      } else if (historicalRow) {
         outputCompanionColumns(historicalRow, outputColumn).forEach(column => {
           if (column !== DATASET_RESULT_META_KEY && !Object.prototype.hasOwnProperty.call(nextRow, column)) nextRow[column] = historicalRow[column];
         });
@@ -363,22 +465,26 @@ export const buildDatasetVersionedSyncPlan = (input: {
       if (!isBlank(nextRow[outputColumn])) {
         const priorMeta = resultMeta[outputColumn];
         const dependencyColumns = priorMeta?.dependencyColumns?.length ? priorMeta.dependencyColumns : dependencyFallback;
-        const sourceWon = !historicalRow
-          || policy === 'source_overwrite'
-          || (policy === 'fill_platform_blanks' && isBlank(platformValue) && !isBlank(sourceValue));
         const dependenciesChanged = Boolean(historicalRow) && dependencyColumns.some(column =>
           stableSerialize(datasetGenerationInputValue(input.dataset, historicalRow, column))
             !== stableSerialize(datasetGenerationInputValue(input.dataset, nextRow, column))
         );
-        resultMeta[outputColumn] = sourceWon
+        const sourceIntroducedOrReplacedResult = sourceApplied && (!historicalRow || resultChanged);
+        resultMeta[outputColumn] = sourceIntroducedOrReplacedResult
           ? {
             source: 'source',
             stale: false,
             dependencyColumns,
             inputFingerprint: resolvedDatasetGenerationInputFingerprint(input.dataset, nextRow, dependencyColumns),
           }
+          : priorMeta && !dependenciesChanged
+            ? priorMeta
           : {
-            ...(priorMeta || { source: currentRow ? 'generation' : 'restored' }),
+            ...(priorMeta || {
+              source: promotedOutputSet.has(outputColumn)
+                ? 'source'
+                : currentRow ? 'generation' : 'restored',
+            }),
             dependencyColumns,
             inputFingerprint: priorMeta?.inputFingerprint
               || resolvedDatasetGenerationInputFingerprint(input.dataset, historicalRow || nextRow, dependencyColumns),
@@ -403,15 +509,18 @@ export const buildDatasetVersionedSyncPlan = (input: {
       });
     }
     if (Object.keys(resultMeta).length) nextRow[DATASET_RESULT_META_KEY] = resultMeta;
+    else delete nextRow[DATASET_RESULT_META_KEY];
     nextRow[DATASET_ITEM_ID_KEY] = stableItemId;
+    delete nextRow[DATASET_HISTORICAL_CASE_ID_KEY];
 
     const comparisonFields = new Set([
-      ...input.sourceHeaders,
+      ...sourceHeaders,
       ...outputColumns,
+      ...outputColumnsDemoted,
       ...Object.keys(historicalRow || {}).filter(key => key !== '_originalData' && !key.startsWith('__')),
     ]);
     const fieldChanges = historicalRow
-      ? [...comparisonFields].flatMap(field => (
+      ? [...comparisonFields].filter(field => !findGenerationOutputCompanion(field, knownOutputColumns)).flatMap(field => (
         outputSet.has(field) && isBlank(historicalRow[field]) && isBlank(nextRow[field])
           ? true
           : stableSerialize(historicalRow[field]) === stableSerialize(nextRow[field])
@@ -425,10 +534,26 @@ export const buildDatasetVersionedSyncPlan = (input: {
       : historicalRow ? 'restored' : 'added';
     cases.push({ identity, caseId, variantLabel, stableItemId, action, fieldChanges, staleOutputColumns });
     return nextRow;
-  });
+  };
+
+  const sourceByIdentity = new Map(input.sourceRows.map(row => [datasetSyncIdentity(row), row]));
+  const rows = syncMode === 'merge'
+    ? [
+      ...input.dataset.items.map(currentRow => {
+        const identity = datasetRowSyncIdentity(input.dataset, currentRow);
+        return compileRow(sourceByIdentity.get(identity), currentRow, undefined);
+      }),
+      ...input.sourceRows
+        .filter(sourceRow => !currentByIdentity.has(datasetSyncIdentity(sourceRow)))
+        .map(sourceRow => compileRow(sourceRow, undefined, historicalByIdentity.get(datasetSyncIdentity(sourceRow)))),
+    ]
+    : input.sourceRows.map(sourceRow => {
+      const identity = datasetSyncIdentity(sourceRow);
+      return compileRow(sourceRow, currentByIdentity.get(identity), historicalByIdentity.get(identity));
+    });
 
   const sourceIdentities = new Set(input.sourceRows.map(datasetSyncIdentity));
-  input.dataset.items.forEach(row => {
+  if (syncMode === 'snapshot') input.dataset.items.forEach(row => {
     const identity = datasetRowSyncIdentity(input.dataset, row);
     if (sourceIdentities.has(identity)) return;
     const [caseId, variantLabel = ''] = parseDatasetSyncIdentity(identity);
@@ -447,24 +572,51 @@ export const buildDatasetVersionedSyncPlan = (input: {
     acc[item.action] += 1;
     acc.staleResults += item.staleOutputColumns.length;
     return acc;
-  }, { added: 0, updated: 0, deleted: 0, restored: 0, unchanged: 0, staleResults: 0, sourceResultOverwrites });
+  }, emptyPreviewSummary({
+    sourceResultOverwrites,
+    sourceResultFills,
+    sourceResultReplacements,
+    sourceResultClears,
+    outputColumnsPromoted: outputColumnsPromoted.length,
+    outputColumnsDemoted: outputColumnsDemoted.length,
+  }));
 
-  const sourceSchema = input.sourceHeaders.map(header => sourceField(header, input.dataset, outputSet));
-  const sourceHeaderSet = new Set(input.sourceHeaders);
-  const retainedSchema = input.dataset.inputSchema.filter(field =>
-    !sourceHeaderSet.has(field.key) && (
-      outputSet.has(field.key)
-      || field.role === 'system'
-      || outputColumns.some(output => isGenerationOutputCompanionColumn(field.key, output))
-    )
-  );
+  const sourceHeaderSet = new Set(sourceHeaders);
+  const schema = syncMode === 'merge'
+    ? [
+      ...input.dataset.inputSchema
+        .filter(field => !outputColumnsDemoted.some(output => isGenerationOutputCompanionColumn(field.key, output)))
+        .map(field => sourceField(field.key, input.dataset, outputSet)),
+      ...sourceHeaders
+        .filter(header => !input.dataset.inputSchema.some(field => field.key === header))
+        .map(header => sourceField(header, input.dataset, outputSet)),
+    ]
+    : [
+      ...sourceHeaders.map(header => sourceField(header, input.dataset, outputSet)),
+      ...input.dataset.inputSchema.filter(field =>
+        !sourceHeaderSet.has(field.key)
+        && !demotedOutputSet.has(field.key)
+        && (
+          outputSet.has(field.key)
+          || field.role === 'system'
+          || outputColumns.some(output => isGenerationOutputCompanionColumn(field.key, output))
+        )
+      ),
+    ];
+  const hasChanges = stableSerialize(rows) !== stableSerialize(input.dataset.items)
+    || stableSerialize(schema) !== stableSerialize(input.dataset.inputSchema)
+    || stableSerialize(outputColumns) !== stableSerialize(previousOutputColumns);
   return {
     valid: true,
     issues: [],
     rows,
-    schema: [...sourceSchema, ...retainedSchema],
+    schema,
     outputColumns,
+    ignoredSourceColumns,
+    outputColumnsPromoted,
+    outputColumnsDemoted,
     cases,
     summary,
+    hasChanges,
   };
 };

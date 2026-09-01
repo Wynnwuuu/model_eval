@@ -1,12 +1,15 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 
 import {
   buildDatasetVersionedSyncPlan,
   type DatasetVersionedSyncPlan,
 } from '../../src/datasetVersionedSync.ts';
+import { findGenerationOutputCompanion } from '../../src/datasetOutputColumns.ts';
 import type {
   DatasetColumnMappings,
+  DatasetSyncColumnRole,
+  DatasetSyncMode,
   DatasetSyncOutputPolicy,
   DatasetSyncPreview,
   DatasetSyncSourceBinding,
@@ -35,7 +38,10 @@ const OUTPUT_POLICIES = new Set<DatasetSyncOutputPolicy>([
 export type DatasetSyncSourceRequest = DatasetSourceRequest;
 
 interface DatasetSyncDecisions {
+  syncMode: DatasetSyncMode;
   outputPolicies: Record<string, DatasetSyncOutputPolicy>;
+  columnRoles: Record<string, DatasetSyncColumnRole>;
+  /** Legacy previews created before all eligible columns could change role. */
   newColumnRoles: Record<string, 'source' | 'output'>;
 }
 
@@ -51,7 +57,7 @@ interface StoredPreviewRow {
     rows: Record<string, unknown>[];
     sourceBinding: DatasetSyncSourceBinding;
   };
-  decisions_json: DatasetSyncDecisions;
+  decisions_json: Partial<DatasetSyncDecisions>;
   result_json: DatasetSyncPreview;
   status: string;
   created_by: string | null;
@@ -60,17 +66,56 @@ interface StoredPreviewRow {
 
 const defaultDecisions = (dataset: EvalDataset, headers: string[]): DatasetSyncDecisions => {
   const knownColumns = new Set(dataset.inputSchema.map(field => field.key));
-  const outputColumns = dataset.columnMappings?.outputColumns || [];
+  const outputColumns = new Set(dataset.columnMappings?.outputColumns || []);
   return {
-    outputPolicies: Object.fromEntries(outputColumns.map(column => [column, 'preserve_platform'])),
+    syncMode: 'merge',
+    outputPolicies: Object.fromEntries([...outputColumns].map(column => [column, 'preserve_platform'])),
+    columnRoles: Object.fromEntries(headers.map(header => [header, outputColumns.has(header) ? 'output' : 'source'])),
     newColumnRoles: Object.fromEntries(headers.filter(header => !knownColumns.has(header)).map(header => [header, 'source'])),
   };
 };
 
+const normalizeStoredDecisions = (
+  dataset: EvalDataset,
+  headers: string[],
+  stored: Partial<DatasetSyncDecisions>,
+): DatasetSyncDecisions => {
+  const defaults = defaultDecisions(dataset, headers);
+  const legacyRoles = stored.newColumnRoles || {};
+  const columnRoles = {
+    ...defaults.columnRoles,
+    ...legacyRoles,
+    ...(stored.columnRoles || {}),
+  };
+  return {
+    syncMode: stored.syncMode || 'snapshot',
+    outputPolicies: { ...defaults.outputPolicies, ...(stored.outputPolicies || {}) },
+    columnRoles,
+    newColumnRoles: Object.fromEntries(Object.entries(columnRoles).filter(([column]) =>
+      !dataset.inputSchema.some(field => field.key === column)
+    )),
+  };
+};
+
 const resolveOutputColumns = (dataset: EvalDataset, decisions: DatasetSyncDecisions) => [...new Set([
-  ...(dataset.columnMappings?.outputColumns || []),
-  ...Object.entries(decisions.newColumnRoles).filter(([, role]) => role === 'output').map(([column]) => column),
+  ...(dataset.columnMappings?.outputColumns || []).filter(column => decisions.columnRoles?.[column] !== 'source'),
+  ...Object.entries(decisions.columnRoles || decisions.newColumnRoles || {})
+    .filter(([, role]) => role === 'output')
+    .map(([column]) => column),
 ])];
+
+const stableDecisionValue = (value: unknown): string => {
+  if (value === undefined) return 'undefined';
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableDecisionValue).join(',')}]`;
+  return `{${Object.keys(value as Record<string, unknown>).sort().map(key =>
+    `${JSON.stringify(key)}:${stableDecisionValue((value as Record<string, unknown>)[key])}`
+  ).join(',')}}`;
+};
+
+const decisionFingerprint = (decisions: DatasetSyncDecisions) => createHash('sha256')
+  .update(stableDecisionValue(decisions))
+  .digest('hex');
 
 const validationMessage = (issue: DatasetVersionedSyncPlan['issues'][number]) => issue.code === 'MISSING_CASE_ID_COLUMN'
   ? '同步源必须包含名称精确为 case_id 的列；平台不会自动修改飞书或文件列名。'
@@ -131,6 +176,13 @@ export const findDatasetSyncGenerationBlockers = async (
     collectColumnReferences(job.controls_json, candidateColumns, dependencies);
     const caseIds: string[] = [];
     const reasons = new Set<string>();
+    if (plan.outputColumnsDemoted.includes(job.target_column)) {
+      (job.stable_item_ids || []).forEach(stableItemId => {
+        const change = changesByStableId.get(stableItemId);
+        if (change) caseIds.push(change.caseId);
+      });
+      reasons.add(`运行批次的目标结果列 ${job.target_column} 将被降级为数据字段`);
+    }
     (job.stable_item_ids || []).forEach(stableItemId => {
       const change = changesByStableId.get(stableItemId);
       if (!change || change.action === 'unchanged' || change.action === 'added' || change.action === 'restored') return;
@@ -173,6 +225,7 @@ const buildPreview = async (input: {
     historicalRows,
     outputColumns,
     outputPolicies: input.decisions.outputPolicies,
+    syncMode: input.decisions.syncMode,
   });
   const blockers = plan.valid
     ? await findDatasetSyncGenerationBlockers(dbPool, input.dataset, plan)
@@ -183,14 +236,26 @@ const buildPreview = async (input: {
     expectedVersion: input.dataset.version || 1,
     source: input.binding,
     sourceHeaders: input.headers,
+    ignoredSourceColumns: plan.ignoredSourceColumns,
+    syncMode: input.decisions.syncMode,
     outputColumns,
     outputPolicies: Object.fromEntries(outputColumns.map(column => [column, input.decisions.outputPolicies[column] || 'preserve_platform'])),
+    columnRoles: input.decisions.columnRoles,
     newColumnRoles: input.decisions.newColumnRoles,
     summary: plan.summary,
     cases: plan.cases,
     blockers,
     validationIssues: plan.issues.map(issue => ({ code: issue.code, message: validationMessage(issue), rowIndexes: issue.rowIndexes })),
-    requiresOverwriteConfirmation: outputColumns.some(column => input.decisions.outputPolicies[column] === 'source_overwrite'),
+    warnings: plan.ignoredSourceColumns.length ? [{
+      code: 'IGNORED_GENERATION_RECORD_COLUMNS',
+      message: '源表中的生成状态、Seed、请求 ID、错误和参数记录由平台维护，本次同步不会导入这些值。',
+      columns: plan.ignoredSourceColumns,
+    }] : [],
+    hasChanges: plan.hasChanges,
+    decisionFingerprint: decisionFingerprint(input.decisions),
+    requiresOverwriteConfirmation: plan.summary.sourceResultOverwrites > 0,
+    requiresDeletionConfirmation: plan.summary.deleted > 0,
+    requiresDemotionConfirmation: plan.outputColumnsDemoted.length > 0,
     createdAt: input.createdAt,
     expiresAt: input.expiresAt,
   };
@@ -240,13 +305,17 @@ const getStoredPreview = async (previewId: string, user: RequestUser) => {
   const result = await dbPool.query<StoredPreviewRow>(
     `
       SELECT * FROM dataset_sync_previews
-      WHERE id = $1 AND status = 'ready' AND expires_at > now()
+      WHERE id = $1
     `,
     [previewId],
   );
   const row = result.rows[0];
   if (!row) throw notFound('Dataset sync preview');
   if (row.created_by && row.created_by !== user.id) throw new ApiError(403, 'FORBIDDEN', '不能使用其他用户创建的同步预览。');
+  if (row.status !== 'ready') throw conflict('该同步预览已经应用或失效，请重新生成预览。');
+  if (row.expires_at.getTime() <= Date.now()) {
+    throw new ApiError(410, 'DATASET_SYNC_PREVIEW_EXPIRED', '同步预览已过期，请重新生成预览。');
+  }
   return row;
 };
 
@@ -286,14 +355,27 @@ export const updateDatasetSyncPreview = async (
   if ((dataset.version || 1) !== stored.expected_version) throw conflict('评测集版本已变化，请重新创建同步预览。');
   const headers = stored.payload_json.headers;
   const knownColumns = new Set(dataset.inputSchema.map(field => field.key));
-  const newColumnRoles = { ...stored.decisions_json.newColumnRoles };
+  const storedDecisions = normalizeStoredDecisions(dataset, headers, stored.decisions_json);
+  const newColumnRoles = { ...storedDecisions.newColumnRoles };
   Object.entries(patch.newColumnRoles || {}).forEach(([column, role]) => {
     if (!headers.includes(column) || knownColumns.has(column) || !['source', 'output'].includes(role)) {
       throw badRequest(`无效的新列角色：${column}`);
     }
     newColumnRoles[column] = role;
   });
-  const outputPolicies = { ...stored.decisions_json.outputPolicies };
+  const columnRoles = { ...storedDecisions.columnRoles, ...newColumnRoles };
+  Object.entries(patch.columnRoles || {}).forEach(([column, role]) => {
+    const schemaField = dataset.inputSchema.find(field => field.key === column);
+    const locked = ['case_id', 'variant_label'].includes(column) || schemaField?.role === 'system';
+    if (!headers.includes(column) || !['source', 'output'].includes(role) || (locked && role !== 'source')) {
+      throw badRequest(`无效的列类型：${column}`);
+    }
+    columnRoles[column] = role;
+    if (!knownColumns.has(column)) newColumnRoles[column] = role;
+  });
+  const syncMode = patch.syncMode || storedDecisions.syncMode;
+  if (!['merge', 'snapshot'].includes(syncMode)) throw badRequest('无效的同步方式。');
+  const outputPolicies = { ...storedDecisions.outputPolicies };
   Object.entries(patch.outputPolicies || {}).forEach(([column, policy]) => {
     if (!headers.includes(column) && !(dataset.columnMappings?.outputColumns || []).includes(column)) {
       throw badRequest(`未知结果列：${column}`);
@@ -301,7 +383,20 @@ export const updateDatasetSyncPreview = async (
     if (!OUTPUT_POLICIES.has(policy)) throw badRequest(`无效的结果保留策略：${column}`);
     outputPolicies[column] = policy;
   });
-  const decisions = { outputPolicies, newColumnRoles };
+  const provisionalDecisions = { syncMode, outputPolicies, columnRoles, newColumnRoles };
+  const selectedOutputColumns = resolveOutputColumns(dataset, provisionalDecisions);
+  const decisions = {
+    ...provisionalDecisions,
+    outputPolicies: Object.fromEntries(selectedOutputColumns.map(column => [
+      column,
+      outputPolicies[column] || 'preserve_platform',
+    ])),
+  };
+  const knownOutputColumns = [...new Set([...(dataset.columnMappings?.outputColumns || []), ...selectedOutputColumns])];
+  const invalidCompanionOutput = headers.find(column =>
+    columnRoles[column] === 'output' && Boolean(findGenerationOutputCompanion(column, knownOutputColumns))
+  );
+  if (invalidCompanionOutput) throw badRequest(`平台生成记录列不能设为模型结果：${invalidCompanionOutput}`);
   const { preview } = await buildPreview({
     id: stored.id,
     dataset,
@@ -382,13 +477,24 @@ const nextDatasetCard = (
 
 export const applyDatasetSyncPreview = async (
   previewId: string,
-  input: { confirmSourceOverwrite?: boolean },
+  input: {
+    decisionFingerprint?: string;
+    confirmSourceOverwrite?: boolean;
+    confirmSourceResultOverwrite?: boolean;
+    confirmCaseDeletion?: boolean;
+    confirmOutputDemotion?: boolean;
+  },
   user: RequestUser,
 ) => {
   const stored = await getStoredPreview(previewId, user);
   const dataset = await getDataset(stored.dataset_id);
   if (!dataset) throw notFound('Dataset');
   if ((dataset.version || 1) !== stored.expected_version) throw conflict('评测集版本已变化，请重新创建同步预览。');
+  const decisions = normalizeStoredDecisions(dataset, stored.payload_json.headers, stored.decisions_json);
+  const currentDecisionFingerprint = decisionFingerprint(decisions);
+  if (input.decisionFingerprint && input.decisionFingerprint !== currentDecisionFingerprint) {
+    throw conflict('同步设置已经变化，请等待最新预览后再应用。');
+  }
 
   let headers = stored.payload_json.headers;
   let rows = stored.payload_json.rows;
@@ -403,25 +509,29 @@ export const applyDatasetSyncPreview = async (
     binding = refreshed.binding;
   }
   const historicalRows = await listDatasetHistoricalRows(dataset.id);
-  const outputColumns = resolveOutputColumns(dataset, stored.decisions_json);
+  const outputColumns = resolveOutputColumns(dataset, decisions);
   const plan = buildDatasetVersionedSyncPlan({
     dataset,
     sourceHeaders: headers,
     sourceRows: rows,
     historicalRows,
     outputColumns,
-    outputPolicies: stored.decisions_json.outputPolicies,
+    outputPolicies: decisions.outputPolicies,
+    syncMode: decisions.syncMode,
   });
   if (!plan.valid) throw new ApiError(422, 'DATASET_SYNC_INVALID_SOURCE', '同步源校验失败，请重新预览。', plan.issues);
-  if (outputColumns.some(column => stored.decisions_json.outputPolicies[column] === 'source_overwrite') && !input.confirmSourceOverwrite) {
+  if (!plan.hasChanges) throw new ApiError(409, 'DATASET_SYNC_NO_CHANGES', '源数据与当前版本一致，无需生成新版本。');
+  if (plan.summary.sourceResultOverwrites > 0 && !(input.confirmSourceResultOverwrite || input.confirmSourceOverwrite)) {
     throw badRequest('源表覆盖平台结果需要二次确认。');
   }
+  if (plan.summary.deleted > 0 && !input.confirmCaseDeletion) throw badRequest('删除源表缺失的 case 需要二次确认。');
+  if (plan.outputColumnsDemoted.length > 0 && !input.confirmOutputDemotion) throw badRequest('将模型结果降级为数据字段需要二次确认。');
   const blockers = await findDatasetSyncGenerationBlockers(dbPool, dataset, plan);
   if (blockers.length) throw new ApiError(409, 'DATASET_SYNC_GENERATION_BLOCKED', '运行中的生成任务使用了将被修改的 case 或字段。', blockers);
 
   const now = Date.now();
   const version = (dataset.version || 1) + 1;
-  const changeSummary = `同步评测集：新增 ${plan.summary.added}，更新 ${plan.summary.updated}，删除 ${plan.summary.deleted}，恢复 ${plan.summary.restored}`;
+  const changeSummary = `${decisions.syncMode === 'merge' ? '更新评测集' : '完整同步评测集'}：新增 ${plan.summary.added}，更新 ${plan.summary.updated}，删除 ${plan.summary.deleted}，恢复 ${plan.summary.restored}`;
   const mappings = nextMappings(dataset, plan);
   const next: EvalDataset = {
     ...dataset,

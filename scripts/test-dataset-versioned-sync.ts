@@ -165,6 +165,11 @@ assert.deepEqual(legacyMappedPlan.summary, {
   unchanged: 0,
   staleResults: 0,
   sourceResultOverwrites: 0,
+  sourceResultFills: 0,
+  sourceResultReplacements: 0,
+  sourceResultClears: 0,
+  outputColumnsPromoted: 0,
+  outputColumnsDemoted: 1,
 });
 assert.deepEqual(
   legacyMappedPlan.rows.map(row => row[DATASET_ITEM_ID_KEY]),
@@ -254,6 +259,11 @@ assert.deepEqual(preservePlan.summary, {
   unchanged: 0,
   staleResults: 1,
   sourceResultOverwrites: 0,
+  sourceResultFills: 0,
+  sourceResultReplacements: 0,
+  sourceResultClears: 0,
+  outputColumnsPromoted: 0,
+  outputColumnsDemoted: 0,
 });
 assert.deepEqual(preservePlan.rows.map(row => row.case_id), ['case-restored', 'case-1', 'case-new'], 'source order is authoritative');
 assert.equal(preservePlan.rows[0][DATASET_ITEM_ID_KEY], 'stable-restored', 're-added identity must restore historical stable ID');
@@ -299,6 +309,9 @@ const fillPlan = buildDatasetVersionedSyncPlan({
   outputPolicies: { model_result: 'fill_platform_blanks' },
 });
 assert.equal(fillPlan.rows[0].model_result, 'https://source.example.com/fill.mp4');
+assert.equal(fillPlan.summary.sourceResultFills, 1);
+assert.equal(fillPlan.summary.sourceResultReplacements, 0);
+assert.equal(fillPlan.summary.sourceResultOverwrites, 0, 'filling an empty platform result must not require destructive overwrite confirmation');
 
 const blankFillPlan = buildDatasetVersionedSyncPlan({
   dataset: {
@@ -331,5 +344,130 @@ const overwritePlan = buildDatasetVersionedSyncPlan({
 });
 assert.equal(overwritePlan.rows[0].model_result, '', 'source overwrite must include blank cells');
 assert.equal(overwritePlan.summary.sourceResultOverwrites, 1);
+
+const mergePlan = buildDatasetVersionedSyncPlan({
+  dataset: current,
+  sourceHeaders: ['case_id', 'variant_label', 'prompt', 'model_result'],
+  sourceRows: [
+    { case_id: 'case-1', variant_label: '', prompt: 'merged prompt', model_result: 'https://source.example.com/merged.mp4' },
+    { case_id: 'case-new', variant_label: '', prompt: 'new case', model_result: '' },
+  ],
+  historicalRows: [],
+  outputColumns: ['model_result'],
+  outputPolicies: { model_result: 'source_overwrite' },
+  syncMode: 'merge',
+});
+assert.deepEqual(
+  mergePlan.rows.map(row => row.case_id),
+  ['case-1', 'case-delete', 'case-new'],
+  'merge synchronization must preserve existing order and append new cases in source order',
+);
+assert.equal(mergePlan.summary.deleted, 0, 'merge synchronization must retain cases omitted from the source');
+assert.equal(mergePlan.rows[0].category, 'identity', 'merge synchronization must retain existing columns omitted from the source');
+
+const overwrittenRow = mergePlan.rows[0];
+assert.equal(overwrittenRow.model_result, 'https://source.example.com/merged.mp4');
+assert.equal(
+  Object.prototype.hasOwnProperty.call(overwrittenRow, 'model_result_status'),
+  false,
+  'replacing a result from the source must clear generation records that describe the previous result',
+);
+assert.equal(overwrittenRow[DATASET_RESULT_META_KEY].model_result.source, 'source');
+assert.equal(overwrittenRow[DATASET_RESULT_META_KEY].model_result.stale, false);
+
+const unchangedResultWithChangedInputPlan = buildDatasetVersionedSyncPlan({
+  dataset: current,
+  sourceHeaders: ['case_id', 'variant_label', 'prompt', 'model_result'],
+  sourceRows: [{
+    case_id: 'case-1',
+    variant_label: '',
+    prompt: 'changed prompt',
+    model_result: 'https://cdn.example.com/case-1.mp4',
+  }],
+  historicalRows: [],
+  outputColumns: ['model_result'],
+  outputPolicies: { model_result: 'source_overwrite' },
+  syncMode: 'merge',
+});
+assert.equal(
+  unchangedResultWithChangedInputPlan.rows[0][DATASET_RESULT_META_KEY].model_result.stale,
+  true,
+  'selecting source authority must not mark an unchanged result fresh after its inputs change',
+);
+assert.equal(
+  unchangedResultWithChangedInputPlan.rows[0].model_result_status,
+  'succeeded',
+  'an unchanged result must retain its matching generation record',
+);
+
+const demotedOutputPlan = buildDatasetVersionedSyncPlan({
+  dataset: current,
+  sourceHeaders: ['case_id', 'variant_label', 'prompt', 'model_result'],
+  sourceRows: [{
+    case_id: 'case-1',
+    variant_label: '',
+    prompt: 'old prompt',
+    model_result: 'https://cdn.example.com/case-1.mp4',
+  }],
+  historicalRows: [],
+  outputColumns: [],
+  outputPolicies: {},
+  syncMode: 'merge',
+});
+assert.equal(demotedOutputPlan.rows[0].model_result, 'https://cdn.example.com/case-1.mp4');
+assert.equal(
+  Object.prototype.hasOwnProperty.call(demotedOutputPlan.rows[0], 'model_result_status'),
+  false,
+  'demoting an output to a data column must remove its current generation records',
+);
+assert.equal(
+  Object.prototype.hasOwnProperty.call(demotedOutputPlan.rows[0], DATASET_RESULT_META_KEY),
+  false,
+  'demoting an output to a data column must remove its current result freshness metadata',
+);
+
+const ignoredCompanionPlan = buildDatasetVersionedSyncPlan({
+  dataset: current,
+  sourceHeaders: ['case_id', 'variant_label', 'prompt', 'model_result', 'model_result_status'],
+  sourceRows: [{
+    case_id: 'case-1',
+    variant_label: '',
+    prompt: 'old prompt',
+    model_result: 'https://source.example.com/replacement.mp4',
+    model_result_status: 'forged-source-status',
+  }],
+  historicalRows: [],
+  outputColumns: ['model_result'],
+  outputPolicies: { model_result: 'source_overwrite' },
+  syncMode: 'merge',
+});
+assert.deepEqual(ignoredCompanionPlan.ignoredSourceColumns, ['model_result_status']);
+assert.equal(
+  Object.prototype.hasOwnProperty.call(ignoredCompanionPlan.rows[0], 'model_result_status'),
+  false,
+  'source generation-record columns must not be imported as trusted platform audit data',
+);
+
+const noChangeDataset: EvalDataset = {
+  ...current,
+  inputSchema: current.inputSchema.filter(field => field.key !== 'model_result_notes'),
+  items: [current.items[0]],
+};
+const noChangePlan = buildDatasetVersionedSyncPlan({
+  dataset: noChangeDataset,
+  sourceHeaders: ['case_id', 'variant_label', 'prompt', 'category', 'model_result'],
+  sourceRows: [{
+    case_id: 'case-1',
+    variant_label: '',
+    prompt: 'old prompt',
+    category: 'identity',
+    model_result: 'https://cdn.example.com/case-1.mp4',
+  }],
+  historicalRows: [],
+  outputColumns: ['model_result'],
+  outputPolicies: { model_result: 'preserve_platform' },
+  syncMode: 'merge',
+});
+assert.equal(noChangePlan.hasChanges, false, 'an identical merge must not create an empty dataset version');
 
 console.log('Versioned dataset synchronization tests passed.');

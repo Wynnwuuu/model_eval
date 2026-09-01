@@ -1017,3 +1017,22 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - Added `PATCH /api/datasets/:datasetId/items/batch` with server-side read-only/identity/type/limit validation, warning confirmation, stable IDs, source-trace synchronization, optimistic version locking, and one transactional dataset version/task propagation.
 - Browser verification passed for 2x2 paste, copy round-trip, undo/redo, one-version save, warning confirmation, media-control click isolation, 390px wrapping, and SPA leave protection.
 - Validation passed: CSV/grid/batch tests, dataset table/filter/sync/direct-import/mapping/deletion/clone/task-case regressions, generation tests, TypeScript, frontend/server builds, PostgreSQL API smoke, `local:check`, and `git diff --check`.
+
+# 2026-09-01: Dataset synchronization source authority repair
+
+### Completed
+
+- Rebased the work on `github/main@6aa80fa`, including the complete export and grid-editing release, in an isolated worktree.
+- Added an explicit default merge mode that updates matching cases and appends new cases while retaining source-omitted cases and columns. Full snapshot remains available and requires confirmation for real deletions.
+- Replaced the one-way new-column role selector with bidirectional data/model-result roles, guarded output demotion, and per-output source policies: platform first, fill platform blanks, or source authoritative including clears.
+- Made preview recomputation automatic and serialized. Fixed the React Strict Mode lifecycle bug that left the action permanently disabled after a policy change, and normalized legacy API previews for rolling-deployment safety.
+- Separated result fills, replacements, and clears. Only replacement/clear of an existing platform result is destructive and requires confirmation; no-op previews cannot create empty versions.
+- Ignored source-provided generation companion columns, preserved unchanged generation audit, removed obsolete audit when the result is replaced/cleared or an output is demoted, and kept retained results stale when their generation inputs change.
+
+### Validation
+
+- Passed versioned-sync unit and PostgreSQL integration tests, all focused dataset import/clone/deletion/filter/task-selection regressions, generation and generation-DB regressions, API smoke, Arena, TypeScript, frontend build, and server build.
+- Browser QA on the latest local API verified source-authoritative result updates, one safe fill plus one destructive replacement, automatic PATCH recomputation, confirmation gating, enabled apply action, desktop and 390x844 layouts, and zero errors in a fresh console session.
+- A 500-case, 24-column preview benchmark ran 60 alternating policy calculations at p50 17.83 ms, p95 25.08 ms, and max 37.61 ms. Browser network inspection confirmed one debounced, serialized PATCH per settled decision and no polling.
+- Final release gates passed against the latest local API: PostgreSQL API smoke, dataset runtime-memory regression, non-overlapping polling, layout sizing, TypeScript, frontend production build, and server production build.
+- No dataset version was applied during browser QA and no paid generation ran.

@@ -1,6 +1,6 @@
 import { collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, orderBy, query, setDoc } from '../../datastore';
 import { auth, db } from '../../auth';
-import { DatasetSyncOutputPolicy, DatasetSyncPreview, DatasetSyncSummary, DatasetVersionSnapshot, EvalDataset, EvalTask, EvaluationItem, VoteRecord } from '../../types';
+import { DatasetSyncColumnRole, DatasetSyncMode, DatasetSyncOutputPolicy, DatasetSyncPreview, DatasetSyncSummary, DatasetVersionSnapshot, EvalDataset, EvalTask, EvaluationItem, VoteRecord } from '../../types';
 import { buildDatasetClone } from '../../datasetClone';
 import {
   detectDatasetColumnRenames,
@@ -498,7 +498,9 @@ export async function createDatasetSyncPreview(
 export async function updateDatasetSyncPreview(
   previewId: string,
   patch: {
+    syncMode?: DatasetSyncMode;
     outputPolicies?: Record<string, DatasetSyncOutputPolicy>;
+    columnRoles?: Record<string, DatasetSyncColumnRole>;
     newColumnRoles?: Record<string, 'source' | 'output'>;
   },
 ) {
@@ -509,10 +511,17 @@ export async function updateDatasetSyncPreview(
   return response.preview;
 }
 
-export async function applyDatasetSyncPreview(previewId: string, confirmSourceOverwrite: boolean) {
+export async function applyDatasetSyncPreview(previewId: string, input: {
+  decisionFingerprint: string;
+  /** @deprecated Sent during rolling deployments for older API instances. */
+  confirmSourceOverwrite?: boolean;
+  confirmSourceResultOverwrite?: boolean;
+  confirmCaseDeletion?: boolean;
+  confirmOutputDemotion?: boolean;
+}) {
   const response = await requestJson<{ dataset: EvalDataset }>(`/api/datasets/sync-previews/${previewId}/apply`, {
     method: 'POST',
-    body: JSON.stringify({ confirmSourceOverwrite }),
+    body: JSON.stringify(input),
   });
   notifyDatasetReloaders();
   return response.dataset;

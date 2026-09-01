@@ -72,7 +72,9 @@ datasetRoutes.post('/:datasetId/sync-previews', async (req, res) => {
 datasetRoutes.patch('/sync-previews/:previewId', async (req, res) => {
   try {
     const preview = await updateDatasetSyncPreview(req.params.previewId, {
+      syncMode: req.body?.syncMode,
       outputPolicies: req.body?.outputPolicies,
+      columnRoles: req.body?.columnRoles,
       newColumnRoles: req.body?.newColumnRoles,
     }, req.user);
     res.json({ preview });
@@ -84,7 +86,11 @@ datasetRoutes.patch('/sync-previews/:previewId', async (req, res) => {
 datasetRoutes.post('/sync-previews/:previewId/apply', async (req, res) => {
   try {
     const dataset = await applyDatasetSyncPreview(req.params.previewId, {
+      decisionFingerprint: req.body?.decisionFingerprint,
       confirmSourceOverwrite: req.body?.confirmSourceOverwrite === true,
+      confirmSourceResultOverwrite: req.body?.confirmSourceResultOverwrite === true,
+      confirmCaseDeletion: req.body?.confirmCaseDeletion === true,
+      confirmOutputDemotion: req.body?.confirmOutputDemotion === true,
     }, req.user);
     res.json({ dataset, syncSummary: dataset.syncSummary });
   } catch (error) {

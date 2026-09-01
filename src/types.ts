@@ -458,6 +458,10 @@ export type DatasetSyncOutputPolicy =
   | 'fill_platform_blanks'
   | 'source_overwrite';
 
+export type DatasetSyncMode = 'merge' | 'snapshot';
+
+export type DatasetSyncColumnRole = 'source' | 'output';
+
 export interface DatasetSyncFieldChange {
   field: string;
   before: unknown;
@@ -483,6 +487,11 @@ export interface DatasetSyncPreviewSummary {
   unchanged: number;
   staleResults: number;
   sourceResultOverwrites: number;
+  sourceResultFills: number;
+  sourceResultReplacements: number;
+  sourceResultClears: number;
+  outputColumnsPromoted: number;
+  outputColumnsDemoted: number;
 }
 
 export interface DatasetSyncPreview {
@@ -491,14 +500,23 @@ export interface DatasetSyncPreview {
   expectedVersion: number;
   source: DatasetSyncSourceBinding;
   sourceHeaders: string[];
+  ignoredSourceColumns: string[];
+  syncMode: DatasetSyncMode;
   outputColumns: string[];
   outputPolicies: Record<string, DatasetSyncOutputPolicy>;
+  columnRoles: Record<string, DatasetSyncColumnRole>;
+  /** @deprecated Kept for previews created before the complete column-role contract. */
   newColumnRoles: Record<string, 'source' | 'output'>;
   summary: DatasetSyncPreviewSummary;
   cases: DatasetSyncCaseChange[];
   blockers: Array<{ jobId: string; caseIds: string[]; reasons: string[] }>;
   validationIssues: Array<{ code: string; message: string; rowIndexes?: number[] }>;
+  warnings: Array<{ code: string; message: string; columns?: string[] }>;
+  hasChanges: boolean;
+  decisionFingerprint: string;
   requiresOverwriteConfirmation: boolean;
+  requiresDeletionConfirmation: boolean;
+  requiresDemotionConfirmation: boolean;
   createdAt: number;
   expiresAt: number;
 }

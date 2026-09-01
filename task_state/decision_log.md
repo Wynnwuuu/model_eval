@@ -578,3 +578,11 @@ An exact `case_id + variant_label` pair is the only business identity eligible f
 - Generation companion and system/audit fields are selectable and copyable but read-only. Row overflow may append rows only when the paste includes a valid unique business case ID; columns are never created by paste.
 - Confirmable data-quality warnings are distinct from hard structural errors. The server recomputes both and never trusts client validation.
 - Unsaved draft state is reported to the app router so normal SPA navigation receives the same leave confirmation as browser close or refresh.
+
+# 2026-09-01: Dataset synchronization distinguishes row scope, column role, and value authority
+
+- Synchronization scope and result authority are independent decisions. `merge` is the default maintenance behavior; `snapshot` is an explicit source-complete replacement with deletion confirmation.
+- A column's role (`source` or `output`) is independent from an output value policy. Selecting source authority for a model-result column updates its values without demoting it from the generation/evaluation contract.
+- `source_overwrite` means exact source authority, including blank-cell clears. `fill_platform_blanks` only fills missing platform results, while `preserve_platform` never replaces a stored result.
+- Generation companion columns and freshness metadata are platform-owned audit state. Source copies are ignored, result replacement/clear invalidates old audit, and unchanged results keep audit while becoming stale when generation dependencies change.
+- Preview decisions are versioned by a deterministic fingerprint. Apply rejects stale decisions, no-op versions, unresolved generation dependencies, and unconfirmed destructive result changes, case deletion, or output demotion.

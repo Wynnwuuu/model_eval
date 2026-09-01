@@ -7,6 +7,7 @@ import { getDataset, getDatasetVersion, listDatasets, saveDataset } from '../ser
 import {
   applyDatasetSyncPreview,
   createDatasetSyncPreview,
+  updateDatasetSyncPreview,
 } from '../server/datasets/datasetSyncService.ts';
 import {
   createGenerationBatchFromPreflight,
@@ -68,7 +69,7 @@ const makePreflight = (dataset: EvalDataset, requestHash: string): StoredGenerat
       datasetId: dataset.id,
       datasetVersion: dataset.version || 1,
       datasetName: dataset.name,
-      targetColumn: 'queued_result',
+      targetColumn: 'model_result',
       modelName: model.modelName,
       selectedDatasetItemIds: [row[DATASET_ITEM_ID_KEY]],
       inputMapping: { promptColumn: 'prompt' },
@@ -128,61 +129,144 @@ try {
     { case_id: 'case-1', variant_label: '', prompt: 'new prompt', category: 'new', model_result: '' },
     { case_id: 'case-3', variant_label: '', prompt: 'added', category: 'new', model_result: '' },
   ]), user);
-  assert.deepEqual(firstPreview.summary, {
-    added: 1,
-    updated: 1,
-    deleted: 1,
-    restored: 0,
-    unchanged: 0,
-    staleResults: 1,
-    sourceResultOverwrites: 0,
-  });
-  const versionTwo = await applyDatasetSyncPreview(firstPreview.id, {}, user);
+  assert.equal(firstPreview.syncMode, 'merge');
+  assert.equal(firstPreview.summary.added, 1);
+  assert.equal(firstPreview.summary.updated, 1);
+  assert.equal(firstPreview.summary.deleted, 0);
+  assert.equal(firstPreview.summary.unchanged, 1);
+  assert.equal(firstPreview.summary.staleResults, 1);
+  const versionTwo = await applyDatasetSyncPreview(firstPreview.id, {
+    decisionFingerprint: firstPreview.decisionFingerprint,
+  }, user);
   assert.equal(versionTwo.version, 2);
   assert.equal(versionTwo.items[0][DATASET_ITEM_ID_KEY], stableOne);
   assert.equal(versionTwo.items[0].model_result, 'https://example.com/one.mp4');
   assert.equal(versionTwo.items[0][DATASET_RESULT_META_KEY].model_result.stale, true);
-  assert.equal(versionTwo.datasetCard?.sampleSize, 2);
-  assert.match(versionTwo.datasetCard?.latestChange || '', /同步评测集/);
+  assert.equal(versionTwo.items.length, 3, 'merge synchronization must retain source-omitted cases');
+  assert.equal(versionTwo.datasetCard?.sampleSize, 3);
+  assert.match(versionTwo.datasetCard?.latestChange || '', /更新评测集/);
 
-  const restorePreview = await createDatasetSyncPreview(datasetId, 2, manualSource([
+  const snapshotDraft = await createDatasetSyncPreview(datasetId, 2, manualSource([
+    { case_id: 'case-1', variant_label: '', prompt: 'new prompt', category: 'new', model_result: '' },
+    { case_id: 'case-3', variant_label: '', prompt: 'added', category: 'new', model_result: '' },
+  ]), user);
+  const snapshotPreview = await updateDatasetSyncPreview(snapshotDraft.id, { syncMode: 'snapshot' }, user);
+  assert.equal(snapshotPreview.summary.deleted, 1);
+  assert.equal(snapshotPreview.requiresDeletionConfirmation, true);
+  await assert.rejects(
+    applyDatasetSyncPreview(snapshotPreview.id, { decisionFingerprint: snapshotPreview.decisionFingerprint }, user),
+    (error: any) => error?.statusCode === 400,
+    'snapshot deletion must require explicit confirmation',
+  );
+  const versionThree = await applyDatasetSyncPreview(snapshotPreview.id, {
+    decisionFingerprint: snapshotPreview.decisionFingerprint,
+    confirmCaseDeletion: true,
+  }, user);
+  assert.equal(versionThree.items.length, 2);
+
+  const restorePreview = await createDatasetSyncPreview(datasetId, 3, manualSource([
     { case_id: 'case-1', variant_label: '', prompt: 'new prompt', category: 'new', model_result: '' },
     { case_id: 'case-2', variant_label: 'alt', prompt: 'restore later', category: 'restored', model_result: '' },
     { case_id: 'case-3', variant_label: '', prompt: 'added', category: 'new', model_result: '' },
   ]), user);
   assert.equal(restorePreview.summary.restored, 1);
-  const versionThree = await applyDatasetSyncPreview(restorePreview.id, {}, user);
-  const restored = versionThree.items.find(row => row.case_id === 'case-2')!;
+  const versionFour = await applyDatasetSyncPreview(restorePreview.id, {
+    decisionFingerprint: restorePreview.decisionFingerprint,
+  }, user);
+  const restored = versionFour.items.find(row => row.case_id === 'case-2')!;
   assert.equal(restored[DATASET_ITEM_ID_KEY], stableTwo);
   assert.equal(restored.model_result, 'https://example.com/two.mp4');
 
-  const stalePreflight = makePreflight(versionThree, `stale-${suffix}`);
-  const metadataPreview = await createDatasetSyncPreview(datasetId, 3, manualSource([
+  const overwriteDraft = await createDatasetSyncPreview(datasetId, 4, manualSource([
+    { case_id: 'case-1', variant_label: '', prompt: 'new prompt', category: 'new', model_result: 'https://source.example.com/replaced.mp4' },
+    { case_id: 'case-2', variant_label: 'alt', prompt: 'restore later', category: 'restored', model_result: 'https://example.com/two.mp4' },
+    { case_id: 'case-3', variant_label: '', prompt: 'added', category: 'new', model_result: '' },
+  ]), user);
+  const overwritePreview = await updateDatasetSyncPreview(overwriteDraft.id, {
+    outputPolicies: { model_result: 'source_overwrite' },
+  }, user);
+  assert.equal(overwritePreview.summary.sourceResultReplacements, 1);
+  assert.equal(overwritePreview.requiresOverwriteConfirmation, true);
+  await assert.rejects(
+    applyDatasetSyncPreview(overwritePreview.id, { decisionFingerprint: overwritePreview.decisionFingerprint }, user),
+    (error: any) => error?.statusCode === 400,
+    'source-authoritative result replacement must require explicit confirmation',
+  );
+  const versionFive = await applyDatasetSyncPreview(overwritePreview.id, {
+    decisionFingerprint: overwritePreview.decisionFingerprint,
+    confirmSourceResultOverwrite: true,
+  }, user);
+  assert.equal(versionFive.items[0].model_result, 'https://source.example.com/replaced.mp4');
+
+  const noChangePreview = await createDatasetSyncPreview(datasetId, 5, manualSource([
+    { case_id: 'case-1', variant_label: '', prompt: 'new prompt', category: 'new', model_result: 'https://source.example.com/replaced.mp4' },
+    { case_id: 'case-2', variant_label: 'alt', prompt: 'restore later', category: 'restored', model_result: 'https://example.com/two.mp4' },
+    { case_id: 'case-3', variant_label: '', prompt: 'added', category: 'new', model_result: '' },
+  ]), user);
+  assert.equal(noChangePreview.hasChanges, false);
+  await assert.rejects(
+    applyDatasetSyncPreview(noChangePreview.id, { decisionFingerprint: noChangePreview.decisionFingerprint }, user),
+    (error: any) => error?.code === 'DATASET_SYNC_NO_CHANGES',
+  );
+  const promotedColumnPreview = await updateDatasetSyncPreview(noChangePreview.id, {
+    columnRoles: { category: 'output' },
+  }, user);
+  assert.equal(promotedColumnPreview.outputPolicies.category, 'preserve_platform');
+  assert.equal(promotedColumnPreview.outputColumns.includes('category'), true);
+  const restoredColumnPreview = await updateDatasetSyncPreview(noChangePreview.id, {
+    columnRoles: { category: 'source' },
+  }, user);
+  assert.equal(Object.prototype.hasOwnProperty.call(restoredColumnPreview.outputPolicies, 'category'), false);
+  assert.equal(restoredColumnPreview.outputColumns.includes('category'), false);
+  assert.equal(restoredColumnPreview.hasChanges, false);
+
+  const stalePreflight = makePreflight(versionFive, `stale-${suffix}`);
+  const metadataPreview = await createDatasetSyncPreview(datasetId, 5, manualSource([
     { case_id: 'case-1', variant_label: '', prompt: 'new prompt', category: 'metadata changed', model_result: '' },
     { case_id: 'case-2', variant_label: 'alt', prompt: 'restore later', category: 'restored', model_result: '' },
     { case_id: 'case-3', variant_label: '', prompt: 'added', category: 'new', model_result: '' },
   ]), user);
-  const versionFour = await applyDatasetSyncPreview(metadataPreview.id, {}, user);
-  assert.equal(versionFour.version, 4);
+  await assert.rejects(
+    applyDatasetSyncPreview(metadataPreview.id, { decisionFingerprint: 'stale-decision' }, user),
+    (error: any) => error?.statusCode === 409,
+    'apply must reject a decision fingerprint that does not match the displayed preview',
+  );
+  const versionSix = await applyDatasetSyncPreview(metadataPreview.id, {
+    decisionFingerprint: metadataPreview.decisionFingerprint,
+  }, user);
+  assert.equal(versionSix.version, 6);
   await assert.rejects(
     createGenerationBatchFromPreflight(stalePreflight, user),
     (error: any) => error?.statusCode === 409,
     'a preflight from an earlier dataset version must never create a batch',
   );
 
-  const currentPreflight = makePreflight(versionFour, `current-${suffix}`);
+  const currentPreflight = makePreflight(versionSix, `current-${suffix}`);
   await saveGenerationPreflight(currentPreflight);
   await createGenerationBatchFromPreflight(currentPreflight, user);
-  const allowedMetadataPreview = await createDatasetSyncPreview(datasetId, 4, manualSource([
+  const demotionDraft = await createDatasetSyncPreview(datasetId, 6, manualSource([
+    { case_id: 'case-1', variant_label: '', prompt: 'new prompt', category: 'metadata changed', model_result: '' },
+    { case_id: 'case-2', variant_label: 'alt', prompt: 'restore later', category: 'restored', model_result: '' },
+    { case_id: 'case-3', variant_label: '', prompt: 'added', category: 'new', model_result: '' },
+  ]), user);
+  const demotionPreview = await updateDatasetSyncPreview(demotionDraft.id, {
+    columnRoles: { model_result: 'source' },
+  }, user);
+  assert.equal(demotionPreview.requiresDemotionConfirmation, true);
+  assert.equal(demotionPreview.blockers.length, 1, 'a running target column must not be demoted');
+  assert.match(demotionPreview.blockers[0].reasons.join('；'), /降级为数据字段/);
+  const allowedMetadataPreview = await createDatasetSyncPreview(datasetId, 6, manualSource([
     { case_id: 'case-1', variant_label: '', prompt: 'new prompt', category: 'metadata changed while queued', model_result: '' },
     { case_id: 'case-2', variant_label: 'alt', prompt: 'restore later', category: 'restored', model_result: '' },
     { case_id: 'case-3', variant_label: '', prompt: 'added', category: 'new', model_result: '' },
   ]), user);
   assert.equal(allowedMetadataPreview.blockers.length, 0, 'unrelated metadata edits must remain available while generation is queued');
-  const versionFive = await applyDatasetSyncPreview(allowedMetadataPreview.id, {}, user);
-  assert.equal(versionFive.version, 5);
+  const versionSeven = await applyDatasetSyncPreview(allowedMetadataPreview.id, {
+    decisionFingerprint: allowedMetadataPreview.decisionFingerprint,
+  }, user);
+  assert.equal(versionSeven.version, 7);
 
-  const blockedPreview = await createDatasetSyncPreview(datasetId, 5, manualSource([
+  const blockedPreview = await createDatasetSyncPreview(datasetId, 7, manualSource([
     { case_id: 'case-1', variant_label: '', prompt: 'changed while queued', category: 'metadata changed while queued', model_result: '' },
     { case_id: 'case-2', variant_label: 'alt', prompt: 'restore later', category: 'restored', model_result: '' },
     { case_id: 'case-3', variant_label: '', prompt: 'added', category: 'new', model_result: '' },
@@ -190,13 +274,13 @@ try {
   assert.equal(blockedPreview.blockers.length, 1);
   assert.equal(blockedPreview.blockers[0].jobId.startsWith('gen-'), true);
   await assert.rejects(
-    applyDatasetSyncPreview(blockedPreview.id, {}, user),
+    applyDatasetSyncPreview(blockedPreview.id, { decisionFingerprint: blockedPreview.decisionFingerprint }, user),
     (error: any) => error?.code === 'DATASET_SYNC_GENERATION_BLOCKED',
   );
 
-  assert.equal((await getDataset(datasetId))?.version, 5, 'a blocked synchronization must not create a partial version');
+  assert.equal((await getDataset(datasetId))?.version, 7, 'a blocked synchronization must not create a partial version');
   const listedDataset = (await listDatasets()).find(dataset => dataset.id === datasetId);
-  assert.equal(listedDataset?.version, 5, 'dataset listings must materialize the current version');
+  assert.equal(listedDataset?.version, 7, 'dataset listings must materialize the current version');
   assert.equal(listedDataset?.items.length, 3, 'dataset listings must retain every current case');
   const versionOne = await getDatasetVersion(datasetId, 1);
   assert.equal(versionOne?.items[0].prompt, 'old prompt', 'explicit historical version reads must remain available');

@@ -906,7 +906,9 @@ const main = async () => {
     });
     assert(syncPreview.preview.summary.updated === 1, 'sync preview did not detect the updated case');
     assert(syncPreview.preview.summary.added === 1, 'sync preview did not detect the added case');
-    const synchronized = await sendJson<{ dataset: any }>(`/api/datasets/sync-previews/${syncPreview.preview.id}/apply`, 'POST', {});
+    const synchronized = await sendJson<{ dataset: any }>(`/api/datasets/sync-previews/${syncPreview.preview.id}/apply`, 'POST', {
+      decisionFingerprint: syncPreview.preview.decisionFingerprint,
+    });
     assert(synchronized.dataset.version === 2, 'sync apply did not create one new version');
     assert(synchronized.dataset.items[0].sync_result === 'https://example.com/sync.mp4', 'sync apply did not preserve the platform result');
     assert(synchronized.dataset.items[0].__generationResultMeta.sync_result.stale === true, 'sync apply did not mark the retained result stale');
