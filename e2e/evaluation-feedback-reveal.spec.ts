@@ -79,6 +79,104 @@ const enableRevealAfterSubmit = async (page: Page) => {
   await expectThumbOnSide('right');
 };
 
+test('A/B visual outputs open a blind-safe viewer and navigate without voting', async ({ page }) => {
+  await seedSession(page, baseSession({
+    items: [{ ...buildItem(70), modelOutputs: buildItem(70).modelOutputs.slice(0, 2) }],
+    taskModels: models.slice(0, 2),
+    taskParadigm: 'Arena',
+    taskEvaluationConfig: { method: 'ab_preference', blind: true, tiePolicy: 'allow' },
+  }));
+
+  await openRestoredEvaluation(page);
+  await page.getByRole('button', { name: '放大查看选项 1' }).click();
+  const viewer = page.getByRole('dialog', { name: '产物全屏预览' });
+  await expect(viewer).toBeVisible();
+  await expect(viewer).toContainText('选项 1');
+  await expect(viewer).not.toContainText('Reveal Model A');
+  await page.keyboard.press('1');
+  await expect(viewer).toBeVisible();
+  await expect(page.getByText('本 case 已保存，模型身份已揭示')).toHaveCount(0);
+  await viewer.getByRole('button', { name: '下一项产物' }).click();
+  await expect(viewer).toContainText('选项 2');
+  await page.keyboard.press('Escape');
+  await expect(viewer).toHaveCount(0);
+});
+
+test('video output viewer remains usable without horizontal overflow on mobile', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const videoDataUrl = 'data:video/mp4;base64,AAAA';
+  const item = {
+    ...buildItem(72),
+    type: 'video',
+    modelA_Url: videoDataUrl,
+    modelB_Url: videoDataUrl,
+    modelOutputs: buildItem(72).modelOutputs.slice(0, 2).map(output => ({
+      ...output,
+      url: videoDataUrl,
+    })),
+  };
+  await seedSession(page, baseSession({
+    items: [item],
+    taskModels: models.slice(0, 2),
+    taskParadigm: 'Arena',
+    taskEvaluationConfig: { method: 'ab_preference', blind: true, tiePolicy: 'allow' },
+  }));
+
+  await openRestoredEvaluation(page);
+  await page.getByRole('button', { name: '放大查看选项 1' }).click();
+  const viewer = page.getByRole('dialog', { name: '产物全屏预览' });
+  await expect(viewer).toBeVisible();
+  await expect(viewer.getByRole('button', { name: '下一项产物' })).toBeVisible();
+  const layout = await page.evaluate(() => ({
+    innerWidth: window.innerWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.innerWidth);
+  await page.keyboard.press('ArrowRight');
+  await expect(viewer).toContainText('选项 2');
+  await page.keyboard.press('Escape');
+  await expect(viewer).toHaveCount(0);
+});
+
+for (const scenario of [
+  {
+    name: 'score',
+    paradigm: 'MOS',
+    config: {
+      method: 'direct_score',
+      blind: true,
+      dimensions: [{ id: 'quality', name: '整体质量', type: 'star_rating', weight: 1, required: true }],
+      requireReason: false,
+    },
+  },
+  {
+    name: 'rank',
+    paradigm: 'Arena-rank',
+    config: { method: 'rank_order', blind: true, tiePolicy: 'allow' },
+  },
+  {
+    name: 'benchmark',
+    paradigm: 'BenchmarkPreview',
+    config: { method: 'benchmark_preview', blind: false },
+  },
+] as const) {
+  test(`${scenario.name} visual outputs expose the shared fullscreen viewer`, async ({ page }) => {
+    await seedSession(page, baseSession({
+      items: [buildItem(71)],
+      taskParadigm: scenario.paradigm,
+      taskEvaluationConfig: scenario.config,
+    }));
+
+    await openRestoredEvaluation(page);
+    const expandButtons = page.getByRole('button', { name: /^放大查看/ });
+    await expect(expandButtons.first()).toBeVisible();
+    await expandButtons.first().click();
+    await expect(page.getByRole('dialog', { name: '产物全屏预览' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog', { name: '产物全屏预览' })).toHaveCount(0);
+  });
+}
+
 test('reveal is off by default and submission advances directly', async ({ page }) => {
   await seedSession(page, baseSession({
     items: [buildItem(0), buildItem(1)],

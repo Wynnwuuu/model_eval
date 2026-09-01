@@ -288,6 +288,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const [bulkPromptColumn, setBulkPromptColumn] = useState('');
   const [reviewsDirty, setReviewsDirty] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
+  const [replacementConfirmed, setReplacementConfirmed] = useState(false);
   const [batch, setBatch] = useState<GenerationBatch | null>(null);
   const [queue, setQueue] = useState<GenerationQueueState>();
   const [busy, setBusy] = useState(false);
@@ -311,7 +312,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const targetOptions = useMemo(() => outputColumns.map(column => ({
     column,
     inspection: selectedModel ? inspectGenerationTargetColumn(dataset, {
-      mode: 'fill_existing',
+      mode: 'update_existing',
       targetColumn: column,
       modelName: selectedModel.modelName || selectedModel.id,
       outputModality: selectedModel.outputModality,
@@ -349,6 +350,14 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   const eligibleDatasetItemIds = scopeEligibility.eligibleDatasetItemIds;
   const scopeCounts = scopeEligibility.counts;
   const eligibleSelectionSignature = eligibleDatasetItemIds.join('|');
+  const selectedReplacementDatasetItemIds = useMemo(() => {
+    if (targetMode !== 'update_existing') return [];
+    const selected = new Set(selectedDatasetItemIds);
+    return (dataset.items || [])
+      .filter(row => selected.has(String(row[DATASET_ITEM_ID_KEY] || '').trim()))
+      .filter(row => String(row[targetColumn] ?? '').trim())
+      .map(row => String(row[DATASET_ITEM_ID_KEY] || '').trim());
+  }, [dataset.items, selectedDatasetItemIds, targetColumn, targetMode]);
   const maxBatchSize = runtimeHealth?.maxBatchSize || 500;
   const selectionTooLarge = selectedDatasetItemIds.length > maxBatchSize;
   const mappingMode = inputMapping.mappingMode || 'assisted';
@@ -541,6 +550,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     setBulkPromptColumn('');
     setReviewsDirty(false);
     setConfirmed(false);
+    setReplacementConfirmed(false);
   };
 
   useEffect(() => {
@@ -559,6 +569,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     setExcludedCaseReviews({});
     setPreflight(null);
     setConfirmed(false);
+    setReplacementConfirmed(false);
   }, [
     dataset.id, dataset.version, eligibleSelectionSignature, initialBatchId, targetColumn, targetMode,
   ]);
@@ -860,6 +871,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     setBulkPromptColumn('');
     setReviewsDirty(false);
     setConfirmed(false);
+    setReplacementConfirmed(false);
   };
 
   const saveCaseReview = (datasetItemId: string, review: GenerationCaseReview) => {
@@ -1028,6 +1040,12 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
       targetColumn: targetColumn.trim(),
       targetMode,
       selectedDatasetItemIds: selectedIds,
+      replacementDatasetItemIds: targetMode === 'update_existing'
+        ? (dataset.items || [])
+            .filter(row => selectedIds.includes(String(row[DATASET_ITEM_ID_KEY] || '').trim()))
+            .filter(row => String(row[targetColumn] ?? '').trim())
+            .map(row => String(row[DATASET_ITEM_ID_KEY] || '').trim())
+        : undefined,
       inputMapping: {
         ...inputMapping,
         referenceVideoColumns: inputMapping.referenceVideoColumns || [],
@@ -1053,6 +1071,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     setError('');
     setBusy(true);
     setConfirmed(false);
+    setReplacementConfirmed(false);
     setPreflight(null);
     try {
       const next = await createExecutionPreflight(buildRequest(reviews, selectedIds));
@@ -1164,22 +1183,25 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
   };
 
   const confirmPreflight = async () => {
-    if (!preflight || !confirmed) return;
+    if (!preflight || !confirmed
+      || ((preflight.selectionSummary?.replaceSelected || 0) > 0 && !replacementConfirmed)) return;
     setError('');
     setBusy(true);
     try {
-      const created = await confirmExecutionPreflight(preflight.id);
+      const created = await confirmExecutionPreflight(preflight.id, replacementConfirmed);
       const loaded = await getExecutionBatch(created.batchId);
       setBatch(loaded);
       setPreflight(null);
       onBatchChange?.(loaded.id);
       setConfirmed(false);
+      setReplacementConfirmed(false);
       if (!isTerminalGenerationBatch(loaded)) startPolling(loaded.id);
     } catch (reason) {
       const typed = reason as Error & { status?: number; code?: string };
       if (typed.status === 409 || typed.status === 410) {
         setPreflight(null);
         setConfirmed(false);
+        setReplacementConfirmed(false);
       }
       if (typed.status === 503 && typed.code?.startsWith('GENERATION_WORKER')) {
         void getGenerationRuntimeHealth().then(setRuntimeHealth).catch(() => undefined);
@@ -1559,7 +1581,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                     <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
                       <div>
                         <h3 className="text-sm font-semibold text-slate-100">{copy.outputColumn}</h3>
-                        <p className="mt-1 text-xs text-slate-400">{'\u65b0\u5efa\u5217\u7528\u4e8e\u65b0\u4e00\u8f6e\u751f\u6210\uff1b\u8865\u9f50\u6a21\u5f0f\u53ea\u5904\u7406\u5df2\u6709\u8f93\u51fa\u5217\u4e2d\u7684\u7a7a\u767d case\u3002'}</p>
+                        <p className="mt-1 text-xs text-slate-400">{'\u65b0\u5efa\u5217\u7528\u4e8e\u65b0\u4e00\u8f6e\u751f\u6210\uff1b\u66f4\u65b0\u6a21\u5f0f\u53ef\u586b\u5145\u7a7a\u767d case\uff0c\u4e5f\u53ef\u9010\u9879\u52fe\u9009\u66ff\u6362\u5df2\u6709\u7ed3\u679c\u3002'}</p>
                       </div>
                       <div className="flex border border-white/10 bg-black/20 p-1" role="group" aria-label={'\u76ee\u6807\u5217\u6a21\u5f0f'}>
                         <button
@@ -1572,11 +1594,11 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                         </button>
                         <button
                           type="button"
-                          aria-pressed={targetMode === 'fill_existing'}
-                          onClick={() => changeTargetMode('fill_existing')}
-                          className={`px-3 py-1.5 text-xs ${targetMode === 'fill_existing' ? 'bg-amber-400 text-black' : 'text-slate-300 hover:bg-white/5'}`}
+                          aria-pressed={targetMode === 'update_existing'}
+                          onClick={() => changeTargetMode('update_existing')}
+                          className={`px-3 py-1.5 text-xs ${targetMode === 'update_existing' ? 'bg-amber-400 text-black' : 'text-slate-300 hover:bg-white/5'}`}
                         >
-                          {'\u8865\u9f50\u5df2\u6709\u5217'}
+                          {'\u66f4\u65b0\u5df2\u6709\u5217'}
                         </button>
                       </div>
                     </div>
@@ -1592,7 +1614,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                       </label>
                     ) : (
                       <label className="block text-xs text-slate-400">
-                        <span className="mb-1.5 block">{'\u9009\u62e9\u5f85\u8865\u9f50\u7684\u6a21\u578b\u8f93\u51fa\u5217'}</span>
+                        <span className="mb-1.5 block">{'\u9009\u62e9\u5f85\u66f4\u65b0\u7684\u6a21\u578b\u8f93\u51fa\u5217'}</span>
                         <select
                           value={targetColumn}
                           onChange={event => { setTargetColumn(event.target.value); invalidatePreflight(); }}
@@ -1612,10 +1634,10 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                       </label>
                     )}
 
-                    {targetMode === 'fill_existing' && !targetOptions.length && (
+                    {targetMode === 'update_existing' && !targetOptions.length && (
                       <div className="mt-3 flex items-start gap-2 text-sm text-amber-300">
                         <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-                        <span>{'\u5f53\u524d\u8bc4\u6d4b\u96c6\u6ca1\u6709\u53ef\u8865\u9f50\u7684\u6a21\u578b\u8f93\u51fa\u5217\u3002'}</span>
+                        <span>{'\u5f53\u524d\u8bc4\u6d4b\u96c6\u6ca1\u6709\u53ef\u66f4\u65b0\u7684\u6a21\u578b\u8f93\u51fa\u5217\u3002'}</span>
                       </div>
                     )}
                     {targetInspection?.errors.map((issue, index) => (
@@ -1901,11 +1923,12 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                   </div>
                 )}
 
-                <div className="mt-4 grid grid-cols-2 gap-px border border-white/10 bg-white/10 text-xs sm:grid-cols-3 lg:grid-cols-6">
+                <div className="mt-4 grid grid-cols-2 gap-px border border-white/10 bg-white/10 text-xs sm:grid-cols-3 lg:grid-cols-7">
                   {[
                     ['范围 case', scopeCounts.total, 'text-slate-100'],
                     ['可生成', scopeCounts.eligible, 'text-emerald-300'],
                     ['已有结果', scopeCounts.targetFilled, 'text-sky-300'],
+                    ['已选替换', selectedReplacementDatasetItemIds.length, 'text-amber-300'],
                     ['模态不匹配', scopeCounts.modalityMismatch, 'text-amber-300'],
                     ['缺稳定 ID', scopeCounts.missingStableId, 'text-red-300'],
                     ['最终已选', selectedDatasetItemIds.length, 'text-amber-200'],
@@ -1923,6 +1946,7 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                 inputMapping={inputMapping}
                 outputModality={selectedModel?.outputModality}
                 targetColumn={targetColumn}
+                targetMode={targetMode}
                 selectedDatasetItemIds={selectedDatasetItemIds}
                 scopeSourceRowIndexes={scopeSourceRowIndexes}
                 maxBatchSize={maxBatchSize}
@@ -1962,8 +1986,10 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                         <h3 className="text-base font-semibold text-slate-100">Preflight result</h3>
                         <p className="mt-1 text-xs text-slate-400">Expires {new Date(preflight.expiresAt).toLocaleString()}</p>
                       </div>
-                      <div className="grid grid-cols-2 gap-4 text-center text-xs sm:grid-cols-4">
+                      <div className="grid grid-cols-2 gap-4 text-center text-xs sm:grid-cols-6">
                         <div><div className="text-xl font-semibold text-slate-100">{preflight.selectionSummary?.selected ?? preflight.total}</div><div className="text-slate-500">{'\u5df2\u9009'}</div></div>
+                        <div><div className="text-xl font-semibold text-emerald-300">{preflight.selectionSummary?.fillSelected ?? preflight.total}</div><div className="text-slate-500">{'\u65b0\u589e'}</div></div>
+                        <div><div className="text-xl font-semibold text-amber-300">{preflight.selectionSummary?.replaceSelected ?? 0}</div><div className="text-slate-500">{'\u66ff\u6362'}</div></div>
                         <div><div className="text-xl font-semibold text-emerald-300">{preflight.validCount}</div><div className="text-slate-500">{'\u6709\u6548\u5e76\u5c06\u63d0\u4ea4'}</div></div>
                         <div><div className="text-xl font-semibold text-red-300">{preflight.invalidCount}</div><div className="text-slate-500">{'\u65e0\u6548\u4e0d\u63d0\u4ea4'}</div></div>
                         <div><div className="text-xl font-semibold text-slate-400">{preflight.selectionSummary?.unselected ?? Math.max(0, dataset.items.length - preflight.total)}</div><div className="text-slate-500">{'\u672a\u9009'}</div></div>
@@ -2202,6 +2228,22 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
                     <input type="checkbox" checked={confirmed} disabled={reviewsDirty} onChange={event => setConfirmed(event.target.checked)} className="mt-0.5" />
                     <span>{copy.explicitConfirm}</span>
                   </label>
+                  {(preflight.selectionSummary?.replaceSelected || 0) > 0 && (
+                    <label className="flex items-start gap-3 border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+                      <input
+                        type="checkbox"
+                        checked={replacementConfirmed}
+                        disabled={reviewsDirty}
+                        onChange={event => setReplacementConfirmed(event.target.checked)}
+                        className="mt-0.5"
+                      />
+                      <span>
+                        {'\u6211\u786e\u8ba4\u7528\u672c\u6279\u6b21\u65b0\u7ed3\u679c\u66ff\u6362 '}
+                        {preflight.selectionSummary?.replaceSelected || 0}
+                        {' \u4e2a\u5df2\u6709\u7ed3\u679c\uff1b\u53ea\u6709\u751f\u6210\u6210\u529f\u7684 case \u4f1a\u8986\u76d6\u539f\u7ed3\u679c\u3002'}
+                      </span>
+                    </label>
+                  )}
                 </>
               )}
 
@@ -2449,8 +2491,8 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
             )}
             {preflight && (
               <>
-                <button type="button" disabled={busy} onClick={() => { setPreflight(null); setConfirmed(false); setStep(2); }} className="border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200 disabled:opacity-40">{copy.rerunPreflight}</button>
-                <button type="button" disabled={busy || reviewsDirty || !confirmed || preflight.validCount === 0 || runtimeHealth?.workerEnabled === false} onClick={() => { void confirmPreflight(); }} className="inline-flex items-center gap-2 bg-amber-500 px-5 py-2 text-sm font-medium text-black disabled:opacity-40">
+                <button type="button" disabled={busy} onClick={() => { setPreflight(null); setConfirmed(false); setReplacementConfirmed(false); setStep(2); }} className="border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-200 disabled:opacity-40">{copy.rerunPreflight}</button>
+                <button type="button" disabled={busy || reviewsDirty || !confirmed || ((preflight.selectionSummary?.replaceSelected || 0) > 0 && !replacementConfirmed) || preflight.validCount === 0 || runtimeHealth?.workerEnabled === false} onClick={() => { void confirmPreflight(); }} className="inline-flex items-center gap-2 bg-amber-500 px-5 py-2 text-sm font-medium text-black disabled:opacity-40">
                   {busy ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />} {copy.confirm}
                 </button>
               </>

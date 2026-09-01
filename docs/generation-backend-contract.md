@@ -19,16 +19,18 @@ If Aion is unavailable, the endpoint returns `503 MODEL_CONFIG_UNAVAILABLE` and 
 
 ## Preflight and submission
 
-`POST /api/generation/preflights` accepts the dataset/version, model name, target column, input mapping, controls, seed policy, selected stable item IDs, and uploaded asset bindings.
+`POST /api/generation/preflights` accepts the dataset/version, model name, target column, input mapping, controls, seed policy, selected stable item IDs, explicit replacement item IDs, and uploaded asset bindings.
 
-The browser sends `targetMode` as `new` or `fill_existing`. New mode requires a column name that does not exist. Fill mode requires an existing compatible output column; known model mismatches are rejected, while legacy rows without model audit metadata produce a warning. `GET /api/generation/health` exposes `maxBatchSize` so clients can enforce the same selected-case limit before preflight.
+New clients send `targetMode` as `new` or `update_existing`. New mode requires a column name that does not exist. Update mode requires an existing compatible output column, including a completely populated column. Empty rows are ordinary `fill` intents; populated rows become `replace` intents only when their stable item IDs are also present in `replacementDatasetItemIds`. Known results from another model are rejected. Every populated row without both model and configuration audit metadata produces a confirmation warning. Historical `fill_existing` snapshots remain fill-only and cannot overwrite a populated result.
+
+The server derives each `fill`/`replace` write intent from the current dataset and records a fingerprint of the result, generation companion fields, and freshness metadata. It does not accept a client-provided snapshot fingerprint. `GET /api/generation/health` exposes `maxBatchSize` so clients can enforce the same selected-case limit before preflight.
 
 `selectedDatasetItemIds` has strict compatibility semantics: an omitted field means all cases for legacy clients, but an explicit empty array returns `400`. Unknown, duplicated, or ambiguous stable IDs are rejected. The server restores dataset order before validation and request hashing, so the same selected set is idempotent regardless of checkbox order. Cost estimation, input validation, and task creation operate only on selected cases; invalid selected cases remain visible in preflight but are not queued.
 
 
 The server reloads that dataset version, rebuilds every case, validates required inputs/assets/controls and target-column conflicts, and returns valid/invalid cases plus a conservative cost estimate. Unknown cost is explicitly reported as unknown.
 
-`POST /api/generation/batches` accepts `{ "batch": { "preflightId": "..." } }`. It reloads live Aion configuration and compares the fingerprint. Changed configuration returns `409`; expired preflight returns `410`. Only valid cases are queued. A unique request hash prevents duplicate-click submissions.
+`POST /api/generation/batches` accepts `{ "batch": { "preflightId": "...", "replacementRiskConfirmed": true } }`. `replacementRiskConfirmed` is required only when the preflight contains replacements and is enforced by the server, not only by the browser. The confirmation is retained in the batch controls for audit. Batch creation locks the dataset and rejects any version change since preflight before paid work is queued. It also reloads live Aion configuration and compares the fingerprint. Changed configuration returns `409`; expired preflight returns `410`. Only valid cases are queued. A unique request hash prevents duplicate-click submissions.
 
 Evaluation video requests always send `features.auto_adjust_duration_to_supported=false`; ManuEval never silently changes evaluation duration.
 
@@ -68,11 +70,17 @@ OSS CORS must allow the ManuEval dev origin to use `PUT`, `GET`, and `HEAD`, all
 
 ## Dataset writeback
 
-After all queued cases terminate, the worker creates at most one new dataset version. Rows merge by stable dataset item ID. Existing non-empty results are never overwritten.
+After all queued cases terminate, the worker creates at most one new dataset version. Rows merge by stable dataset item ID. Existing non-empty results are overwritten only by an explicit, successful `replace` intent from `update_existing` mode.
 
-Only actual batch items are visited during writeback. Unselected rows retain an empty result and receive no status, error, seed, request ID, or parameter metadata. Later `fill_existing` batches reuse the same output schema and fill only the remaining empty rows; retries remain scoped to failures from their original batch.
+Before writeback, every update intent is compared with its server-created snapshot. A change to the target result, companion audit fields, or freshness metadata makes the whole batch `writeback_conflict`; no partial dataset version is created. Only actual batch items are visited. Unselected rows receive no result or generation metadata.
+
+Successful replacements update the result and all companion audit fields together. Failed, cancelled, skipped, or `submission_unknown` replacements preserve the prior result and prior audit metadata exactly; their failure remains visible in the generation task center. Empty-row fills keep the existing success/failure/skip behavior. A mixed batch applies only actual changes in one version, and an all-failed replacement batch creates no empty dataset version. Retries retain the original fill/replace intent and take a new current snapshot during retry preflight.
 
 The worker writes the requested result column plus `<result>_status`, `<result>_seed`, `<result>_request_id`, `<result>_error`, and `<result>_params_json`. The result cell contains only the selected media URL; `_params_json` records `originalResultUrl` and `durability` for audit. Internal Aion file paths are never exposed through the API or dataset. If a safe merge is impossible, the batch becomes `writeback_conflict` and no partial version is created. Partial-success/cancelled batches still write successful cases and terminal metadata.
+
+## Evaluation media viewer
+
+Image and video candidates in A/B, Pairwise, MOS, Rubric, Arena Rank, and Benchmark expose the same explicit top-right expand action. Reference images and videos reuse the same dialog; audio stays in its native inline player. The viewer uses generic option labels while an evaluation is blind, pauses background media, traps Escape and arrow-key navigation before voting/save handlers, and supports close button, backdrop, previous/next controls, and responsive `object-contain` rendering. Double-click is intentionally not an entry point because it conflicts with video controls and touch behavior.
 
 ## Required dev configuration
 

@@ -37,6 +37,7 @@ export interface GenerationPreflightRequest {
   fixedSeed?: number;
   seedColumn?: string;
   selectedDatasetItemIds?: string[];
+  replacementDatasetItemIds?: string[];
   assetBindings?: GenerationAssetBinding[];
   caseReviews?: Record<string, GenerationCaseReview>;
 }
@@ -140,10 +141,13 @@ export const createExecutionPreflight = async (
   return response.preflight;
 };
 
-export const confirmExecutionPreflight = async (preflightId: string) => {
+export const confirmExecutionPreflight = async (
+  preflightId: string,
+  replacementRiskConfirmed = false,
+) => {
   return requestJson<{ batchId: string; reused: boolean }>('/api/generation/batches', {
     method: 'POST',
-    body: JSON.stringify({ batch: { preflightId } }),
+    body: JSON.stringify({ batch: { preflightId, replacementRiskConfirmed } }),
   });
 };
 

@@ -1036,3 +1036,20 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - A 500-case, 24-column preview benchmark ran 60 alternating policy calculations at p50 17.83 ms, p95 25.08 ms, and max 37.61 ms. Browser network inspection confirmed one debounced, serialized PATCH per settled decision and no polling.
 - Final release gates passed against the latest local API: PostgreSQL API smoke, dataset runtime-memory regression, non-overlapping polling, layout sizing, TypeScript, frontend production build, and server production build.
 - No dataset version was applied during browser QA and no paid generation ran.
+
+# 2026-09-02: Update existing generation results and shared media viewer
+
+### Completed
+
+- Replaced the new-task fill-only UI with `update_existing`: blank cases remain selected by default, populated cases require explicit row selection, bulk selection only selects blanks, and completely populated output columns remain available.
+- Added server-derived fill/replace intents with target/audit/freshness fingerprints, dataset-version admission locking, whole-batch writeback conflict detection, and retry intent preservation. Failed or skipped replacements preserve the old result and all old audit cells; batches with no dataset changes create no version.
+- Added a separate replacement confirmation in the UI and enforced it again at batch creation. The confirmation is retained in batch controls and cannot be bypassed by calling the batch endpoint directly.
+- Added one shared image/video viewer to A/B, Pairwise, MOS, Rubric, Arena Rank, Benchmark, and reference media. It uses an explicit top-right expand icon, blind-safe labels, background playback suspension, Escape/backdrop close, arrow navigation, and responsive desktop/mobile layout.
+
+### Validation
+
+- Passed generation unit/contract/worker/deployment tests and PostgreSQL generation integration tests.
+- Passed dataset synchronization unit and PostgreSQL tests, API smoke, Arena and reference-media regressions, TypeScript, frontend build, and server build.
+- The complete evaluation browser suite passed 36 tests with one existing conditional skip; focused update/viewer regression passed 15/15 after final safety edits.
+- Runtime-memory and non-overlapping polling regressions passed. A 500-case target/audit snapshot benchmark ran 200 passes (100,000 fingerprints) at 1.536 ms average per batch, 2.24 ms p95, and 3.328 ms maximum.
+- No real Aion request or paid generation ran.

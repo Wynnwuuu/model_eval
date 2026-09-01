@@ -218,6 +218,7 @@ export const getGenerationPreflight = async (preflightId: string): Promise<Store
 export const createGenerationBatchFromPreflight = async (
   preflight: StoredGenerationPreflight,
   user: RequestUser,
+  confirmation: { replacementRiskConfirmed?: boolean } = {},
 ) => {
   const existing = await dbPool.query(
     'SELECT id FROM generation_jobs WHERE request_hash = $1 LIMIT 1',
@@ -349,6 +350,8 @@ export const createGenerationBatchFromPreflight = async (
       seedColumn: preflight.payload.seedColumn,
       datasetName: preflight.payload.datasetName,
       targetMode: preflight.payload.targetMode || 'new',
+      replacementDatasetItemIds: preflight.payload.replacementDatasetItemIds || [],
+      replacementRiskConfirmed: confirmation.replacementRiskConfirmed === true,
       selectionSummary: preflight.result.selectionSummary,
       assetBindings: preflight.payload.assetBindings || [],
       selectedDatasetItemIds: preflight.payload.selectedDatasetItemIds || [],

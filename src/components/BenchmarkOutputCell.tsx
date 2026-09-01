@@ -3,12 +3,15 @@ import { ExternalLink, FileText } from 'lucide-react';
 import MediaRenderer from './MediaRenderer';
 import { inferPreviewMediaType, looksLikeUrl, PreviewMediaType } from '../mediaTypeUtils';
 import { resolvePlaybackUrl } from '../mediaUrlUtils';
+import { EvaluationMediaExpandButton } from './EvaluationMediaViewer';
 
 interface BenchmarkOutputCellProps {
   label: string;
   value: unknown;
   preferredType?: PreviewMediaType;
   isActive?: boolean;
+  onExpand?: () => void;
+  suspendPlayback?: boolean;
 }
 
 const stringifyValue = (value: unknown) => {
@@ -17,11 +20,20 @@ const stringifyValue = (value: unknown) => {
   return JSON.stringify(value, null, 2);
 };
 
-const BenchmarkOutputCell: React.FC<BenchmarkOutputCellProps> = ({ label, value, preferredType, isActive = false }) => {
+const BenchmarkOutputCell: React.FC<BenchmarkOutputCellProps> = ({
+  label,
+  value,
+  preferredType,
+  isActive = false,
+  onExpand,
+  suspendPlayback = false,
+}) => {
   const textValue = stringifyValue(value);
   const playbackUrl = resolvePlaybackUrl(textValue);
   const fallbackType: PreviewMediaType = preferredType || 'text';
-  const mediaType = inferPreviewMediaType(textValue, fallbackType, label);
+  const mediaType = fallbackType === 'image' || fallbackType === 'video'
+    ? fallbackType
+    : inferPreviewMediaType(textValue, fallbackType, label);
   const isMedia = mediaType === 'image' || mediaType === 'video' || mediaType === 'audio';
 
   return (
@@ -52,6 +64,7 @@ const BenchmarkOutputCell: React.FC<BenchmarkOutputCellProps> = ({ label, value,
             isActive={isActive}
             forceType={mediaType}
             videoPreload="metadata"
+            suspendPlayback={suspendPlayback}
             className="rounded-none border-0 shadow-none"
           />
         ) : (
@@ -65,6 +78,9 @@ const BenchmarkOutputCell: React.FC<BenchmarkOutputCellProps> = ({ label, value,
               </div>
             )}
           </div>
+        )}
+        {(mediaType === 'image' || mediaType === 'video') && onExpand && (
+          <EvaluationMediaExpandButton label={label} onClick={onExpand} />
         )}
       </div>
     </section>

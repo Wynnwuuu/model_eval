@@ -59,7 +59,7 @@
     "test:projects": "tsx scripts/test-project-contract.ts",
     "test:evaluation-storage": "tsx scripts/test-evaluation-client-storage.ts",
     "test:runtime-stability": "node scripts/test-dataset-runtime-memory.mjs && tsx scripts/test-http-polling.ts",
-    "test:e2e:evaluation-storage": "playwright test e2e/evaluation-storage.spec.ts e2e/arena-rank-playback.spec.ts e2e/overview-material-navigation.spec.ts e2e/evaluation-feedback-reveal.spec.ts e2e/owner-access.spec.ts e2e/task-builder-generated-columns.spec.ts",
+    "test:e2e:evaluation-storage": "playwright test e2e/evaluation-storage.spec.ts e2e/arena-rank-playback.spec.ts e2e/overview-material-navigation.spec.ts e2e/evaluation-feedback-reveal.spec.ts e2e/generation-update-existing.spec.ts e2e/owner-access.spec.ts e2e/task-builder-generated-columns.spec.ts",
     "migrate:postgres": "tsx scripts/migrate-to-postgres.ts",
     "owner-access:generate": "tsx scripts/generate-owner-access.ts",
     "build": "vite build",

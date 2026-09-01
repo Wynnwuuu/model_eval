@@ -586,3 +586,11 @@ An exact `case_id + variant_label` pair is the only business identity eligible f
 - `source_overwrite` means exact source authority, including blank-cell clears. `fill_platform_blanks` only fills missing platform results, while `preserve_platform` never replaces a stored result.
 - Generation companion columns and freshness metadata are platform-owned audit state. Source copies are ignored, result replacement/clear invalidates old audit, and unchanged results keep audit while becoming stale when generation dependencies change.
 - Preview decisions are versioned by a deterministic fingerprint. Apply rejects stale decisions, no-op versions, unresolved generation dependencies, and unconfirmed destructive result changes, case deletion, or output demotion.
+
+# 2026-09-02: Existing generation results require explicit, atomic replacement intent
+
+- `update_existing` is a new-task contract. Legacy `fill_existing` snapshots remain fill-only so a historical task cannot gain overwrite behavior after deployment.
+- A populated target is never inferred as replace from selection alone. The client sends explicit replacement stable IDs, and the server independently derives the action and snapshots the result plus its companion/freshness audit state.
+- Replacement confirmation is both a visible second checkbox and a server batch-admission requirement. Client UI state alone is not a sufficient destructive-action boundary.
+- A replacement changes the dataset only when generation succeeds with a non-empty result URL. Every other terminal outcome preserves the previous result and audit; any concurrent target/audit mutation blocks the whole writeback.
+- Visual result enlargement uses an explicit top-right expand button, not double-click. One shared dialog owns keyboard interception, blind-safe labels, navigation, playback suspension, and mobile behavior across evaluation paradigms and reference media.

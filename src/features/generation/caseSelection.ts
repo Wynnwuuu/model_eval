@@ -24,6 +24,7 @@ export interface GenerationTargetInspection {
   isOutputColumn: boolean;
   completedCount: number;
   emptyCount: number;
+  unknownModelAuditCount: number;
   priorModelNames: string[];
   priorConfigFingerprints: string[];
   errors: GenerationPreflightIssue[];
@@ -158,6 +159,7 @@ export const inspectGenerationTargetColumn = (
   const emptyCount = Math.max(0, (dataset.items || []).length - completedCount);
   const errors: GenerationPreflightIssue[] = [];
   const warnings: GenerationPreflightIssue[] = [];
+  const usesExistingColumn = options.mode === 'fill_existing' || options.mode === 'update_existing';
 
   if (!targetColumn) {
     errors.push({ code: 'TARGET_COLUMN_REQUIRED', field: 'targetColumn', message: 'A target result column is required.' });
@@ -167,7 +169,7 @@ export const inspectGenerationTargetColumn = (
       field: targetColumn,
       message: `The target column already exists: ${targetColumn}`,
     });
-  } else if (options.mode === 'fill_existing' && !isOutputColumn) {
+  } else if (usesExistingColumn && !isOutputColumn) {
     errors.push({
       code: 'TARGET_COLUMN_NOT_OUTPUT',
       field: targetColumn,
@@ -179,7 +181,7 @@ export const inspectGenerationTargetColumn = (
     ? options.outputModality as DatasetPreviewType
     : undefined;
   const actualPreview = previewTypeForField(dataset, targetColumn);
-  if (options.mode === 'fill_existing' && expectedPreview && actualPreview
+  if (usesExistingColumn && expectedPreview && actualPreview
     && actualPreview !== expectedPreview && actualPreview !== 'link') {
     errors.push({
       code: 'TARGET_MODALITY_MISMATCH',
@@ -196,14 +198,16 @@ export const inspectGenerationTargetColumn = (
     });
   }
 
-  const audits = (dataset.items || [])
-    .filter(row => text(row[targetColumn]))
-    .map(row => parseAuditMetadata(row[`${targetColumn}_params_json`]))
-    .filter((value): value is Record<string, any> => Boolean(value));
+  const populatedRows = (dataset.items || []).filter(row => text(row[targetColumn]));
+  const parsedAudits = populatedRows.map(row => parseAuditMetadata(row[`${targetColumn}_params_json`]));
+  const audits = parsedAudits.filter((value): value is Record<string, any> => Boolean(value));
+  const unknownModelAuditCount = parsedAudits.filter(audit => (
+    !text(audit?.modelName) || !text(audit?.configFingerprint)
+  )).length;
   const priorModelNames = Array.from(new Set(audits.map(audit => text(audit.modelName)).filter(Boolean)));
   const priorConfigFingerprints = Array.from(new Set(audits.map(audit => text(audit.configFingerprint)).filter(Boolean)));
 
-  if (options.mode === 'fill_existing' && completedCount > 0) {
+  if (usesExistingColumn && completedCount > 0) {
     if (priorModelNames.length && options.modelName
       && priorModelNames.some(modelName => modelName !== options.modelName)) {
       errors.push({
@@ -211,11 +215,12 @@ export const inspectGenerationTargetColumn = (
         field: targetColumn,
         message: `The target column contains results from ${priorModelNames.join(', ')}, not ${options.modelName}.`,
       });
-    } else if (!priorModelNames.length) {
+    }
+    if (unknownModelAuditCount > 0) {
       warnings.push({
         code: 'TARGET_MODEL_UNKNOWN',
         field: targetColumn,
-        message: 'Existing rows do not contain generation model metadata. Confirm that this is the same model before filling the column.',
+        message: `${unknownModelAuditCount} existing result${unknownModelAuditCount === 1 ? '' : 's'} do not contain complete generation model/config metadata. Confirm that they belong to the selected model before updating the column.`,
       });
     }
 
@@ -234,6 +239,7 @@ export const inspectGenerationTargetColumn = (
     isOutputColumn,
     completedCount,
     emptyCount,
+    unknownModelAuditCount,
     priorModelNames,
     priorConfigFingerprints,
     errors,

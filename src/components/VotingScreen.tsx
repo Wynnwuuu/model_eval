@@ -8,9 +8,14 @@ import DimensionChips from './DimensionChips';
 import { getDimensionValuesForItem, hasDimensionValues } from '../dimensionUtils';
 import { getEvaluationReferenceInputKeys, resolveEvaluationReferenceMedia } from '../evaluationReferenceMedia';
 import EvaluationReferenceMediaStrip from './EvaluationReferenceMediaStrip';
+import EvaluationMediaViewer, {
+  EvaluationMediaExpandButton,
+  type EvaluationMediaViewerItem,
+} from './EvaluationMediaViewer';
 import ModelFeedbackEditor from './ModelFeedbackEditor';
 import RevealAfterSubmitToggle from './RevealAfterSubmitToggle';
 import { resolveModelFeedbackCandidates, type ModelFeedbackDraft } from '../modelFeedback';
+import { inferPreviewMediaType } from '../mediaTypeUtils';
 
 interface VotingScreenProps {
   item: EvaluationItem;
@@ -63,6 +68,7 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
 }) => {
   const [showFullPrompt, setShowFullPrompt] = useState(false);
   const [referenceViewerOpen, setReferenceViewerOpen] = useState(false);
+  const [outputViewerIndex, setOutputViewerIndex] = useState<number | null>(null);
   const [justSaved, setJustSaved] = useState(false);
   const [feedbackDraft, setFeedbackDraft] = useState<ModelFeedbackDraft>({});
 
@@ -98,6 +104,22 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
   const rightData = isSwapped
     ? { url: item.modelA_Url, voteVal: 'A' as VoteType, candidate: candidateA }
     : { url: item.modelB_Url, voteVal: 'B' as VoteType, candidate: candidateB };
+  const outputViewerItems = useMemo(() => [
+    { id: 'left', url: leftData.url, label: '选项 1' },
+    { id: 'right', url: rightData.url, label: '选项 2' },
+  ].flatMap(candidate => {
+    const type = item.type === 'image' || item.type === 'video'
+      ? item.type
+      : inferPreviewMediaType(candidate.url, item.type, candidate.label);
+    return type === 'image' || type === 'video'
+      ? [{ ...candidate, type } satisfies EvaluationMediaViewerItem]
+      : [];
+  }), [item.type, leftData.url, rightData.url]);
+  const outputViewerOpen = outputViewerIndex !== null;
+  const openOutputViewer = (id: string) => {
+    const index = outputViewerItems.findIndex(candidate => candidate.id === id);
+    if (index >= 0) setOutputViewerIndex(index);
+  };
   const mediaCycleKey = [currentIndex, item.id, item.type, leftData.url, rightData.url].join('|');
   const mediaCycleKeyRef = useRef(mediaCycleKey);
   mediaCycleKeyRef.current = mediaCycleKey;
@@ -117,14 +139,14 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
 
     const key = event.key;
 
-    if (referenceViewerOpen) return;
+    if (referenceViewerOpen || outputViewerOpen) return;
 
     if (canVote && !isRevealed) {
       if (KEYBOARD_SHORTCUTS.A.includes(key)) onVote(leftData.voteVal, feedbackDraft);
       else if (KEYBOARD_SHORTCUTS.B.includes(key)) onVote(rightData.voteVal, feedbackDraft);
       else if (allowTie && KEYBOARD_SHORTCUTS.TIE.includes(key)) onVote('Tie', feedbackDraft);
     }
-  }, [onVote, referenceViewerOpen, leftData.voteVal, rightData.voteVal, canVote, allowTie, isRevealed, feedbackDraft]);
+  }, [onVote, referenceViewerOpen, outputViewerOpen, leftData.voteVal, rightData.voteVal, canVote, allowTie, isRevealed, feedbackDraft]);
 
   useEffect(() => {
     window.addEventListener('keydown', handleKeyPress);
@@ -183,6 +205,7 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
     mediaCycleKeyRef.current = mediaCycleKey;
     setShowFullPrompt(false);
     setReferenceViewerOpen(false);
+    setOutputViewerIndex(null);
     setLeftLoaded(false);
     setRightLoaded(false);
     setMediaWaitTimedOut(false);
@@ -318,7 +341,11 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
                   isActive={true}
                   onLoadStatusChange={handleLeftLoadStatus}
                   forceType={item.type}
+                  suspendPlayback={outputViewerOpen}
                 />
+                {outputViewerItems.some(candidate => candidate.id === 'left') && (
+                  <EvaluationMediaExpandButton label="选项 1" onClick={() => openOutputViewer('left')} />
+                )}
               </div>
               <ModelFeedbackEditor
                 modelId={leftData.candidate.modelId}
@@ -379,7 +406,11 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
                   isActive={true}
                   onLoadStatusChange={handleRightLoadStatus}
                   forceType={item.type}
+                  suspendPlayback={outputViewerOpen}
                 />
+                {outputViewerItems.some(candidate => candidate.id === 'right') && (
+                  <EvaluationMediaExpandButton label="选项 2" onClick={() => openOutputViewer('right')} />
+                )}
               </div>
               <ModelFeedbackEditor
                 modelId={rightData.candidate.modelId}
@@ -429,6 +460,13 @@ const VotingScreen: React.FC<VotingScreenProps> = ({
           </div>
         </div>
       )}
+
+      <EvaluationMediaViewer
+        items={outputViewerItems}
+        activeIndex={outputViewerIndex}
+        onIndexChange={setOutputViewerIndex}
+        onClose={() => setOutputViewerIndex(null)}
+      />
 
     </div>
   );

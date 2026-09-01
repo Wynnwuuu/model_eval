@@ -14,6 +14,7 @@ export interface MediaRendererProps {
   forceType?: 'image' | 'video' | 'audio' | string;
   videoPreload?: 'none' | 'metadata' | 'auto';
   compact?: boolean;
+  suspendPlayback?: boolean;
 }
 
 const REFERRER_POLICY_FALLBACKS = ['no-referrer', 'origin', 'unsafe-url'] as const;
@@ -82,6 +83,7 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
   forceType,
   videoPreload = 'auto',
   compact = false,
+  suspendPlayback = false,
 }) => {
   const sourceUrl = useMemo(() => resolvePlaybackUrl(url), [url]);
   const candidates = useMemo(() => resolveMediaPlaybackCandidates(sourceUrl || ''), [sourceUrl]);
@@ -260,6 +262,12 @@ const MediaRenderer: React.FC<MediaRendererProps> = ({
       checks.forEach(window.clearTimeout);
     };
   }, [mediaType, finalUrl, mediaRequestKey, retryKey, error, loading, handleLoad, isActiveRequest]);
+
+  useEffect(() => {
+    if (!suspendPlayback) return;
+    videoRef.current?.pause();
+    audioRef.current?.pause();
+  }, [suspendPlayback, mediaRequestKey]);
 
   useEffect(() => {
     if (!loading || error || !finalUrl) return;

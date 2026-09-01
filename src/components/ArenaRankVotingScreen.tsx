@@ -9,9 +9,14 @@ import DimensionChips from './DimensionChips';
 import { getDimensionValuesForItem, hasDimensionValues } from '../dimensionUtils';
 import { getEvaluationReferenceInputKeys } from '../evaluationReferenceMedia';
 import EvaluationReferenceMediaStrip from './EvaluationReferenceMediaStrip';
+import EvaluationMediaViewer, {
+  EvaluationMediaExpandButton,
+  type EvaluationMediaViewerItem,
+} from './EvaluationMediaViewer';
 import ModelFeedbackEditor from './ModelFeedbackEditor';
 import RevealAfterSubmitToggle from './RevealAfterSubmitToggle';
 import type { ModelFeedbackDraft } from '../modelFeedback';
+import { inferPreviewMediaType } from '../mediaTypeUtils';
 
 interface ArenaRankVotingScreenProps {
   item: EvaluationItem;
@@ -62,6 +67,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
   const [showRankDrawer, setShowRankDrawer] = useState(false);
   const [rankAnnouncement, setRankAnnouncement] = useState('');
   const [feedbackDraft, setFeedbackDraft] = useState<ModelFeedbackDraft>({});
+  const [outputViewerIndex, setOutputViewerIndex] = useState<number | null>(null);
   const draggedTierIndexRef = useRef<number | null>(null);
 
   const sourceOutputs = useMemo(() => getModelOutputsForItem(item, models), [item, models]);
@@ -90,6 +96,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
     setShowFullPrompt(false);
     setShowRankDrawer(false);
     setRankAnnouncement('');
+    setOutputViewerIndex(null);
     setJustSaved(true);
     const timer = setTimeout(() => setJustSaved(false), 2000);
     return () => clearTimeout(timer);
@@ -102,6 +109,16 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
   ]));
   const displayOutputs = rankTiers
     .flatMap(tier => tier.map(modelId => outputsById.get(modelId)).filter(Boolean)) as typeof sourceOutputs;
+  const outputViewerItems = displayOutputs.flatMap(output => {
+    const label = optionLabels.get(output.modelId) || output.modelId;
+    const type = item.type === 'image' || item.type === 'video'
+      ? item.type
+      : inferPreviewMediaType(output.url, item.type, label);
+    return type === 'image' || type === 'video'
+      ? [{ id: output.modelId, url: output.url, type, label } satisfies EvaluationMediaViewerItem]
+      : [];
+  });
+  const outputViewerOpen = outputViewerIndex !== null;
   const rankMetaById = new Map<string, { rank: number; tied: boolean }>();
   const tierIndexByModelId = new Map<string, number>();
   let rankedPosition = 0;
@@ -595,7 +612,7 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
                         {tier.map(modelId => optionLabels.get(modelId) || modelId).join(' = ')}
                       </div>
                     )}
-                    <div className="min-h-[280px] flex-1 overflow-hidden bg-black/55 p-1">
+                    <div className="relative min-h-[280px] flex-1 overflow-hidden bg-black/55 p-1">
                       <MediaRenderer
                         key={`${mediaCycleKey}-${output.modelId}-${output.url}-media`}
                         url={output.url}
@@ -603,7 +620,14 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
                         isActive={false}
                         forceType={item.type}
                         onLoadStatusChange={(isLoaded) => handleLoadStatusChange(output.modelId, isLoaded)}
+                        suspendPlayback={outputViewerOpen}
                       />
+                      {outputViewerItems.some(candidate => candidate.id === output.modelId) && (
+                        <EvaluationMediaExpandButton
+                          label={optionLabel}
+                          onClick={() => setOutputViewerIndex(outputViewerItems.findIndex(candidate => candidate.id === output.modelId))}
+                        />
+                      )}
                     </div>
                     <ModelFeedbackEditor
                       modelId={output.modelId}
@@ -639,6 +663,13 @@ const ArenaRankVotingScreen: React.FC<ArenaRankVotingScreenProps> = ({
       )}
 
       <div className="sr-only" aria-live="polite">{rankAnnouncement}</div>
+
+      <EvaluationMediaViewer
+        items={outputViewerItems}
+        activeIndex={outputViewerIndex}
+        onIndexChange={setOutputViewerIndex}
+        onClose={() => setOutputViewerIndex(null)}
+      />
 
       {showRankDrawer && (
         <div className="fixed inset-0 z-50 flex items-end bg-black/75 xl:hidden" onClick={() => setShowRankDrawer(false)}>

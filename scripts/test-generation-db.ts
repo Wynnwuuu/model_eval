@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import type { RequestUser } from '../server/auth/context.ts';
 import { closeDatabase, dbPool } from '../server/db/client.ts';
 import { serverConfig } from '../server/config.ts';
-import { getDataset, saveDataset } from '../server/datasets/datasetRepository.ts';
+import { getDataset, saveDataset, updateDatasetItem } from '../server/datasets/datasetRepository.ts';
 import {
   beginGenerationSubmission,
   claimGenerationWriteback,
@@ -27,6 +27,7 @@ import {
 } from '../server/generation/generationExecutionRepository.ts';
 import { listGenerationJobs } from '../server/generation/generationRepository.ts';
 import { normalizeAionModelConfig } from '../server/generation/generationPlanning.ts';
+import { buildGenerationTargetWriteIntent } from '../server/generation/generationTargetWrite.ts';
 import {
   markAdaptiveGenerationSubmissionAccepted,
   recordAdaptiveGenerationSubmissionOutcome,
@@ -43,7 +44,7 @@ import {
 } from '../server/generation/generationWorkerRegistry.ts';
 import { isGenerationFailureCell } from '../src/features/generation/generationFailureCell.ts';
 import { DATASET_ITEM_ID_KEY } from '../src/datasetSync.ts';
-import type { EvalDataset } from '../src/types.ts';
+import type { EvalDataset, GenerationTargetMode } from '../src/types.ts';
 
 const suffix = randomUUID();
 const user: RequestUser = {
@@ -93,10 +94,14 @@ const createPreflightRecord = (
   targetColumn: string,
   requestHash: string,
   rowIndexes: number[] = [0],
-  targetMode: 'new' | 'fill_existing' = 'new',
+  targetMode: GenerationTargetMode = 'new',
+  replacementRowIndexes: number[] = [],
 ): StoredGenerationPreflight => {
   const selectedDatasetItemIds = rowIndexes.map(rowIndex =>
     String(savedDataset.items[rowIndex][DATASET_ITEM_ID_KEY]));
+  const replacementDatasetItemIds = replacementRowIndexes.map(rowIndex =>
+    String(savedDataset.items[rowIndex][DATASET_ITEM_ID_KEY]));
+  const replacementIdSet = new Set(replacementDatasetItemIds);
   const cases = rowIndexes.map(rowIndex => {
     const row = savedDataset.items[rowIndex];
     const resolvedCase = {
@@ -110,6 +115,13 @@ const createPreflightRecord = (
       seed: 7 + rowIndex,
       extraInputs: {},
       generationType: 'text_to_image',
+      targetWriteIntent: buildGenerationTargetWriteIntent(
+        row,
+        targetColumn,
+        targetMode === 'update_existing' && replacementIdSet.has(String(row[DATASET_ITEM_ID_KEY]))
+          ? 'replace'
+          : 'fill',
+      ),
     };
     return {
       valid: true,
@@ -135,6 +147,7 @@ const createPreflightRecord = (
       targetColumn,
       targetMode,
       selectedDatasetItemIds,
+      replacementDatasetItemIds,
       inputMapping: {
         promptColumn: 'prompt',
         referenceImageColumns: [],
@@ -160,6 +173,8 @@ const createPreflightRecord = (
         valid: cases.length,
         invalid: 0,
         unselected: savedDataset.items.length - cases.length,
+        fillSelected: cases.filter(item => item.resolvedCase.targetWriteIntent.action === 'fill').length,
+        replaceSelected: cases.filter(item => item.resolvedCase.targetWriteIntent.action === 'replace').length,
       },
       costEstimate: {
         known: true,
@@ -814,6 +829,8 @@ try {
     valid: 2,
     invalid: 0,
     unselected: 1,
+    fillSelected: 2,
+    replaceSelected: 0,
   });
 
   const partialClaims = await Promise.all([
@@ -916,6 +933,149 @@ try {
   const afterOverwriteAttempt = await getDataset(datasetId);
   assert.equal(afterOverwriteAttempt?.items[0][partialColumn], firstResult);
   assert.equal((await getGenerationBatch(overwriteJob.id))?.writebackStatus, 'conflict');
+
+  const replacementSource = afterOverwriteAttempt!;
+  const secondResultBeforeReplacement = String(replacementSource.items[1][partialColumn]);
+  const secondAuditBeforeReplacement = String(replacementSource.items[1][`${partialColumn}_params_json`]);
+  const replacementPreflight = createPreflightRecord(
+    replacementSource,
+    partialColumn,
+    `request-${suffix}-partial-replacement`,
+    [0, 1],
+    'update_existing',
+    [0, 1],
+  );
+  await saveGenerationPreflight(replacementPreflight);
+  const replacementJob = await createGenerationBatchFromPreflight(replacementPreflight, user);
+  const replacementClaims = [
+    await claimNextGenerationItem('image', `worker-replacement-a-${suffix}`),
+    await claimNextGenerationItem('image', `worker-replacement-b-${suffix}`),
+  ];
+  assert.equal(replacementClaims.filter(Boolean).length, 2);
+  for (const claim of replacementClaims) {
+    if (!claim) throw new Error('Expected a claimed replacement generation item.');
+    if (claim.request.resolvedInputs?.rowIndex === 0) {
+      await updateGenerationItem(claim.id, {
+        status: 'succeeded',
+        providerTaskId: 'provider-replacement-case-1',
+        result: {
+          resultUrl: 'https://assets.example.com/replaced-case-1.png',
+          durability: 'vidmuse_asset',
+          mediaType: 'image',
+        },
+        finishedAt: Date.now(),
+        nextPollAt: null,
+      });
+    } else {
+      await updateGenerationItem(claim.id, {
+        status: 'failed',
+        error: { code: 'REPLACEMENT_FAILED', message: 'Replacement failed intentionally.' },
+        finishedAt: Date.now(),
+        nextPollAt: null,
+      });
+    }
+    await releaseGenerationItemLease(claim.id);
+  }
+  await refreshGenerationJob(replacementJob.id);
+  assert.equal(await writeGenerationBatchToDataset(replacementJob.id), true);
+
+  const afterReplacement = (await getDataset(datasetId))!;
+  assert.equal(afterReplacement.items[0][partialColumn], 'https://assets.example.com/replaced-case-1.png');
+  assert.equal(afterReplacement.items[1][partialColumn], secondResultBeforeReplacement,
+    'a failed replacement must preserve the previous result');
+  assert.equal(afterReplacement.items[1][`${partialColumn}_params_json`], secondAuditBeforeReplacement,
+    'a failed replacement must preserve the previous audit metadata');
+  assert.equal(afterReplacement.version, (replacementSource.version || 1) + 1);
+
+  const noOpReplacementPreflight = createPreflightRecord(
+    afterReplacement,
+    partialColumn,
+    `request-${suffix}-replacement-no-op`,
+    [1],
+    'update_existing',
+    [1],
+  );
+  await saveGenerationPreflight(noOpReplacementPreflight);
+  const noOpReplacementJob = await createGenerationBatchFromPreflight(noOpReplacementPreflight, user);
+  const noOpReplacementClaim = await claimNextGenerationItem('image', `worker-replacement-no-op-${suffix}`);
+  assert.equal(noOpReplacementClaim?.jobId, noOpReplacementJob.id);
+  await updateGenerationItem(noOpReplacementClaim!.id, {
+    status: 'failed',
+    error: { code: 'REPLACEMENT_FAILED', message: 'No-op replacement failure.' },
+    finishedAt: Date.now(),
+    nextPollAt: null,
+  });
+  await releaseGenerationItemLease(noOpReplacementClaim!.id);
+  await refreshGenerationJob(noOpReplacementJob.id);
+  assert.equal(await writeGenerationBatchToDataset(noOpReplacementJob.id), true);
+  const afterNoOpReplacement = (await getDataset(datasetId))!;
+  assert.equal(afterNoOpReplacement.version, afterReplacement.version,
+    'an all-failed replacement batch must not create an empty dataset version');
+  assert.equal(afterNoOpReplacement.items[1][partialColumn], secondResultBeforeReplacement);
+  assert.equal(afterNoOpReplacement.items[1][`${partialColumn}_params_json`], secondAuditBeforeReplacement);
+
+  const concurrentReplacementPreflight = createPreflightRecord(
+    afterNoOpReplacement,
+    partialColumn,
+    `request-${suffix}-replacement-concurrent`,
+    [0],
+    'update_existing',
+    [0],
+  );
+  await saveGenerationPreflight(concurrentReplacementPreflight);
+  const concurrentReplacementJob = await createGenerationBatchFromPreflight(concurrentReplacementPreflight, user);
+  const concurrentReplacementClaim = await claimNextGenerationItem('image', `worker-replacement-concurrent-${suffix}`);
+  assert.equal(concurrentReplacementClaim?.jobId, concurrentReplacementJob.id);
+  await updateGenerationItem(concurrentReplacementClaim!.id, {
+    status: 'succeeded',
+    result: {
+      resultUrl: 'https://assets.example.com/must-not-overwrite-concurrent.png',
+      durability: 'vidmuse_asset',
+      mediaType: 'image',
+    },
+    finishedAt: Date.now(),
+    nextPollAt: null,
+  });
+  await releaseGenerationItemLease(concurrentReplacementClaim!.id);
+  await refreshGenerationJob(concurrentReplacementJob.id);
+  const concurrentlyEdited = await updateDatasetItem(
+    datasetId,
+    String(afterNoOpReplacement.items[0][DATASET_ITEM_ID_KEY]),
+    partialColumn,
+    'https://assets.example.com/concurrent-manual-edit.png',
+    afterNoOpReplacement.version || 1,
+    user,
+  );
+  assert.ok(concurrentlyEdited);
+  assert.equal(await writeGenerationBatchToDataset(concurrentReplacementJob.id), false);
+  const afterConcurrentConflict = (await getDataset(datasetId))!;
+  assert.equal(afterConcurrentConflict.items[0][partialColumn], 'https://assets.example.com/concurrent-manual-edit.png');
+  assert.equal(afterConcurrentConflict.version, concurrentlyEdited?.version);
+  assert.equal((await getGenerationBatch(concurrentReplacementJob.id))?.writebackStatus, 'conflict');
+
+  const preSubmitConflictPreflight = createPreflightRecord(
+    afterConcurrentConflict,
+    partialColumn,
+    `request-${suffix}-replacement-pre-submit-conflict`,
+    [1],
+    'update_existing',
+    [1],
+  );
+  await saveGenerationPreflight(preSubmitConflictPreflight);
+  const preSubmitEdit = await updateDatasetItem(
+    datasetId,
+    String(afterConcurrentConflict.items[1][DATASET_ITEM_ID_KEY]),
+    partialColumn,
+    'https://assets.example.com/changed-before-submit.png',
+    afterConcurrentConflict.version || 1,
+    user,
+  );
+  assert.ok(preSubmitEdit);
+  await assert.rejects(
+    createGenerationBatchFromPreflight(preSubmitConflictPreflight, user),
+    /dataset changed after preflight/i,
+  );
+  const afterPreSubmitConflict = (await getDataset(datasetId))!;
   serverConfig.generationVideoModelLimits.models[model.modelName] = {
     min: 2, initial: 2, max: 2,
   };
@@ -948,7 +1108,7 @@ try {
     updatedAt: Date.now(),
   }, user.id);
   const fairnessPreflightA = createPreflightRecord(
-    afterFillWriteback,
+    afterPreSubmitConflict,
     `fairness_a_${suffix}`,
     `request-${suffix}-fairness-a`,
     [0, 1, 2],

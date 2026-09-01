@@ -39,6 +39,7 @@ import {
   validateGenerationPromptColumnOverrides,
   validateExpectedGenerationConfigFingerprint,
   validateGenerationSeedConfiguration,
+  validateGenerationReplacementConfirmation,
   validateDurationSourceConfiguration,
 } from '../server/generation/generationPreflightService.ts';
 import { inferDatasetMappings } from '../src/datasetManifest.ts';
@@ -1446,6 +1447,76 @@ assert.equal(fillTarget.completedCount, 1);
 assert.equal(fillTarget.emptyCount, 1);
 assert.deepEqual(fillTarget.errors, []);
 assert.ok(fillTarget.warnings.some(issue => issue.code === 'TARGET_CONFIG_CHANGED'));
+
+const updateTarget = inspectGenerationTargetColumn(generatedDataset, {
+  mode: 'update_existing' as any,
+  targetColumn: 'generated_video',
+  modelName: 'provider/video-pro',
+  outputModality: 'video',
+  configFingerprint: 'new-fingerprint',
+});
+assert.deepEqual(updateTarget.errors, []);
+assert.ok(updateTarget.warnings.some(issue => issue.code === 'TARGET_CONFIG_CHANGED'));
+
+assert.ok(inspectGenerationTargetColumn(generatedDataset, {
+  mode: 'update_existing' as any,
+  targetColumn: 'generated_video',
+  modelName: 'provider/other-video',
+  outputModality: 'video',
+}).errors.some(issue => issue.code === 'TARGET_MODEL_MISMATCH'));
+
+assert.ok(inspectGenerationTargetColumn(generatedDataset, {
+  mode: 'update_existing' as any,
+  targetColumn: 'generated_video',
+  modelName: 'provider/video-pro',
+  outputModality: 'image',
+}).errors.some(issue => issue.code === 'TARGET_MODALITY_MISMATCH'));
+
+const partiallyAuditedDataset = {
+  ...generatedDataset,
+  items: [
+    generatedDataset.items[0],
+    {
+      [DATASET_ITEM_ID_KEY]: 'item-2',
+      generated_video: 'https://assets.example.com/two.mp4',
+    },
+  ],
+} as any;
+const partiallyAuditedUpdate = inspectGenerationTargetColumn(partiallyAuditedDataset, {
+  mode: 'update_existing' as any,
+  targetColumn: 'generated_video',
+  modelName: 'provider/video-pro',
+  outputModality: 'video',
+});
+assert.ok(partiallyAuditedUpdate.warnings.some(issue => issue.code === 'TARGET_MODEL_UNKNOWN'));
+
+const configAuditMissingUpdate = inspectGenerationTargetColumn({
+  ...generatedDataset,
+  items: [{
+    ...generatedDataset.items[0],
+    generated_video_params_json: JSON.stringify({ modelName: 'provider/video-pro' }),
+  }],
+}, {
+  mode: 'update_existing',
+  targetColumn: 'generated_video',
+  modelName: 'provider/video-pro',
+  outputModality: 'video',
+  configFingerprint: 'new-fingerprint',
+});
+assert.ok(configAuditMissingUpdate.warnings.some(issue => issue.code === 'TARGET_MODEL_UNKNOWN'));
+
+assert.doesNotThrow(() => validateGenerationReplacementConfirmation(
+  { replaceSelected: 0 },
+  false,
+));
+assert.doesNotThrow(() => validateGenerationReplacementConfirmation(
+  { replaceSelected: 1 },
+  true,
+));
+assert.throws(
+  () => validateGenerationReplacementConfirmation({ replaceSelected: 1 }, false),
+  /Confirm the existing-result replacement risk/,
+);
 
 assert.ok(inspectGenerationTargetColumn(generatedDataset, {
   mode: 'fill_existing',

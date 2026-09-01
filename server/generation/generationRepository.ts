@@ -30,6 +30,8 @@ type GenerationJobRow = {
     seedPolicyVersion?: DatasetGenerationJob['seedPolicyVersion'];
     fixedSeed?: number;
     seedColumn?: string;
+    targetMode?: DatasetGenerationJob['targetMode'];
+    replacementDatasetItemIds?: string[];
     datasetName?: string;
     datasetVersion?: number;
     createdByUid?: string;
@@ -133,6 +135,7 @@ const mapJob = (row: GenerationJobRow): DatasetGenerationJob => {
     seedPolicyVersion: controls.seedPolicyVersion,
     fixedSeed: controls.fixedSeed,
     seedColumn: controls.seedColumn,
+    targetMode: controls.targetMode,
     status: row.logical_status || row.status,
     total: Number(row.logical_total ?? row.total),
     succeeded: Number(row.logical_succeeded ?? row.succeeded),

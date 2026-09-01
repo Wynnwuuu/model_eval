@@ -73,6 +73,10 @@ import {
   saveGenerationPreflight,
 } from './generationExecutionRepository.ts';
 import { generationValidationForModel } from './generationValidationPolicy.ts';
+import {
+  buildGenerationTargetWriteIntent,
+  generationTargetHasResult,
+} from './generationTargetWrite.ts';
 
 export type GenerationPreflightRequest = {
   datasetId: string;
@@ -92,6 +96,7 @@ export type GenerationPreflightRequest = {
   fixedSeed?: number;
   seedColumn?: string;
   selectedDatasetItemIds?: string[];
+  replacementDatasetItemIds?: string[];
   retryOfJobId?: string;
   retrySourceItemIds?: Record<string, string>;
   retryDuplicateBillingRiskConfirmed?: boolean;
@@ -1490,6 +1495,25 @@ export const createGenerationPreflight = async (
     throw badRequest(selection.errors[0].message, { issues: selection.errors });
   }
   const selectedIdSet = new Set(selection.normalizedIds);
+  const requestedReplacementIds = (request.replacementDatasetItemIds || []).map(text).filter(Boolean);
+  const duplicateReplacementIds = requestedReplacementIds.filter((id, index) => (
+    requestedReplacementIds.indexOf(id) !== index
+  ));
+  if (duplicateReplacementIds.length) {
+    throw badRequest('Replacement case selection contains duplicate stable item IDs.', {
+      datasetItemIds: Array.from(new Set(duplicateReplacementIds)),
+    });
+  }
+  if (targetMode !== 'update_existing' && requestedReplacementIds.length) {
+    throw badRequest('Explicit result replacement is only available in update-existing mode.');
+  }
+  const unknownReplacementIds = requestedReplacementIds.filter(id => !selectedIdSet.has(id));
+  if (unknownReplacementIds.length) {
+    throw badRequest('Replacement cases must also be selected for generation.', {
+      datasetItemIds: unknownReplacementIds,
+    });
+  }
+  const replacementIdSet = new Set(requestedReplacementIds);
   const unknownReviewIds = Object.keys(request.caseReviews || {}).filter(id => !selectedIdSet.has(id));
   if (unknownReviewIds.length) {
     throw badRequest('Case reviews contain unknown or unselected stable item IDs.', {
@@ -1514,6 +1538,7 @@ export const createGenerationPreflight = async (
     ...request,
     targetMode,
     selectedDatasetItemIds: selection.normalizedIds,
+    replacementDatasetItemIds: requestedReplacementIds,
   };
   validateGenerationPromptColumnOverrides(request, dataset, selection.rows);
   validateGenerationParameterColumnOverrides(request, model, dataset, selection.rows);
@@ -1542,6 +1567,11 @@ export const createGenerationPreflight = async (
     );
     const sourceRow = dataset.items[resolvedCase.rowIndex] || {};
     const targetValue = text(sourceRow[request.targetColumn]);
+    const targetHasResult = generationTargetHasResult(sourceRow, request.targetColumn);
+    const replacementRequested = replacementIdSet.has(resolvedCase.datasetItemId);
+    const targetWriteAction = targetMode === 'update_existing' && targetHasResult
+      ? 'replace'
+      : 'fill';
     let errors = [...preparationIssues, ...result.errors];
     const warnings = [...preparationWarnings, ...result.warnings];
     const review = request.caseReviews?.[resolvedCase.datasetItemId];
@@ -1618,7 +1648,7 @@ export const createGenerationPreflight = async (
       && typeof finalAionRequest.generation_type === 'string'
       ? finalAionRequest.generation_type
       : result.generationType;
-    const auditedResolvedCase = result.resolvedCase.compilerAudit
+    const resolvedCaseWithAudit = result.resolvedCase.compilerAudit
       ? {
           ...result.resolvedCase,
           generationType: finalGenerationType,
@@ -1644,7 +1674,27 @@ export const createGenerationPreflight = async (
           },
         }
       : result.resolvedCase;
-    if (targetValue) {
+    const auditedResolvedCase = {
+      ...resolvedCaseWithAudit,
+      targetWriteIntent: buildGenerationTargetWriteIntent(
+        sourceRow,
+        request.targetColumn,
+        targetWriteAction,
+      ),
+    };
+    if (targetMode === 'update_existing' && targetHasResult && !replacementRequested) {
+      errors.push({
+        code: 'TARGET_REPLACEMENT_NOT_CONFIRMED',
+        field: request.targetColumn,
+        message: `Case ${auditedResolvedCase.caseId} already has a result and was not explicitly selected for replacement.`,
+      });
+    } else if (targetMode === 'update_existing' && !targetHasResult && replacementRequested) {
+      errors.push({
+        code: 'TARGET_REPLACEMENT_STALE',
+        field: request.targetColumn,
+        message: `Case ${auditedResolvedCase.caseId} was marked for replacement, but its target result is now empty.`,
+      });
+    } else if (targetMode !== 'update_existing' && targetValue) {
       errors.push({
         code: 'TARGET_NOT_EMPTY',
         field: request.targetColumn,
@@ -1687,6 +1737,8 @@ export const createGenerationPreflight = async (
     valid: validCount,
     invalid: invalidCount,
     unselected: Math.max(0, dataset.items.length - cases.length),
+    fillSelected: cases.filter(item => item.resolvedCase.targetWriteIntent?.action === 'fill').length,
+    replaceSelected: cases.filter(item => item.resolvedCase.targetWriteIntent?.action === 'replace').length,
   };
   const costEstimate = estimateGenerationCost(model, cases.filter(item => item.valid).map(item => item.resolvedCase));
   const hashCases = cases.map(item => {
@@ -1702,6 +1754,7 @@ export const createGenerationPreflight = async (
       seed: resolved.seed,
       extraInputs: resolved.extraInputs,
       parameterAudit: resolved.parameterAudit,
+      targetWriteIntent: resolved.targetWriteIntent,
       compilerAudit: audit ? {
         compilerVersion: audit.compilerVersion,
         originalInput: audit.originalInput,
@@ -1742,6 +1795,7 @@ export const createGenerationPreflight = async (
     fixedSeed: request.fixedSeed,
     seedColumn: request.seedColumn,
     selectedDatasetItemIds: selection.normalizedIds,
+    replacementDatasetItemIds: requestedReplacementIds,
     cases: hashCases,
   });
   const id = `preflight-${randomUUID()}`;
@@ -1781,9 +1835,19 @@ export const createGenerationPreflight = async (
   return { id, ...result };
 };
 
+export const validateGenerationReplacementConfirmation = (
+  selectionSummary: { replaceSelected?: number } | undefined,
+  replacementRiskConfirmed: boolean,
+) => {
+  if ((selectionSummary?.replaceSelected || 0) > 0 && !replacementRiskConfirmed) {
+    throw badRequest('Confirm the existing-result replacement risk before creating this batch.');
+  }
+};
+
 export const confirmGenerationPreflight = async (
   preflightId: string,
   user: RequestUser,
+  confirmation: { replacementRiskConfirmed?: boolean } = {},
 ) => {
   const preflight = await getGenerationPreflight(preflightId);
   if (!preflight) throw new ApiError(410, 'PREFLIGHT_EXPIRED', 'The preflight expired; run it again.');
@@ -1803,8 +1867,14 @@ export const confirmGenerationPreflight = async (
   if (!(preflight.result.validCount > 0)) {
     throw badRequest('The preflight contains no valid cases to submit.');
   }
+  validateGenerationReplacementConfirmation(
+    preflight.result.selectionSummary,
+    confirmation.replacementRiskConfirmed === true,
+  );
 
-  return createGenerationBatchFromPreflight(preflight, user);
+  return createGenerationBatchFromPreflight(preflight, user, {
+    replacementRiskConfirmed: confirmation.replacementRiskConfirmed === true,
+  });
 };
 
 export const generationPreflightFingerprint = (request: GenerationPreflightRequest) =>

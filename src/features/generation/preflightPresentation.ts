@@ -148,6 +148,8 @@ const ISSUE_COPY: Record<string, GenerationIssueCopy> = {
   MCP_AION_PROJECTION_MISMATCH: issueCopy('MCP 输入与 Aion 请求不一致', 'MCP 公共字段投影到最终 Aion 请求时发生了值或顺序变化。', '查看请求差异并修正编译或人工请求。'),
   DATASET_MODALITY_MISMATCH: issueCopy('Case 模态与模型不一致', '该 case 的 modality 不适用于当前模型输出类型。', '选择同模态 case 或切换模型。'),
   TARGET_NOT_EMPTY: issueCopy('目标结果列已有内容', '为避免覆盖旧结果，该 case 不能写入当前目标列。', '选择空目标列或新建结果列。'),
+  TARGET_REPLACEMENT_NOT_CONFIRMED: issueCopy('已有结果未确认替换', '该 case 已有结果，但没有出现在明确的替换选择中。', '返回生成范围并逐行勾选需要替换的 case。'),
+  TARGET_REPLACEMENT_STALE: issueCopy('替换选择已失效', '该 case 被标记为替换，但当前目标结果已经为空。', '刷新评测集并重新选择生成范围。'),
   MISSING_STABLE_ITEM_ID: issueCopy('Case 缺少稳定 ID', '平台无法保证生成结果回填到正确行。', '重新导入或修复评测集稳定 ID。'),
 };
 

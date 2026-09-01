@@ -7,9 +7,14 @@ import { normalizeDimensions } from '../evaluationMethods';
 import MediaRenderer from './MediaRenderer';
 import DimensionChips from './DimensionChips';
 import EvaluationReferenceMediaStrip from './EvaluationReferenceMediaStrip';
+import EvaluationMediaViewer, {
+  EvaluationMediaExpandButton,
+  type EvaluationMediaViewerItem,
+} from './EvaluationMediaViewer';
 import ModelFeedbackEditor from './ModelFeedbackEditor';
 import RevealAfterSubmitToggle from './RevealAfterSubmitToggle';
 import type { ModelFeedbackDraft } from '../modelFeedback';
+import { inferPreviewMediaType } from '../mediaTypeUtils';
 
 interface ScoreEvaluationScreenProps {
   item: EvaluationItem;
@@ -97,11 +102,22 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
   const [mediaWaitTimedOut, setMediaWaitTimedOut] = useState(false);
   const [draft, setDraft] = useState<Record<string, ResponseDraft>>({});
   const [justSaved, setJustSaved] = useState(false);
+  const [outputViewerIndex, setOutputViewerIndex] = useState<number | null>(null);
 
   const dimensions = useMemo(() => normalizeDimensions(config.dimensions || [], config.method), [config]);
   const scoreDimensions = dimensions.filter(isScoreDimension);
   const otherDimensions = dimensions.filter(dimension => !isScoreDimension(dimension));
   const outputs = useMemo(() => getModelOutputsForItem(item, models), [item, models]);
+  const outputViewerItems = useMemo(() => outputs.flatMap((output, index) => {
+    const label = `候选 ${index + 1}`;
+    const type = item.type === 'image' || item.type === 'video'
+      ? item.type
+      : inferPreviewMediaType(output.url, item.type, label);
+    return type === 'image' || type === 'video'
+      ? [{ id: output.modelId, url: output.url, type, label } satisfies EvaluationMediaViewerItem]
+      : [];
+  }), [item.type, outputs]);
+  const outputViewerOpen = outputViewerIndex !== null;
   const mediaCycleKey = useMemo(
     () => [currentIndex, item.id, item.type, ...outputs.map(output => `${output.modelId}:${output.url}`)].join('|'),
     [currentIndex, item.id, item.type, outputs]
@@ -119,6 +135,7 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
     setLoaded({});
     setMediaWaitTimedOut(false);
     setShowFullPrompt(false);
+    setOutputViewerIndex(null);
     setJustSaved(true);
     const nextDraft = Object.fromEntries(outputs.map(output => [
       output.modelId,
@@ -301,7 +318,7 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
                     </span>
                   </div>
                 </div>
-                <div className="min-h-[260px] overflow-hidden bg-black/55 p-1">
+                <div className="relative min-h-[260px] overflow-hidden bg-black/55 p-1">
                   {isTextLikeOutput ? (
                     <div className="h-full min-h-[260px] overflow-auto bg-white/5 p-4 text-sm leading-relaxed text-slate-200 whitespace-pre-wrap">
                       {output.url || '无文本输出'}
@@ -314,6 +331,13 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
                       isActive={true}
                       forceType={item.type}
                       onLoadStatusChange={(isLoaded) => handleLoadStatusChange(output.modelId, isLoaded)}
+                      suspendPlayback={outputViewerOpen}
+                    />
+                  )}
+                  {!isTextLikeOutput && outputViewerItems.some(candidate => candidate.id === output.modelId) && (
+                    <EvaluationMediaExpandButton
+                      label={`候选 ${index + 1}`}
+                      onClick={() => setOutputViewerIndex(outputViewerItems.findIndex(candidate => candidate.id === output.modelId))}
                     />
                   )}
                 </div>
@@ -417,6 +441,13 @@ const ScoreEvaluationScreen: React.FC<ScoreEvaluationScreenProps> = ({
           </button>
         </div>
       </div>
+
+      <EvaluationMediaViewer
+        items={outputViewerItems}
+        activeIndex={outputViewerIndex}
+        onIndexChange={setOutputViewerIndex}
+        onClose={() => setOutputViewerIndex(null)}
+      />
     </div>
   );
 };

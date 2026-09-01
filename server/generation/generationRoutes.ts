@@ -174,7 +174,11 @@ generationRoutes.post('/batches', async (req, res) => {
     if (typeof payload.preflightId !== 'string' || !payload.preflightId) {
       throw badRequest('preflightId is required.');
     }
-    const batch = await confirmGenerationPreflight(payload.preflightId, req.user);
+    const batch = await confirmGenerationPreflight(
+      payload.preflightId,
+      req.user,
+      { replacementRiskConfirmed: payload.replacementRiskConfirmed === true },
+    );
     res.status(batch.reused ? 200 : 201).json({ batchId: batch.id, reused: batch.reused });
   } catch (error) {
     sendError(res, error, 'Failed to create generation batch');
@@ -284,6 +288,12 @@ generationRoutes.post('/batches/:batchId/retry', async (req, res) => {
       fixedSeed: rootBatch.controls?.fixedSeed,
       seedColumn: rootBatch.controls?.seedColumn,
       selectedDatasetItemIds: stableDatasetItemIds,
+      replacementDatasetItemIds: rootBatch.controls?.targetMode === 'update_existing'
+        ? stableDatasetItemIds.filter(datasetItemId => {
+            const item = retryable.find(candidate => candidate?.datasetItemId === datasetItemId);
+            return item?.resolvedInputs?.targetWriteIntent?.action === 'replace';
+          })
+        : undefined,
       assetBindings: rootBatch.controls?.assetBindings || [],
     }, req.user);
     res.status(201).json({ preflight });

@@ -591,7 +591,13 @@ export type GenerationItemStatus =
   | 'pending' | 'submitting' | 'submitted' | 'processing' | 'reconciling' | 'archiving'
   | 'running' | 'succeeded' | 'completed' | 'failed' | 'submission_unknown' | 'cancelled';
 export type GenerationSeedMode = 'unused' | 'fixed' | 'derive_from_case' | 'column';
-export type GenerationTargetMode = 'new' | 'fill_existing';
+export type GenerationTargetMode = 'new' | 'fill_existing' | 'update_existing';
+export type GenerationTargetWriteAction = 'fill' | 'replace';
+
+export interface GenerationTargetWriteIntent {
+  action: GenerationTargetWriteAction;
+  expectedSnapshotFingerprint: string;
+}
 export type GenerationAssetDurability = 'vidmuse_asset' | 'temporary' | 'manueval_oss';
 export type GenerationItemResolutionStatus = 'open' | 'skipped' | 'retrying' | 'resolved';
 
@@ -711,6 +717,8 @@ export interface GenerationSelectionSummary {
   valid: number;
   invalid: number;
   unselected: number;
+  fillSelected?: number;
+  replaceSelected?: number;
 }
 
 export interface GenerationControlDefinition {

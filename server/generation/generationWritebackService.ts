@@ -20,7 +20,9 @@ import {
   finishGenerationWriteback,
   getGenerationBatch,
   getGenerationBatchFamily,
+  skipGenerationFamilyItems,
 } from './generationExecutionRepository.ts';
+import { generationTargetSnapshotFingerprint } from './generationTargetWrite.ts';
 
 const terminalItemStatuses = new Set(['succeeded', 'failed', 'submission_unknown', 'cancelled']);
 
@@ -94,7 +96,18 @@ export const writeGenerationBatchToDataset = async (jobId: string) => {
 
     const current = await getDataset(batch.datasetId);
     if (!current) throw new Error('Target dataset was not found during writeback');
-    const changeSummary = `Generation batch ${batch.id} wrote output column ${batch.targetColumn}.`;
+    const targetMode = batch.targetMode || batch.controls?.targetMode || 'new';
+    const successfulFillCount = batch.items.filter(item => (
+      item.status === 'succeeded' && Boolean(String(item.resultUrl || '').trim())
+      && item.resolvedInputs?.targetWriteIntent?.action !== 'replace'
+    )).length;
+    const successfulReplacementCount = batch.items.filter(item => (
+      item.status === 'succeeded' && Boolean(String(item.resultUrl || '').trim())
+      && item.resolvedInputs?.targetWriteIntent?.action === 'replace'
+    )).length;
+    const changeSummary = targetMode === 'update_existing'
+      ? `Generation batch ${batch.id} updated ${batch.targetColumn}: ${successfulFillCount} filled, ${successfulReplacementCount} replaced.`
+      : `Generation batch ${batch.id} wrote output column ${batch.targetColumn}.`;
     const completedVersion = current.versionHistory?.find(entry => entry.changeSummary === changeSummary)?.version;
     if (completedVersion) {
       await finishGenerationWriteback(jobId, 'completed', completedVersion);
@@ -109,6 +122,18 @@ export const writeGenerationBatchToDataset = async (jobId: string) => {
       const currentRow = rowsByStableId.get(String(item.datasetItemId || ''));
       if (!currentRow) {
         conflicts.push({ caseId: item.caseId, reason: 'stable dataset item no longer exists' });
+        continue;
+      }
+      const intent = item.resolvedInputs?.targetWriteIntent;
+      if (targetMode === 'update_existing') {
+        if (!intent || !['fill', 'replace'].includes(intent.action) || !intent.expectedSnapshotFingerprint) {
+          conflicts.push({ caseId: item.caseId, reason: 'target write intent is missing or invalid' });
+          continue;
+        }
+        const currentFingerprint = generationTargetSnapshotFingerprint(currentRow.row, batch.targetColumn);
+        if (currentFingerprint !== intent.expectedSnapshotFingerprint) {
+          conflicts.push({ caseId: item.caseId, reason: 'target result or its audit metadata changed after preflight' });
+        }
         continue;
       }
       const existing = String(currentRow.row[batch.targetColumn] ?? '').trim();
@@ -135,9 +160,15 @@ export const writeGenerationBatchToDataset = async (jobId: string) => {
       [batch.inputMapping, batch.controls],
       candidateColumns,
     );
+    let datasetChanged = false;
     for (const item of batch.items) {
       const currentRow = rowsByStableId.get(String(item.datasetItemId || ''));
       if (!currentRow) continue;
+      const replacement = targetMode === 'update_existing'
+        && item.resolvedInputs?.targetWriteIntent?.action === 'replace';
+      if (replacement && (
+        item.status !== 'succeeded' || !String(item.resultUrl || '').trim()
+      )) continue;
       const row = nextItems[currentRow.index];
       if (item.status === 'succeeded') row[batch.targetColumn] = item.resultUrl || '';
       if (item.resolutionStatus === 'skipped') row[batch.targetColumn] = formatGenerationFailureCell(item);
@@ -161,6 +192,7 @@ export const writeGenerationBatchToDataset = async (jobId: string) => {
           ? sanitizeGenerationFailureError(item.error)
           : item.error || undefined,
       });
+      datasetChanged = true;
       if (item.status === 'succeeded' && row[batch.targetColumn]) {
         const sourceRow = sourceRowsByStableId.get(String(item.datasetItemId || '')) || row;
         const resultMeta: DatasetResultFreshnessMap = row[DATASET_RESULT_META_KEY]
@@ -179,6 +211,11 @@ export const writeGenerationBatchToDataset = async (jobId: string) => {
         };
         row[DATASET_RESULT_META_KEY] = resultMeta;
       }
+    }
+
+    if (!datasetChanged) {
+      await finishGenerationWriteback(jobId, 'completed', current.version || 1);
+      return true;
     }
 
     const outputField: DatasetSchemaField = {
@@ -287,12 +324,24 @@ export const skipGenerationFamilyItemsWithWriteback = async (
 
   const current = await getDataset(family.datasetId);
   if (!current) throw new Error('Target dataset was not found during skip writeback.');
+  const replacementItems = items.filter(item => (
+    family.targetMode === 'update_existing'
+    && item.resolvedInputs?.targetWriteIntent?.action === 'replace'
+  ));
+  if (replacementItems.length === items.length) {
+    await skipGenerationFamilyItems(jobId, uniqueItemIds, user);
+    return {
+      handled: true as const,
+      datasetVersion: family.writebackDatasetVersion || current.version || 1,
+    };
+  }
   const rowsByStableId = new Map(current.items.map((row, index) => [
     String(row[DATASET_ITEM_ID_KEY] || ''),
     { row, index },
   ]));
   const nextItems = current.items.map(row => ({ ...row }));
   for (const item of items) {
+    if (replacementItems.some(candidate => candidate.id === item.id)) continue;
     const currentRow = rowsByStableId.get(String(item.datasetItemId || ''));
     if (!currentRow) throw conflict('A selected case no longer exists in the current dataset.', {
       datasetItemId: item.datasetItemId,

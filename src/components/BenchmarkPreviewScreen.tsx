@@ -3,9 +3,11 @@ import { ArrowLeft, ArrowRight, CheckCircle2, ClipboardList, MessageSquare, Rota
 import { EvaluationItem } from '../types';
 import DimensionChips from './DimensionChips';
 import BenchmarkOutputCell from './BenchmarkOutputCell';
-import { PreviewMediaType } from '../mediaTypeUtils';
+import { inferPreviewMediaType, type PreviewMediaType } from '../mediaTypeUtils';
 import { getDimensionValuesForItem } from '../dimensionUtils';
 import { resolveEvaluationItemPrompt } from '../rankingUtils';
+import { resolvePlaybackUrl } from '../mediaUrlUtils';
+import EvaluationMediaViewer, { type EvaluationMediaViewerItem } from './EvaluationMediaViewer';
 
 interface BenchmarkPreviewScreenProps {
   item: EvaluationItem;
@@ -39,9 +41,11 @@ const BenchmarkPreviewScreen: React.FC<BenchmarkPreviewScreenProps> = ({
   onGoBack
 }) => {
   const [comment, setComment] = useState('');
+  const [outputViewerIndex, setOutputViewerIndex] = useState<number | null>(null);
 
   useEffect(() => {
     setComment('');
+    setOutputViewerIndex(null);
   }, [item.id]);
 
   const inputEntries = useMemo(() => {
@@ -68,6 +72,22 @@ const BenchmarkPreviewScreen: React.FC<BenchmarkPreviewScreenProps> = ({
       }))
       .filter(output => output.value);
   }, [item, models]);
+  const effectiveOutputType: PreviewMediaType = outputType === 'image' || outputType === 'video'
+    ? outputType
+    : item.type === 'image' || item.type === 'video'
+      ? item.type
+      : outputType as PreviewMediaType;
+  const outputViewerItems = useMemo(() => outputEntries.flatMap(output => {
+    const textValue = stringifyValue(output.value);
+    const type = effectiveOutputType === 'image' || effectiveOutputType === 'video'
+      ? effectiveOutputType
+      : inferPreviewMediaType(textValue, effectiveOutputType, output.label);
+    const url = resolvePlaybackUrl(textValue) || textValue;
+    return type === 'image' || type === 'video'
+      ? [{ id: output.key, url, type, label: output.label } satisfies EvaluationMediaViewerItem]
+      : [];
+  }), [effectiveOutputType, outputEntries]);
+  const outputViewerOpen = outputViewerIndex !== null;
 
   const progressPercent = totalItems > 0 ? Math.round(((currentIndex + 1) / totalItems) * 100) : 0;
   const isLastItem = currentIndex >= totalItems - 1;
@@ -81,6 +101,7 @@ const BenchmarkPreviewScreen: React.FC<BenchmarkPreviewScreenProps> = ({
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (outputViewerOpen) return;
       const editable = isEditableTarget(event.target);
 
       if (editable) {
@@ -113,7 +134,7 @@ const BenchmarkPreviewScreen: React.FC<BenchmarkPreviewScreenProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [comment, handleSave, onGoBack, onSkip]);
+  }, [comment, handleSave, onGoBack, onSkip, outputViewerOpen]);
 
   return (
     <div className="mx-auto flex min-h-[calc(100vh-96px)] max-w-7xl flex-col px-4 py-4 md:px-6">
@@ -190,8 +211,10 @@ const BenchmarkPreviewScreen: React.FC<BenchmarkPreviewScreenProps> = ({
                   key={output.key}
                   label={output.label}
                   value={output.value}
-                  preferredType={outputType}
+                  preferredType={effectiveOutputType}
                   isActive={false}
+                  suspendPlayback={outputViewerOpen}
+                  onExpand={() => setOutputViewerIndex(outputViewerItems.findIndex(candidate => candidate.id === output.key))}
                 />
               ))
             ) : (
@@ -226,6 +249,13 @@ const BenchmarkPreviewScreen: React.FC<BenchmarkPreviewScreenProps> = ({
           </div>
         </div>
       </footer>
+
+      <EvaluationMediaViewer
+        items={outputViewerItems}
+        activeIndex={outputViewerIndex}
+        onIndexChange={setOutputViewerIndex}
+        onClose={() => setOutputViewerIndex(null)}
+      />
     </div>
   );
 };
