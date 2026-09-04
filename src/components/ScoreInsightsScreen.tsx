@@ -19,6 +19,8 @@ import {
   type InsightExportContext,
   type InsightExportRequest,
 } from '../insightExports';
+import { useDimensionOptionScope } from '../dimensionOptionScope';
+import DimensionOptionFilter from './DimensionOptionFilter';
 
 interface ScoreInsightsScreenProps {
   mode: 'score' | 'pairwise';
@@ -290,7 +292,7 @@ const ArenaDimensionTable: React.FC<{ bundle: PairwiseInsightBundle }> = ({ bund
     <section className="glass-panel overflow-hidden">
       <div className="border-b border-white/10 p-4">
         <h2 className="text-lg font-bold text-slate-100">按评测维度聚合</h2>
-        <p className="mt-1 text-xs text-slate-500">每组至少 5 个 case、10 场有效对战且图连通时才给出 BT 领先模型。</p>
+        <p className="mt-1 text-xs text-slate-500">多选维度按选项拆开统计；每组至少 5 个 case、10 场有效对战且图连通时才给出 BT 领先模型。</p>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[720px] text-left text-sm">
@@ -342,30 +344,31 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
 }) => {
   const [isExportingWorkbook, setIsExportingWorkbook] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  const scope = useDimensionOptionScope(items, votes);
   const scoreBundle = useMemo(() => {
     if (mode !== 'score' || !config) return null;
-    return buildScoreInsights({ items, votes, models, config });
-  }, [config, items, mode, models, votes]);
+    return buildScoreInsights({ items: scope.items, votes: scope.votes, models, config });
+  }, [config, mode, models, scope.items, scope.votes]);
 
   const pairwiseBundle = useMemo(() => {
     if (mode !== 'pairwise') return null;
-    return buildPairwiseInsights({ items, votes, models });
-  }, [items, mode, models, votes]);
+    return buildPairwiseInsights({ items: scope.items, votes: scope.votes, models });
+  }, [mode, models, scope.items, scope.votes]);
   const scoreTopSummary = useMemo(
-    () => scoreBundle ? buildScoreTopSummary(scoreBundle, items.length) : null,
-    [items.length, scoreBundle],
+    () => scoreBundle ? buildScoreTopSummary(scoreBundle, scope.items.length) : null,
+    [scope.items.length, scoreBundle],
   );
   const pairwiseTopSummary = useMemo(
-    () => pairwiseBundle ? buildPairwiseTopSummary(pairwiseBundle, items.length) : null,
-    [items.length, pairwiseBundle],
+    () => pairwiseBundle ? buildPairwiseTopSummary(pairwiseBundle, scope.items.length) : null,
+    [scope.items.length, pairwiseBundle],
   );
   const scoreEvidence = useMemo(
-    () => scoreBundle ? buildCaseEvidenceViewModels({ bundle: scoreBundle, items, votes }) : [],
-    [items, scoreBundle, votes],
+    () => scoreBundle ? buildCaseEvidenceViewModels({ bundle: scoreBundle, items: scope.items, votes: scope.votes }) : [],
+    [scope.items, scoreBundle, scope.votes],
   );
   const pairwiseEvidence = useMemo(
-    () => pairwiseBundle ? buildCaseEvidenceViewModels({ bundle: pairwiseBundle, items, votes }) : [],
-    [items, pairwiseBundle, votes],
+    () => pairwiseBundle ? buildCaseEvidenceViewModels({ bundle: pairwiseBundle, items: scope.items, votes: scope.votes }) : [],
+    [scope.items, pairwiseBundle, scope.votes],
   );
   const activeBundle = scoreBundle || pairwiseBundle;
   const resolvedExportContext = useMemo<InsightExportContext>(() => exportContext || ({
@@ -379,10 +382,10 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
   }), [config?.method, exportContext, mode, title]);
   const exportRequest = useMemo<InsightExportRequest | null>(() => activeBundle ? ({
     bundle: activeBundle,
-    items,
-    votes,
+    items: scope.items,
+    votes: scope.votes,
     context: resolvedExportContext,
-  }) : null, [activeBundle, items, resolvedExportContext, votes]);
+  }) : null, [activeBundle, resolvedExportContext, scope.items, scope.votes]);
   const exportWorkbook = async () => {
     if (!exportRequest || isExportingWorkbook) return;
     setIsExportingWorkbook(true);
@@ -439,6 +442,7 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
         {exportError && <div role="alert" className="border border-red-400/30 border-l-2 border-l-red-400 bg-[#151116] px-4 py-3 text-sm text-red-100">{exportError}</div>}
 
         {controls}
+        <DimensionOptionFilter catalog={scope.catalog} selected={scope.selected} onChange={scope.setSelected} />
         {notices}
 
         {skippedCount > 0 && (
@@ -495,6 +499,7 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
         {exportError && <div role="alert" className="border border-red-400/30 border-l-2 border-l-red-400 bg-[#151116] px-4 py-3 text-sm text-red-100">{exportError}</div>}
 
         {controls}
+        <DimensionOptionFilter catalog={scope.catalog} selected={scope.selected} onChange={scope.setSelected} />
         {notices}
 
         {skippedCount > 0 && (

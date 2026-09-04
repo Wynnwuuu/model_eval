@@ -1,7 +1,7 @@
 import React from 'react';
 import { ExternalLink, FileSearch, MessageSquareText } from 'lucide-react';
 import type { CaseEvidenceOutput, CaseEvidenceViewModel } from '../caseEvidence';
-import { getDimensionEntries } from '../dimensionUtils';
+import { getDimensionOptionEntries } from '../dimensionUtils';
 import DeferredMediaRenderer from './DeferredMediaRenderer';
 
 const formatReviewTime = (timestamp?: number) => {
@@ -114,9 +114,9 @@ const CaseEvidenceGallery: React.FC<CaseEvidenceGalleryProps> = ({
             <div className="min-w-0 flex-1">
               <div className="font-mono text-xs font-bold text-amber-300">{item.originalItemId}</div>
               <div className="mt-2 max-w-5xl whitespace-pre-wrap break-words text-sm leading-6 text-slate-200">{item.prompt || '-'}</div>
-              {getDimensionEntries(item.dimensionValues).length > 0 && (
+              {getDimensionOptionEntries(item.dimensionValues).length > 0 && (
                 <div className="mt-3 flex flex-wrap gap-1.5">
-                  {getDimensionEntries(item.dimensionValues).map(([key, value]) => (
+                  {getDimensionOptionEntries(item.dimensionValues).map(([key, value]) => (
                     <span key={`${item.itemId}-${key}-${value}`} className="border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-slate-300">{key}: {value}</span>
                   ))}
                 </div>

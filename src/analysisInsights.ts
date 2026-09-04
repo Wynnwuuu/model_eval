@@ -1,5 +1,5 @@
 import { AggregatedResult, EvaluationItem, ModelOutput, RankingEntry, VoteRecord, VoteType } from './types';
-import { DimensionValues, getDimensionEntries, getDimensionValuesForItem } from './dimensionUtils';
+import { DimensionValues, getDimensionEntries, getDimensionOptionEntries, getDimensionValuesForItem } from './dimensionUtils';
 import {
   ArenaRankPromptItem,
   calculateRankPairwiseStats,
@@ -574,7 +574,7 @@ const buildAbDimensionInsights = (cases: AbCaseInsight[], models: InsightModelNa
   const grouped = new Map<string, { key: string; value: string; cases: AbCaseInsight[] }>();
 
   cases.forEach(item => {
-    getDimensionEntries(item.dimensionValues).forEach(([dimensionKey, dimensionValue]) => {
+    getDimensionOptionEntries(item.dimensionValues).forEach(([dimensionKey, dimensionValue]) => {
       const groupKey = `${dimensionKey}::${dimensionValue}`;
       const group = grouped.get(groupKey) || { key: dimensionKey, value: dimensionValue, cases: [] };
       group.cases.push(item);
@@ -615,7 +615,7 @@ const buildAbDimensionInsights = (cases: AbCaseInsight[], models: InsightModelNa
         smallSample: group.cases.length < 5 || totalVotes < 10
       };
     })
-    .sort((a, b) => a.dimensionKey.localeCompare(b.dimensionKey) || b.totalVotes - a.totalVotes);
+    .sort((a, b) => a.dimensionKey.localeCompare(b.dimensionKey) || b.totalVotes - a.totalVotes || a.dimensionValue.localeCompare(b.dimensionValue));
 };
 
 const toRankModelInsights = (votes: VoteRecord[]): RankModelInsight[] => {
@@ -760,7 +760,7 @@ const buildRankDimensionInsights = (cases: RankCaseInsight[], votes: VoteRecord[
   const grouped = new Map<string, { key: string; value: string; cases: RankCaseInsight[]; votes: VoteRecord[] }>();
 
   cases.forEach(item => {
-    getDimensionEntries(item.dimensionValues).forEach(([dimensionKey, dimensionValue]) => {
+    getDimensionOptionEntries(item.dimensionValues).forEach(([dimensionKey, dimensionValue]) => {
       const groupKey = `${dimensionKey}::${dimensionValue}`;
       const group = grouped.get(groupKey) || { key: dimensionKey, value: dimensionValue, cases: [], votes: [] };
       group.cases.push(item);
@@ -794,7 +794,7 @@ const buildRankDimensionInsights = (cases: RankCaseInsight[], votes: VoteRecord[
         smallSample: group.cases.length < 5 || group.votes.length < 10
       };
     })
-    .sort((a, b) => a.dimensionKey.localeCompare(b.dimensionKey) || b.rankingRecords - a.rankingRecords);
+    .sort((a, b) => a.dimensionKey.localeCompare(b.dimensionKey) || b.rankingRecords - a.rankingRecords || a.dimensionValue.localeCompare(b.dimensionValue));
 };
 
 export const csvEscape = (value: any) => `"${String(value ?? '').replace(/"/g, '""')}"`;

@@ -1,5 +1,5 @@
 import { EvalDimension, EvaluationConfig, EvaluationItem, ModelOutput, VoteRecord } from './types';
-import { getDimensionValuesForItem } from './dimensionUtils';
+import { getDimensionOptionEntries, getDimensionValuesForItem } from './dimensionUtils';
 import { getModelOutputsForItem, resolveEvaluationItemPrompt } from './rankingUtils';
 import { normalizeDimensions, scoreDimensionWeightTotal } from './evaluationMethods';
 import { getEffectiveVotes } from './voteUtils';
@@ -580,12 +580,11 @@ export const buildPairwiseInsights = ({
       voteAudit: getVoteAuditCsvValues(vote),
     });
 
-    Object.entries(dimensionValues).forEach(([dimension, value]) => {
-      if (!String(value).trim()) return;
+    getDimensionOptionEntries(dimensionValues).forEach(([dimension, value]) => {
       const key = `${dimension}\u0000${value}`;
       const group = dimensionGroups.get(key) || {
         dimension,
-        value: String(value),
+        value,
         votes: [],
         itemIds: new Set<string>(),
       };

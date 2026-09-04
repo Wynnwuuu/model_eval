@@ -1,5 +1,5 @@
 import React from 'react';
-import { getDimensionEntries } from '../dimensionUtils';
+import { getDimensionOptionEntries } from '../dimensionUtils';
 
 interface DimensionChipsProps {
   values?: Record<string, string>;
@@ -8,7 +8,7 @@ interface DimensionChipsProps {
 }
 
 const DimensionChips: React.FC<DimensionChipsProps> = ({ values, className = '', label = '评测维度' }) => {
-  const entries = getDimensionEntries(values);
+  const entries = getDimensionOptionEntries(values);
   if (entries.length === 0) return null;
 
   return (
