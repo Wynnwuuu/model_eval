@@ -68,6 +68,8 @@ jobs:
 
       - run: npm run lint
 
+      - run: npm run test:dimension-options
+
       - run: npm run test:owner-access
 
       - run: npm run test:owner-access:disabled

@@ -57,10 +57,78 @@ export const getDimensionEntries = (values?: DimensionValues) =>
     .map(([key, value]) => [key, cleanValue(value)] as [string, string])
     .filter(([, value]) => value.length > 0);
 
+const DIMENSION_OPTION_SPLIT = /[,，;；|]/;
+
+export const parseDimensionOptionValues = (value: unknown): string[] => {
+  if (Array.isArray(value)) return [...new Set(value.flatMap(parseDimensionOptionValues))];
+  const parts = String(value ?? '').split(DIMENSION_OPTION_SPLIT).map(part => part.trim()).filter(Boolean);
+  return [...new Set(parts)];
+};
+
+export const getDimensionOptionEntries = (values?: DimensionValues) =>
+  getDimensionEntries(values).flatMap(([key, value]) =>
+    parseDimensionOptionValues(value).map(option => [key, option] as [string, string])
+  );
+
+export const dimensionValueHasOption = (value: unknown, option: string) =>
+  parseDimensionOptionValues(value).includes(option);
+
+export type DimensionOptionSelection = Record<string, string[]>;
+
+export const hasDimensionOptionSelection = (selected: DimensionOptionSelection) =>
+  Object.values(selected).some(options => options.length > 0);
+
+export const itemMatchesDimensionOptions = (
+  values: DimensionValues | undefined,
+  selected: DimensionOptionSelection,
+) => Object.entries(selected).every(([key, options]) =>
+  options.length === 0 || options.every(option => dimensionValueHasOption(values?.[key], option))
+);
+
+export const toggleDimensionOption = (
+  selected: DimensionOptionSelection,
+  key: string,
+  option: string,
+): DimensionOptionSelection => {
+  const current = selected[key] || [];
+  const nextValues = current.includes(option)
+    ? current.filter(value => value !== option)
+    : [...current, option];
+  const next = { ...selected, [key]: nextValues };
+  if (nextValues.length === 0) delete next[key];
+  return next;
+};
+
+export const collectDimensionOptionCatalog = (
+  items: Array<{ dimensionValues?: DimensionValues }>,
+) => {
+  const catalog = new Map<string, Map<string, number>>();
+  items.forEach(item => {
+    getDimensionOptionEntries(item.dimensionValues).forEach(([key, option]) => {
+      const options = catalog.get(key) || new Map<string, number>();
+      options.set(option, (options.get(option) || 0) + 1);
+      catalog.set(key, options);
+    });
+  });
+  return Array.from(catalog.entries())
+    .map(([key, options]) => ({
+      key,
+      options: Array.from(options.entries())
+        .map(([value, count]) => ({ value, count }))
+        .sort((left, right) => right.count - left.count || left.value.localeCompare(right.value)),
+    }))
+    .filter(group => group.options.length > 1);
+};
+
 export const hasDimensionValues = (values?: DimensionValues) => getDimensionEntries(values).length > 0;
 
 export const formatDimensionValues = (values?: DimensionValues) => {
   const entries = getDimensionEntries(values);
+  return entries.length ? entries.map(([key, value]) => `${key}: ${value}`).join(' | ') : '';
+};
+
+export const formatDimensionOptionValues = (values?: DimensionValues) => {
+  const entries = getDimensionOptionEntries(values);
   return entries.length ? entries.map(([key, value]) => `${key}: ${value}`).join(' | ') : '';
 };
 
@@ -122,7 +190,7 @@ export const calculateVoteDimensionSummaries = (items: AggregatedResult[]): Vote
   const grouped = new Map<string, VoteDimensionSummary & { itemIds: Set<string> }>();
 
   items.forEach(item => {
-    const entries = getDimensionEntries(item.dimensionValues);
+    const entries = getDimensionOptionEntries(item.dimensionValues);
     const total = item.votes.A + item.votes.B + item.votes.Tie;
     if (entries.length === 0 || total === 0) return;
 
@@ -176,7 +244,7 @@ export const calculateRankDimensionSummaries = (
 
   votes.filter(isArenaRankVote).forEach(vote => {
     const item = itemMap.get(vote.itemId);
-    const entries = getDimensionEntries(getDimensionValuesForItem(item));
+    const entries = getDimensionOptionEntries(getDimensionValuesForItem(item));
     entries.forEach(([dimensionKey, dimensionValue]) => {
       const groupKey = `${dimensionKey}::${dimensionValue}`;
       const existing = grouped.get(groupKey) || {

@@ -21,7 +21,9 @@ import {
   formatPValue,
   formatPercent,
 } from '../analysisInsights';
-import { getDimensionEntries, formatDimensionValues } from '../dimensionUtils';
+import { dimensionValueHasOption, formatDimensionOptionValues } from '../dimensionUtils';
+import { useDimensionOptionScope } from '../dimensionOptionScope';
+import DimensionOptionFilter from './DimensionOptionFilter';
 import InsightTopSummaryPanel from './InsightTopSummaryPanel';
 import { buildAbTopSummary, buildRankTopSummary } from '../insightPresentation';
 import { buildCaseEvidenceViewModels } from '../caseEvidence';
@@ -90,7 +92,7 @@ const buildHtmlSnapshot = (bundle: InsightBundle) => {
     <tr>
       <td>${escapeHtml(item.itemId)}</td>
       <td>${escapeHtml(item.prompt)}</td>
-      <td>${escapeHtml(formatDimensionValues(item.dimensionValues))}</td>
+      <td>${escapeHtml(formatDimensionOptionValues(item.dimensionValues))}</td>
       <td>${escapeHtml(JSON.stringify(item.metrics))}</td>
       <td>${escapeHtml(item.representativeOutputs.map(output => `${output.modelName}: ${output.url}`).join(' | '))}</td>
     </tr>
@@ -420,7 +422,7 @@ const DimensionTable: React.FC<{ bundle: InsightBundle; onSelect: (key: string, 
   <section className="rounded-xl border border-white/10 bg-white/5">
     <div className="border-b border-white/10 p-4">
       <h3 className="text-sm font-semibold text-slate-100">按评测维度聚合</h3>
-      <p className="mt-1 text-xs text-slate-500">用于定位模型在场景、能力、难度等维度上的差异。</p>
+      <p className="mt-1 text-xs text-slate-500">多选维度按选项拆开统计，同一 case 可计入多个选项。</p>
     </div>
     {bundle.dimensions.length ? (
       <div className="overflow-x-auto">
@@ -492,7 +494,7 @@ const getFilterLabel = (filter: CaseFilter, bundle: InsightBundle) => {
 const filterCases = (bundle: InsightBundle, filter: CaseFilter) => {
   if (filter.type === 'all') return bundle.cases;
   if (filter.type === 'dimension') {
-    return bundle.cases.filter(item => item.dimensionValues?.[filter.key] === filter.value);
+    return bundle.cases.filter(item => dimensionValueHasOption(item.dimensionValues?.[filter.key], filter.value));
   }
   if (bundle.mode === 'ab') {
     if (filter.type === 'lowConsensus') return bundle.cases.filter(item => item.agreementRate < 0.6);
@@ -556,21 +558,32 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
   const [isExportingWorkbook, setIsExportingWorkbook] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const galleryRef = useRef<HTMLElement>(null);
+  const scope = useDimensionOptionScope(items, votes, aggregatedData);
+  const scopedRawVoteRows = useMemo(
+    () => scope.active ? rawVoteRows.filter(row => scope.itemIds.has(row.itemId)) : rawVoteRows,
+    [rawVoteRows, scope.active, scope.itemIds],
+  );
   const bundle = useMemo<InsightBundle>(() => {
     if (mode === 'rank') {
-      return buildRankInsights({ items: items as any, votes, models });
+      return buildRankInsights({ items: scope.items as any, votes: scope.votes, models });
     }
-    return buildAbInsights({ items, votes, aggregatedData, rawVoteRows, modelNames });
-  }, [mode, items, votes, aggregatedData, rawVoteRows, modelNames, models]);
+    return buildAbInsights({
+      items: scope.items,
+      votes: scope.votes,
+      aggregatedData: scope.aggregatedData,
+      rawVoteRows: scopedRawVoteRows,
+      modelNames,
+    });
+  }, [mode, modelNames, models, scope.aggregatedData, scope.items, scope.votes, scopedRawVoteRows]);
   const topSummary = useMemo(
     () => bundle.mode === 'ab'
-      ? buildAbTopSummary(bundle, items.length)
-      : buildRankTopSummary(bundle, items.length),
-    [bundle, items.length],
+      ? buildAbTopSummary(bundle, scope.items.length)
+      : buildRankTopSummary(bundle, scope.items.length),
+    [bundle, scope.items.length],
   );
   const evidenceCases = useMemo(
-    () => buildCaseEvidenceViewModels({ bundle, items, votes }),
-    [bundle, items, votes],
+    () => buildCaseEvidenceViewModels({ bundle, items: scope.items, votes: scope.votes }),
+    [bundle, scope.items, scope.votes],
   );
   const resolvedExportContext = useMemo<InsightExportContext>(() => exportContext || ({
     projectId: '',
@@ -583,11 +596,11 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
   }), [exportContext, mode, title]);
   const exportRequest = useMemo<InsightExportRequest<InsightBundle>>(() => ({
     bundle,
-    items,
-    votes,
-    rawAbVoteRows: rawVoteRows,
+    items: scope.items,
+    votes: scope.votes,
+    rawAbVoteRows: scopedRawVoteRows,
     context: resolvedExportContext,
-  }), [bundle, items, rawVoteRows, resolvedExportContext, votes]);
+  }), [bundle, resolvedExportContext, scope.items, scope.votes, scopedRawVoteRows]);
 
   const filteredCases = filterCases(bundle, filter);
   const filteredCaseIds = new Set(filteredCases.map(item => item.itemId));
@@ -595,6 +608,10 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
   const selectFilter = (nextFilter: CaseFilter) => {
     setFilter(nextFilter);
     window.requestAnimationFrame(() => galleryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  };
+  const selectDimensionOptions = (next: typeof scope.selected) => {
+    scope.setSelected(next);
+    setFilter({ type: 'all' });
   };
   const dateTag = new Date().toISOString().slice(0, 10);
   const exportWorkbook = async () => {
@@ -668,6 +685,7 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
       )}
 
       {controls}
+      <DimensionOptionFilter catalog={scope.catalog} selected={scope.selected} onChange={selectDimensionOptions} />
       {notices}
 
       {skippedCount > 0 && (

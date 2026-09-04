@@ -47,6 +47,7 @@
     "audit:audio-review-clips": "tsx scripts/create-audio-review-clips.ts",
     "test:rank-ties": "tsx scripts/test-rank-ties.ts",
     "test:model-feedback": "tsx scripts/test-model-feedback.ts",
+    "test:dimension-options": "tsx scripts/test-dimension-options.ts",
     "test:insights-summary": "tsx scripts/test-insights-summary.ts",
     "test:insight-exports": "tsx scripts/test-insight-exports.ts",
     "test:insight-workspace": "tsx scripts/test-insight-workspace.ts",
