@@ -70,6 +70,7 @@ interface ImportedMaterialResult {
   rankItems: ArenaRankPromptItem[];
   methodVotes: VoteRecord[];
   archivedVoteRows: ArchivedVoteRow[];
+  skippedVotes: VoteRecord[];
 }
 
 interface ArchivedVoteRow {
@@ -350,6 +351,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   const [methodVotes, setMethodVotes] = useState<VoteRecord[]>([]);
   const [analysisVoteRows, setAnalysisVoteRows] = useState<AnalysisVoteRow[]>([]);
   const [archivedVoteRows, setArchivedVoteRows] = useState<ArchivedVoteRow[]>([]);
+  const [reportSkippedVotes, setReportSkippedVotes] = useState<VoteRecord[] | undefined>();
   const resultRequestGateRef = useRef(new LatestRequestGate());
   const previousInitialProjectId = useRef(initialProjectId);
   const previousInitialScope = useRef(initialScope);
@@ -530,6 +532,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         })),
       };
     });
+    const skippedVotes = reviewerAwareVoteGroups.flatMap(group => group.votes).filter(vote => vote.choice === 'skipped');
     const archivedVoteRows: ArchivedVoteRow[] = reviewerAwareVoteGroups.flatMap(group =>
       (group.archivedVotes || []).map(vote => ({
         taskId: selectedTask.id,
@@ -562,7 +565,8 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         rankVotes: importedRankVotes,
         rankItems: importedAnalysisItems as ArenaRankPromptItem[],
         methodVotes: [],
-        archivedVoteRows
+        archivedVoteRows,
+        skippedVotes,
       };
     }
 
@@ -591,7 +595,8 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         rankVotes: [],
         rankItems: [],
         methodVotes: importedMethodVotes,
-        archivedVoteRows
+        archivedVoteRows,
+        skippedVotes,
       };
     }
 
@@ -658,7 +663,8 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
       rankVotes: [],
       rankItems: [],
       methodVotes: [],
-      archivedVoteRows
+      archivedVoteRows,
+      skippedVotes,
     };
   };
 
@@ -669,6 +675,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     setAnalysisItems([]);
     setAnalysisVoteRows([]);
     setArchivedVoteRows([]);
+    setReportSkippedVotes(undefined);
     setMethodVotes([]);
     setAnalysisModelList([]);
     setAnalysisEvaluationConfig(null);
@@ -682,6 +689,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
     }
 
     setArchivedVoteRows(result.archivedVoteRows);
+    setReportSkippedVotes(result.skippedVotes);
     const selectedParadigm = result.paradigm;
     const selectedConfig = result.evaluationConfig;
 
@@ -824,6 +832,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     setError(null);
     setArchivedVoteRows([]);
+    setReportSkippedVotes(undefined);
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
@@ -1367,6 +1376,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         additionalActions={resultActions}
         notices={resultNotices}
         exportContext={insightExportContext}
+        reportSkippedVotes={reportSkippedVotes}
       />
     );
   }
@@ -1388,6 +1398,7 @@ const AnalysisScreen: React.FC<AnalysisScreenProps> = ({
         additionalActions={resultActions}
         notices={resultNotices}
         exportContext={insightExportContext}
+        reportSkippedVotes={reportSkippedVotes}
       />
     );
   };

@@ -20,6 +20,7 @@ single Docker image -> Express serves /api/* and Vite dist
 
 - 项目、数据集、模板、任务、结果洞察的独立路由和可分享 URL。
 - A/B 偏好、Pairwise、MOS、Rubric、Arena-rank 等评测方式。
+- 结果洞察支持[可视化报告 HTML](docs/visual-html-report.md)：单文件图表、逐 case 产物对照、评审反馈和打印/PDF；统计可离线阅读，媒体联网预览。
 - Benchmark 数据预览：上传 CSV，选择输入列和输出预览列，逐条查看文本、图片、视频、音频并记录评论。
 - PostgreSQL 作为业务主存储，前端通过 HTTP API 访问，不再依赖 Firestore。
 - 本地 Docker PostgreSQL、API smoke test、迁移脚本和一键开发脚本。

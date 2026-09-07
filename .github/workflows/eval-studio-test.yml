@@ -70,6 +70,10 @@ jobs:
 
       - run: npm run test:dimension-options
 
+      - run: npm run test:insight-exports
+
+      - run: npm run test:insight-html
+
       - run: npm run test:owner-access
 
       - run: npm run test:owner-access:disabled
@@ -138,6 +142,9 @@ jobs:
           exit 1
 
       - run: npm run test:e2e:evaluation-storage
+
+      - name: Visual report download and standalone regression
+        run: npx playwright test e2e/insight-html-report.spec.ts e2e/insight-html-entry.spec.ts
 
       - name: Stop Vite
         if: always()

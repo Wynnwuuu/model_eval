@@ -1053,3 +1053,13 @@ Validation complete: `test:generation`, `test:generation:db`, dataset sync/clone
 - The complete evaluation browser suite passed 36 tests with one existing conditional skip; focused update/viewer regression passed 15/15 after final safety edits.
 - Runtime-memory and non-overlapping polling regressions passed. A 500-case target/audit snapshot benchmark ran 200 passes (100,000 fingerprints) at 1.536 ms average per batch, 2.24 ms p95, and 3.328 ms maximum.
 - No real Aion request or paid generation ran.
+
+# 2026-09-07: Visual HTML evaluation report
+
+- Implemented on main@6c42785 in isolated worktree codex/visual-insight-report.
+- Report replaces JSON/link-only snapshot with static charts, context, case comparison and reviews for A/B, Arena-rank, MOS, Rubric and Pairwise.
+- Preserved existing statistics and other export formats; added scoped skip metadata only for reporting.
+- Passed 26 browser regressions and report/export/summary/dimension/rank/workspace unit checks, lint and both builds. Details: visual_html_report.md.
+- Preview runs on 3011. Existing API 8787 is stopped; shared API/database check cannot pass in this environment.
+- Implementation did not invoke a real model-service request. User subsequently authorized direct release to main.
+- Release preflight repeated successfully: report/export/summary/dimension/rank/workspace regressions, 26 browser checks, lint and frontend/server builds. Remote main still at 6c42785; ordinary fast-forward push only.

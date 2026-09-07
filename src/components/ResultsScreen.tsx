@@ -394,6 +394,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
         ]}
         config={activeConfig}
         skippedCount={skippedCount}
+        reportSkippedVotes={scopedVotes}
         returnAction={resultReturnAction}
         exportContext={insightExportContext}
       />
@@ -414,6 +415,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
           { id: 'model-1', name: modelNames.b },
         ]}
         skippedCount={skippedCount}
+        reportSkippedVotes={scopedVotes}
         returnAction={resultReturnAction}
         exportContext={insightExportContext}
       />
@@ -431,6 +433,7 @@ const ResultsScreen: React.FC<ResultsScreenProps> = ({
       modelNames={modelNames}
       models={arenaRankModelList}
       skippedCount={skippedCount}
+      reportSkippedVotes={scopedVotes}
       returnAction={resultReturnAction}
       exportContext={insightExportContext}
     />

@@ -165,8 +165,8 @@ const sanitizeFilenamePart = (value: string) => normalizeText(value)
 
 export const buildInsightArtifactFilename = (
   context: InsightExportContext,
-  artifact: '分析报表' | '评审明细' | '证据',
-  extension: 'xlsx' | 'csv' | 'json',
+  artifact: '分析报表' | '评审明细' | '证据' | '可视化报告',
+  extension: 'xlsx' | 'csv' | 'json' | 'html',
 ) => {
   const date = resolveExportTimestamp(context).slice(0, 10);
   return [

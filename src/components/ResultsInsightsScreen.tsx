@@ -21,7 +21,7 @@ import {
   formatPValue,
   formatPercent,
 } from '../analysisInsights';
-import { dimensionValueHasOption, formatDimensionOptionValues } from '../dimensionUtils';
+import { dimensionValueHasOption } from '../dimensionUtils';
 import { useDimensionOptionScope } from '../dimensionOptionScope';
 import DimensionOptionFilter from './DimensionOptionFilter';
 import InsightTopSummaryPanel from './InsightTopSummaryPanel';
@@ -51,6 +51,7 @@ interface ResultsInsightsScreenProps {
   modelNames?: InsightModelNames;
   models?: { id: string; name: string }[];
   skippedCount?: number;
+  reportSkippedVotes?: VoteRecord[];
   returnAction?: { label: string; onClick: () => void };
   additionalActions?: React.ReactNode;
   notices?: React.ReactNode;
@@ -65,67 +66,6 @@ type CaseFilter =
   | { type: 'winner'; winner: VoteType }
   | { type: 'dimension'; key: string; value: string }
   | { type: 'pairwise'; a: string; b: string };
-
-const downloadTextFile = (filename: string, content: string, mimeType: string) => {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
-};
-
-const escapeHtml = (value: any) =>
-  String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-
-const buildHtmlSnapshot = (bundle: InsightBundle) => {
-  const title = bundle.mode === 'rank' ? 'Arena-rank 结果洞察' : 'A/B 结果洞察';
-  const caseRows = bundle.cases.map(item => `
-    <tr>
-      <td>${escapeHtml(item.itemId)}</td>
-      <td>${escapeHtml(item.prompt)}</td>
-      <td>${escapeHtml(formatDimensionOptionValues(item.dimensionValues))}</td>
-      <td>${escapeHtml(JSON.stringify(item.metrics))}</td>
-      <td>${escapeHtml(item.representativeOutputs.map(output => `${output.modelName}: ${output.url}`).join(' | '))}</td>
-    </tr>
-  `).join('');
-
-  return `<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8" />
-  <title>${escapeHtml(title)}</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 32px; color: #111827; }
-    h1 { margin-bottom: 4px; }
-    .meta { color: #6b7280; margin-bottom: 24px; }
-    pre { background: #f3f4f6; padding: 16px; border-radius: 8px; overflow: auto; }
-    table { width: 100%; border-collapse: collapse; margin-top: 16px; }
-    th, td { border: 1px solid #e5e7eb; padding: 8px; text-align: left; vertical-align: top; }
-    th { background: #f9fafb; }
-  </style>
-</head>
-<body>
-  <h1>${escapeHtml(title)}</h1>
-  <div class="meta">导出时间：${new Date().toISOString()}</div>
-  <h2>核心结论</h2>
-  <pre>${escapeHtml(JSON.stringify(bundle.summary, null, 2))}</pre>
-  <h2>Case Evidence</h2>
-  <table>
-    <thead><tr><th>ItemID</th><th>Prompt</th><th>Dimensions</th><th>Metrics</th><th>Outputs</th></tr></thead>
-    <tbody>${caseRows}</tbody>
-  </table>
-</body>
-</html>`;
-};
 
 const Meter: React.FC<{ value: number; className?: string }> = ({ value, className = 'bg-amber-400' }) => (
   <div className="h-2 overflow-hidden rounded-full bg-white/10">
@@ -549,6 +489,7 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
   modelNames,
   models = [],
   skippedCount = 0,
+  reportSkippedVotes,
   returnAction,
   additionalActions,
   notices,
@@ -556,6 +497,7 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
 }) => {
   const [filter, setFilter] = useState<CaseFilter>({ type: 'all' });
   const [isExportingWorkbook, setIsExportingWorkbook] = useState(false);
+  const [isExportingHtml, setIsExportingHtml] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const galleryRef = useRef<HTMLElement>(null);
   const scope = useDimensionOptionScope(items, votes, aggregatedData);
@@ -613,7 +555,6 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
     scope.setSelected(next);
     setFilter({ type: 'all' });
   };
-  const dateTag = new Date().toISOString().slice(0, 10);
   const exportWorkbook = async () => {
     if (isExportingWorkbook) return;
     setIsExportingWorkbook(true);
@@ -643,7 +584,26 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
       setExportError(error?.message || '证据 JSON 生成失败，请重试。');
     }
   };
-  const exportHtml = () => downloadTextFile(`insights_snapshot_${bundle.mode}_${dateTag}.html`, buildHtmlSnapshot(bundle), 'text/html;charset=utf-8;');
+  const exportHtml = async () => {
+    if (isExportingHtml) return;
+    setIsExportingHtml(true);
+    setExportError(null);
+    try {
+      const { downloadInsightHtmlReport, countReportSkippedVotes } = await import('../reports/insightHtmlReport');
+      downloadInsightHtmlReport({
+        ...exportRequest,
+        report: {
+          originalItemCount: items.length,
+          dimensionSelection: scope.selected,
+          skippedCount: countReportSkippedVotes(reportSkippedVotes, scope.itemIds, scope.active),
+        },
+      });
+    } catch (error: any) {
+      setExportError(error?.message || '可视化报告生成失败，请重试。');
+    } finally {
+      setIsExportingHtml(false);
+    }
+  };
 
   return (
     <div className="mx-auto max-w-7xl space-y-6 p-6 animate-in fade-in duration-500">
@@ -671,8 +631,8 @@ const ResultsInsightsScreen: React.FC<ResultsInsightsScreenProps> = ({
           <button onClick={exportEvidence} className="inline-flex items-center gap-2 rounded-lg bg-black/40 px-3 py-2 text-xs font-medium text-white hover:bg-white/10">
             <FileJson size={14} /> 证据 JSON
           </button>
-          <button onClick={exportHtml} className="inline-flex items-center gap-2 rounded-lg bg-black/40 px-3 py-2 text-xs font-medium text-white hover:bg-white/10">
-            <FileText size={14} /> HTML 快照
+          <button onClick={exportHtml} disabled={isExportingHtml} className="inline-flex items-center gap-2 rounded-lg bg-black/40 px-3 py-2 text-xs font-medium text-white hover:bg-white/10 disabled:cursor-wait disabled:opacity-60">
+            {isExportingHtml ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />} {isExportingHtml ? '生成中' : '可视化报告 HTML'}
           </button>
           {additionalActions}
         </div>

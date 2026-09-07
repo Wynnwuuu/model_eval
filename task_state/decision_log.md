@@ -594,3 +594,12 @@ An exact `case_id + variant_label` pair is the only business identity eligible f
 - Replacement confirmation is both a visible second checkbox and a server batch-admission requirement. Client UI state alone is not a sufficient destructive-action boundary.
 - A replacement changes the dataset only when generation succeeds with a non-empty result URL. Every other terminal outcome preserves the previous result and audit; any concurrent target/audit mutation blocks the whole writeback.
 - Visual result enlargement uses an explicit top-right expand button, not double-click. One shared dialog owns keyboard interception, blind-safe labels, navigation, playback suspension, and mobile behavior across evaluation paradigms and reference media.
+
+# 2026-09-07: HTML reports are frozen, readable artifacts
+
+- Generate the complete light report at export time with inline SVG/CSS and progressive enhancement; do not serialize a live application or recalculate statistics in the downloaded file.
+- A report uses the selected material, reviewer scope and dimension AND selection. Case browser filters are independent and never reduce export scope.
+- Share the existing export request, top-summary and case-identity helpers. Keep Excel/CSV/JSON formats, database contracts and live chart layout unchanged.
+- External media stays linked with signed queries intact; no credential export, blob persistence, asset downloads or offline media package.
+- Use bounded lazy loading and native playback, with visible errors and links. Printing restores every case and detail without destroying screen filters.
+- Tests should target controls by section and actual method-specific labels, not assume identical text across report paths. Standalone and entry browser tests run together to avoid overwriting shared test artifacts.

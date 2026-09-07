@@ -32,6 +32,7 @@ interface ScoreInsightsScreenProps {
   models: { id: string; name: string }[];
   config?: EvaluationConfig;
   skippedCount?: number;
+  reportSkippedVotes?: VoteRecord[];
   returnAction?: { label: string; onClick: () => void };
   additionalActions?: React.ReactNode;
   notices?: React.ReactNode;
@@ -337,12 +338,14 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
   models,
   config,
   skippedCount = 0,
+  reportSkippedVotes,
   returnAction,
   additionalActions,
   notices,
   exportContext,
 }) => {
   const [isExportingWorkbook, setIsExportingWorkbook] = useState(false);
+  const [isExportingHtml, setIsExportingHtml] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const scope = useDimensionOptionScope(items, votes);
   const scoreBundle = useMemo(() => {
@@ -408,6 +411,26 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
       setExportError(error?.message || '评审明细生成失败，请重试。');
     }
   };
+  const exportHtml = async () => {
+    if (!exportRequest || isExportingHtml) return;
+    setIsExportingHtml(true);
+    setExportError(null);
+    try {
+      const { downloadInsightHtmlReport, countReportSkippedVotes } = await import('../reports/insightHtmlReport');
+      downloadInsightHtmlReport({
+        ...exportRequest,
+        report: {
+          originalItemCount: items.length,
+          dimensionSelection: scope.selected,
+          skippedCount: countReportSkippedVotes(reportSkippedVotes, scope.itemIds, scope.active),
+        },
+      });
+    } catch (error: any) {
+      setExportError(error?.message || '可视化报告生成失败，请重试。');
+    } finally {
+      setIsExportingHtml(false);
+    }
+  };
   const exportActions = (
     <>
       <button onClick={exportWorkbook} disabled={isExportingWorkbook} className="btn-secondary disabled:cursor-wait disabled:opacity-60">
@@ -416,6 +439,9 @@ const ScoreInsightsScreen: React.FC<ScoreInsightsScreenProps> = ({
       </button>
       <button onClick={exportDetails} className="btn-secondary">
         <Download size={16} /> 评审明细 CSV
+      </button>
+      <button onClick={exportHtml} disabled={isExportingHtml} className="btn-secondary disabled:cursor-wait disabled:opacity-60">
+        {isExportingHtml ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />} {isExportingHtml ? '生成中' : '可视化报告 HTML'}
       </button>
     </>
   );
