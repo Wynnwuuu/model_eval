@@ -35,11 +35,63 @@ interface GenerationTargetOptions {
   mode: GenerationTargetMode;
   targetColumn: string;
   modelName?: string;
+  modelDisplayName?: string;
+  modelProvider?: string;
   outputModality: DatasetModality;
   configFingerprint?: string;
 }
 
 const text = (value: unknown) => String(value ?? '').trim();
+
+const normalizedModelLabel = (value: unknown) => text(value).toLocaleLowerCase();
+
+const MODEL_VARIANT_SUFFIXES = [
+  '/text-to-image',
+  '/image-to-image',
+  '/image-to-video',
+  '/text-to-video',
+  '/reference-to-video',
+  '/frame-to-video',
+  '/frame_to_video',
+  '/edit',
+  '/transition',
+] as const;
+
+/**
+ * Generation columns represent a model family in evaluation workflows, while
+ * modelName identifies the concrete invocation route. Keep the normalisation
+ * deliberately conservative so unrelated models from the same provider do not
+ * become compatible by accident.
+ */
+export const generationModelFamilyKey = (modelName: unknown) => {
+  const normalized = normalizedModelLabel(modelName);
+  return MODEL_VARIANT_SUFFIXES.reduce((family, suffix) => (
+    family.endsWith(suffix) ? family.slice(0, -suffix.length) : family
+  ), normalized);
+};
+
+const auditMatchesModelFamily = (
+  audit: Record<string, any>,
+  options: GenerationTargetOptions,
+) => {
+  const auditModelName = text(audit.modelName);
+  if (!auditModelName || !options.modelName) return false;
+  if (auditModelName === options.modelName) return true;
+
+  const auditDisplayName = normalizedModelLabel(audit.displayName);
+  const selectedDisplayName = normalizedModelLabel(options.modelDisplayName);
+  const auditProvider = normalizedModelLabel(audit.provider);
+  const selectedProvider = normalizedModelLabel(options.modelProvider);
+  const normalizedFamilyMatches = generationModelFamilyKey(auditModelName)
+    === generationModelFamilyKey(options.modelName);
+  if (auditDisplayName && selectedDisplayName && auditDisplayName === selectedDisplayName
+    && ((auditProvider && selectedProvider && auditProvider === selectedProvider)
+      || normalizedFamilyMatches)) {
+    return true;
+  }
+
+  return normalizedFamilyMatches;
+};
 
 const duplicateValues = (values: string[]) => {
   const seen = new Set<string>();
@@ -208,12 +260,23 @@ export const inspectGenerationTargetColumn = (
   const priorConfigFingerprints = Array.from(new Set(audits.map(audit => text(audit.configFingerprint)).filter(Boolean)));
 
   if (usesExistingColumn && completedCount > 0) {
-    if (priorModelNames.length && options.modelName
-      && priorModelNames.some(modelName => modelName !== options.modelName)) {
+    const auditedModelRows = audits.filter(audit => text(audit.modelName));
+    const incompatibleModelNames = Array.from(new Set(auditedModelRows
+      .filter(audit => !auditMatchesModelFamily(audit, options))
+      .map(audit => text(audit.modelName))));
+    if (incompatibleModelNames.length && options.modelName) {
       errors.push({
         code: 'TARGET_MODEL_MISMATCH',
         field: targetColumn,
-        message: `The target column contains results from ${priorModelNames.join(', ')}, not ${options.modelName}.`,
+        message: `The target column contains results from a different model family: ${incompatibleModelNames.join(', ')}; selected ${options.modelName}.`,
+      });
+    }
+    if (!incompatibleModelNames.length && options.modelName
+      && priorModelNames.some(modelName => modelName !== options.modelName)) {
+      warnings.push({
+        code: 'TARGET_MODEL_VARIANT_MIXED',
+        field: targetColumn,
+        message: 'The target column contains another invocation variant of the same model. Per-case model and configuration metadata will be preserved.',
       });
     }
     if (unknownModelAuditCount > 0) {

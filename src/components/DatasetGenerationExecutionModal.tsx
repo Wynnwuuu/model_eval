@@ -315,6 +315,8 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
       mode: 'update_existing',
       targetColumn: column,
       modelName: selectedModel.modelName || selectedModel.id,
+      modelDisplayName: selectedModel.displayName,
+      modelProvider: selectedModel.provider,
       outputModality: selectedModel.outputModality,
       configFingerprint: selectedModel.configFingerprint,
     }) : null,
@@ -323,6 +325,8 @@ const DatasetGenerationExecutionModal: React.FC<DatasetGenerationExecutionModalP
     mode: targetMode,
     targetColumn,
     modelName: selectedModel.modelName || selectedModel.id,
+    modelDisplayName: selectedModel.displayName,
+    modelProvider: selectedModel.provider,
     outputModality: selectedModel.outputModality,
     configFingerprint: selectedModel.configFingerprint,
   }) : null, [dataset, selectedModel, targetColumn, targetMode]);

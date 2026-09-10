@@ -1458,6 +1458,50 @@ const updateTarget = inspectGenerationTargetColumn(generatedDataset, {
 assert.deepEqual(updateTarget.errors, []);
 assert.ok(updateTarget.warnings.some(issue => issue.code === 'TARGET_CONFIG_CHANGED'));
 
+const sameModelVariantTarget = inspectGenerationTargetColumn({
+  ...generatedDataset,
+  items: [{
+    ...generatedDataset.items[0],
+    generated_video_params_json: JSON.stringify({
+      modelName: 'provider/video-pro/image-to-video',
+      displayName: 'Video Pro',
+      provider: 'provider',
+      configFingerprint: 'image-to-video-fingerprint',
+    }),
+  }],
+}, {
+  mode: 'update_existing',
+  targetColumn: 'generated_video',
+  modelName: 'provider/video-pro/text-to-video',
+  modelDisplayName: 'Video Pro',
+  modelProvider: 'provider',
+  outputModality: 'video',
+  configFingerprint: 'text-to-video-fingerprint',
+});
+assert.deepEqual(sameModelVariantTarget.errors, []);
+assert.ok(sameModelVariantTarget.warnings.some(issue => issue.code === 'TARGET_MODEL_VARIANT_MIXED'));
+
+const sameLabelDifferentProviderTarget = inspectGenerationTargetColumn({
+  ...generatedDataset,
+  items: [{
+    ...generatedDataset.items[0],
+    generated_video_params_json: JSON.stringify({
+      modelName: 'other-provider/other-video/edit',
+      displayName: 'Video Pro',
+      provider: 'other-provider',
+      configFingerprint: 'other-provider-fingerprint',
+    }),
+  }],
+}, {
+  mode: 'update_existing',
+  targetColumn: 'generated_video',
+  modelName: 'provider/video-pro/text-to-video',
+  modelDisplayName: 'Video Pro',
+  modelProvider: 'provider',
+  outputModality: 'video',
+});
+assert.ok(sameLabelDifferentProviderTarget.errors.some(issue => issue.code === 'TARGET_MODEL_MISMATCH'));
+
 assert.ok(inspectGenerationTargetColumn(generatedDataset, {
   mode: 'update_existing' as any,
   targetColumn: 'generated_video',

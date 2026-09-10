@@ -1474,6 +1474,8 @@ export const createGenerationPreflight = async (
     mode: targetMode,
     targetColumn: request.targetColumn,
     modelName: model.modelName || model.id,
+    modelDisplayName: model.displayName,
+    modelProvider: model.provider,
     outputModality: model.outputModality,
     configFingerprint: model.configFingerprint,
   });
