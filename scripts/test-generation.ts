@@ -1500,14 +1500,15 @@ const sameLabelDifferentProviderTarget = inspectGenerationTargetColumn({
   modelProvider: 'provider',
   outputModality: 'video',
 });
-assert.ok(sameLabelDifferentProviderTarget.errors.some(issue => issue.code === 'TARGET_MODEL_MISMATCH'));
+assert.deepEqual(sameLabelDifferentProviderTarget.errors, []);
+assert.ok(sameLabelDifferentProviderTarget.warnings.some(issue => issue.code === 'TARGET_MODEL_MISMATCH'));
 
 assert.ok(inspectGenerationTargetColumn(generatedDataset, {
   mode: 'update_existing' as any,
   targetColumn: 'generated_video',
   modelName: 'provider/other-video',
   outputModality: 'video',
-}).errors.some(issue => issue.code === 'TARGET_MODEL_MISMATCH'));
+}).warnings.some(issue => issue.code === 'TARGET_MODEL_MISMATCH'));
 
 assert.ok(inspectGenerationTargetColumn(generatedDataset, {
   mode: 'update_existing' as any,
@@ -1567,7 +1568,7 @@ assert.ok(inspectGenerationTargetColumn(generatedDataset, {
   targetColumn: 'generated_video',
   modelName: 'provider/other-video',
   outputModality: 'video',
-}).errors.some(issue => issue.code === 'TARGET_MODEL_MISMATCH'));
+}).warnings.some(issue => issue.code === 'TARGET_MODEL_MISMATCH'));
 
 assert.ok(inspectGenerationTargetColumn(generatedDataset, {
   mode: 'fill_existing',

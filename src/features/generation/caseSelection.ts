@@ -265,10 +265,10 @@ export const inspectGenerationTargetColumn = (
       .filter(audit => !auditMatchesModelFamily(audit, options))
       .map(audit => text(audit.modelName))));
     if (incompatibleModelNames.length && options.modelName) {
-      errors.push({
+      warnings.push({
         code: 'TARGET_MODEL_MISMATCH',
         field: targetColumn,
-        message: `The target column contains results from a different model family: ${incompatibleModelNames.join(', ')}; selected ${options.modelName}.`,
+        message: `The target column contains results from another model family: ${incompatibleModelNames.join(', ')}; selected ${options.modelName}. You can continue, but each replaced result will overwrite the existing value and its model metadata.`,
       });
     }
     if (!incompatibleModelNames.length && options.modelName
