@@ -9,13 +9,13 @@
 准备 Node.js 22 或更新版本（含 npm）和 Git。首次使用：
 
 ```sh
-git clone git@github.com:Wynnwuuu/model_eval.git
+git clone https://github.com/Wynnwuuu/model_eval.git
 cd model_eval
 npm ci
 npm run dev:local
 ```
 
-仓库目前为私有，同事需要仓库读取权限；SSH 克隆还需在 GitHub 配置自己的 SSH key。也可以使用 `git clone https://github.com/Wynnwuuu/model_eval.git`，按 GitHub 提示登录。解压源码 ZIP 的用户直接在 `model_eval` 目录从 `npm ci` 开始。
+仓库公开，无需登录即可通过 HTTPS 克隆，或从 [GitHub 仓库页面](https://github.com/Wynnwuuu/model_eval) 下载源码 ZIP。解压源码 ZIP 的用户直接在 `model_eval` 目录从 `npm ci` 开始。
 
 打开 **http://127.0.0.1:3010**，保持终端运行。下次使用只需 `npm run dev:local`。结束时按 `Ctrl+C`。
 
