@@ -53,8 +53,8 @@ export function isCompleteOrder(order: unknown, variantIds: string[]): order is 
 export function validateSimpleDataset(value: unknown): SimpleDataset {
   const dataset = value as SimpleDataset;
   if (!dataset || typeof dataset.id !== 'string' || !dataset.id || typeof dataset.title !== 'string'
-    || !Array.isArray(dataset.variants) || dataset.variants.length !== 5 || !Array.isArray(dataset.cases) || !dataset.cases.length) {
-    throw new Error('内置评测数据不完整，需要 5 个方案和至少 1 条音频。');
+    || !Array.isArray(dataset.variants) || dataset.variants.length < 2 || dataset.variants.length > 5 || !Array.isArray(dataset.cases) || !dataset.cases.length) {
+    throw new Error('内置评测数据不完整，需要 2–5 个方案和至少 1 条音频。');
   }
   const ids = dataset.variants.map(variant => variant?.id);
   if (new Set(ids).size !== ids.length || dataset.variants.some(variant => !variant || !variant.id || typeof variant.name !== 'string'

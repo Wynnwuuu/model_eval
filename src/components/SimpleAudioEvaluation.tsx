@@ -26,6 +26,7 @@ export default function SimpleAudioEvaluation({ dataset }: { dataset: SimpleData
   const [saving, setSaving] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
   const item = dataset.cases[session.currentIndex];
+  const candidateCount = dataset.variants.length;
   const review = session.reviews[item.id];
   const optionOrder = review?.optionOrder || blindVariantOrder(dataset, session.reviewerId, item.id);
   const initialOrder = review?.status === 'ranked' ? review.order : optionOrder;
@@ -165,7 +166,7 @@ export default function SimpleAudioEvaluation({ dataset }: { dataset: SimpleData
       <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-[minmax(0,1fr)_310px]">
         <section className="min-w-0" aria-labelledby="read-analysis-heading">
           <h2 id="read-analysis-heading" className="text-base font-bold text-slate-100">对照阅读</h2>
-          <p className="mt-1 text-xs leading-5 text-slate-400">分析 A–E 的位置固定。排序在右侧完成，手机上位于阅读区下方。<a href="#ranking-panel" className="ml-2 text-amber-300 underline underline-offset-4 xl:hidden">前往排序</a></p>
+          <p className="mt-1 text-xs leading-5 text-slate-400">分析 A–{String.fromCharCode(64 + candidateCount)} 的位置固定。排序在右侧完成，手机上位于阅读区下方。<a href="#ranking-panel" className="ml-2 text-amber-300 underline underline-offset-4 xl:hidden">前往排序</a></p>
           <div role="tablist" aria-label="分析内容分区" className="my-4 grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
             {AUDIO_ANALYSIS_VIEWS.map(view => <button
               key={view.id} type="button" role="tab" id={`analysis-tab-${view.id}`} aria-controls="analysis-reading-panel" aria-selected={analysisView === view.id} tabIndex={analysisView === view.id ? 0 : -1}
@@ -203,11 +204,11 @@ export default function SimpleAudioEvaluation({ dataset }: { dataset: SimpleData
               <span className="w-6 shrink-0 text-sm font-bold text-amber-300" aria-label={`第 ${index + 1} 名`}>{index + 1}</span>
               <span className="flex-1 text-sm font-bold text-slate-100">分析 {labelOf(variantId)}</span>
               <button type="button" onClick={() => move(variantId, index - 1)} disabled={saving || storageBlocked || index === 0} aria-label={`将分析 ${labelOf(variantId)} 上移`} className="rounded-md p-1.5 text-slate-300 hover:bg-white/10 disabled:opacity-20"><ArrowUp size={16} /></button>
-              <button type="button" onClick={() => move(variantId, index + 1)} disabled={saving || storageBlocked || index === 4} aria-label={`将分析 ${labelOf(variantId)} 下移`} className="rounded-md p-1.5 text-slate-300 hover:bg-white/10 disabled:opacity-20"><ArrowDown size={16} /></button>
+              <button type="button" onClick={() => move(variantId, index + 1)} disabled={saving || storageBlocked || index === currentDraft.order.length - 1} aria-label={`将分析 ${labelOf(variantId)} 下移`} className="rounded-md p-1.5 text-slate-300 hover:bg-white/10 disabled:opacity-20"><ArrowDown size={16} /></button>
             </li>)}
           </ol>
           <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-white/10 p-3 text-sm leading-6 text-slate-300"><input type="checkbox" checked={currentDraft.confirmed} disabled={!hasListened || audioError || saving || storageBlocked} onChange={event => setDraft({ ...currentDraft, confirmed: event.target.checked })} className="mt-1 h-4 w-4 shrink-0 accent-amber-400" /><span>我已试听并确认此排序</span></label>
-          <p role="status" className="mt-3 min-h-5 text-xs leading-5 text-slate-400">{!hasListened ? '请先播放音频' : audioError ? '请先恢复音频播放' : !currentDraft.confirmed ? '请确认从第 1 名到第 5 名的顺序' : '可以保存评价'}</p>
+          <p role="status" className="mt-3 min-h-5 text-xs leading-5 text-slate-400">{!hasListened ? '请先播放音频' : audioError ? '请先恢复音频播放' : !currentDraft.confirmed ? `请确认从第 1 名到第 ${candidateCount} 名的顺序` : '可以保存评价'}</p>
           {!storageBlocked && error && <p role="alert" className="mt-3 text-sm leading-6 text-rose-300">{error}</p>}
           {notice && !error && <p role="status" className="mt-3 flex items-start gap-1.5 text-sm leading-6 text-emerald-300"><Check size={16} className="mt-1 shrink-0" />{notice}</p>}
           <button type="button" onClick={save} disabled={!canSave} className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg bg-amber-400 px-4 py-3 text-sm font-bold text-slate-950 hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-35"><Check size={17} />{session.currentIndex === dataset.cases.length - 1 ? '保存评价' : '保存并下一条'}</button>
