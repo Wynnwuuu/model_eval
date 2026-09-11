@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, Download, GripVertical, Headphones, RotateCcw, SkipForward } from 'lucide-react';
 import AudioAnalysisContent from './AudioAnalysisContent';
+import FloatingAudioPlayer from './FloatingAudioPlayer';
 import { AUDIO_ANALYSIS_VIEWS, type AudioAnalysisView } from '../audioAnalysisPresentation';
 import {
   blindVariantOrder, buildSimpleResultsCsv, emptySimpleSession, isCompleteOrder, loadSimpleSession,
@@ -21,6 +22,7 @@ export default function SimpleAudioEvaluation({ dataset }: { dataset: SimpleData
   const [analysisView, setAnalysisView] = useState<AudioAnalysisView>('overview');
   const [hasListened, setHasListened] = useState(false);
   const [audioError, setAudioError] = useState(false);
+  const [audioExpanded, setAudioExpanded] = useState(() => window.matchMedia('(min-width: 1280px)').matches);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -150,17 +152,19 @@ export default function SimpleAudioEvaluation({ dataset }: { dataset: SimpleData
       <div className="h-1 bg-white/5" role="progressbar" aria-label="评审进度" aria-valuemin={0} aria-valuemax={dataset.cases.length} aria-valuenow={completed}><div className="h-full bg-amber-400 transition-all" style={{ width: `${completed / dataset.cases.length * 100}%` }} /></div>
     </header>
 
+    <FloatingAudioPlayer
+      audioRef={audioRef} sourceKey={caseKey} src={audioUrl} index={session.currentIndex + 1} total={dataset.cases.length} durationSeconds={item.durationSeconds}
+      expanded={audioExpanded} onExpandedChange={setAudioExpanded} error={audioError}
+      onPlaying={() => { if (activeCaseRef.current === caseKey) { setHasListened(true); setAudioError(false); } }}
+      onError={() => { if (activeCaseRef.current === caseKey) setAudioError(true); }}
+      onRetry={() => { setAudioError(false); setHasListened(false); audioRef.current?.load(); }}
+    />
+    <div className="evaluation-content" data-audio-expanded={audioExpanded}>
     <main className="mx-auto max-w-[1480px] px-4 py-6 sm:px-8 sm:py-8">
       {storageBlocked && <div role="alert" className="mb-6 rounded-xl border border-rose-400/30 bg-rose-400/5 p-4 text-sm text-rose-200"><p>{error || '浏览器存储暂不可用，恢复后才能保存评价。'}</p><button type="button" onClick={reloadStorage} className={`${actionClass} mt-3`}>重新读取本地进度</button></div>}
       <section className="mb-6 rounded-2xl border border-white/15 bg-white/[0.035] p-4 sm:p-5" aria-label="待评审音频">
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><h2 className="flex items-center gap-2 text-base font-bold text-slate-100"><Headphones size={19} className="text-amber-400" />音频 {session.currentIndex + 1}<span className="ml-1 text-sm font-normal text-slate-500">/ {dataset.cases.length}</span></h2><span className="text-xs text-slate-400">{review?.status === 'ranked' ? '本条已保存，可试听后修改' : review?.status === 'skipped' ? '本条已跳过，可继续补评' : '待评审'}</span></div>
-        <audio
-          ref={audioRef} key={caseKey} src={audioUrl} controls preload="metadata" className="h-11 w-full" aria-label={`音频 ${session.currentIndex + 1}`}
-          onPlaying={() => { if (activeCaseRef.current === caseKey) { setHasListened(true); setAudioError(false); } }}
-          onError={() => { if (activeCaseRef.current === caseKey) setAudioError(true); }}
-        />
-        {audioError ? <p role="alert" className="mt-3 text-sm text-amber-200">音频加载失败。请确认源码中的音频文件完整，或<button type="button" className="underline underline-offset-4" onClick={() => { setAudioError(false); setHasListened(false); audioRef.current?.load(); }}>重试加载</button>。</p>
-          : <p className="mt-3 text-xs leading-5 text-slate-400">先听音频，再按事实的准确程度排序。注意错误、臆测与关键信息遗漏；语言、篇幅和排版不代表质量。</p>}
+        <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="flex items-center gap-2 text-base font-bold text-slate-100"><Headphones size={19} className="text-amber-400" />音频 {session.currentIndex + 1}<span className="ml-1 text-sm font-normal text-slate-500">/ {dataset.cases.length}</span></h2><span className="text-xs text-slate-400">{review?.status === 'ranked' ? '本条已保存，可试听后修改' : review?.status === 'skipped' ? '本条已跳过，可继续补评' : '待评审'}</span></div>
+        <p className="mt-3 text-xs leading-5 text-slate-400">先听音频，再按事实的准确程度排序。注意错误、臆测与关键信息遗漏；语言、篇幅和排版不代表质量。可通过左侧音频栏随时重听。</p>
       </section>
 
       <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-[minmax(0,1fr)_310px]">
@@ -222,5 +226,6 @@ export default function SimpleAudioEvaluation({ dataset }: { dataset: SimpleData
         </aside>
       </div>
     </main>
+    </div>
   </div>;
 }

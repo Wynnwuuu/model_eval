@@ -10,3 +10,28 @@ button:disabled { cursor: not-allowed; }
 button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid #5eead4; outline-offset: 4px; }
 * { box-sizing: border-box; }
 ::selection { background: #0f766e; color: white; }
+
+.audio-rail {
+  position: fixed;
+  z-index: 30;
+  left: max(12px, env(safe-area-inset-left));
+  bottom: max(16px, env(safe-area-inset-bottom));
+  width: 60px;
+  padding: 9px;
+  border: 1px solid rgb(255 255 255 / 15%);
+  border-radius: 18px;
+  background: #141b24;
+  box-shadow: 0 12px 36px rgb(0 0 0 / 30%);
+}
+.audio-rail[data-expanded="true"] { width: min(280px, calc(100vw - 24px)); padding: 16px; }
+.audio-range { margin: 0; }
+.evaluation-content { padding-bottom: 148px; }
+@media (min-width: 1280px) {
+  .audio-rail { top: 132px; bottom: auto; left: 16px; }
+  .audio-rail[data-expanded="true"] { width: 232px; }
+  .evaluation-content { padding-left: 76px; padding-bottom: 0; }
+  .evaluation-content[data-audio-expanded="true"] { padding-left: 248px; }
+}
+@media (max-height: 500px) {
+  .audio-rail { top: 12px; bottom: auto; max-height: calc(100dvh - 24px); overflow-y: auto; }
+}
