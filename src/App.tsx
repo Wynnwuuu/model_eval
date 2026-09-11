@@ -4,15 +4,14 @@
  */
 
 import React from 'react';
-import { BrowserRouter } from 'react-router-dom';
-import AppRouter from './app/router';
-import PageMetadataSync from './components/PageMetadataSync';
+import SimpleAudioEvaluation from './components/SimpleAudioEvaluation';
+import datasetSource from './data/evaluation.json';
+import { validateSimpleDataset } from './simpleEvaluation';
 
 export default function App() {
-  return (
-    <BrowserRouter>
-      <PageMetadataSync />
-      <AppRouter />
-    </BrowserRouter>
-  );
+  try {
+    return <SimpleAudioEvaluation dataset={validateSimpleDataset(datasetSource)} />;
+  } catch (error) {
+    return <main className="mx-auto max-w-xl p-8"><h1 className="text-xl font-bold">音频评审暂不可用</h1><p role="alert" className="mt-4 text-amber-200">{error instanceof Error ? error.message : '请检查内置数据。'}</p></main>;
+  }
 }

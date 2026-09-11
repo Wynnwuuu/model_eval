@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="180" height="180" viewBox="0 0 64 64" role="img" aria-label="Manueval">
-  <rect width="64" height="64" fill="#050607"/>
-  <path d="M0 0h10v64H0z" fill="#ffb21d"/>
-  <path d="M18 45V19h7l7 11 7-11h7v26h-8V32l-6 9-6-9v13z" fill="#f3f3eb"/>
-  <path d="M47 9h13v13z" fill="#ffb21d"/>
-  <path d="M50 52h10v3H50z" fill="#8aa3bf"/>
-</svg>

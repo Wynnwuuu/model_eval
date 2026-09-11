@@ -1,150 +1,57 @@
-# ManuEval
+# model_eval · 音频分析盲评
 
-ManuEval 是一个面向模型与生成内容评测的协作平台。当前工程形态是标准 React 前端 + Express HTTP API + PostgreSQL 数据库，支持项目管理、数据集仓库、评测模板、评测任务、评测执行、结果洞察、生产数据管理，以及仅用于快速查看数据的 Benchmark 预览模式。
+只保留一个流程：**播放音频 → 阅读 5 份匿名分析 → 拖动排序 → 保存评价**。
 
-标准数据路径：
+30 条音频和 150 份分析已包含在源码中，无需上传文件、配置账号、连接数据库或调用模型。原始分析内容原样保留。
 
-```text
-React frontend -> HTTP API -> PostgreSQL
+## 本地启动
+
+准备 Node.js 22 或更新版本（含 npm）和 Git。首次使用：
+
+```sh
+git clone git@github.com:Wynnwuuu/model_eval.git
+cd model_eval
+npm ci
+npm run dev:local
 ```
 
-生产部署形态：
+仓库目前为私有，同事需要仓库读取权限；SSH 克隆还需在 GitHub 配置自己的 SSH key。也可以使用 `git clone https://github.com/Wynnwuuu/model_eval.git`，按 GitHub 提示登录。解压源码 ZIP 的用户直接在 `model_eval` 目录从 `npm ci` 开始。
 
-```text
-single Docker image -> Express serves /api/* and Vite dist
-```
+打开 **http://127.0.0.1:3010**，保持终端运行。下次使用只需 `npm run dev:local`。结束时按 `Ctrl+C`。
 
-线上评测用户只需要访问部署站点并使用飞书登录；Docker、PostgreSQL 和 `local:start` 仅面向开发、CI 或部署维护。
+macOS、Windows、Linux 使用相同命令。首次安装依赖需要联网；评测时音频和分析均从本机加载。3010 端口被占用时不会自动切换端口。
 
-## 核心能力
+已克隆过的同事可在项目目录运行 `git pull --ff-only origin main` 更新，再执行 `npm ci` 和 `npm run dev:local`。本版本的音频、分析和稳定数据 ID 都随 Git 保存；同一数据集更新界面代码不会清除已保存的评价。
 
-- 项目、数据集、模板、任务、结果洞察的独立路由和可分享 URL。
-- A/B 偏好、Pairwise、MOS、Rubric、Arena-rank 等评测方式。
-- 结果洞察支持[可视化报告 HTML](docs/visual-html-report.md)：单文件图表、逐 case 产物对照、评审反馈和打印/PDF；统计可离线阅读，媒体联网预览。
-- Benchmark 数据预览：上传 CSV，选择输入列和输出预览列，逐条查看文本、图片、视频、音频并记录评论。
-- PostgreSQL 作为业务主存储，前端通过 HTTP API 访问，不再依赖 Firestore。
-- 本地 Docker PostgreSQL、API smoke test、迁移脚本和一键开发脚本。
-- dev 环境 CI/CD：main push 后自动测试、构建镜像、迁移数据库并部署 ACK dev。
+## 如何评测
 
-## 本地开发
+1. 试听当前音频，阅读 A–E 五份分析；可切换整体描述、环境与声源、时间变化和完整原文。
+2. 在排序区拖动 A–E，从最准确排到最不准确；也可用上下移动按钮。
+3. 确认排序，保存评价并进入下一条。可以跳过暂时无法判断的条目，再回来补评。
+4. 通过导出按钮下载结果 CSV，交给发起评测的人。
 
-推荐完整本地模式，也是默认多人协作模式：
+模型及 Prompt 的名称在评测界面隐藏，导出文件保留真实方案、音频、评审者和名次，便于汇总。相同模型的不同 Prompt 是独立方案：Qwen Plus 两份、Qwen Flash 两份、Qwen3 Captioner 固定基线一份。
 
-```bash
-npm install
-npm.cmd run local:start
-```
+## 30 条音频如何选择
 
-该脚本会启动 PostgreSQL、执行迁移、启动 API 和 Vite，并检查 `http://localhost:3000/`、`http://localhost:8787/api/health`、`http://localhost:8787/api/db/health`。
+按音频包的六个大类各取 5 条：动作表演、情绪表演、音乐、角色对白/旁白、音效、人声/乐器单轨。兼顾难度，人声和乐器单轨的两种子类均覆盖；选择只使用音频清单属性，不按模型结果好坏筛选。
 
-如果本机已经存在 `eval-studio-postgres` 容器，`dev:full` 会直接复用或启动该容器，避免重复创建导致容器名冲突。
+`src/data/evaluation.json` 保存对应的五方案分析，`public/audio/` 保存音频。页面按六类交错排列，每连续六题覆盖所有大类。具体抽样规则见 [selection.md](docs/selection.md)，音频来源见 [audio-sources.csv](docs/audio-sources.csv)；原始 100 条数据未修改。
 
-也可以前台分步运行：
+## 保存与分享
 
-```bash
-npm run db:up
-npm run db:migrate
-npm run api:dev
-npm run dev
-```
+评价保存在**当前浏览器、当前网址**。重启服务或刷新页面后可以继续；换电脑、换浏览器、换端口或改成 `localhost` 会使用另一份记录。清除浏览器网站数据会删除本机评价，请及时导出。
 
-如确实只需要单机 demo，可以显式运行离线模式：
+同事从 GitHub 拉取代码，或解压完整源码 ZIP，按相同步骤启动即可；**各人的结果不会自动回传给你**。请让他们导出 CSV 发回，文件包含评审者标识，方便区分。公网共享及集中保存尚未部署。
 
-```bash
-npm.cmd run dev:offline
-```
+## 开发与文件
 
-离线模式只读取当前浏览器 localStorage，不能用于多人评测或全员结果洞察。
-
-默认地址：
-
-- 前端：`http://localhost:3000`
-- API：`http://localhost:8787`
-- PostgreSQL：`localhost:5432`
-
-## 环境变量
-
-复制 `.env.example` 为 `.env.local`，按需配置。
-
-常用变量：
-
-| 变量 | 说明 |
-| --- | --- |
-| `DATABASE_URL` | API 连接 PostgreSQL 的连接串 |
-| `API_PORT` | API 监听端口，默认 `8787` |
-| `CORS_ORIGIN` | 本地跨域来源，默认可设为 `http://localhost:3000` |
-| `VITE_STORAGE_MODE` | 仅设置为 `local` 时进入离线 localStorage demo |
-| `VITE_USE_API_BACKEND` | 兼容旧开关；设置为 `false` 时进入离线 localStorage demo |
-| `VITE_API_BASE_URL` | 默认留空走同源 `/api`；只有前后端分域部署时才填写 API 域名 |
-| `VITE_API_PROXY_TARGET` | Vite 本地代理目标，默认 `http://localhost:8787` |
-| `GEMINI_API_KEY` | 可选，生成相关能力需要时配置 |
-
-## 数据库
-
-本地 PostgreSQL：
-
-```bash
-npm run db:up
-npm run db:migrate
-```
-
-进入 psql：
-
-```bash
-npm run db:psql
-```
-
-迁移脚本位于 `server/db/migrations`，执行状态由 `schema_migrations` 表记录。
-
-## 验证
-
-```bash
-npm run lint
+```sh
+npm test
 npm run build
-npm run server:build
-npm run test:api:smoke
+npm run test:e2e
 ```
 
-Docker 构建：
+浏览器测试首次运行前需要 `npx playwright install chromium`。`npm run build` 生成静态产物 `dist/`。音频和分析会随构建一起复制；直接双击 HTML 不能替代本地服务。
 
-```bash
-docker build -t manueval:local .
-```
-
-## Dev CI/CD
-
-当前只启用 dev 自动部署，staging/prod 暂不部署。
-
-main push 后执行：
-
-```text
-test -> build Docker image -> deploy dev -> migration job -> rollout status
-```
-
-相关工作流：
-
-- `.github/workflows/eval-studio-test.yml`
-- `.github/workflows/eval-studio-build.yml`
-- `.github/workflows/eval-studio-deploy.yml`
-- `.github/workflows/eval-studio-cicd.yml`
-
-部署文档见：
-
-- [docs/dev-cicd-deployment.md](docs/dev-cicd-deployment.md)
-
-dev 部署默认启用飞书登录。需要在 GitHub Actions Secrets 配置飞书 App ID、App Secret、回调地址和 JWT 签名密钥，并在飞书开放平台放通同一个 `/feishu-callback` 回调地址。
-
-## 重要文档
-
-- [docs/react-standardization-refactor-plan.md](docs/react-standardization-refactor-plan.md) — React 标准化重构规划。
-- [docs/refactor-execution-log.md](docs/refactor-execution-log.md) — 分阶段执行记录。
-- [docs/postgres-local.md](docs/postgres-local.md) — 本地 PostgreSQL 说明。
-- [docs/deployment-postgres.md](docs/deployment-postgres.md) — PostgreSQL 线上部署说明。
-- [docs/benchmark-data-preview-plan.md](docs/benchmark-data-preview-plan.md) — Benchmark 数据预览功能规划。
-- [docs/dev-cicd-deployment.md](docs/dev-cicd-deployment.md) — dev CI/CD 部署说明。
-
-## 远端仓库
-
-```text
-https://github.com/world-sim-dev/ManuEval.git
-```
+主要代码是 `src/components/SimpleAudioEvaluation.tsx`、`src/simpleEvaluation.ts` 与 `src/components/AudioAnalysisContent.tsx`。项目从 [ManuEval](https://github.com/world-sim-dev/ManuEval) 改造，已移除与本次音频评测无关的任务平台、生产生成、数据库和部署代码。

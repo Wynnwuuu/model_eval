@@ -1,5 +1,0 @@
-{
-  "name": "ManuEval",
-  "description": "基于 React、HTTP API 和 PostgreSQL 的协作式评测与 Benchmark 数据预览平台，用于管理评测项目、数据集、模板、任务执行、评论预览、结果洞察和 dev 自动部署。",
-  "requestFramePermissions": []
-}
