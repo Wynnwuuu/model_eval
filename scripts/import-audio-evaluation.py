@@ -88,16 +88,25 @@ def reject_json_constant(value: str):
     raise ValueError(f"Non-standard JSON constant: {value}")
 
 
+def manifest_path(args) -> Path:
+    return getattr(args, "manifest", None) or args.audio_dir / "manifest.csv"
+
+
 def prepare(args) -> tuple[dict, dict, dict[str, bytes], bytes, bytes]:
     """Read and validate every row and WAV before touching any existing output."""
     source_rows, source_bytes = read_csv(args.results_csv, REQUIRED_COLUMNS)
-    manifest_rows, manifest_bytes = read_csv(args.audio_dir / "manifest.csv", tuple(set(ATTRIBUTION_COLUMNS + SELECTION_COLUMNS)))
+    source_manifest = manifest_path(args)
+    manifest_rows, manifest_bytes = read_csv(source_manifest, tuple(set(ATTRIBUTION_COLUMNS + SELECTION_COLUMNS)))
     manifest = {row["clip_id"]: row for row in manifest_rows}
     if len(manifest) != len(manifest_rows):
         raise ValueError("manifest.csv: duplicate clip IDs")
     cases_by_id: dict[str, dict] = {}
     variants_by_key: dict[tuple[str, str], dict] = {}
     outputs_by_case: dict[str, dict] = {}
+    allow_invalid_json = getattr(args, "allow_invalid_json", False)
+    format_findings = []
+    valid_json_count = 0
+    flag_mismatch_count = 0
     for row_number, row in enumerate(source_rows, 2):
         case_id = row["case_id"].strip()
         model, prompt = row["模型"].strip(), row["Prompt版本"].strip()
@@ -108,17 +117,27 @@ def prepare(args) -> tuple[dict, dict, dict[str, bytes], bytes, bytes]:
             raise ValueError(f"{label}: case ID absent from manifest")
         if row["调用状态"].strip().lower() != "ok":
             raise ValueError(f"{label}: unsuccessful model call")
-        if row["JSON语法有效"].strip().lower() != "true":
+        source_json_flag = row["JSON语法有效"].strip().lower()
+        if source_json_flag not in ("true", "false"):
+            raise ValueError(f"{label}: JSON syntax flag must be true or false")
+        if source_json_flag != "true" and not allow_invalid_json:
             raise ValueError(f"{label}: source marks output as invalid JSON")
         if row["结束原因"].strip().lower() != "stop":
             raise ValueError(f"{label}: response did not finish normally")
         text = row["模型输出全文"]
         if not text.strip() or re.match(r"^\s*\[(?:BLOCKED|ERROR)\]", text, re.I):
             raise ValueError(f"{label}: missing or failed analysis")
+        json_error = None
         try:
             json.loads(text, parse_constant=reject_json_constant)
         except (ValueError, TypeError) as error:
-            raise ValueError(f"{label}: analysis is not valid JSON despite source flag") from error
+            if not allow_invalid_json:
+                raise ValueError(f"{label}: analysis is not valid JSON despite source flag") from error
+            json_error = str(error)
+        actual_json_valid = json_error is None
+        source_json_valid = source_json_flag == "true"
+        valid_json_count += actual_json_valid
+        flag_mismatch_count += source_json_valid != actual_json_valid
         item = manifest[case_id]
         if not audio_reference_matches(row["音频链接"], item["file"]):
             raise ValueError(f"{label}: audio path does not match its manifest case ID")
@@ -138,6 +157,11 @@ def prepare(args) -> tuple[dict, dict, dict[str, bytes], bytes, bytes]:
                 "name": f"{prompt}｜{model}", "modelName": model, "promptName": prompt, "isBaseline": False,
             }
         variant_id = variants_by_key[key]["id"]
+        if not actual_json_valid or source_json_valid != actual_json_valid:
+            format_findings.append({"caseId": case_id, "variantId": variant_id,
+                                    "modelName": model, "promptName": prompt,
+                                    "sourceJsonValid": source_json_valid, "actualJsonValid": actual_json_valid,
+                                    "jsonError": json_error})
         if variant_id in outputs_by_case.setdefault(case_id, {}):
             raise ValueError(f"{label}: duplicate case/model/Prompt output")
         # Deliberately retain the complete CSV field, including whitespace/newlines.
@@ -184,18 +208,24 @@ def prepare(args) -> tuple[dict, dict, dict[str, bytes], bytes, bytes]:
     if any(row["请求ID"] and row["请求ID"] in serialized for row in source_rows):
         raise ValueError("Analysis contains a request ID; refusing to copy request identifiers into the bundle")
     # Recheck the source input at the end of preparation to avoid mixed snapshots.
-    if args.results_csv.read_bytes() != source_bytes or (args.audio_dir / "manifest.csv").read_bytes() != manifest_bytes:
+    if args.results_csv.read_bytes() != source_bytes or source_manifest.read_bytes() != manifest_bytes:
         raise ValueError("Input changed during import; rerun with stable source files")
     report = {
         "datasetId": dataset["id"], "fingerprint": fingerprint,
         "sourceCsvSha256": source_hash, "sourceManifestSha256": digest(manifest_bytes),
         "caseCount": len(cases), "variantCount": len(variants), "analysisCount": len(source_rows),
+        "allowInvalidJson": allow_invalid_json,
+        "jsonSummary": {"valid": valid_json_count, "invalid": len(source_rows) - valid_json_count,
+                        "sourceFlagMismatches": flag_mismatch_count},
+        "formatFindings": format_findings,
         "caseOrder": list(cases_by_id), "variants": variants,
         "categoryCounts": dict(Counter(item["category"] for item in cases)),
         "totalDurationSeconds": sum(item["durationSeconds"] for item in cases),
         "audioBytes": sum(map(len, assets.values())), "clips": clip_checks,
         "checks": {"completeMatrix": True, "uniqueCaseVariantPairs": True, "allCallsSuccessful": True,
-                   "allAnalysesValidJson": True, "allAnalysisTextPreserved": True, "allAudioHashesVerified": True,
+                   "allAnalysesValidJson": valid_json_count == len(source_rows),
+                   "jsonFlagsMatchActual": flag_mismatch_count == 0,
+                   "allAnalysisTextPreserved": True, "allAudioHashesVerified": True,
                    "allDurationsVerified": True, "originalSourcesUnchanged": True,
                    "noSourcePathsOrRequestIdsStored": True},
     }
@@ -255,9 +285,11 @@ def run(args) -> dict:
     destinations = [args.app_audio_dir, args.app_data, args.source_attribution, args.selection_csv, args.report]
     resolved = [path.resolve() for path in destinations]
     audio_root, source_csv = args.audio_dir.resolve(), args.results_csv.resolve()
+    source_manifest = manifest_path(args).resolve()
     for index, path in enumerate(resolved):
-        if path == source_csv or path.is_relative_to(audio_root) or audio_root.is_relative_to(path):
-            raise ValueError("Output destinations must not overwrite the source CSV or audio pack")
+        if (source_csv.is_relative_to(path) or source_manifest.is_relative_to(path)
+                or path.is_relative_to(audio_root) or audio_root.is_relative_to(path)):
+            raise ValueError("Output destinations must not overwrite the source CSV, manifest, or audio pack")
         if any(path == other or path.is_relative_to(other) or other.is_relative_to(path) for other in resolved[index + 1:]):
             raise ValueError("Output destinations must be distinct and must not contain one another")
     if args.app_audio_dir.exists() and (not args.app_audio_dir.is_dir() or any(not item.is_file() or item.suffix.lower() != ".wav" for item in args.app_audio_dir.iterdir())):
@@ -274,6 +306,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for flag in ("results-csv", "audio-dir", "app-data", "app-audio-dir", "source-attribution", "selection-csv", "report"):
         parser.add_argument("--" + flag, required=True, type=Path)
+    parser.add_argument("--manifest", type=Path, help="Audio manifest CSV; defaults to AUDIO_DIR/manifest.csv")
+    parser.add_argument("--allow-invalid-json", action="store_true",
+                        help="Retain successful, normally finished responses with invalid JSON verbatim and report their format diagnostics")
     report = run(parser.parse_args())
     print(json.dumps({key: report[key] for key in ("datasetId", "caseCount", "variantCount", "analysisCount", "caseOrder", "checks")}, ensure_ascii=False, indent=2))
 

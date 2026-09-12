@@ -7,3 +7,9 @@ playwright-report/
 test-results/
 .env
 .env.*
+
+# Local model credentials and resumable raw API runs
+.local/
+evaluation/results/
+__pycache__/
+*.pyc

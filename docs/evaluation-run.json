@@ -1,0 +1,113 @@
+{
+  "datasetId": "audio-eval-30-2a7b22f5255ecf61",
+  "fingerprint": "2a7b22f5255ecf61369b6648b3f1913b333efcb0ab2fff2c3efcde090097b0bc",
+  "caseCount": 30,
+  "variantCount": 4,
+  "analysisCount": 120,
+  "caseOrder": [
+    "ACT-005",
+    "EMO-004",
+    "MUS-005",
+    "SFX-002",
+    "SPK-006",
+    "STM-I-002",
+    "ACT-011",
+    "EMO-006",
+    "MUS-011",
+    "SFX-004",
+    "SPK-007",
+    "STM-I-003",
+    "ACT-012",
+    "EMO-011",
+    "MUS-014",
+    "SFX-005",
+    "SPK-008",
+    "STM-I-004",
+    "ACT-015",
+    "EMO-015",
+    "MUS-016",
+    "SFX-009",
+    "SPK-010",
+    "STM-V-001",
+    "ACT-019",
+    "EMO-018",
+    "MUS-020",
+    "SFX-010",
+    "SPK-016",
+    "STM-V-004"
+  ],
+  "categoryCounts": {
+    "动作表演": 5,
+    "情绪表演类": 5,
+    "音乐": 5,
+    "音效": 5,
+    "角色对白、旁白": 5,
+    "人声、乐器单轨": 5
+  },
+  "totalDurationSeconds": 591.0,
+  "requestSummary": {
+    "completedOutputs": 120,
+    "totalAttempts": 122,
+    "extraAttempts": 2
+  },
+  "checks": {
+    "completeMatrix": true,
+    "uniqueCaseVariantPairs": true,
+    "allCallsSuccessful": true,
+    "allAnalysesValidJson": false,
+    "jsonFlagsMatchActual": true,
+    "allAnalysisTextPreserved": true,
+    "allAudioHashesVerified": true,
+    "allDurationsVerified": true,
+    "originalSourcesUnchanged": true,
+    "noSourcePathsOrRequestIdsStored": true
+  },
+  "jsonSummary": {
+    "valid": 119,
+    "invalid": 1,
+    "sourceFlagMismatches": 0
+  },
+  "formatFindings": [
+    {
+      "caseId": "ACT-012",
+      "variantId": "variant-3ff66291b55dce33",
+      "modelName": "Qwen3.8-0mni-Flash",
+      "promptName": "Wynn结构化",
+      "sourceJsonValid": false,
+      "actualJsonValid": false,
+      "jsonError": "Expecting value: line 1 column 1 (char 0)"
+    }
+  ],
+  "allowInvalidJson": true,
+  "promptSources": {
+    "structured": {
+      "file": "结构化prompt.md",
+      "file_sha256": "82b174e5b5a7272f1e94970354f7899037efcb20f8779a68d12d053e5cf0075f",
+      "system_template_sha256": "82b174e5b5a7272f1e94970354f7899037efcb20f8779a68d12d053e5cf0075f",
+      "outer_markdown_fence_removed": false
+    },
+    "wynn": {
+      "file": "Wynn结构化promt.md",
+      "file_sha256": "eeed69885e3c1f5f0a0179f9f18a0c4e2a6322b1a21422acad00593e4d1b1ff5",
+      "system_template_sha256": "5e3353b0a0bd9221c2a1b8aac63979fbbc5950b08984baed8a02c285d6ea3961",
+      "outer_markdown_fence_removed": true
+    }
+  },
+  "modelApiIds": {
+    "Qwen3.8-0mni-Flash": "audio-cap",
+    "Qwen3.5-Omni-Plus": "qwen3.5-omni-plus"
+  },
+  "aggregateCatalog": {
+    "qwen38_flash": {
+      "id": "audio-cap",
+      "displayName": "Qwen3.8-0mni-Flash",
+      "featureTags": [
+        "image_input",
+        "audio_input",
+        "video_input",
+        "streaming"
+      ]
+    }
+  },
+  "baseCodeCommit": "a808097"
+}

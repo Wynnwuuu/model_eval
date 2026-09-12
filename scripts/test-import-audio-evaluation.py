@@ -91,6 +91,90 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(first["variants"], second["variants"])
         self.assertNotEqual(first["sourceCsvSha256"], second["sourceCsvSha256"])
 
+    def test_four_variants_keep_each_prompt_models_adjacent_and_each_case_complete(self):
+        rows = []
+        for row in self.rows:
+            for model in ("Qwen3.8-0mni-Flash", "qwen3.5-omni-plus"):
+                rows.append({**row, "模型": model, "模型输出全文": json.dumps({"model": model, "prompt": row["Prompt版本"]})})
+        self.rows = rows
+        self.write_source()
+        report = importer.run(self.args)
+        dataset = json.loads(self.args.app_data.read_text())
+        self.assertEqual(report["variantCount"], 4)
+        self.assertEqual(report["analysisCount"], 8)
+        self.assertEqual([(item["promptName"], item["modelName"]) for item in dataset["variants"]],
+                         [(prompt, model) for prompt in ("原版", "2.2") for model in ("Qwen3.8-0mni-Flash", "qwen3.5-omni-plus")])
+        self.assertTrue(all(len(case["outputs"]) == 4 for case in dataset["cases"]))
+
+    def test_opt_in_preserves_invalid_json_and_records_actual_validity_and_flag_mismatches(self):
+        self.args.allow_invalid_json = True
+        self.rows[0].update({"模型输出全文": "  original non-JSON\n音频描述\n", "JSON语法有效": "false"})
+        self.rows[1].update({"模型输出全文": '\n {"broken": ', "JSON语法有效": "true"})
+        self.rows[2]["JSON语法有效"] = "false"  # Valid text with an inaccurate source flag.
+        self.write_source()
+        source_bytes = self.source.read_bytes()
+        report = importer.run(self.args)
+        dataset = json.loads(self.args.app_data.read_text())
+        self.assertTrue(report["allowInvalidJson"])
+        self.assertEqual(report["jsonSummary"], {"valid": 2, "invalid": 2, "sourceFlagMismatches": 2})
+        self.assertEqual(len(report["formatFindings"]), 3)
+        self.assertFalse(report["checks"]["allAnalysesValidJson"])
+        self.assertFalse(report["checks"]["jsonFlagsMatchActual"])
+        self.assertTrue(report["checks"]["allAnalysisTextPreserved"])
+        self.assertTrue(report["checks"]["allCallsSuccessful"])
+        self.assertEqual(report["caseCount"], 2)
+        self.assertEqual(report["analysisCount"], 4)
+        for row in self.rows:
+            variant = next(item for item in dataset["variants"] if item["promptName"] == row["Prompt版本"])
+            case = next(item for item in dataset["cases"] if item["id"] == row["case_id"])
+            self.assertEqual(case["outputs"][variant["id"]], row["模型输出全文"])
+        self.assertEqual(self.source.read_bytes(), source_bytes)
+
+    def test_opt_in_does_not_allow_failed_truncated_or_missing_calls(self):
+        self.args.allow_invalid_json = True
+        original = [dict(row) for row in self.rows]
+        for change in ({"调用状态": "error"}, {"结束原因": "length"}, {"模型输出全文": "  "},
+                       {"模型输出全文": "[ERROR] failed"}, {"模型输出全文": "[BLOCKED] failed"},
+                       {"JSON语法有效": "unknown"}):
+            with self.subTest(change=change):
+                self.rows = [dict(row) for row in original]
+                self.rows[0].update(change)
+                self.write_source()
+                with self.assertRaises(ValueError):
+                    importer.run(self.args)
+                self.assertFalse(self.args.app_data.exists())
+
+    def test_nonstandard_json_constants_are_reported_without_rewriting(self):
+        self.rows[0]["模型输出全文"] = '{"value": NaN}'
+        self.write_source()
+        with self.assertRaises(ValueError):
+            importer.prepare(self.args)
+        self.args.allow_invalid_json = True
+        dataset, report, *_ = importer.prepare(self.args)
+        self.assertEqual(report["jsonSummary"]["invalid"], 1)
+        self.assertIn("Non-standard JSON constant", report["formatFindings"][0]["jsonError"])
+        self.assertIn('{"value": NaN}', dataset["cases"][0]["outputs"].values())
+
+    def test_external_manifest_works_without_manifest_in_audio_directory(self):
+        source_manifest = self.audio / "manifest.csv"
+        self.args.manifest = self.root / "selected-cases.csv"
+        source_manifest.replace(self.args.manifest)
+        before = self.args.manifest.read_bytes()
+        report = importer.run(self.args)
+        self.assertEqual(report["sourceManifestSha256"], hashlib.sha256(before).hexdigest())
+        self.assertEqual(self.args.manifest.read_bytes(), before)
+        self.assertFalse(source_manifest.exists())
+
+    def test_cannot_overwrite_external_manifest(self):
+        self.args.manifest = self.root / "selected-cases.csv"
+        (self.audio / "manifest.csv").replace(self.args.manifest)
+        self.args.report = self.args.manifest
+        before = self.args.manifest.read_bytes()
+        with self.assertRaisesRegex(ValueError, "must not overwrite"):
+            importer.run(self.args)
+        self.assertEqual(self.args.manifest.read_bytes(), before)
+        self.assertFalse(self.args.app_data.exists())
+
     def test_duplicate_missing_failed_and_conflicting_rows_fail_before_writing(self):
         initial_rows = [dict(row) for row in self.rows]
         mutations = {

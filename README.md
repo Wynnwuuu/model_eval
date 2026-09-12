@@ -2,7 +2,7 @@
 
 只保留一个流程：**播放音频 → 阅读匿名分析 → 拖动排序 → 保存评价**。
 
-当前内置 `promt测试.csv` 中的 **3 条音频、每条 2 份分析，共 6 份结果**，无需上传文件、配置账号、连接数据库或调用模型。源文件中的模型均为 `qwen3.5-omni-plus`，两个比较方案分别使用 Prompt“原版”和“2.2”。原始分析全文原样保留。
+当前内置 **30 条音频、每条 4 份分析，共 120 份结果**。同一批音频比较 Qwen3.8-0mni-Flash 与 Qwen3.5-Omni-Plus，各使用“结构化”和“Wynn结构化”两版 Prompt。普通评审无需 API 账号，原始分析全文随代码提供。
 
 ## 本地启动
 
@@ -25,28 +25,48 @@ macOS、Windows、Linux 使用相同命令。首次安装依赖需要联网；�
 
 ## 如何评测
 
-1. 试听当前音频，阅读 A/B 两份分析；可切换整体描述、环境与声源、时间变化和完整原文。
-2. 在排序区拖动 A/B，从最准确排到最不准确；也可用上下移动按钮。
+1. 试听当前音频，阅读 A–D 四份分析；可切换整体描述、环境与声源、时间变化和完整原文。
+2. 在排序区拖动 A–D，从最准确排到最不准确；也可用上下移动按钮。
 3. 确认排序，保存评价并进入下一条。可以跳过暂时无法判断的条目，再回来补评。
 4. 通过导出按钮下载结果 CSV，交给发起评测的人。
 
 播放器固定在页面左侧，阅读长分析时也可随时暂停、拖动进度或从头播放。点击箭头收起，点击耳机图标展开；收起后仍可播放或暂停，播放进度不会丢失。手机默认显示左下角的小入口。切换音频时会停止上一条，并从头开始新一条。
 
-模型及 Prompt 的名称在评测界面隐藏，导出文件保留真实方案、音频、评审者和名次，便于汇总。同一模型的两个 Prompt 是独立方案，保存和导出时会分别记录。界面支持内置数据定义的 2–5 个方案。
+模型及 Prompt 的名称在评测界面隐藏，导出文件保留真实方案、音频、评审者和名次，便于汇总。两个模型各自的两个 Prompt 是独立方案，保存和导出时会分别记录。界面支持内置数据定义的 2–5 个方案。
 
 ## 当前评测数据
 
-完整使用新 CSV 的全部结果，按文件首次出现顺序展示：
+恢复原先 30 条音频及其六类交错顺序，六个大类各 5 条，音频总长 591 秒。case ID、顺序及每个 WAV 的 SHA-256 均与原 30 条版本核对一致，没有重新抽样。
 
-| 音频 | 类别 | 时长 | 分析数 |
-| --- | --- | ---: | ---: |
-| MUS-001 | 音乐 | 15 秒 | 2 |
-| SFX-004 | 环境音 | 15 秒 | 2 |
-| EMO-001 | 情绪类 | 15 秒 | 2 |
+| Prompt | 模型 1 | 模型 2 |
+| --- | --- | --- |
+| 结构化 | Qwen3.8-0mni-Flash | Qwen3.5-Omni-Plus |
+| Wynn结构化 | Qwen3.8-0mni-Flash | Qwen3.5-Omni-Plus |
 
-`src/data/evaluation.json` 保存分析，`public/audio/` 保存对应音频，均随 Git 分发。数据导入说明见 [selection.md](docs/selection.md)，来源见 [audio-sources.csv](docs/audio-sources.csv)。原始 CSV 和桌面音频包未修改。
+`src/data/evaluation.json` 保存 120 份分析，`public/audio/` 保存 30 条音频。新结果使用新的数据集 ID，原 3 条及旧 30 条评测记录仍保留在各自浏览器存储中，不混入新一轮导出。悬浮播放器、匿名排序、保存及 CSV 导出沿用最新界面。
 
-替换模型结果或音频会生成新的数据集 ID。新一轮从未评状态开始，之前 30 条评测的浏览器记录保留在旧数据集下，不会混入本轮导出。需要回收旧评价时，应在更新前导出；已经更新的开发者可使用上一版代码访问旧数据集。
+数据与调用说明见 [selection.md](docs/selection.md)，音频来源见 [audio-sources.csv](docs/audio-sources.csv)。
+
+## 重新运行模型（维护者）
+
+模型调用、Prompt、校验和导出全部使用 Python 3.10+ 标准库，无需安装 Python 依赖。网页仍使用现有 Node/React 项目。
+
+```sh
+python3 evaluation/setup_credentials.py
+python3 evaluation/run_eval.py --check-api
+python3 evaluation/run_eval.py --workers 12 --per-model-workers 6 --rpm 20 --timeout 300
+python3 evaluation/publish_results.py
+```
+
+也可设置环境变量 `AGGREGATE_API_KEY` 与 `DASHSCOPE_API_KEY`；它们优先于本机凭证文件。聚合 API 使用目录返回的真实 ID `audio-cap`，百炼使用 `qwen3.5-omni-plus`。如果运行环境需要额外可信 CA，可用 `SSL_CERT_FILE` 指定证书包。
+
+- `evaluation/prompts.py` 内置两版完整 Prompt，`prompt_sources.json` 记录原文件哈希。Wynn 文件只移除最外层 Markdown 围栏；结构化版的参考文本占位符填“未提供”。同一 Prompt 下，两模型收到相同的系统文本、音频字节及实测音频元数据，不发送来源字幕或参考答案。
+- 默认使用 `evaluation/cases.csv` 的固定 30 条。先试一条可加 `--limit 1 --output-dir evaluation/results/smoke`；预览使用 `--dry-run`，真实任务与预览使用不同目录。
+- `evaluation/results/full/results.csv` 每行一条音频，共 5 列：音频链接、结构化 Flash、结构化 Plus、Wynn Flash、Wynn Plus。CSV 保留完整返回；API 错误单独写入状态文件。界面中的匿名 A–D 顺序按评审者稳定随机，导出保留真实模型与 Prompt 对应关系。
+- 相同命令默认断点续跑；缓存同时校验音频、Prompt、模型配置。只有临时 API 故障会自动重试；非 JSON 原文不修复、不因为格式差而重新抽样。`--rerun` 会重新调用成功项。
+- `publish_results.py` 校验完整 30×4 矩阵及音频哈希后更新本地页面；失败或截断时停止更新。正常结束但 JSON 格式异常的返回会原样进入评测，异常单独写入报告。
+
+运行记录、请求 ID、token 和 CA 存在被 Git 忽略的 `evaluation/results/` 或 `evaluation/.local/` 中。模型输出 CSV 用于查看模型全文；页面“导出评价 CSV”用于收集评审排序，两者用途不同。
 
 ## 保存与分享
 
