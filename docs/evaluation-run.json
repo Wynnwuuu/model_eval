@@ -1,9 +1,9 @@
 {
-  "datasetId": "audio-eval-30-9d5d1ea02ac603e7",
-  "fingerprint": "9d5d1ea02ac603e70f3eacb7e6373bcb13443efd346eb37bc04174fbd667be7d",
+  "datasetId": "audio-eval-30-816388871fefc951",
+  "fingerprint": "816388871fefc95163c3b0b8c3cf7c074b60a7bf31e526c46861c97948103cfd",
   "caseCount": 30,
-  "variantCount": 4,
-  "analysisCount": 120,
+  "variantCount": 2,
+  "analysisCount": 60,
   "caseOrder": [
     "ACT-005",
     "EMO-004",
@@ -46,10 +46,10 @@
   },
   "totalDurationSeconds": 591.0,
   "requestSummary": {
-    "completedOutputs": 120,
-    "reusedOutputs": 90,
-    "newOutputs": 30,
-    "totalAttempts": 123,
+    "completedOutputs": 60,
+    "reusedOutputs": 60,
+    "newOutputs": 0,
+    "totalAttempts": 63,
     "extraAttempts": 3,
     "attemptsNote": "totalAttempts includes retained attempts from reused source responses and failures for the same tasks in this run; it is not the number of new API calls in this round."
   },
@@ -66,19 +66,13 @@
     "noSourcePathsOrRequestIdsStored": true
   },
   "jsonSummary": {
-    "valid": 120,
+    "valid": 60,
     "invalid": 0,
     "sourceFlagMismatches": 0
   },
   "formatFindings": [],
   "allowInvalidJson": true,
   "promptSources": {
-    "structured": {
-      "file": "结构化prompt.md",
-      "file_sha256": "82b174e5b5a7272f1e94970354f7899037efcb20f8779a68d12d053e5cf0075f",
-      "system_template_sha256": "82b174e5b5a7272f1e94970354f7899037efcb20f8779a68d12d053e5cf0075f",
-      "outer_markdown_fence_removed": false
-    },
     "wynn": {
       "file": "Wynn结构化promt.md",
       "file_sha256": "eeed69885e3c1f5f0a0179f9f18a0c4e2a6322b1a21422acad00593e4d1b1ff5",
@@ -106,5 +100,5 @@
       ]
     }
   },
-  "baseCodeCommit": "14d90fb"
+  "baseCodeCommit": "2f6af70"
 }
