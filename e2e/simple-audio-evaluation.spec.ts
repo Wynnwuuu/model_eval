@@ -57,7 +57,7 @@ test('every bundled case retains each complete original response and playable ma
   expect(new Set(dataset.cases.map(item => item.id)).size).toBe(caseCount);
   const variantIds = dataset.variants.map(variant => variant.id);
   expect(new Set(variantIds).size).toBe(variantCount);
-  await page.goto('/');
+  await page.goto('/?view=blind');
   for (let index = 0; index < dataset.cases.length; index++) {
     const item = dataset.cases[index];
     expect(Object.keys(item.outputs).sort(), item.id).toEqual([...variantIds].sort());
@@ -87,7 +87,7 @@ test('every bundled case retains each complete original response and playable ma
 });
 
 test('real playback, drag ranking, refresh, and CSV preserve anonymous labels and exact model mapping', async ({ page }) => {
-  await page.goto('/');
+  await page.goto('/?view=blind');
   await expect(page.getByTestId('simple-audio-evaluation')).toBeVisible();
   await expect(confirmation(page)).toBeDisabled();
   await expect(saveButton(page)).toBeDisabled();
@@ -123,7 +123,7 @@ test('real playback, drag ranking, refresh, and CSV preserve anonymous labels an
 });
 
 test('skip remains distinct from a ranked answer and can be replaced after listening', async ({ page }) => {
-  await page.goto('/');
+  await page.goto('/?view=blind');
   await page.getByRole('button', { name: '跳过本条' }).click();
   await expect(progress(page, 0, 1)).toBeVisible();
   const [headers, ...rows] = await exportRows(page);
@@ -144,7 +144,7 @@ test('skip remains distinct from a ranked answer and can be replaced after liste
 });
 
 test('storage write failure keeps draft retryable without falsely advancing or replacing durable data', async ({ page }) => {
-  await page.goto('/');
+  await page.goto('/?view=blind');
   const before = await page.evaluate(key => localStorage.getItem(key), storageKey);
   await page.evaluate(key => {
     const original = Storage.prototype.setItem;
@@ -172,7 +172,7 @@ test('storage write failure keeps draft retryable without falsely advancing or r
 test('malformed saved progress is not overwritten or silently treated as an empty assessment', async ({ page }) => {
   const damaged = '{"version":1,"reviews":{"saved-important-data":true}}';
   await page.addInitScript(({ key, value }) => localStorage.setItem(key, value), { key: storageKey, value: damaged });
-  await page.goto('/');
+  await page.goto('/?view=blind');
   await expect(page.getByRole('alert')).toContainText('未覆盖已有记录');
   await expect(saveButton(page)).toBeDisabled();
   await expect(page.getByRole('button', { name: '下一条', exact: true })).toBeDisabled();
@@ -180,7 +180,7 @@ test('malformed saved progress is not overwritten or silently treated as an empt
 });
 
 test('another tab updating progress blocks stale writes and export until explicit reload', async ({ page, context }) => {
-  await page.goto('/');
+  await page.goto('/?view=blind');
   await playAudio(page);
   await confirmation(page).check();
   await saveButton(page).click();
@@ -207,7 +207,7 @@ test('another tab updating progress blocks stale writes and export until explici
 
 test('mobile reading and accessible ranking controls fit without horizontal overflow', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto('/');
+  await page.goto('/?view=blind');
   await expect(page.locator('[data-testid^="analysis-card-"]')).toHaveCount(variantCount);
   await expect(page.locator('[data-testid^="rank-row-"]')).toHaveCount(variantCount);
   for (const name of ['整体描述', '环境与声源', '时间变化', '完整原文']) {

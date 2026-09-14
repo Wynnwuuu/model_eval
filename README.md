@@ -1,6 +1,10 @@
-# model_eval · 音频分析盲评
+# model_eval · 三模型音频评测结果
 
-只保留一个流程：**播放音频 → 阅读匿名分析 → 拖动排序 → 保存评价**。
+`model_gemini_comparison` 分支默认展示 **30 题已经确认的名次、真实模型名称与 90 份完整分析**，同事打开页面即可查看。每题按第 1、2、3 名排列，可听原音频、切换分析分区、查看完整原文，也可复制单题链接。
+
+前 15 题采用发起人的评分 CSV；后 15 题采用同事提供的模型明示 ZIP。两部分通过题目 ID、真实模型名和 Prompt 关联，不使用浏览器的 A/B/C 顺序。ZIP 已包含第 30 题的具名排名，本分支因此完整展示 30 题；此前的 29 题汇总没有被当成 30 题使用。
+
+结果随代码保存，换电脑或浏览器不会改变。原来的盲评流程保留在 `?view=blind`，仅盲评模式会读取或保存当前浏览器的个人评价。完整来源和核对方法见 [model-gemini-comparison.md](docs/model-gemini-comparison.md)。
 
 当前评测配置为 **原 30 条音频 × 3 个模型 × Wynn结构化 Prompt（Schema 2.2）**：Gemini 3.1 Pro、Gemini 3.8 Flash 与 Qwen3.5-Omni-Plus，每条对应三份分析，完整矩阵共 90 份结果。普通评审无需 API 账号，导入后的原始分析全文随代码提供。
 
@@ -11,7 +15,7 @@
 准备 Node.js 22 或更新版本（含 npm）和 Git。首次使用：
 
 ```sh
-git clone https://github.com/Wynnwuuu/model_eval.git
+git clone --branch model_gemini_comparison https://github.com/Wynnwuuu/model_eval.git
 cd model_eval
 npm ci
 npm run dev:local
@@ -23,9 +27,11 @@ npm run dev:local
 
 macOS、Windows、Linux 使用相同命令。首次安装依赖需要联网；评测时音频和分析均从本机加载。3010 端口被占用时不会自动切换端口。
 
-已克隆过的同事可在项目目录运行 `git pull --ff-only origin main` 更新，再执行 `npm ci` 和 `npm run dev:local`。本版本的音频、分析和稳定数据 ID 都随 Git 保存；同一数据集更新界面代码不会清除已保存的评价。
+获取已发布的本分支后，已克隆过的同事可运行 `git fetch origin`、`git switch model_gemini_comparison`、`git pull --ff-only origin model_gemini_comparison`，再执行 `npm ci` 和 `npm run dev:local`。请先处理自己的未提交改动。音频、完整分析和固定名次都随 Git 保存。
 
-## 如何评测
+## 如何重新盲评
+
+从结果页进入“盲评模式”，或访问 `http://127.0.0.1:3010/?view=blind`。
 
 1. 试听当前音频，阅读匿名 A、B、C 三份分析。可切换整体描述、环境与声源、时间变化和完整原文。
 2. 在排序区拖动方案字母，从最准确排到最不准确；也可用上下移动按钮。
@@ -77,7 +83,9 @@ python3 evaluation/publish_results.py --run-dir evaluation/results/gemini_plus_w
 
 ## 保存与分享
 
-评价保存在**当前浏览器、当前网址**。重启服务或刷新页面后可以继续；换电脑、换浏览器、换端口或改成 `localhost` 会使用另一份记录。清除浏览器网站数据会删除本机评价，请及时导出。
+默认结果页的 30 题名次保存在代码数据文件中，不依赖浏览器存储。分享某题链接可直接定位同一题；通过“导出排名 CSV”可取得全部 90 条具名排名。
+
+重新盲评时，个人评价保存在**当前浏览器、当前网址**。重启服务或刷新页面后可以继续；换电脑、换浏览器、换端口或改成 `localhost` 会使用另一份记录。清除浏览器网站数据会删除本机个人评价，请及时导出。个人盲评不会覆盖默认结果页的固定名次。
 
 同事从 GitHub 拉取代码，或解压完整源码 ZIP，按相同步骤启动即可；**各人的结果不会自动回传给你**。请让他们导出 CSV 发回，文件包含评审者标识，方便区分。公网共享及集中保存尚未部署。
 

@@ -1,0 +1,16 @@
+题号,SourceID,分类,音频文件,时长（秒）,第1名,第2名,第3名
+16,SFX-005,音效,第16题_SFX-005/SFX-005_medium_15s.wav,15,Gemini 3.1 Pro,Gemini 3.8 Flash,Qwen3.5-Omni-Plus
+17,SPK-008,角色对白、旁白,第17题_SPK-008/SPK-008_medium_15s.wav,15,Qwen3.5-Omni-Plus,Gemini 3.8 Flash,Gemini 3.1 Pro
+18,STM-I-004,人声、乐器单轨,第18题_STM-I-004/STM-I-004_medium_15s.wav,15,Qwen3.5-Omni-Plus,Gemini 3.8 Flash,Gemini 3.1 Pro
+19,ACT-015,动作表演,第19题_ACT-015/ACT-015_hard_26s.wav,26,Qwen3.5-Omni-Plus,Gemini 3.1 Pro,Gemini 3.8 Flash
+20,EMO-015,情绪表演类,第20题_EMO-015/EMO-015_hard_30s.wav,30,Qwen3.5-Omni-Plus,Gemini 3.8 Flash,Gemini 3.1 Pro
+21,MUS-016,音乐,第21题_MUS-016/MUS-016_hard_30s.wav,30,Qwen3.5-Omni-Plus,Gemini 3.1 Pro,Gemini 3.8 Flash
+22,SFX-009,音效,第22题_SFX-009/SFX-009_hard_26s.wav,26,Gemini 3.1 Pro,Qwen3.5-Omni-Plus,Gemini 3.8 Flash
+23,SPK-010,角色对白、旁白,第23题_SPK-010/SPK-010_medium_15s.wav,15,Qwen3.5-Omni-Plus,Gemini 3.8 Flash,Gemini 3.1 Pro
+24,STM-V-001,人声、乐器单轨,第24题_STM-V-001/STM-V-001_simple_15s.wav,15,Gemini 3.1 Pro,Gemini 3.8 Flash,Qwen3.5-Omni-Plus
+25,ACT-019,动作表演,第25题_ACT-019/ACT-019_hard_30s.wav,30,Gemini 3.8 Flash,Qwen3.5-Omni-Plus,Gemini 3.1 Pro
+26,EMO-018,情绪表演类,第26题_EMO-018/EMO-018_hard_30s.wav,30,Qwen3.5-Omni-Plus,Gemini 3.8 Flash,Gemini 3.1 Pro
+27,MUS-020,音乐,第27题_MUS-020/MUS-020_hard_30s.wav,30,Qwen3.5-Omni-Plus,Gemini 3.8 Flash,Gemini 3.1 Pro
+28,SFX-010,音效,第28题_SFX-010/SFX-010_hard_29s.wav,29,Qwen3.5-Omni-Plus,Gemini 3.1 Pro,Gemini 3.8 Flash
+29,SPK-016,角色对白、旁白,第29题_SPK-016/SPK-016_hard_30s.wav,30,Qwen3.5-Omni-Plus,Gemini 3.8 Flash,Gemini 3.1 Pro
+30,STM-V-004,人声、乐器单轨,第30题_STM-V-004/STM-V-004_hard_30s.wav,30,Qwen3.5-Omni-Plus,Gemini 3.1 Pro,Gemini 3.8 Flash

@@ -21,7 +21,7 @@ async function beginPlayback(page: Page) {
 
 test('desktop player stays alongside long analysis and keeps one continuous audio while folded', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto('/');
+  await page.goto('/?view=blind');
   await expect(collapseButton(page)).toBeVisible();
   await expect(rail(page).getByText('当前音频', { exact: true })).toBeVisible();
   await expect(rail(page)).toContainText(`1 / ${dataset.cases.length}`);
@@ -56,7 +56,7 @@ test('desktop player stays alongside long analysis and keeps one continuous audi
 
 test('seek and restart control the same audio, then changing the case stops playback and clears listening confirmation', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto('/');
+  await page.goto('/?view=blind');
   await beginPlayback(page);
   await pauseButton(page).click();
   const slider = page.getByRole('slider', { name: '音频播放进度' });
@@ -87,7 +87,7 @@ test('seek and restart control the same audio, then changing the case stops play
 test('mobile player starts folded and fits the viewport when expanded while reading below the page top', async ({ page }) => {
   for (const width of [390, 320]) {
     await page.setViewportSize({ width, height: 844 });
-    await page.goto('/');
+    await page.goto('/?view=blind');
     await expect(expandButton(page)).toBeVisible();
     await expect(collapseButton(page)).toHaveCount(0);
     await page.getByRole('tab', { name: '完整原文' }).click();
@@ -115,7 +115,7 @@ test('failed audio loads remain unconfirmed and can be retried from the floating
   let failAudio = true;
   await page.route(`**${dataset.cases[0].audioUrl}`, route => failAudio ? route.abort('failed') : route.continue());
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto('/');
+  await page.goto('/?view=blind');
   await expect(rail(page).getByRole('alert')).toContainText('音频加载失败');
   await expect(confirmation(page)).toBeDisabled();
   await expect(page.getByRole('button', { name: '保存并下一条', exact: true })).toBeDisabled();

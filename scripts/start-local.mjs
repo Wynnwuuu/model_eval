@@ -43,7 +43,7 @@ async function main() {
     throw new Error('尚未安装项目依赖。请在包含 package.json 的项目目录先运行 npm ci，再运行 npm run dev:local。');
   }
   await checkPort(port);
-  console.log(`\nmodel_eval 本地版：http://${host}:${port}\n音频和分析随代码内置，评价保存在当前浏览器中。以后请使用相同浏览器和地址。按 Ctrl+C 停止。\n`);
+  console.log(`\nmodel_eval 本地版：http://${host}:${port}\n首页展示内置的30题具名输出与固定排名；?view=blind 可独立盲评，个人进度仅存在当前浏览器。按 Ctrl+C 停止。\n`);
   // Launch Node directly: no shell syntax or npm.cmd quoting is needed on Windows.
   const child = spawn(process.execPath, [vite, '--host', host, '--port', String(port), '--strictPort'], {
     cwd: projectRoot,

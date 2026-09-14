@@ -1,0 +1,46 @@
+题号,SourceID,Rank,ModelName,PromptName
+16,SFX-005,1,Gemini 3.1 Pro,Wynn结构化
+16,SFX-005,2,Gemini 3.8 Flash,Wynn结构化
+16,SFX-005,3,Qwen3.5-Omni-Plus,Wynn结构化
+17,SPK-008,3,Gemini 3.1 Pro,Wynn结构化
+17,SPK-008,2,Gemini 3.8 Flash,Wynn结构化
+17,SPK-008,1,Qwen3.5-Omni-Plus,Wynn结构化
+18,STM-I-004,3,Gemini 3.1 Pro,Wynn结构化
+18,STM-I-004,2,Gemini 3.8 Flash,Wynn结构化
+18,STM-I-004,1,Qwen3.5-Omni-Plus,Wynn结构化
+19,ACT-015,2,Gemini 3.1 Pro,Wynn结构化
+19,ACT-015,3,Gemini 3.8 Flash,Wynn结构化
+19,ACT-015,1,Qwen3.5-Omni-Plus,Wynn结构化
+20,EMO-015,3,Gemini 3.1 Pro,Wynn结构化
+20,EMO-015,2,Gemini 3.8 Flash,Wynn结构化
+20,EMO-015,1,Qwen3.5-Omni-Plus,Wynn结构化
+21,MUS-016,2,Gemini 3.1 Pro,Wynn结构化
+21,MUS-016,3,Gemini 3.8 Flash,Wynn结构化
+21,MUS-016,1,Qwen3.5-Omni-Plus,Wynn结构化
+22,SFX-009,1,Gemini 3.1 Pro,Wynn结构化
+22,SFX-009,3,Gemini 3.8 Flash,Wynn结构化
+22,SFX-009,2,Qwen3.5-Omni-Plus,Wynn结构化
+23,SPK-010,3,Gemini 3.1 Pro,Wynn结构化
+23,SPK-010,2,Gemini 3.8 Flash,Wynn结构化
+23,SPK-010,1,Qwen3.5-Omni-Plus,Wynn结构化
+24,STM-V-001,1,Gemini 3.1 Pro,Wynn结构化
+24,STM-V-001,2,Gemini 3.8 Flash,Wynn结构化
+24,STM-V-001,3,Qwen3.5-Omni-Plus,Wynn结构化
+25,ACT-019,3,Gemini 3.1 Pro,Wynn结构化
+25,ACT-019,1,Gemini 3.8 Flash,Wynn结构化
+25,ACT-019,2,Qwen3.5-Omni-Plus,Wynn结构化
+26,EMO-018,3,Gemini 3.1 Pro,Wynn结构化
+26,EMO-018,2,Gemini 3.8 Flash,Wynn结构化
+26,EMO-018,1,Qwen3.5-Omni-Plus,Wynn结构化
+27,MUS-020,3,Gemini 3.1 Pro,Wynn结构化
+27,MUS-020,2,Gemini 3.8 Flash,Wynn结构化
+27,MUS-020,1,Qwen3.5-Omni-Plus,Wynn结构化
+28,SFX-010,2,Gemini 3.1 Pro,Wynn结构化
+28,SFX-010,3,Gemini 3.8 Flash,Wynn结构化
+28,SFX-010,1,Qwen3.5-Omni-Plus,Wynn结构化
+29,SPK-016,3,Gemini 3.1 Pro,Wynn结构化
+29,SPK-016,2,Gemini 3.8 Flash,Wynn结构化
+29,SPK-016,1,Qwen3.5-Omni-Plus,Wynn结构化
+30,STM-V-004,2,Gemini 3.1 Pro,Wynn结构化
+30,STM-V-004,3,Gemini 3.8 Flash,Wynn结构化
+30,STM-V-004,1,Qwen3.5-Omni-Plus,Wynn结构化
