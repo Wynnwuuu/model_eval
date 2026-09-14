@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""两个模型 × Wynn 版 Prompt；Python 3.10+，仅使用标准库。"""
+"""两个模型 × 结构化 / Wynn 结构化两版 Prompt；Python 3.10+，仅使用标准库。"""
 import argparse
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -287,7 +287,7 @@ def parse_args():
     if args.retries < 0 or (args.limit is not None and args.limit < 1):
         parser.error("retries 不能为负，limit 必须大于 0")
     if not args.output_dir:
-        args.output_dir = ROOT / "results" / ("round3_preview" if args.dry_run else "round3_wynn_doubao_plus")
+        args.output_dir = ROOT / "results" / ("round4_preview" if args.dry_run else "round4_two_prompts_doubao_plus")
     return args
 
 

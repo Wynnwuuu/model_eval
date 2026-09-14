@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""校验本轮 30×2 原始返回，生成长表并更新本地盲评数据；不调用 API。"""
+"""校验本轮 30×2×2 原始返回，生成长表并更新本地盲评数据；不调用 API。"""
 import argparse
 import csv
 import hashlib
@@ -43,10 +43,13 @@ def publish(run_dir: Path):
     models = model_configs()
     specs = column_specs(models)
     model_ids = [model["id"] for model in models]
-    if len(models) != 2 or len(set(model_ids)) != 2 or len(specs) != 2 or any(prompt != "wynn" for prompt, _ in specs):
-        raise ValueError("Exactly two distinct models × the Wynn Prompt are required")
-    if run_config.get("model_order") != model_ids or run_config.get("prompt_order") != ["wynn"]:
-        raise ValueError("Run configuration does not match this two-model Wynn comparison")
+    prompt_ids = ["structured", "wynn"]
+    expected_model_ids = ["doubao_seed20_lite", "qwen35_plus"]
+    expected_specs = [(prompt_id, model_id) for prompt_id in prompt_ids for model_id in expected_model_ids]
+    if model_ids != expected_model_ids or [(prompt_id, model["id"]) for prompt_id, model in specs] != expected_specs:
+        raise ValueError("Doubao Seed Lite and Qwen Plus × structured and Wynn Prompts are required, in that order")
+    if run_config.get("model_order") != model_ids or run_config.get("prompt_order") != prompt_ids:
+        raise ValueError("Run configuration does not match this two-model, two-Prompt comparison")
     rows = []
     response_hashes = {}
     for sample in samples:
@@ -75,7 +78,7 @@ def publish(run_dir: Path):
     spec.loader.exec_module(importer)
     dataset, report, assets, attribution, selection = importer.prepare(SimpleNamespace(
         results_csv=long_csv, audio_dir=DEFAULT_DATASET, manifest=ROOT / "cases.csv", allow_invalid_json=True))
-    if report["caseOrder"] != origin["case_ids"] or report["analysisCount"] != 60 or report["variantCount"] != 2:
+    if report["caseOrder"] != origin["case_ids"] or report["analysisCount"] != 120 or report["variantCount"] != 4:
         raise ValueError("Imported matrix/order changed")
     # WAVs are already bundled and validated by prepare(); never overwrite them.
     for filename, content in assets.items():
@@ -83,10 +86,10 @@ def publish(run_dir: Path):
             raise ValueError("Audio changed during import")
     summary = json.loads((run_dir / "summary.json").read_text())
     report["requestSummary"] = request_summary(run_dir, response_hashes, summary["attempts"])
-    report["baseCodeCommit"] = "c4cbd33"
+    report["baseCodeCommit"] = "14d90fb"
     report["selectionOrigin"] = origin
     prompt_sources = json.loads((ROOT / "prompt_sources.json").read_text())
-    report["promptSources"] = {"wynn": prompt_sources["wynn"]}
+    report["promptSources"] = {prompt_id: prompt_sources[prompt_id] for prompt_id in prompt_ids}
     report["modelApiIds"] = {m["label"]: m["model"] for m in models}
     report["aggregateCatalog"] = {key: {field: value.get(field) for field in ("id", "displayName", "featureTags")}
                                   for key, value in run_config.get("discovery", {}).items() if value}
@@ -101,5 +104,5 @@ def publish(run_dir: Path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--run-dir", type=Path, default=ROOT / "results/round3_wynn_doubao_plus")
+    parser.add_argument("--run-dir", type=Path, default=ROOT / "results/round4_two_prompts_doubao_plus")
     publish(parser.parse_args().run_dir.resolve())
