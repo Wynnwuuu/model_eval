@@ -1,9 +1,9 @@
 {
-  "datasetId": "audio-eval-30-816388871fefc951",
-  "fingerprint": "816388871fefc95163c3b0b8c3cf7c074b60a7bf31e526c46861c97948103cfd",
+  "datasetId": "audio-eval-30-9f7982fbfae67788",
+  "fingerprint": "9f7982fbfae677888e1a8f47d069bcabc651c4da23a7475d4f317f7006307c9b",
   "caseCount": 30,
-  "variantCount": 2,
-  "analysisCount": 60,
+  "variantCount": 3,
+  "analysisCount": 90,
   "caseOrder": [
     "ACT-005",
     "EMO-004",
@@ -46,18 +46,18 @@
   },
   "totalDurationSeconds": 591.0,
   "requestSummary": {
-    "completedOutputs": 60,
-    "reusedOutputs": 60,
-    "newOutputs": 0,
-    "totalAttempts": 63,
-    "extraAttempts": 3,
+    "completedOutputs": 90,
+    "reusedOutputs": 30,
+    "newOutputs": 60,
+    "totalAttempts": 98,
+    "extraAttempts": 8,
     "attemptsNote": "totalAttempts includes retained attempts from reused source responses and failures for the same tasks in this run; it is not the number of new API calls in this round."
   },
   "checks": {
     "completeMatrix": true,
     "uniqueCaseVariantPairs": true,
     "allCallsSuccessful": true,
-    "allAnalysesValidJson": true,
+    "allAnalysesValidJson": false,
     "jsonFlagsMatchActual": true,
     "allAnalysisTextPreserved": true,
     "allAudioHashesVerified": true,
@@ -66,11 +66,165 @@
     "noSourcePathsOrRequestIdsStored": true
   },
   "jsonSummary": {
-    "valid": 60,
-    "invalid": 0,
+    "valid": 73,
+    "invalid": 17,
     "sourceFlagMismatches": 0
   },
-  "formatFindings": [],
+  "formatFindings": [
+    {
+      "caseId": "SFX-002",
+      "variantId": "variant-a5e8f88ecc732ea4",
+      "modelName": "Gemini 3.1 Pro",
+      "promptName": "Wynn结构化",
+      "sourceJsonValid": false,
+      "actualJsonValid": false,
+      "jsonError": "Expecting value: line 1 column 1 (char 0)"
+    },
+    {
+      "caseId": "STM-I-002",
+      "variantId": "variant-a5e8f88ecc732ea4",
+      "modelName": "Gemini 3.1 Pro",
+      "promptName": "Wynn结构化",
+      "sourceJsonValid": false,
+      "actualJsonValid": false,
+      "jsonError": "Expecting value: line 1 column 1 (char 0)"
+    },
+    {
+      "caseId": "EMO-006",
+      "variantId": "variant-a5e8f88ecc732ea4",
+      "modelName": "Gemini 3.1 Pro",
+      "promptName": "Wynn结构化",
+      "sourceJsonValid": false,
+      "actualJsonValid": false,
+      "jsonError": "Expecting value: line 1 column 1 (char 0)"
+    },
+    {
+      "caseId": "MUS-011",
+      "variantId": "variant-a5e8f88ecc732ea4",
+      "modelName": "Gemini 3.1 Pro",
+      "promptName": "Wynn结构化",
+      "sourceJsonValid": false,
+      "actualJsonValid": false,
+      "jsonError": "Expecting value: line 1 column 1 (char 0)"
+    },
+    {
+      "caseId": "SFX-004",
+      "variantId": "variant-a5e8f88ecc732ea4",
+      "modelName": "Gemini 3.1 Pro",
+      "promptName": "Wynn结构化",
+      "sourceJsonValid": false,
+      "actualJsonValid": false,
+      "jsonError": "Expecting value: line 1 column 1 (char 0)"
+    },
+    {
+      "caseId": "SPK-007",
+      "variantId": "variant-a5e8f88ecc732ea4",
+      "modelName": "Gemini 3.1 Pro",
+      "promptName": "Wynn结构化",
+      "sourceJsonValid": false,
+      "actualJsonValid": false,
+      "jsonError": "Expecting value: line 1 column 1 (char 0)"
+    },
+    {
+      "caseId": "ACT-012",
+      "variantId": "variant-a5e8f88ecc732ea4",
+      "modelName": "Gemini 3.1 Pro",
+      "promptName": "Wynn结构化",
+      "sourceJsonValid": false,
+      "actualJsonValid": false,
+      "jsonError": "Expecting value: line 1 column 1 (char 0)"
+    },
+    {
+      "caseId": "SFX-005",
+      "variantId": "variant-a5e8f88ecc732ea4",
+      "modelName": "Gemini 3.1 Pro",
+      "promptName": "Wynn结构化",
+      "sourceJsonValid": false,
+      "actualJsonValid": false,
+      "jsonError": "Expecting value: line 1 column 1 (char 0)"
+    },
+    {
+      "caseId": "SPK-008",
+      "variantId": "variant-a5e8f88ecc732ea4",
+      "modelName": "Gemini 3.1 Pro",
+      "promptName": "Wynn结构化",
+      "sourceJsonValid": false,
+      "actualJsonValid": false,
+      "jsonError": "Expecting value: line 1 column 1 (char 0)"
+    },
+    {
+      "caseId": "ACT-015",
+      "variantId": "variant-a5e8f88ecc732ea4",
+      "modelName": "Gemini 3.1 Pro",
+      "promptName": "Wynn结构化",
+      "sourceJsonValid": false,
+      "actualJsonValid": false,
+      "jsonError": "Expecting value: line 1 column 1 (char 0)"
+    },
+    {
+      "caseId": "MUS-016",
+      "variantId": "variant-a5e8f88ecc732ea4",
+      "modelName": "Gemini 3.1 Pro",
+      "promptName": "Wynn结构化",
+      "sourceJsonValid": false,
+      "actualJsonValid": false,
+      "jsonError": "Expecting value: line 1 column 1 (char 0)"
+    },
+    {
+      "caseId": "SFX-009",
+      "variantId": "variant-a5e8f88ecc732ea4",
+      "modelName": "Gemini 3.1 Pro",
+      "promptName": "Wynn结构化",
+      "sourceJsonValid": false,
+      "actualJsonValid": false,
+      "jsonError": "Expecting value: line 1 column 1 (char 0)"
+    },
+    {
+      "caseId": "ACT-019",
+      "variantId": "variant-a5e8f88ecc732ea4",
+      "modelName": "Gemini 3.1 Pro",
+      "promptName": "Wynn结构化",
+      "sourceJsonValid": false,
+      "actualJsonValid": false,
+      "jsonError": "Expecting value: line 1 column 1 (char 0)"
+    },
+    {
+      "caseId": "MUS-020",
+      "variantId": "variant-a5e8f88ecc732ea4",
+      "modelName": "Gemini 3.1 Pro",
+      "promptName": "Wynn结构化",
+      "sourceJsonValid": false,
+      "actualJsonValid": false,
+      "jsonError": "Expecting value: line 1 column 1 (char 0)"
+    },
+    {
+      "caseId": "MUS-020",
+      "variantId": "variant-f04634f25f2b8b72",
+      "modelName": "Gemini 3.8 Flash",
+      "promptName": "Wynn结构化",
+      "sourceJsonValid": false,
+      "actualJsonValid": false,
+      "jsonError": "Expecting value: line 1 column 1 (char 0)"
+    },
+    {
+      "caseId": "SFX-010",
+      "variantId": "variant-a5e8f88ecc732ea4",
+      "modelName": "Gemini 3.1 Pro",
+      "promptName": "Wynn结构化",
+      "sourceJsonValid": false,
+      "actualJsonValid": false,
+      "jsonError": "Expecting value: line 1 column 1 (char 0)"
+    },
+    {
+      "caseId": "SPK-016",
+      "variantId": "variant-a5e8f88ecc732ea4",
+      "modelName": "Gemini 3.1 Pro",
+      "promptName": "Wynn结构化",
+      "sourceJsonValid": false,
+      "actualJsonValid": false,
+      "jsonError": "Expecting value: line 1 column 1 (char 0)"
+    }
+  ],
   "allowInvalidJson": true,
   "promptSources": {
     "wynn": {
@@ -81,24 +235,58 @@
     }
   },
   "modelApiIds": {
-    "Doubao Seed 2.0 Lite(260428)": "audio-seed_lite",
+    "Gemini 3.1 Pro": "video-caption-opt",
+    "Gemini 3.8 Flash": "gemini-audio-test",
     "Qwen3.5-Omni-Plus": "qwen3.5-omni-plus"
   },
   "aggregateCatalog": {
-    "doubao_seed20_lite": {
-      "id": "audio-seed_lite",
-      "displayName": "Doubao Seed 2.0 Lite(260428)",
+    "gemini31_pro": {
+      "id": "video-caption-opt",
+      "displayName": "Gemini3.1-Pro",
       "featureTags": [
         "function_call",
         "json_mode",
         "structured_output",
         "image_input",
         "audio_input",
+        "video_input",
+        "file_input",
+        "streaming",
+        "reasoning"
+      ]
+    },
+    "gemini38_flash": {
+      "id": "gemini-audio-test",
+      "displayName": "gemini-audio-test",
+      "featureTags": [
+        "function_call",
+        "json_mode",
+        "structured_output",
+        "image_input",
+        "audio_input",
+        "video_input",
+        "video_agentic",
         "file_input",
         "streaming",
         "reasoning"
       ]
     }
   },
-  "baseCodeCommit": "2f6af70"
+  "baseCodeCommit": "0faadb5",
+  "verifiedModelBindings": [
+    {
+      "modelKey": "gemini-audio-test",
+      "providerModel": "google/gemini-3.8-flash",
+      "checkedAt": "2026-09-14T09:08:04.066221+00:00"
+    },
+    {
+      "modelKey": "video-caption-opt",
+      "providerModel": "gemini-3.1-pro-preview",
+      "checkedAt": "2026-09-14T09:08:04.066221+00:00"
+    }
+  ],
+  "excludedProbeSummary": {
+    "count": 1,
+    "reason": "One preliminary request to the former mixed Pro/Flash route was excluded because the physical model could not be established. It is outside the published matrix and its attempt count."
+  }
 }

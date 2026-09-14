@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""校验本轮 30×2×1 原始返回，生成长表并更新本地盲评数据；不调用 API。"""
+"""校验本轮 30×3×1 原始返回，生成长表并更新本地盲评数据；不调用 API。"""
 import argparse
 import csv
 import hashlib
@@ -44,12 +44,12 @@ def publish(run_dir: Path):
     specs = column_specs(models)
     model_ids = [model["id"] for model in models]
     prompt_ids = ["wynn"]
-    expected_model_ids = ["doubao_seed20_lite", "qwen35_plus"]
+    expected_model_ids = ["gemini31_pro", "gemini38_flash", "qwen35_plus"]
     expected_specs = [(prompt_id, model_id) for prompt_id in prompt_ids for model_id in expected_model_ids]
     if model_ids != expected_model_ids or [(prompt_id, model["id"]) for prompt_id, model in specs] != expected_specs:
-        raise ValueError("Doubao Seed Lite and Qwen Plus × Wynn Prompt are required, in that order")
+        raise ValueError("Gemini 3.1 Pro, Gemini 3.8 Flash and Qwen Plus × Wynn Prompt are required, in that order")
     if run_config.get("model_order") != model_ids or run_config.get("prompt_order") != prompt_ids:
-        raise ValueError("Run configuration does not match this two-model, Wynn-Prompt comparison")
+        raise ValueError("Run configuration does not match this three-model, Wynn-Prompt comparison")
     rows = []
     response_hashes = {}
     for sample in samples:
@@ -78,7 +78,7 @@ def publish(run_dir: Path):
     spec.loader.exec_module(importer)
     dataset, report, assets, attribution, selection = importer.prepare(SimpleNamespace(
         results_csv=long_csv, audio_dir=DEFAULT_DATASET, manifest=ROOT / "cases.csv", allow_invalid_json=True))
-    if report["caseOrder"] != origin["case_ids"] or report["analysisCount"] != 60 or report["variantCount"] != 2:
+    if report["caseOrder"] != origin["case_ids"] or report["analysisCount"] != 90 or report["variantCount"] != 3:
         raise ValueError("Imported matrix/order changed")
     # WAVs are already bundled and validated by prepare(); never overwrite them.
     for filename, content in assets.items():
@@ -86,7 +86,22 @@ def publish(run_dir: Path):
             raise ValueError("Audio changed during import")
     summary = json.loads((run_dir / "summary.json").read_text())
     report["requestSummary"] = request_summary(run_dir, response_hashes, summary["attempts"])
-    report["baseCodeCommit"] = "2f6af70"
+    report["baseCodeCommit"] = "0faadb5"
+    binding_path = run_dir / "model_bindings.json"
+    if binding_path.exists():
+        binding_rows = json.loads(binding_path.read_text())
+        expected = {"video-caption-opt": "gemini-3.1-pro-preview",
+                    "gemini-audio-test": "google/gemini-3.8-flash"}
+        if (len(binding_rows) != len(expected) or
+            {item["modelKey"]: item["providerModel"] for item in binding_rows} != expected or
+            any(item["status"] != "enabled" or not item["available"] for item in binding_rows)):
+            raise ValueError("Gemini model binding snapshot does not match the evaluated models")
+        report["verifiedModelBindings"] = [
+            {key: item[key] for key in ("modelKey", "providerModel", "checkedAt")}
+            for item in binding_rows]
+    probe_path = run_dir / "excluded_probes.json"
+    if probe_path.exists():
+        report["excludedProbeSummary"] = json.loads(probe_path.read_text())
     report["selectionOrigin"] = origin
     prompt_sources = json.loads((ROOT / "prompt_sources.json").read_text())
     report["promptSources"] = {prompt_id: prompt_sources[prompt_id] for prompt_id in prompt_ids}
@@ -95,6 +110,9 @@ def publish(run_dir: Path):
                                   for key, value in run_config.get("discovery", {}).items() if value}
     public_report = {k: report[k] for k in ("datasetId", "fingerprint", "caseCount", "variantCount", "analysisCount",
         "caseOrder", "categoryCounts", "totalDurationSeconds", "requestSummary", "checks", "jsonSummary", "formatFindings", "allowInvalidJson", "promptSources", "modelApiIds", "aggregateCatalog", "baseCodeCommit")}
+    for key in ("verifiedModelBindings", "excludedProbeSummary"):
+        if key in report:
+            public_report[key] = report[key]
     importer.publish([(repo / "src/data/evaluation.json", importer.pretty_json(dataset)),
                       (repo / "docs/audio-sources.csv", attribution), (repo / "docs/selection.csv", selection),
                       (repo / "docs/evaluation-run.json", importer.pretty_json(public_report)),
@@ -104,5 +122,5 @@ def publish(run_dir: Path):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--run-dir", type=Path, default=ROOT / "results/wynn_only_doubao_plus")
+    parser.add_argument("--run-dir", type=Path, default=ROOT / "results/gemini_plus_wynn")
     publish(parser.parse_args().run_dir.resolve())

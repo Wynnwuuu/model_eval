@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""两个模型 × Wynn 结构化 Prompt；Python 3.10+，仅使用标准库。"""
+"""三个模型 × Wynn 结构化 Prompt；Python 3.10+，仅使用标准库。"""
 import argparse
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -223,7 +223,7 @@ def csv_cell(record, model_id=None):
 
 
 def column_specs(models):
-    """同一个 Prompt 的两个模型相邻。"""
+    """同一个 Prompt 的所有模型相邻。"""
     return [(p, m) for p in PROMPTS for m in models]
 
 
@@ -287,7 +287,7 @@ def parse_args():
     if args.retries < 0 or (args.limit is not None and args.limit < 1):
         parser.error("retries 不能为负，limit 必须大于 0")
     if not args.output_dir:
-        args.output_dir = ROOT / "results" / ("wynn_preview" if args.dry_run else "wynn_only_doubao_plus")
+        args.output_dir = ROOT / "results" / ("gemini_plus_preview" if args.dry_run else "gemini_plus_wynn")
     return args
 
 
@@ -303,7 +303,7 @@ def main():
             if m["id"] not in selected_models:
                 continue
             if m.get("supports_system_prompt") is False and m["prompt_mode"] != "audio_only":
-                disabled[m["id"]] = "UNSUPPORTED_SYSTEM_PROMPT：本轮要求两个模型均支持 system prompt"
+                disabled[m["id"]] = "UNSUPPORTED_SYSTEM_PROMPT：本轮要求所有模型均支持 system prompt"
                 continue
             if not tokens.get(m["id"]):
                 disabled[m["id"]] = "MISSING_TOKEN：请填写 " + m["token_env"]

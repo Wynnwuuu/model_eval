@@ -1,4 +1,4 @@
-"""两模型配置；凭证只从环境变量或本地未跟踪文件读取。"""
+"""三模型配置；凭证只从环境变量或本地未跟踪文件读取。"""
 import json
 import os
 from pathlib import Path
@@ -6,7 +6,12 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_DATASET = ROOT.parent / "public" / "audio"
 AGGREGATE_BASE_URL = "https://api-dev-product-infra-platform.sandaii.cn/svc/model/api/v1/llm"
 MODELS = [
-    dict(id="doubao_seed20_lite", label="Doubao Seed 2.0 Lite(260428)", model="audio-seed_lite",
+    dict(id="gemini31_pro", label="Gemini 3.1 Pro", model="video-caption-opt",
+         base_url=AGGREGATE_BASE_URL, token_env="AGGREGATE_API_KEY", provider="sandai",
+         audio_encoding="base64", stream=True, max_completion_tokens=16384,
+         discovery_url=AGGREGATE_BASE_URL + "/models"),
+    # The user confirmed this aggregate alias is Gemini 3.8 Flash.
+    dict(id="gemini38_flash", label="Gemini 3.8 Flash", model="gemini-audio-test",
          base_url=AGGREGATE_BASE_URL, token_env="AGGREGATE_API_KEY", provider="sandai",
          audio_encoding="base64", stream=True, max_completion_tokens=16384,
          discovery_url=AGGREGATE_BASE_URL + "/models"),
