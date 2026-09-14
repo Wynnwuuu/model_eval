@@ -1,10 +1,4 @@
 {
-  "structured": {
-    "file": "结构化prompt.md",
-    "file_sha256": "82b174e5b5a7272f1e94970354f7899037efcb20f8779a68d12d053e5cf0075f",
-    "system_template_sha256": "82b174e5b5a7272f1e94970354f7899037efcb20f8779a68d12d053e5cf0075f",
-    "outer_markdown_fence_removed": false
-  },
   "wynn": {
     "file": "Wynn结构化promt.md",
     "file_sha256": "eeed69885e3c1f5f0a0179f9f18a0c4e2a6322b1a21422acad00593e4d1b1ff5",

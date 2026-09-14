@@ -1,4 +1,4 @@
-"""Offline regressions for the 30-case, two-model, two-prompt comparison.
+"""Offline regressions for the 30-case, two-model, Wynn-prompt comparison.
 
 Run with ``python3 evaluation/test_eval.py`` from the repository root.
 All inference is mocked; no credentials or network connections are used.
@@ -29,8 +29,8 @@ from providers import APIError, build_payload
 import run_eval as runner
 
 
-MODEL_IDS = ["qwen38_flash", "qwen35_plus"]
-PROMPT_IDS = ["structured", "wynn"]
+MODEL_IDS = ["doubao_seed20_lite", "qwen35_plus"]
+PROMPT_IDS = ["wynn"]
 
 
 class EvaluationTests(unittest.TestCase):
@@ -132,7 +132,7 @@ class EvaluationTests(unittest.TestCase):
             [(p, m) for p in PROMPT_IDS for m in MODEL_IDS],
         )
 
-    def test_30_cases_produce_120_requests_and_five_correctly_aligned_csv_columns(self):
+    def test_30_cases_produce_60_requests_and_three_correctly_aligned_csv_columns(self):
         samples = self.samples(30)
         calls = []
 
@@ -148,7 +148,7 @@ class EvaluationTests(unittest.TestCase):
 
         status, mocked = self.run_batch(samples, inference)
         self.assertEqual(status, 0)
-        self.assertEqual(mocked.call_count, 120)
+        self.assertEqual(mocked.call_count, 60)
         self.assertEqual(Counter((a, p, m) for a, p, m, _, _ in calls),
                          Counter((s.sha256, p, m) for s in samples
                                  for p in PROMPT_IDS for m in MODEL_IDS))
@@ -157,14 +157,14 @@ class EvaluationTests(unittest.TestCase):
                                  for p in PROMPT_IDS for m in self.models]
         self.assertEqual(rows[0], headers)
         self.assertEqual(len(rows), 31)
-        self.assertTrue(all(len(row) == 5 for row in rows))
+        self.assertTrue(all(len(row) == 3 for row in rows))
         for row, sample in zip(rows[1:], samples):
             self.assertEqual(row[0], sample.audio_url)
             for text, (prompt_id, model) in zip(row[1:], runner.column_specs(self.models)):
                 parsed = json.loads(text)
                 self.assertEqual((parsed["audio"], parsed["prompt"], parsed["model"]),
                                  (sample.sha256, prompt_id, model["id"]))
-        self.assertEqual(Counter(cell["status"] for cell in self.statuses()), {"ok": 120})
+        self.assertEqual(Counter(cell["status"] for cell in self.statuses()), {"ok": 60})
 
         grouped = defaultdict(list)
         for audio_hash, prompt_id, model_id, payload, audio_bytes in calls:
@@ -186,7 +186,7 @@ class EvaluationTests(unittest.TestCase):
     def test_resume_does_not_repeat_successful_requests(self):
         samples = self.samples()
         status, first = self.run_batch(samples, lambda *args: self.reply())
-        self.assertEqual((status, first.call_count), (0, 4))
+        self.assertEqual((status, first.call_count), (0, 2))
         original = (self.output / "results.csv").read_bytes()
         status, resumed = self.run_batch(samples, lambda *args: self.fail("Cached request repeated"))
         self.assertEqual((status, resumed.call_count), (0, 0))
@@ -196,8 +196,8 @@ class EvaluationTests(unittest.TestCase):
         samples = self.samples()
         raw = '前导文本\n{"caption": "原始,响应\n含未转义换行"}\n尾部'
         status, first = self.run_batch(samples, lambda *args: self.reply(raw))
-        self.assertEqual((status, first.call_count), (0, 4))
-        self.assertEqual(self.csv_rows()[1][1:], [raw] * 4)
+        self.assertEqual((status, first.call_count), (0, 2))
+        self.assertEqual(self.csv_rows()[1][1:], [raw] * 2)
         self.assertTrue(all(cell["json_valid"] is False for cell in self.statuses()))
         for path in (self.output / "responses").glob("*.json"):
             self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["text"], raw)
@@ -208,13 +208,13 @@ class EvaluationTests(unittest.TestCase):
         samples = self.samples()
 
         def inference(model, token, audio, system, user, timeout):
-            if model["id"] == MODEL_IDS[0] and system == render_prompt("structured"):
+            if model["id"] == MODEL_IDS[0] and system == render_prompt("wynn"):
                 raise APIError("offline rejected " + token, status=400,
                                code="unsupported_parameter", request_id="offline-failure")
             return self.reply()
 
         status, first = self.run_batch(samples, inference)
-        self.assertEqual((status, first.call_count), (2, 4))
+        self.assertEqual((status, first.call_count), (2, 2))
         self.assertEqual(self.csv_rows()[1][1], "")
         self.assertTrue(all(self.csv_rows()[1][2:]))
         failures = [cell for cell in self.statuses() if cell["status"] == "error"]
@@ -230,7 +230,7 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual((status, resumed.call_count), (0, 1))
         self.assertTrue(all(self.csv_rows()[1][1:]))
         summary = json.loads((self.output / "summary.json").read_text())
-        self.assertEqual(summary["attempts"], 5)
+        self.assertEqual(summary["attempts"], 3)
         history = [json.loads(line) for line in (self.output / "attempt_history.jsonl").read_text().splitlines()]
         self.assertEqual(len(history), 1)
         self.assertEqual(history[0]["error_code"], "unsupported_parameter")
@@ -239,22 +239,22 @@ class EvaluationTests(unittest.TestCase):
         samples = self.samples()
         self.run_batch(samples, lambda *args: self.reply())
         old_keys = {cell["request_hash"] for cell in self.statuses()}
-        with patch.dict(PROMPTS, {"structured": PROMPTS["structured"] + "\n离线测试变更"}):
+        with patch.dict(PROMPTS, {"wynn": PROMPTS["wynn"] + "\n离线测试变更"}):
             status, second = self.run_batch(samples, lambda *args: self.reply())
             new_keys = {cell["request_hash"] for cell in self.statuses()}
         self.assertEqual((status, second.call_count), (0, 2))
-        self.assertEqual(len(old_keys & new_keys), 2)
+        self.assertEqual(len(old_keys & new_keys), 0)
         self.assertTrue(all(call.args[3].endswith("离线测试变更") for call in second.call_args_list))
 
     def test_model_change_invalidates_only_affected_model_requests(self):
         samples = self.samples()
         self.run_batch(samples, lambda *args: self.reply())
         old_keys = {cell["request_hash"] for cell in self.statuses()}
-        self.models[0] = dict(self.models[0], model="audio-cap-updated-for-offline-test")
+        self.models[0] = dict(self.models[0], model="audio-seed-lite-updated-for-offline-test")
         status, second = self.run_batch(samples, lambda *args: self.reply())
         new_keys = {cell["request_hash"] for cell in self.statuses()}
-        self.assertEqual((status, second.call_count), (0, 2))
-        self.assertEqual(len(old_keys & new_keys), 2)
+        self.assertEqual((status, second.call_count), (0, 1))
+        self.assertEqual(len(old_keys & new_keys), 1)
         self.assertTrue(all(call.args[0]["id"] == MODEL_IDS[0] for call in second.call_args_list))
 
     def test_reference_answers_file_names_and_dataset_categories_are_not_sent(self):

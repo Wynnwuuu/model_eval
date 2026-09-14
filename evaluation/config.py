@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parent
 DEFAULT_DATASET = ROOT.parent / "public" / "audio"
 AGGREGATE_BASE_URL = "https://api-dev-product-infra-platform.sandaii.cn/svc/model/api/v1/llm"
 MODELS = [
-    dict(id="qwen38_flash", label="Qwen3.8-0mni-Flash", model="audio-cap",
+    dict(id="doubao_seed20_lite", label="Doubao Seed 2.0 Lite(260428)", model="audio-seed_lite",
          base_url=AGGREGATE_BASE_URL, token_env="AGGREGATE_API_KEY", provider="sandai",
          audio_encoding="base64", stream=True, max_completion_tokens=16384,
          discovery_url=AGGREGATE_BASE_URL + "/models"),
